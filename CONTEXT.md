@@ -38,6 +38,30 @@ _Avoid_: Agent(단독), Bot
 Agent Runtime이 한 질문에 산출한 답. `text`(답 본문) · `sources`(근거 출처) · `mode`를 가진다. `mode`는 신뢰 상태 — `full`(그대로 사용자에게)과 `draft_only`(Approval 게이트가 걸려 사람 승인 전까지는 초안). 즉 Routed에 Approval이 붙으면 Runtime은 `draft_only`로 답한다(승인 ≠ 라우팅, 게이트만 걸림). "답에는 항상 담당·신뢰 상태(승인/초안/출처)가 붙는다"는 불변식의 그 답.
 _Avoid_: Response, Result, Reply
 
+### Distributed transport (분산 전송)
+
+owner PC는 서버를 노출하지 않는다(NAT/방화벽 뒤·고정 IP 없음·상시 가동 X). 그래서 owner PC의 워커가 중앙에 *역방향 아웃바운드*로 연결해 작업을 가져가고, 중앙은 owner별 작업 큐에 적재해 비동기로 답을 수집한다. 논리적 호출 방향(질문 중앙→owner)과 물리적 연결 방향(소켓은 owner→중앙)은 분리된다. (ADR 0011 — Agent Runtime의 도달 방식, 답변 주체=owner Claude Code는 ADR 0010 그대로.)
+
+**Owner Worker (오너 워커)**:
+각 Owner PC에서 도는 작은 실행 주체. 중앙에 *아웃바운드*로 연결(폴링 또는 WS/SSE)해 자기 owner 작업 큐의 작업을 가져가(`claim`), 로컬 Claude Code(`ClaudeCodeRuntime` 재사용)로 답을 만들어 중앙에 회신(`submit`)한다. 중앙이 owner PC로 인바운드 연결을 *걸지 않는다* — 연결을 거는 쪽은 항상 워커다. 진짜 그 owner인지는 인증으로 강제한다(ADR 0009 연결점). 선례: Claude Code Remote Control(owner claude가 claude.ai에 아웃바운드 연결).
+_Avoid_: Agent(단독), Client(단독 — 논리 호출 방향과 혼동), Node
+
+**Work Queue (작업 큐)**:
+중앙이 owner별로 질문 작업을 적재하는 큐. owner Worker가 연결돼 있을 때 가져가고, owner 부재/PC 꺼짐이면 작업은 *대기*한다(비동기 — 답은 즉시 보장되지 않는다). 미해소 작업의 도메인 보관소지 절차 로그가 아니다(전이 ≠ 기록 — AuditLog와 별개). 큐에 든 작업은 회신되거나 escalation되거나 둘 중 하나로 반드시 종착한다(미아 없음).
+_Avoid_: Inbox(이건 Owner 처리함 — 합의 다툼, 작업 큐와 구분), Manager 큐(사람 위계 escalation), Mailbox
+
+**RuntimeDispatcher (디스패처)**:
+중앙이 owner별로 작업을 라우팅하고 답을 수집하는 포트 — `AuditLog`·`PrecedentStore`·`ConflictCaseStore`와 같은 패턴(Protocol + `InMemoryWorkQueueDispatcher`). 중앙측 `dispatch(question, card) -> WorkTicket`(작업 큐 적재·추적표 즉시 반환) · `poll(ticket) -> DispatchOutcome`(회신·대기·escalation 조회), 워커측 `claim(owner_id) -> WorkTicket | None` · `submit(ticket_id, answer)`. 동기 포트 `AgentRuntime.answer`는 폐기하지 않고 어댑터 `DispatchingRuntime`이 디스패처 위에 얹어 보존한다(dispatch→블로킹 poll). Authority·지식은 owner 환경에 있고 디스패처는 *운반·수집*만 — 답을 만들지 않는다. (ADR 0011)
+_Avoid_: Router(이건 담당 결정 — 디스패처는 작업 운반), Broker, Queue(단독 — Work Queue는 데이터, 디스패처는 그 위 포트)
+
+**WorkTicket (작업 추적표)**:
+중앙이 작업을 owner 큐에 넣을 때 즉시 돌려받는 추적표 — 답이 아니라 비동기 손잡이. `owner_id`(어느 owner 큐) · `agent_id`(어느 카드의 답) · `question`(워커가 로컬 claude에 넘길 원문) · `enqueued_at`(주입 clock, timeout 판정 기준) · `ticket_id`. `owner_id` 귀속이 신원/책임 연결점(회신이 진짜 그 owner에게서 왔는지, ADR 0009). 카드 본문이 아니라 식별자만 든다(`Candidate`·`ConflictCase`와 같은 정신 — 카드 출처는 Registry).
+_Avoid_: Job(단독), Task(단독), Receipt
+
+**DispatchOutcome (디스패치 결과)**:
+`poll(ticket)`이 돌려주는 결말. "타입이 곧 상태"(RoutingDecision·ConsensusOutcome 정신) — 세 결말 중 하나. **Delivered**(워커가 owner 환경에서 답을 만들어 회신 → `Answer` 도착, `mode` 보존 = Approval 게이트 합류 자리) · **AwaitingWorker**(아직 회신 없음 — 워커 미연결/생성 중 → 큐에 대기, `waited` 경과시간) · **EscalatedToManager**(timeout/owner 부재 → 미아·합의 실패와 같은 종착 처분 = Escalation, `reason`은 T5.2 Manager 큐로 넘길 근거). owner 부재·timeout escalation은 새 경로가 아니라 사람 그래프 상향(Owner→Manager) 재사용이며, 실제 Manager 큐 연결은 T5.2로 자리만 둔다(ConsensusOutcome.Deadlocked 정합). (ADR 0011)
+_Avoid_: Result(단독 — Answer와 혼동), DeliveryStatus
+
 **Registry**:
 Agent Card를 등록·보관·조회하는 모듈. 카드의 출처(YAML 파일)다.
 _Avoid_: Directory, Store, 중앙 서버

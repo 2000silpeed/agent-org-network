@@ -3,6 +3,7 @@ from typing import Literal
 
 from agent_org_network.audit import AuditEntry, AuditLog, Clock, default_clock
 from agent_org_network.classifier import Classifier
+from agent_org_network.conflict import Candidate, ConflictCase, ConflictCaseStore
 from agent_org_network.decision import Contested, Routed, Unowned
 from agent_org_network.router import Router
 from agent_org_network.runtime import AgentRuntime, Answer, AnswerMode
@@ -34,12 +35,14 @@ class AskOrg:
         audit_log: AuditLog,
         classifier: Classifier,
         clock: Clock = default_clock,
+        case_store: ConflictCaseStore | None = None,
     ) -> None:
         self._router = router
         self._runtime = runtime
         self._audit = audit_log
         self._classifier = classifier
         self._clock = clock
+        self._case_store = case_store
 
     def handle(self, question: str, user: User) -> OrgReply:
         intent = self._classifier.classify(question)
@@ -58,8 +61,19 @@ class AskOrg:
             case Contested():
                 reply = Pending(
                     kind="contested",
-                    message="담당이 여럿이라 합의 중이에요. 정해지면 답변드릴게요.",
+                    message="담당을 확인하고 있어요. 정해지면 답변드릴게요.",
                 )
+                if self._case_store is not None and self._case_store.open_for_intent(intent) is None:
+                    case = ConflictCase(
+                        intent=intent,
+                        question=question,
+                        candidates=tuple(
+                            Candidate(agent_id=c.agent_id, owner=c.owner)
+                            for c in decision.candidates
+                        ),
+                        opened_at=self._clock(),
+                    )
+                    self._case_store.open_case(case)
             case Unowned():
                 reply = Pending(
                     kind="unowned",

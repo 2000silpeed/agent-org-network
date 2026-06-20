@@ -1,32 +1,43 @@
 # Agent Org Network — Tasks v0
 
-근거: [prd-v0.md](prd-v0.md), [trd-v0.md](trd-v0.md). 수직 슬라이스 단위, TDD(red→green→refactor)로 진행. 한 번에 하나씩.
+작성일: 2026-06-20 · rev2(walking skeleton 로드맵) · 근거: [prd-v0.md](prd-v0.md), [trd-v0.md](trd-v0.md). 수직 슬라이스, TDD(red→green→refactor), 한 번에 하나씩.
 
-## Slice 0 — 스캐폴드
+## Phase 1 — 등록 창구 (쓰기)
 
-- [x] **T0.1** `.venv` + `pyproject.toml`(pytest·pydantic·ruff·pyright) + `src/agent_org_network/` + `tests/` 레이아웃, 빈 pytest 통과 확인
+- [x] **T0.1** 스캐폴드(uv·pytest·pydantic·ruff·pyright)
+- [x] **T1.1** `AgentCard` + `Registry.register/get`
+- [x] **T1.2** 참조 무결성(User/Agent 그래프, `validate`)
+- [ ] **T1.3** `Registry.load(dir)` YAML 로더 + `validate` CLI
 
-## Slice 1 — 등록 창구 (쓰기)
+## Phase 2 — 라우팅 코어 (읽기)
 
-- [x] **T1.1** (red→green) `AgentCard` 값 객체 + `Registry.register/get` — "유효한 카드 등록 → 조회됨"
-- [x] **T1.2** (red→green) 참조 무결성 — "`agent_id`·user id 중복 → 등록 거부, `owner`·`manager`가 실재 User 아니면 `validate()` 실패" *(User/Agent 그래프 — ADR 0005)*
-- [ ] **T1.3** `Registry.load(dir)` YAML 로더 + `validate` CLI(CI용)
+- [ ] **T2.1** `Classifier` 포트 + `RuleBased` + `Fake`
+- [ ] **T2.2** 단일 매칭 → `Routed(primary)`
+- [ ] **T2.3** 0 매칭 → `Unowned(루트 User)` (불변식)
+- [ ] **T2.4** ≥2 매칭 → `Contested`
+- [ ] **T2.5** `Routed`에 Approval·Collaborator 부착
 
-## Slice 2 — 라우팅 (읽기)
+## Phase 3 — Walking skeleton (end-to-end 한 바퀴 보이기)
 
-- [ ] **T2.1** `Classifier` 포트 + `RuleBasedClassifier` + `FakeClassifier`
-- [ ] **T2.2** (red→green) 테스트 A — "단일 매칭 → `Routed(primary)`"
-- [ ] **T2.3** (red→green) 테스트 B(불변식) — "0 매칭 → `Unowned(루트 Manager)`, null 아님"
-- [ ] **T2.4** (red→green) "≥2 매칭 + Authority 없음 → `Contested`"
-- [ ] **T2.5** (red→green) `Routed`에 Approval 게이트·Collaborator 부착
+- [ ] **T3.1** `AgentRuntime` 포트 + `StubRuntime`(canned 답)
+- [ ] **T3.2** MCP 서버 `ask_org(question, user)` — Router → (Routed면) StubRuntime → `Answer` 반환
+- [ ] **T3.3** 실 사용자 채팅(웹) 최소 — 질문 → 답(담당·승인·출처) 화면에 표시
+- [ ] **T3.4** append-only 감사 로그(모든 절차 기록)
 
-## Slice 3 — 판례 + 감사
+## Phase 4 — 판례 + 후보 합의
 
-- [ ] **T3.1** append-only JSONL 감사 로그(라우팅 결과 기록)
-- [ ] **T3.2** Resolution → Precedent 기록 + 라우터 참조("해소된 질문은 다음에 자동 라우팅")
+- [ ] **T4.1** Resolution → Precedent 기록 + 라우터 참조(자동 라우팅)
+- [ ] **T4.2** Owner 처리함 + 후보 합의(1인칭) — Contested를 합의로 해소 → Precedent
 
-## Slice 4 — 샘플 + 검증
+## Phase 5 — 나머지 면
 
-- [ ] **T4.1** 샘플 카드 5개(영업·기술·법무·재무·운영) + 루트 Manager
-- [ ] **T4.2** 질문 30개 골든셋 + eval 러너(정확도 임계값)
-- [ ] **T4.3** ADR-0003(테스트 전략) 기록
+- [ ] **T5.1** 운영 모니터링 로그 + 상세 보기
+- [ ] **T5.2** Manager 큐(승인·escalation·합의 실패)
+- [ ] **T5.3** Org 그래프 · Agent 빌더
+
+## Phase 6 — 깊게 (실서비스화)
+
+- [ ] **T6.1** `LlmRuntime`(owner `knowledge_sources` RAG) — StubRuntime 교체
+- [ ] **T6.2** `LlmClassifier` + 골든셋 eval 러너(정확도 임계값)
+- [ ] **T6.3** 분산 전송(각 Agent MCP/A2A 등록·호출, 로컬 PC 도달)
+- [ ] **T6.4** 샘플 카드 5개 + 질문 30개 골든셋

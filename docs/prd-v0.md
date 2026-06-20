@@ -1,6 +1,6 @@
 # Agent Org Network — PRD v0
 
-작성일: 2026-06-20 · 상태: MVP 착수 · 근거: [initial-planning.md](initial-planning.md), [CONTEXT.md](../CONTEXT.md), ADR 0001/0002/0004
+작성일: 2026-06-20 · rev2(end-to-end 비전 반영) · 근거: [initial-planning.md](initial-planning.md), [CONTEXT.md](../CONTEXT.md), ADR 0001/0002/0004/0005/0006/0007
 
 ## 1. 문제
 
@@ -8,53 +8,57 @@
 
 ## 2. 제품 한 줄
 
-조직 구성원이 자기 업무 에이전트(Agent Card)를 관리하고, 중앙 라우터가 담당·권한·판례를 기준으로 질문을 올바른 담당자에게 연결하는 협업형 AI 조직도.
+조직 구성원이 자기 업무 에이전트를 만들어 *자기 지식으로 답하게* 하고, 중앙(MCP 서버)이 담당·권한·판례를 기준으로 질문을 알맞은 에이전트에 연결해 *답을 돌려주는* 협업형 AI 조직.
 
 ## 3. 핵심 원칙
 
-- 중앙은 지식을 소유하지 않는다 — 연결자이지 답변자가 아니다.
+- 중앙은 지식을 소유하지 않는다 — 연결자다. 답은 담당 에이전트가 한다.
 - 책임 범위가 페르소나보다 중요하다.
 - 모르면 아는 척하지 않고 안전하게 넘긴다.
 - 충돌(그레이 영역)은 한 번에 안 닫는다 — 사람이 합의하고, 그 합의가 **판례(Precedent)**로 쌓여 라우터가 학습한다.
-- **불변식: 어떤 질문도 미아로 남지 않는다.** 담당이 없으면 라우터가 사람(Manager)에게 올린다.
+- **불변식: 어떤 질문도 미아로 남지 않는다.** 담당이 없으면 사람(Manager)에게 올린다.
+- 실 사용자에게는 라우팅 기계장치를 감추고, **담당·승인·출처(책임·신뢰)만** 보인다.
 
-## 4. 사용자
+## 4. 페르소나와 화면(surface)
 
-- **Owner** — 카드의 답변에 책임지는 사람/팀. 자기 카드를 관리한다.
-- **Maintainer** — 카드를 편집할 권한자(MVP에선 Owner와 동일, git PR로 강제).
-- **Manager** — 담당 지정·신규 카드 생성 권한(Authority)을 가진 역할. 충돌의 백스톱.
-- **질문자(end-user)** — 시스템에 질문을 던지는 사람.
+| 페르소나 | 보는 화면 | 핵심 |
+|---|---|---|
+| 실 사용자 | 채팅(웹) · 또는 자기 MCP 클라이언트 | 묻고 답받음. 내부는 숨김, 담당·승인·출처만 |
+| 개인 Owner | Agent 빌더 · Owner 처리함 | 자기 에이전트를 깎고, 자기에게 온 후보 합의 등을 처리 |
+| Manager | Manager 큐 | 승인 요청·escalation·합의 실패를 처리 |
+| 운영자 | 모니터링 로그 · 상세 보기 · Org 그래프 | 전체 그림 + 모든 Q&A의 절차·답 추적 |
 
-## 5. MVP 범위 (In)
+## 5. 범위 (In)
 
 - 카드 YAML 등록 창구 + 검증(스키마·참조 무결성)
-- 규칙 기반 라우팅: `Routed / Contested / Unowned` 처분
-- Approval(승인 게이트)·Collaboration(협업) 표시
-- Conflict 해소 결과를 Precedent로 기록, 라우터가 이후 참조
-- 라우팅 이유와 confidence 표시
-- append-only 감사 로그
+- 규칙 기반 라우팅: `Routed / Contested / Unowned` + Approval(승인 게이트)·Collaboration(협업)
+- Conflict → 후보 합의(1인칭) → Resolution → **Precedent 학습**
+- **Agent Runtime — 카드가 실제로 답함.** 스켈레톤은 stub/canned → 실제 LLM RAG(owner `knowledge_sources` 근거)
+- **중앙 MCP 서버 `ask_org`** — 사용자가 어느 클라이언트(웹챗·Slack·자기 Claude/IDE)에서든 질문
+- **실 사용자 채팅(웹)** + 운영 모니터링 + Agent 빌더 + Owner 처리함 + Manager 큐
+- append-only 감사 로그 + 그 위의 모니터링
 
-## 6. MVP 범위 밖 (Out)
+## 6. 범위 밖 / 후순위
 
-- LLM 분류기(포트만 준비) · 임베딩 유사도 매칭
-- 실시간 합의 UX · Agent Runtime 실제 실행
-- 권한/인증 시스템(git PR로 대체) · SSO
-- UI 대시보드 · HTTP `POST /agents`
-- Manager 계층의 LCA(공통 상위) 트리 등반
+- 분산 Agent 실제 전송(로컬 PC 도달·연결 유지) — 스켈레톤은 in-process stub, 실제는 후순위
+- LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위
+- SSO·정식 인증 — git PR로 대체
+- Manager 계층 LCA(공통 상위) 트리 등반 · 멀티홉 위임
 
-## 7. 핵심 시나리오
+## 7. 핵심 시나리오 (end-to-end)
 
-1. **단일 담당** — 질문이 한 카드에 맞음 → `Routed(primary)`.
-2. **그레이/겹침(Overlap)** — 후보 여럿 → `Contested` → 후보 합의, 실패 시 Manager.
-3. **미아(Gap)** — 후보 0 → `Unowned` → 루트 Manager. 반복되면 "담당 공백" backlog.
-4. **민감/고액** — `Routed` + Approval 게이트 + Collaboration(예: 재무 끌어들임).
-5. **학습** — 해소 결과가 Precedent로 남아 다음 같은 질문은 자동 라우팅.
+1. **단일 담당** — 질문 → `Routed` → 담당 Agent Runtime이 답 → 담당·승인·출처 붙여 반환.
+2. **민감/고액** — `Routed` + Collaboration(재무) + Approval(사람 승인) → 사용자에겐 "초안·승인 대기"로 표시.
+3. **그레이(Overlap)** — `Contested` → 후보 Owner들이 각자 화면(1인칭)에서 합의 → Precedent 확정 → 라우터 학습.
+4. **미아(Gap)** — `Unowned` → Manager 큐로. 반복되면 "담당 공백" backlog.
+5. **모니터링** — 운영자가 모든 질문의 질문→절차→답을 추적, 승인 대기·미아·판례를 본다.
 
 ## 8. 성공 기준
 
+- 실 사용자가 질문 → 담당·승인 붙은 답을 **end-to-end로** 받는다(웹 + MCP 클라이언트 양쪽).
 - 카드 5개를 코드 수정 없이 YAML 추가만으로 등록한다.
 - 업무 질문 30개에 대해 담당을 납득 가능하게 라우팅한다.
-- 금지(`cannot_answer`)·미아 영역은 답하지 않고 처분한다.
-- Approval 필요 여부를 구분하고, 라우팅 이유를 설명한다.
-- 라우팅·판례·핸드오프 이력이 남는다.
+- 금지(`cannot_answer`)·미아는 답하지 않고 처분하고, Approval 필요 여부를 구분한다.
+- Contested를 후보 합의로 풀어 Precedent로 학습한다.
+- 운영자가 모든 질문의 절차·답을 모니터링한다.
 - 유효하지 않은 카드는 등록되지 않는다.

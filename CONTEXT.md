@@ -31,7 +31,7 @@ _Avoid_: Editor, Admin
 _Avoid_: Account, Member
 
 **Agent Runtime**:
-Agent Card를 실제로 구동해 질문에 답하는 실행 주체(LLM 등). MVP 범위 밖 — 이름만 예약한다.
+Agent Card를 구동해 owner의 `knowledge_sources`에 근거해 질문에 답하는 실행 주체. 라우터가 호출한다. 포트로 분리 — `StubRuntime`(canned)·`LlmRuntime`(RAG). (ADR 0007)
 _Avoid_: Agent(단독), Bot
 
 **Registry**:

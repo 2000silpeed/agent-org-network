@@ -5,9 +5,11 @@ T1.3 YAML 로더·T6.4 샘플 골든셋이 아직이라 인라인으로 카드/�
 """
 
 from datetime import date
+from pathlib import Path
 
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.ask_org import AskOrg
+from agent_org_network.audit import JsonlAuditLog
 from agent_org_network.classifier import RuleBasedClassifier
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router
@@ -77,4 +79,9 @@ def build_demo_ask_org() -> AskOrg:
 
     classifier = RuleBasedClassifier(_KEYWORD_INTENTS)
     router = Router(registry, classifier, root_user=ROOT_USER)
-    return AskOrg(router=router, runtime=StubRuntime())
+    return AskOrg(
+        router=router,
+        runtime=StubRuntime(),
+        audit_log=JsonlAuditLog(Path("logs/audit.jsonl")),
+        classifier=classifier,
+    )

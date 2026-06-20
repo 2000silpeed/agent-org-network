@@ -1,9 +1,11 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
+from agent_org_network.audit import AuditEntry, AuditLog, Clock, default_clock
+from agent_org_network.classifier import Classifier
 from agent_org_network.decision import Contested, Routed, Unowned
 from agent_org_network.router import Router
-from agent_org_network.runtime import AgentRuntime, AnswerMode
+from agent_org_network.runtime import AgentRuntime, Answer, AnswerMode
 from agent_org_network.user import User
 
 
@@ -25,28 +27,53 @@ OrgReply = Answered | Pending
 
 
 class AskOrg:
-    def __init__(self, router: Router, runtime: AgentRuntime) -> None:
+    def __init__(
+        self,
+        router: Router,
+        runtime: AgentRuntime,
+        audit_log: AuditLog,
+        classifier: Classifier,
+        clock: Clock = default_clock,
+    ) -> None:
         self._router = router
         self._runtime = runtime
+        self._audit = audit_log
+        self._classifier = classifier
+        self._clock = clock
 
     def handle(self, question: str, user: User) -> OrgReply:
+        intent = self._classifier.classify(question)
         decision = self._router.route(question)
+
+        answer: Answer | None = None
         match decision:
             case Routed():
                 answer = self._runtime.answer(question, decision.primary)
-                return Answered(
+                reply: OrgReply = Answered(
                     text=answer.text,
                     answered_by=(decision.primary.owner, decision.primary.agent_id),
                     mode=answer.mode,
                     sources=answer.sources,
                 )
             case Contested():
-                return Pending(
+                reply = Pending(
                     kind="contested",
                     message="담당이 여럿이라 합의 중이에요. 정해지면 답변드릴게요.",
                 )
             case Unowned():
-                return Pending(
+                reply = Pending(
                     kind="unowned",
                     message="아직 담당이 없어 매니저에게 전달했어요. 답변되면 알림드릴게요.",
                 )
+
+        self._audit.record(
+            AuditEntry(
+                timestamp=self._clock(),
+                user_id=user.id,
+                question=question,
+                intent=intent,
+                decision=decision,
+                answer=answer,
+            )
+        )
+        return reply

@@ -130,6 +130,15 @@ _Avoid_: Rule(단독), History
 **Trust Label**:
 카드·답변의 취급 제약 태그(`internal_only` 등). Authority·Confidence와 구분.
 
+### Audit (운영자向 기록)
+
+**Audit log (감사 로그)**:
+운영자向 append-only JSONL 기록. 한 질문 처리의 전체 절차(질문·intent·처분·답)를 *내부값까지* 담는다 — OrgReply(사용자向)가 감춘 `confidence`·`candidates`·`escalated_to`·`primary`를 여기선 전부 기록. 미래 모니터링(질문→절차→답)의 데이터 원천. 전이가 아니라 기록(전이 ≠ 기록).
+_Avoid_: Trace(단독 — 사용자에게 감추는 라우팅 내부와 혼동), Log(단독)
+
+**AuditEntry**:
+Audit log의 한 줄. 한 질문 처리 절차의 기록 단위 — `timestamp`·`user_id`·`question`·`intent`·`decision`(RoutingDecision 원형, 내부 상세 보존)·`answer`(Routed일 때만). OrgReply가 decision을 투영해 버리는 것과 달리 **decision 원형을 그대로 안는다**.
+
 ## Flagged ambiguities
 
 **"Agent" 단독 사용 금지**: 도메인 모델·코드·이 문서에서 맨 단어 "Agent"는 쓰지 않는다 — 항상 **Owner / Agent Card / Agent Runtime** 중 하나로 한정. (제품·마케팅 산문에서는 "에이전트" 자유 사용 OK.)

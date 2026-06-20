@@ -2,6 +2,7 @@ from datetime import date
 
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.ask_org import AskOrg, Answered, Pending
+from agent_org_network.audit import InMemoryAuditLog
 from agent_org_network.classifier import FakeClassifier
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router
@@ -25,8 +26,14 @@ def ask_org_with(cards: list[AgentCard], intent: str) -> AskOrg:
     registry = Registry()
     for c in cards:
         registry.register(c)
-    router = Router(registry, FakeClassifier(intent), root_user="root")
-    return AskOrg(router=router, runtime=StubRuntime())
+    classifier = FakeClassifier(intent)
+    router = Router(registry, classifier, root_user="root")
+    return AskOrg(
+        router=router,
+        runtime=StubRuntime(),
+        audit_log=InMemoryAuditLog(),
+        classifier=classifier,
+    )
 
 
 def test_Routed면_Answered로_담당과_출처가_붙는다():

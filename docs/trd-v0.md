@@ -32,7 +32,7 @@
 - **Agent Runtime 포트** — `answer(question, card) -> Answer`. `Answer(text, sources[], mode)`. 구현: `StubRuntime`(canned, 스켈레톤·테스트) → `LlmRuntime`(owner `knowledge_sources` RAG). *분류기와 같은 포트 패턴.*
 - **Manager** — 다른 User를 `manages` 하는 User. Escalation은 사람 그래프를 타고 오른다.
 - **Resolution / Precedent** — 합의 결론과 append-only 기록. 라우터가 참조.
-- **Audit log** — append-only JSONL. 전이가 아니라 기록 담당.
+- **Audit log 포트(`AuditLog`)** — `record(entry)`로 한 줄씩 append-only JSONL(`JsonlAuditLog`)·테스트용 `InMemoryAuditLog`. `AuditEntry`는 `RoutingDecision` 원형 + `Answer`를 안아 내부값(confidence·candidates·escalated_to·primary)까지 기록(OrgReply가 감춘 것). timestamp는 주입 clock으로 결정론. 전이가 아니라 기록.
 
 ## 5. 진입점 · 전송
 

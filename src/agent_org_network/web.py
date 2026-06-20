@@ -28,6 +28,7 @@ from agent_org_network.conflict import (
     StillOpen,
 )
 from agent_org_network.demo import build_demo
+from agent_org_network.runtime import AgentRuntime
 from agent_org_network.user import User
 
 _WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
@@ -102,9 +103,13 @@ def serialize_outcome(outcome: ConsensusOutcome) -> dict[str, Any]:
             assert_never(outcome)
 
 
-def create_app() -> FastAPI:
+def create_app(runtime: AgentRuntime | None = None) -> FastAPI:
+    """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
+
+    결정론이 필요한 테스트는 `runtime=StubRuntime()`을 넘겨 실제 claude 호출을 막는다.
+    """
     app = FastAPI(title="Agent Org Network — 채팅·처리함(데모)")
-    bundle = build_demo()
+    bundle = build_demo(runtime=runtime)
 
     @app.post("/ask")
     def ask_endpoint(req: AskRequest) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]

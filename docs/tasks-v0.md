@@ -40,9 +40,9 @@
 
 ## Phase 6 — 깊게 (실서비스화)
 
-- [ ] **T6.1** `LlmRuntime`(owner `knowledge_sources` RAG) — StubRuntime 교체
+- [ ] **T6.1** `ClaudeCodeRuntime`(`claude -p` 헤드리스 1회성, 임시·중앙 단일·모든 카드가 로컬 claude로 답) — StubRuntime 대체. 답변 주체 = Owner의 Claude Code(중앙 API 키 LLM 아님, ADR 0010). API 키 불필요·로컬 claude 인증 사용. 한계: owner별 지식 격리 없음(T6.3에서), `knowledge_sources`는 출처 레이블뿐.
 - [ ] **T6.2** `LlmClassifier` + 골든셋 eval 러너(정확도 임계값)
   - 선행 주의: 현재 `ask_org`·`router`가 같은 질문을 각자 `classify`(결정론 분류기라 무해). 비결정 LLM 분류 도입 시 두 intent가 갈려 케이스 intent와 라우팅 intent가 어긋날 수 있음 → `RoutingDecision`에 intent를 실어 단일 출처화 선행 검토.
-- [ ] **T6.3** 분산 전송(각 Agent MCP/A2A 등록·호출, 로컬 PC 도달)
+- [ ] **T6.3** 분산 전송 — 각 Owner PC의 Claude Code에 분산 연결(MCP/A2A 등록·호출, 로컬 PC 도달). 답변 주체가 그 owner 환경이 되어 owner별 지식 격리 성립(ADR 0010). `ClaudeCodeRuntime` 호출 대상을 중앙 1회성 → owner별 분산 엔드포인트로 전환.
 - [ ] **T6.4** 샘플 카드 5개 + 질문 30개 골든셋
 - [ ] **T6.5** 페르소나별 인증 분리 — 실 사용자/운영 면 분리, Owner는 자기 처리함만, `inbox.html` owner 가장 드롭다운 제거(세션 `owner_id`로 대체). (ADR 0009 — 최종 완료 필수)

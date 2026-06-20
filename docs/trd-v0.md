@@ -1,6 +1,6 @@
 # Agent Org Network — TRD v0
 
-작성일: 2026-06-20 · rev2(end-to-end 비전 반영) · 근거: [CONTEXT.md](../CONTEXT.md), ADR 0001~0007, [prd-v0.md](prd-v0.md)
+작성일: 2026-06-20 · rev2(end-to-end 비전 반영) · 근거: [CONTEXT.md](../CONTEXT.md), ADR 0001~0010, [prd-v0.md](prd-v0.md)
 
 ## 1. 스택
 
@@ -29,7 +29,7 @@
 - **Registry** — User·Agent 등록 + admission 불변식. `register / register_user / get / load(dir) / validate`.
 - **Classifier 포트** — `classify(question) -> intent`. `RuleBased`(v0) · `Llm`(후순위) · `Fake`(테스트).
 - **RoutingDecision** — sealed sum `Routed | Contested | Unowned`. 타입이 곧 상태.
-- **Agent Runtime 포트** — `answer(question, card) -> Answer`. `Answer(text, sources[], mode)`. 구현: `StubRuntime`(canned, 스켈레톤·테스트) → `LlmRuntime`(owner `knowledge_sources` RAG). *분류기와 같은 포트 패턴.*
+- **Agent Runtime 포트** — `answer(question, card) -> Answer`. `Answer(text, sources[], mode)`. 답변 주체는 각 Owner의 Claude Code(중앙 API 키 LLM 아님, ADR 0010). 구현: `StubRuntime`(canned, 스켈레톤·테스트) → `ClaudeCodeRuntime`(`claude -p` 헤드리스, T6.1 임시·중앙 1회성·모든 카드가 로컬 claude로 답) → owner별 분산 Claude Code(MCP/A2A, T6.3). *분류기와 같은 포트 패턴.*
 - **Manager** — 다른 User를 `manages` 하는 User. Escalation은 사람 그래프를 타고 오른다.
 - **Resolution / Precedent** — 합의 결론과 append-only 기록. 라우터가 참조.
 - **ConflictCase / ConflictCaseStore 포트** — 미해소 Overlap 다툼의 저장 단위와 그 보관·조회 포트(`AuditLog`·`PrecedentStore`와 같은 패턴, `conflict.py`). `ConflictCase(intent·question·candidates[Candidate(agent_id,owner)]·status·opened_at·case_id·resolution?)`, open→resolved는 `resolve()`가 새 인스턴스. 포트 메서드 `open_case·get·open_for_owner(처리함)·open_for_intent(중복 open 방지)·mark_resolved`. 구현 `InMemoryConflictCaseStore`. **전이 ≠ 기록** — 미해소 도메인 상태 보관이지 절차 로그 아님. (ADR 0008)
@@ -40,7 +40,7 @@
 
 - **MCP 서버 `ask_org(question, user)`** — 사용자 클라이언트가 붙는 1급 진입점. Router 호출 → `Routed`면 Agent Runtime 호출 → `Answer` 반환(담당·승인·출처 포함). (ADR 0006)
 - **웹 백엔드 API** — 같은 코어를 채팅·운영·빌더·처리함·큐 화면에 제공. 채팅 `POST /ask`·`GET /`(`serialize_reply`, 내부값 미노출). 처리함 `GET /inbox`(HTML)·`GET /inbox/{owner_id}`(open 케이스 JSON)·`POST /cases/{case_id}/concur`(`ConcurOnPrimary`→`ConsensusOutcome`, `ValueError`→400; `serialize_case`/`serialize_outcome`) — Owner向 운영 화면이라 내부값(후보·intent) 노출(채팅과 다른 면). 채팅·처리함은 한 `DemoBundle`(공유 store)을 봐 합의 성립이 곧 채팅 자동 라우팅에 반영. (T4.2)
-- **분산 전송** — 중앙이 각 Agent를 호출하는 방식. *스켈레톤은 in-process stub.* 실제는 각 Agent가 MCP/A2A 엔드포인트로 중앙에 등록·연결, 중앙이 client로 호출 — 로컬 PC 도달은 후순위.
+- **분산 전송** — 중앙이 각 Owner의 Claude Code를 호출하는 방식(ADR 0010). *스켈레톤은 in-process stub, T6.1 임시는 중앙 단일 `claude -p` 1회성.* 최종(T6.3)은 각 Owner PC의 Claude Code가 MCP/A2A 엔드포인트로 중앙에 등록·연결, 중앙이 client로 호출해 답변 주체가 그 owner 환경 — 로컬 PC 도달은 후순위.
 
 ## 6. 라우팅 알고리즘 v0 (규칙 기반)
 

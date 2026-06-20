@@ -31,7 +31,7 @@ _Avoid_: Editor, Admin
 _Avoid_: Account, Member
 
 **Agent Runtime**:
-Agent Card를 구동해 owner의 `knowledge_sources`에 근거해 질문에 답하는 실행 주체. 라우터가 호출한다. 포트로 분리 — `StubRuntime`(canned)·`LlmRuntime`(RAG). (ADR 0007)
+Agent Card를 구동해 질문에 답하는 실행 주체. 라우터가 호출한다. 답변 주체는 각 Owner의 Claude Code다 — 중앙 API 키 LLM이 아니라(ADR 0010). 포트로 분리 — `StubRuntime`(canned, 테스트·스켈레톤) → `ClaudeCodeRuntime`(`claude -p` 헤드리스, T6.1 임시·중앙 1회성·모든 카드가 로컬 claude로 답) → owner별 분산 Claude Code(MCP/A2A, T6.3 — 그때 owner별 지식 격리 성립). `knowledge_sources`는 현재 `Answer.sources` 출처 레이블이며 진짜 문서 RAG는 후속. (ADR 0007·0010)
 _Avoid_: Agent(단독), Bot
 
 **Answer**:

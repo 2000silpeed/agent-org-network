@@ -1,6 +1,6 @@
 # Agent Org Network — PRD v0
 
-작성일: 2026-06-20 · rev2(end-to-end 비전 반영) · 근거: [initial-planning.md](initial-planning.md), [CONTEXT.md](../CONTEXT.md), ADR 0001/0002/0004/0005/0006/0007
+작성일: 2026-06-20 · rev2(end-to-end 비전 반영) · 근거: [initial-planning.md](initial-planning.md), [CONTEXT.md](../CONTEXT.md), ADR 0001/0002/0004/0005/0006/0007/0010
 
 ## 1. 문제
 
@@ -34,14 +34,14 @@
 - 카드 YAML 등록 창구 + 검증(스키마·참조 무결성)
 - 규칙 기반 라우팅: `Routed / Contested / Unowned` + Approval(승인 게이트)·Collaboration(협업)
 - Conflict → 후보 합의(1인칭) → Resolution → **Precedent 학습**
-- **Agent Runtime — 카드가 실제로 답함.** 스켈레톤은 stub/canned → 실제 LLM RAG(owner `knowledge_sources` 근거)
+- **Agent Runtime — 카드가 실제로 답함.** 답변 주체는 각 Owner의 Claude Code(중앙 API 키 LLM 아님, ADR 0010). 스켈레톤 stub/canned → `claude -p` 임시 1회성(T6.1) → owner별 분산 Claude Code 답(T6.3)
 - **중앙 MCP 서버 `ask_org`** — 사용자가 어느 클라이언트(웹챗·Slack·자기 Claude/IDE)에서든 질문
 - **실 사용자 채팅(웹)** + 운영 모니터링 + Agent 빌더 + Owner 처리함 + Manager 큐
 - append-only 감사 로그 + 그 위의 모니터링
 
 ## 6. 범위 밖 / 후순위
 
-- 분산 Agent 실제 전송(로컬 PC 도달·연결 유지) — 스켈레톤은 in-process stub, 실제는 후순위
+- 분산 전송 — 각 Owner PC의 Claude Code 연결(로컬 PC 도달·연결 유지)로 답변 주체가 그 owner 환경(ADR 0010). 스켈레톤은 in-process stub, T6.1 임시는 중앙 `claude -p` 1회성, owner별 분산은 후순위(T6.3)
 - LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위
 - SSO·정식 인증 — v0는 git PR/처리함 owner 선택 가장으로 대체. **단 최종 제품은 페르소나별 인증 분리가 필수**(실 사용자/운영 면 분리, Owner는 자기 처리함만 — ADR 0009)
 - Manager 계층 LCA(공통 상위) 트리 등반 · 멀티홉 위임

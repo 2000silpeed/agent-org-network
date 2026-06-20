@@ -23,6 +23,7 @@ from agent_org_network.conflict import (
     StillOpen,
 )
 from agent_org_network.demo import build_demo_ask_org
+from agent_org_network.runtime import StubRuntime
 from agent_org_network.user import User
 from agent_org_network.web import (
     create_app,
@@ -41,13 +42,16 @@ _LEAKY_KEYS = {"confidence", "candidates", "escalated_to", "reason", "primary", 
 
 
 def _reply_to_json(question: str) -> dict[str, Any]:
-    """데모 핸들러를 한 번 돌려 직렬화 dict까지 만든다(웹 경로와 동일)."""
-    reply: OrgReply = build_demo_ask_org().handle(question, _USER)
+    """데모 핸들러를 한 번 돌려 직렬화 dict까지 만든다(웹 경로와 동일).
+
+    StubRuntime 주입 — 실제 claude 호출 없이 결정론 유지.
+    """
+    reply: OrgReply = build_demo_ask_org(runtime=StubRuntime()).handle(question, _USER)
     return serialize_reply(reply)
 
 
 def test_데모_계약질문은_contract_ops가_답한다():
-    reply = build_demo_ask_org().handle("이 계약 조건 바꿔도 돼?", _USER)
+    reply = build_demo_ask_org(runtime=StubRuntime()).handle("이 계약 조건 바꿔도 돼?", _USER)
 
     assert isinstance(reply, Answered)
     assert reply.answered_by == ("legal_lead", "contract_ops")
@@ -56,14 +60,14 @@ def test_데모_계약질문은_contract_ops가_답한다():
 
 
 def test_데모_주차장질문은_unowned로_미아되지_않는다():
-    reply = build_demo_ask_org().handle("주차장 정기권 어떻게 갱신해요?", _USER)
+    reply = build_demo_ask_org(runtime=StubRuntime()).handle("주차장 정기권 어떻게 갱신해요?", _USER)
 
     assert isinstance(reply, Pending)
     assert reply.kind == "unowned"
 
 
 def test_데모_보상질문은_contested로_합의대기된다():
-    reply = build_demo_ask_org().handle("보상 기준이 어떻게 되나요?", _USER)
+    reply = build_demo_ask_org(runtime=StubRuntime()).handle("보상 기준이 어떻게 되나요?", _USER)
 
     assert isinstance(reply, Pending)
     assert reply.kind == "contested"
@@ -108,7 +112,7 @@ def test_직렬화에_라우팅_내부값이_새지_않는다():
 
 
 def test_create_app_은_조립된다():
-    app = create_app()
+    app = create_app(runtime=StubRuntime())
 
     routes = {getattr(r, "path", None) for r in app.routes}
     assert "/ask" in routes
@@ -202,7 +206,7 @@ def _post(client: TestClient, url: str, payload: dict[str, Any]) -> HttpResult:
 
 
 def _client() -> TestClient:
-    app: FastAPI = create_app()
+    app: FastAPI = create_app(runtime=StubRuntime())
     return TestClient(app)
 
 

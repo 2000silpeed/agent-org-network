@@ -21,7 +21,7 @@ from agent_org_network.conflict import (
 )
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router
-from agent_org_network.runtime import StubRuntime
+from agent_org_network.runtime import AgentRuntime, ClaudeCodeRuntime
 from agent_org_network.user import User
 
 ROOT_USER = "root_manager"
@@ -89,11 +89,13 @@ class DemoBundle:
     consensus: ConsensusService
 
 
-def build_demo() -> DemoBundle:
+def build_demo(runtime: AgentRuntime | None = None) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
     카드 3종(contract_ops·cs_ops·finance_ops) + 루트 매니저 포함 유저 4명.
-    분류기는 키워드 규칙(계약/환불/가격/보상), 런타임은 결정론 StubRuntime.
+    분류기는 키워드 규칙(계약/환불/가격/보상).
+    런타임은 기본 `ClaudeCodeRuntime`(웹에서 진짜 Claude 답) — 단 결정론이 필요한
+    테스트는 `StubRuntime`(또는 FakeRunner 주입한 ClaudeCodeRuntime)을 넘긴다.
     cs_ops·finance_ops가 "보상" domain을 공유 → "보상" 질문은 Contested(다툼) 시연.
 
     `precedents`·`case_store`를 하나씩 만들어 Router·AskOrg·ConsensusService에
@@ -113,7 +115,7 @@ def build_demo() -> DemoBundle:
     router = Router(registry, classifier, root_user=ROOT_USER, precedents=precedents)
     ask = AskOrg(
         router=router,
-        runtime=StubRuntime(),
+        runtime=runtime if runtime is not None else ClaudeCodeRuntime(),
         audit_log=JsonlAuditLog(Path("logs/audit.jsonl")),
         classifier=classifier,
         case_store=case_store,
@@ -127,10 +129,11 @@ def build_demo() -> DemoBundle:
     )
 
 
-def build_demo_ask_org() -> AskOrg:
+def build_demo_ask_org(runtime: AgentRuntime | None = None) -> AskOrg:
     """하위호환 진입점 — `build_demo().ask`만 돌려준다.
 
     기존 호출처(채팅 단독 테스트 등)는 공유 store가 필요 없으므로 AskOrg만
     받는다. 처리함과 한 상태를 공유해야 하는 웹은 `build_demo()`를 쓴다.
+    `runtime`은 `build_demo`로 그대로 전달한다(테스트는 StubRuntime 주입).
     """
-    return build_demo().ask
+    return build_demo(runtime=runtime).ask

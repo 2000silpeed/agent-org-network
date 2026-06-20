@@ -185,11 +185,11 @@ _Avoid_: Rule(단독), History
 ### Audit (운영자向 기록)
 
 **Audit log (감사 로그)**:
-운영자向 append-only JSONL 기록. 한 질문 처리의 전체 절차(질문·intent·처분·답)를 *내부값까지* 담는다 — OrgReply(사용자向)가 감춘 `confidence`·`candidates`·`escalated_to`·`primary`를 여기선 전부 기록. 미래 모니터링(질문→절차→답)의 데이터 원천. 전이가 아니라 기록(전이 ≠ 기록).
+운영자向 append-only JSONL 기록. 한 질문 처리의 전체 절차(질문·intent·라우팅 처분·디스패치 결말)를 *내부값까지* 담는다 — OrgReply(사용자向)가 감춘 `confidence`·`candidates`·`escalated_to`·`primary`, 그리고 `Pending(dispatched)`가 떨군 디스패치 escalation의 `manager_id`·`reason`까지 여기선 전부 기록. 미래 모니터링(질문→절차→답)의 데이터 원천. 전이가 아니라 기록(전이 ≠ 기록).
 _Avoid_: Trace(단독 — 사용자에게 감추는 라우팅 내부와 혼동), Log(단독)
 
 **AuditEntry**:
-Audit log의 한 줄. 한 질문 처리 절차의 기록 단위 — `timestamp`·`user_id`·`question`·`intent`·`decision`(RoutingDecision 원형, 내부 상세 보존)·`answer`(Routed일 때만). OrgReply가 decision을 투영해 버리는 것과 달리 **decision 원형을 그대로 안는다**.
+Audit log의 한 줄. 한 질문 처리 절차의 기록 단위 — `timestamp`·`user_id`·`question`·`intent`·`decision`(RoutingDecision 원형, 내부 상세 보존)·`dispatch_outcome`(DispatchOutcome 원형, Routed일 때만; Contested/Unowned는 디스패치를 안 하므로 `None`). OrgReply가 decision·outcome을 투영해 버리는 것과 달리 **둘 다 원형을 그대로 안는다** — 한 질문 처리의 두 절차(라우팅→`decision`, 디스패치→`dispatch_outcome`)를 1급으로 기록. `EscalatedToManager`의 `manager_id`·`reason`은 사용자向 `Pending`에선 떨궈지지만 여기선 전부 남아, `Unowned.escalated_to`를 남기는 것과 *대칭*을 이룬다(둘 다 "escalation 대상" — 같은 처분이 기록 차원에서 같은 모양). `answer`는 별도 필드가 아니라 `dispatch_outcome`에서 유도하는 파생 접근자다(`Delivered.answer`만 답을 가짐 — 같은 답을 두 곳에 두지 않기 위함, SSOT는 `dispatch_outcome`).
 
 ## Flagged ambiguities
 

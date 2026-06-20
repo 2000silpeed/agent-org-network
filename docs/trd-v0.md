@@ -35,7 +35,7 @@
 - **Resolution / Precedent** — 합의 결론과 append-only 기록. 라우터가 참조.
 - **ConflictCase / ConflictCaseStore 포트** — 미해소 Overlap 다툼의 저장 단위와 그 보관·조회 포트(`AuditLog`·`PrecedentStore`와 같은 패턴, `conflict.py`). `ConflictCase(intent·question·candidates[Candidate(agent_id,owner)]·status·opened_at·case_id·resolution?)`, open→resolved는 `resolve()`가 새 인스턴스. 포트 메서드 `open_case·get·open_for_owner(처리함)·open_for_intent(중복 open 방지)·mark_resolved`. 구현 `InMemoryConflictCaseStore`. **전이 ≠ 기록** — 미해소 도메인 상태 보관이지 절차 로그 아님. (ADR 0008)
 - **ConcurOnPrimary / ConsensusOutcome** — 후보 Owner의 1인칭 합의 표(`by_owner→on_agent`, 단일 축)와 합의 시도 결과 sealed sum(`Agreed`→Resolution+Precedent / `StillOpen` / `Deadlocked`). Agreed가 T4.2 핵심, Deadlocked→Manager는 T5.2로 자리만. (ADR 0008)
-- **Audit log 포트(`AuditLog`)** — `record(entry)`로 한 줄씩 append-only JSONL(`JsonlAuditLog`)·테스트용 `InMemoryAuditLog`. `AuditEntry`는 `RoutingDecision` 원형 + `Answer`를 안아 내부값(confidence·candidates·escalated_to·primary)까지 기록(OrgReply가 감춘 것). timestamp는 주입 clock으로 결정론. 전이가 아니라 기록.
+- **Audit log 포트(`AuditLog`)** — `record(entry)`로 한 줄씩 append-only JSONL(`JsonlAuditLog`)·테스트용 `InMemoryAuditLog`. `AuditEntry`는 `RoutingDecision` 원형 + `DispatchOutcome` 원형(디스패치 결말, Routed만 채움; `answer`는 거기서 유도하는 파생 접근자)을 안아 내부값(confidence·candidates·escalated_to·primary·escalation의 manager_id·reason)까지 기록(OrgReply가 감춘 것). timestamp는 주입 clock으로 결정론. 전이가 아니라 기록. (ADR 0011 결정 5)
 
 ## 5. 진입점 · 전송
 

@@ -13,7 +13,7 @@ from agent_org_network.dispatch import (
     RuntimeDispatcher,
 )
 from agent_org_network.router import Router
-from agent_org_network.runtime import Answer, AnswerMode
+from agent_org_network.runtime import AnswerMode
 from agent_org_network.user import User
 
 
@@ -84,26 +84,25 @@ class AskOrg:
 
     def _project_outcome(
         self, outcome: DispatchOutcome, primary_owner: str, primary_agent_id: str
-    ) -> tuple[OrgReply, Answer | None]:
-        """DispatchOutcome을 (사용자向 OrgReply, audit用 Answer|None)로 매핑한다.
+    ) -> OrgReply:
+        """DispatchOutcome을 사용자向 OrgReply로 *투영*한다(표현 경계).
 
         Delivered→Answered(mode 보존, owner·agent_id 부착). AwaitingWorker·
         EscalatedToManager→Pending(kind="dispatched") — 사용자엔 둘을 구분 않고 중립
         안내만. manager_id/reason 등 기계값은 Pending에 싣지 않는다(노출 불변식).
-        audit용 Answer는 Delivered일 때만(미회신·escalation은 답이 없으니 None).
-        match+assert_never로 DispatchOutcome 망라.
+        audit 기록은 별개다 — handle이 outcome *원형*을 AuditEntry로 넘긴다(여기선
+        떨궈도 audit엔 manager_id·reason이 남는다). match+assert_never로 망라.
         """
         match outcome:
             case Delivered():
-                reply: OrgReply = Answered(
+                return Answered(
                     text=outcome.answer.text,
                     answered_by=(primary_owner, primary_agent_id),
                     mode=outcome.answer.mode,
                     sources=outcome.answer.sources,
                 )
-                return reply, outcome.answer
             case AwaitingWorker() | EscalatedToManager():
-                return Pending(kind="dispatched", message=_DISPATCHED_MESSAGE), None
+                return Pending(kind="dispatched", message=_DISPATCHED_MESSAGE)
             case _ as never:
                 assert_never(never)
 
@@ -111,12 +110,15 @@ class AskOrg:
         intent = self._classifier.classify(question)
         decision = self._router.route(question)
 
-        answer: Answer | None = None
+        # 디스패치 절차의 결말 — Routed일 때만 채워지고(dispatch→poll), Contested/
+        # Unowned는 디스패치를 안 하므로 None. audit이 이 원형에서 answer를 파생하고
+        # escalation 대상(manager_id·reason)까지 기록한다(2b 선결, ADR 0011).
+        outcome: DispatchOutcome | None = None
         match decision:
             case Routed():
                 ticket = self._dispatcher.dispatch(question, decision.primary)
                 outcome = self._dispatcher.poll(ticket)
-                reply, answer = self._project_outcome(
+                reply = self._project_outcome(
                     outcome,
                     decision.primary.owner,
                     decision.primary.agent_id,
@@ -150,7 +152,7 @@ class AskOrg:
                 question=question,
                 intent=intent,
                 decision=decision,
-                answer=answer,
+                dispatch_outcome=outcome,
             )
         )
         return reply

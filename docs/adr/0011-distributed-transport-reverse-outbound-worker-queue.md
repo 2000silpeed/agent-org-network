@@ -1,6 +1,6 @@
 # 분산 전송은 owner 워커의 역방향 아웃바운드 연결 + 중앙 작업 큐로 한다 — owner PC는 서버를 노출하지 않는다
 
-상태: accepted (2026-06-20, 결정 1~3) · 보강 accepted (2026-06-21, 결정 4 — ask_org 비동기화·manager_id 분리, 슬라이스2 진입 전) · ADR 0010의 *전송 계층* 보강(답변 주체=owner Claude Code는 그대로, "어떻게 그 환경에 도달하나"를 못박음)
+상태: accepted (2026-06-20, 결정 1~3) · 보강 accepted (2026-06-21, 결정 4 — ask_org 비동기화·manager_id 분리, 슬라이스2 진입 전) · 보강 accepted (2026-06-21, 결정 5 — escalation의 audit 기록, 슬라이스2b 진입 전 선결 ①) · ADR 0010의 *전송 계층* 보강(답변 주체=owner Claude Code는 그대로, "어떻게 그 환경에 도달하나"를 못박음)
 
 ADR 0010은 Agent Runtime의 답변 주체를 각 Owner의 Claude Code로 못박았고, 최종(T6.3)은 "각 Owner PC의 Claude Code에 분산 연결(MCP/A2A 등록·호출)"이라 적었다. TRD §5도 "각 Owner Claude Code가 MCP/A2A로 중앙에 등록·연결, 중앙이 client로 호출, 로컬 PC 도달은 후순위"라 적었다. T6.3은 그 *전송 계층*을 채운다 — **중앙이 owner 환경에 실제로 어떻게 도달하는가**. 되돌리기 어려운 결정 두 가지: (1) 연결 방향(누가 누구에게 연결을 거는가), (2) 동기/비동기(중앙 핸들러가 답을 어떻게 기다리는가).
 
@@ -50,6 +50,24 @@ owner 부재·PC 꺼짐이 정상 상태다. 따라서 답은 **즉시 보장되
 
 - **`DispatchingRuntime`의 운명 = 유지(재포지셔닝).** Answer 위장을 ask_org에서 걷어내면 이 동기 어댑터는 *프로덕션 경로*에선 불필요해진다(ask_org가 디스패처를 직접 봄). 그러나 (a) ADR 0011 결정 2가 "동기 포트 `AgentRuntime.answer`를 어댑터로 보존"을 명시했고, (b) 슬라이스1이 단조성·망라까지 보강한 그린 자산이며(`test_dispatch`의 `DispatchingRuntime` 테스트군), (c) "동기 answer를 요구하는 비-ask_org 호출처"가 미래에 생길 수 있다. 그래서 **폐기하지 않고 "레거시/호환 어댑터"로 남긴다** — 단 docstring에 "ask_org는 이를 거치지 않으며, 폴백 Answer는 AgentRuntime 계약 유지용 어댑터 한정 동작"임을 못박아 *위장 금지 결정과 충돌하지 않음*을 명시한다. (ask_org의 즉답 다리 역할은 `LocalRuntimeDispatcher`가 맡는다 — 역할이 갈린다: `DispatchingRuntime`=디스패처→동기 answer, `LocalRuntimeDispatcher`=동기 runtime→디스패처.)
 
+### 5. escalation의 audit 기록 — `AuditEntry`가 `DispatchOutcome`을 1급으로 안는다 (슬라이스2b 진입 전 선결 ①)
+
+결정 4의 매핑은 디스패치 escalation(`EscalatedToManager`)을 `Pending(dispatched)`로 투영하며 `manager_id`·`reason`을 사용자向에서 떨군다 — 노출 불변식상 옳다. 그러나 그 escalation은 **audit엔 남아야** 한다(미아 없음의 *기록* 차원). 한 질문 처리는 두 절차다 — (1) 라우팅 → `RoutingDecision`, (2) 디스패치 → `DispatchOutcome`. 기존 `AuditEntry`는 (1)을 `decision`으로 1급 기록하면서 (2)는 `answer`(=`Delivered.answer`)로만 반쪽 기록해, `Routed`인데 escalation된 경우(`decision=Routed`·`answer=None`) escalation 대상이 통째로 소실됐다.
+
+- **`AuditEntry.dispatch_outcome: DispatchOutcome | None` 1급 추가.** 디스패치 절차의 결말을 *원형 그대로* 안는다(`decision`이 라우팅 절차를 원형으로 안는 것과 대칭). Routed일 때만 채워지고, Contested/Unowned는 디스패치를 안 하므로 `None`.
+
+- **`answer` 중복 제거 — 파생 프로퍼티로.** `Delivered.answer`가 이미 `dispatch_outcome`에 들어가므로 `answer`를 별도 생성자 필드로 두면 같은 답이 두 곳에 산다(SSOT 위반). 그래서 `answer`를 생성자 필드에서 빼고 `dispatch_outcome`에서 유도하는 `@property`로 둔다 — 진실은 `dispatch_outcome` 한 곳, `answer` 접근(`entry.answer`·JSONL `answer` 키)은 하위호환으로 그대로 산다. 대안(병존 = 중복, 대체 = 기존 `answer` 어서션·답 없는 처분 키 소실)보다 정합적이다.
+
+- **직렬화 통일성 — escalation 키를 `Unowned.escalated_to`와 같은 결로.** `_dispatch_record`는 `EscalatedToManager`를 `{"disposition": "escalated_to_manager", "escalated_to": manager_id, "reason": …}`로 남긴다 — `Unowned`가 `{"disposition": "unowned", "escalated_to": …}`로 남기는 것과 *같은 모양*(둘 다 "escalation 대상" 개념이라 audit 독자가 한 눈에 같은 처분으로 읽는다). `AwaitingWorker`는 `waited_seconds`, `Delivered`는 처분 라벨만(답 본문은 상위 `answer` 키가 담아 중복 회피). `match`+`assert_never`로 `DispatchOutcome` 망라.
+
+- **의존 방향.** `audit.py`가 `dispatch.py`(`DispatchOutcome` sum)에 의존하게 된다. `dispatch.py`는 `audit`를 import하지 않으므로 순환 없음 — `audit.py`는 이미 `runtime.Answer`를 런타임 import하므로 `DispatchOutcome`도 직접 import한다(`TYPE_CHECKING` 불필요). `decision.py`도 `dispatch`에 의존하지 않아 무관.
+
+- **노출 불변식과 무관.** audit는 내부값을 *다 기록하는 게* 목적이라(`manager_id`·`reason`을 *남긴다*) 노출 불변식의 대상이 아니다. OrgReply/`Pending`엔 여전히 안 샌다(결정 4 그대로). 전이 ≠ 기록도 유지 — 디스패처 큐 상태(queued↔claimed↔…)는 도메인 전이, `AuditEntry.dispatch_outcome`은 그 *결말의 기록*이다(둘은 별개).
+
+- **결정론·테스트 경로.** `LocalRuntimeDispatcher`는 항상 `Delivered`라 지금은 escalation이 구조적으로 안 난다. escalation 경로의 audit 기록은 `InMemoryWorkQueueDispatcher`(timeout 주입 clock) 주입으로 만들어 검증한다(결정론, ADR 0003).
+
+- **이번 범위 밖 — 두 경계(2a→2b 리뷰 Minor, 의도된 결정).** 이 결정은 *escalation*의 audit 기록만 닫는다. (a) **`Delivered`의 ticket 식별자 생략은 의도적이다** — `_dispatch_record`의 `Delivered`는 처분 라벨만 남기고 `ticket_id`를 싣지 않는다. 답 본문은 상위 `answer` 키가, 담당은 `decision.primary`가 이미 담아 정상 경로 추적엔 충분하다(`decision`도 Routed에서 필요한 식별자만 남기듯, "원형"이 곧 전 필드는 아니다). 큐 작업↔entry 연결(`ticket_id`)이 필요해지면 운영 모니터링(T5.1)에서 보강한다. (b) **`AwaitingWorker`의 audit은 poll 시점 *스냅샷*이다** — 현재 `ask_org`는 dispatch→poll 1회라, 미회신(`AwaitingWorker`)으로 찍힌 entry는 그 질문이 나중에 Delivered/Escalated로 종착해도 재기록되지 않는다. 종착 재기록은 폴링/콜백이 생기는 슬라이스2 네트워크 디스패처의 몫이며, 그때 "큐의 작업은 반드시 종착한다"가 기록 차원에서도 닫힌다.
+
 ## Considered Options (연결 방향)
 
 - **owner 워커의 역방향 아웃바운드 + 중앙 큐**(선택): 방화벽/NAT 통과, 상시 켜짐 불요, owner 부재가 큐 대기로 자연 흡수. 단 비동기·전달 보장·연결 수명 관리 비용.
@@ -63,7 +81,7 @@ owner 부재·PC 꺼짐이 정상 상태다. 따라서 답은 **즉시 보장되
 - **신원·책임 연결점(지금 구현 X).** 워커가 진짜 그 owner인지는 ADR 0009(페르소나 인증)가 강제할 자리다 — 워커는 중앙 연결 시 owner 신원으로 인증해야 하며, 인증되지 않은 워커의 회신은 거부된다. `WorkTicket`/회신에 `owner_id` 귀속을 실어 *연결점만* 명시하고, 실제 인증은 T6.5에 위임한다.
 - **Approval 게이트 연결점(지금 구현 X).** owner가 만든 답이 `draft_only`(Approval 게이트, CONTEXT: Answer.mode)면 회신은 사람 승인 전까지 초안이다. 회신 경로에 mode를 보존해 *Approval과 합류할 자리*를 남긴다 — Approval 평가 자체는 T2.5/Routed 영역이고 이 ADR 범위 밖.
 - **전이 ≠ 기록 유지.** 작업 enqueue·claim·submit·timeout은 *도메인 전이*(디스패처/큐 상태)이고, audit 기록은 별개로 계속 흐른다(ADR 0008과 동일). 작업 큐는 미해소 작업의 도메인 보관소지 절차 로그가 아니다.
-- **escalation의 audit 기록 공백(슬라이스2 네트워크 선행 미결, 2a 리뷰 [Major]).** 결정 4의 매핑은 `EscalatedToManager`를 `Pending(dispatched)`로 투영하며 `manager_id`·`reason`을 사용자向에서 떨군다 — 노출 불변식상 옳다. 그러나 현재 `AuditEntry`(`decision`+`answer`만)엔 그 escalation 대상을 실을 자리가 없어, `Unowned`가 `escalated_to`를 audit에 남기는 것과 **비대칭**이고 CONTEXT Audit log 정의("OrgReply가 감춘 `escalated_to`를 여기선 전부 기록")와 어긋난다. 지금은 `LocalRuntimeDispatcher`(항상 Delivered)라 escalation이 구조적으로 안 나 이 공백이 노출되지 않으나, escalation이 처음 발생하는 네트워크 디스패처 *진입 전*에 `AuditEntry` 확장(`DispatchOutcome` 또는 `manager_id`/`reason` 기록)이 **선행돼야** 한다 — 그래야 "큐의 작업은 회신되거나 escalation되거나 반드시 종착하며 영영 사라지지 않는다"(위 escalation 재사용)가 *기록* 차원에서도 지켜진다.
+- **escalation의 audit 기록 공백 → 해소(2b 진입 전 선결 ①, 2026-06-21, 아래 결정 5).** 2a 리뷰 [Major]가 발견한 공백 — 결정 4의 매핑이 `EscalatedToManager`를 `Pending(dispatched)`로 투영하며 `manager_id`·`reason`을 사용자向에서 떨구는데, 당시 `AuditEntry`(`decision`+`answer`만)엔 그 escalation 대상을 실을 자리가 없어 `Unowned.escalated_to`와 **비대칭**이었다. **이 공백을 결정 5에서 메웠다** — `AuditEntry`에 `dispatch_outcome: DispatchOutcome | None`을 1급으로 추가해 `EscalatedToManager`의 `manager_id`·`reason`을 audit에 *전부* 남긴다(노출 불변식은 사용자向 `Pending`에만 적용, audit는 내부값 기록이 목적). 이로써 "큐의 작업은 회신되거나 escalation되거나 반드시 종착하며 영영 사라지지 않는다"가 *기록* 차원에서도 지켜진다.
 - **결정론 테스트는 in-process로.** 실제 네트워크 전송·워커 프로세스·연결 수명은 비결정이라 단위 테스트에 부적합하다. `InMemoryWorkQueueDispatcher` + Fake Worker(동기 회신)로 *큐 적재→회수→회신→escalation 분기*를 결정론으로 검증하고(ADR 0003), 실제 전송 품질은 데모/수동 시연으로 본다.
 - **외부 의존 추가(다음 슬라이스).** 네트워크 슬라이스부터 owner Worker는 별 프로세스·아웃바운드 연결(폴링 또는 WS)·로컬 `claude` CLI에 의존한다. 연결 끊김·재연결·중복 전달은 그 슬라이스에서 다룰 실패 모드다.
 - TRD §5 분산 전송·tasks T6.3, CONTEXT(Owner Worker·Work Queue·RuntimeDispatcher·WorkTicket·DispatchOutcome)를 이 방향으로 갱신한다.

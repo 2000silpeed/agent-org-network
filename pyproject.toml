@@ -1,0 +1,32 @@
+[project]
+name = "agent-org-network"
+version = "0.0.0"
+description = "개인별 업무 에이전트 + 중앙 라우터 조직형 멀티에이전트 네트워크"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "pyright>=1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_org_network"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"

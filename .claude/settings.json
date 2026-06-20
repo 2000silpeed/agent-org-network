@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"[프로젝트 규칙] (1) 이 요청이 docs/prd-v0.md·docs/trd-v0.md 기획과 충돌하는지 먼저 검토하고, 충돌하면 진행 전에 사용자에게 알릴 것. (2) 작업 단계(Task)가 끝나면 docs/prd-v0.md·docs/trd-v0.md·docs/tasks-v0.md, 그리고 CONTEXT.md·docs/adr를 다시 읽고 변경을 반영해 갱신할 것.\"}}'"
+          }
+        ]
+      }
+    ]
+  }
+}

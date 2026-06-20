@@ -20,7 +20,7 @@
 
 ## 3. 바운디드 컨텍스트
 
-단일 컨텍스트 **Routing**. 모듈: `registry / router / runtime / conflict / audit / server(mcp) / web(api)`.
+단일 컨텍스트 **Routing**. 모듈(현재): `registry · classifier · router · decision · runtime · ask_org · audit · demo · web`. 예정: `conflict`(판례) · `server`(MCP 어댑터).
 
 ## 4. 도메인 모델 · 포트
 
@@ -62,10 +62,13 @@
 
 ```text
 src/agent_org_network/
-  user.py  agent_card.py  registry.py  classifier.py
-  router.py  decision.py  runtime.py  conflict.py  audit.py  server.py
-registry/agents/*.yaml   registry/routing_rules.yaml
-samples/questions.jsonl  logs/audit.jsonl   web/   tests/
+  user.py  agent_card.py  registry.py          # 등록 창구
+  classifier.py  decision.py  router.py        # 라우팅 코어
+  runtime.py  ask_org.py  audit.py             # 런타임·핸들러·감사
+  demo.py  web.py                              # 데모 조립 + 웹 어댑터
+  # 예정: conflict.py(판례)  server.py(MCP 어댑터)
+web/index.html   logs/audit.jsonl   tests/
+# 예정: registry/agents/*.yaml · routing_rules.yaml · samples/questions.jsonl
 ```
 
 ## 10. 핵심 불변식

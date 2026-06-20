@@ -13,10 +13,11 @@ from agent_org_network.dispatch import (
     DispatchingRuntime,
     EscalatedToManager,
     InMemoryWorkQueueDispatcher,
+    LocalRuntimeDispatcher,
     RuntimeDispatcher,
     WorkTicket,
 )
-from agent_org_network.runtime import Answer
+from agent_org_network.runtime import Answer, StubRuntime
 
 
 # ── 공용 픽스처 ──────────────────────────────────────────────────────────────
@@ -516,3 +517,132 @@ def test_answered_작업은_다시_claim되지_않는다():
     # answered 상태에서 다시 claim 시도
     second_claim = dispatcher.claim("alice")
     assert second_claim is None, f"answered 작업이 재claim됨: {second_claim}"
+
+
+# ── ⑫ [슬라이스2a] EscalatedToManager.manager_id 주입 ──────────────────────
+
+
+def test_EscalatedToManager_manager_id가_manager_of_주입_시_해당_값으로_채워진다():
+    """manager_of 콜백 주입 시 EscalatedToManager.manager_id가 그 반환값."""
+    timeout = timedelta(seconds=1)
+    elapsed = timedelta(seconds=10)
+
+    call_count = 0
+    def timeout_clock() -> datetime:
+        nonlocal call_count
+        call_count += 1
+        return BASE_TS if call_count == 1 else BASE_TS + elapsed
+
+    dispatcher = InMemoryWorkQueueDispatcher(
+        clock=timeout_clock,
+        timeout=timeout,
+        manager_of=lambda owner_id: "manager_" + owner_id,
+    )
+    card = _fixed_card(owner="alice")
+    ticket = dispatcher.dispatch("Q", card)
+
+    outcome = dispatcher.poll(ticket)
+    assert isinstance(outcome, EscalatedToManager)
+    assert outcome.manager_id == "manager_alice"
+
+
+def test_EscalatedToManager_manager_id가_미주입_시_None():
+    """manager_of 미주입이면 EscalatedToManager.manager_id는 None."""
+    timeout = timedelta(seconds=1)
+    elapsed = timedelta(seconds=10)
+
+    call_count = 0
+    def timeout_clock() -> datetime:
+        nonlocal call_count
+        call_count += 1
+        return BASE_TS if call_count == 1 else BASE_TS + elapsed
+
+    dispatcher = InMemoryWorkQueueDispatcher(clock=timeout_clock, timeout=timeout)
+    card = _fixed_card(owner="alice")
+    ticket = dispatcher.dispatch("Q", card)
+
+    outcome = dispatcher.poll(ticket)
+    assert isinstance(outcome, EscalatedToManager)
+    assert outcome.manager_id is None
+
+
+# ── ⑬ [슬라이스2a] LocalRuntimeDispatcher 단위 테스트 ───────────────────────
+
+
+def test_LocalRuntimeDispatcher_dispatch_poll_즉시_Delivered():
+    """dispatch 후 poll이 즉시 Delivered를 반환한다(로컬 동기)."""
+    dispatcher = LocalRuntimeDispatcher(StubRuntime(), clock=_fixed_clock(BASE_TS))
+    card = _fixed_card()
+
+    ticket = dispatcher.dispatch("배송 문의", card)
+    outcome = dispatcher.poll(ticket)
+
+    assert isinstance(outcome, Delivered)
+    assert outcome.ticket == ticket
+
+
+def test_LocalRuntimeDispatcher_poll_answer가_runtime_답과_동일():
+    """poll Delivered의 answer가 runtime.answer 반환값과 동일하다."""
+    stub = StubRuntime()
+    dispatcher = LocalRuntimeDispatcher(stub, clock=_fixed_clock(BASE_TS))
+    card = _fixed_card()
+
+    ticket = dispatcher.dispatch("Q", card)
+    outcome = dispatcher.poll(ticket)
+
+    assert isinstance(outcome, Delivered)
+    # StubRuntime.answer 직접 호출과 동일한 결과여야 한다
+    expected = stub.answer("Q", card)
+    assert outcome.answer.text == expected.text
+    assert outcome.answer.mode == expected.mode
+
+
+def test_LocalRuntimeDispatcher_mode_보존_draft_only():
+    """draft_only 런타임 주입 시 Delivered.answer.mode가 draft_only."""
+    class DraftOnlyRuntime:
+        def answer(self, question: str, card: AgentCard) -> Answer:
+            return Answer(text="초안 답변", sources=(), mode="draft_only")
+
+    dispatcher = LocalRuntimeDispatcher(
+        DraftOnlyRuntime(),  # type: ignore[arg-type]
+        clock=_fixed_clock(BASE_TS),
+    )
+    card = _fixed_card()
+    ticket = dispatcher.dispatch("Q", card)
+    outcome = dispatcher.poll(ticket)
+
+    assert isinstance(outcome, Delivered)
+    assert outcome.answer.mode == "draft_only"
+
+
+def test_LocalRuntimeDispatcher_claim은_항상_None():
+    """claim은 항상 None — 로컬 즉답엔 외부 워커 큐가 없다."""
+    dispatcher = LocalRuntimeDispatcher(StubRuntime(), clock=_fixed_clock(BASE_TS))
+
+    result = dispatcher.claim("alice")
+
+    assert result is None
+
+
+def test_LocalRuntimeDispatcher_두_dispatch의_ticket_id가_서로_다르다():
+    """두 번 dispatch한 ticket_id가 상이하다(uuid 기반 고유성)."""
+    dispatcher = LocalRuntimeDispatcher(StubRuntime(), clock=_fixed_clock(BASE_TS))
+    card = _fixed_card()
+
+    t1 = dispatcher.dispatch("Q1", card)
+    t2 = dispatcher.dispatch("Q2", card)
+
+    assert t1.ticket_id != t2.ticket_id
+
+
+def test_LocalRuntimeDispatcher_dispatch_후_history에_쌓인다():
+    """dispatch 이력이 history에 append된다."""
+    dispatcher = LocalRuntimeDispatcher(StubRuntime(), clock=_fixed_clock(BASE_TS))
+    card = _fixed_card()
+
+    t1 = dispatcher.dispatch("Q1", card)
+    t2 = dispatcher.dispatch("Q2", card)
+
+    assert t1 in dispatcher.history
+    assert t2 in dispatcher.history
+    assert len(dispatcher.history) == 2

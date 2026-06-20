@@ -1,12 +1,19 @@
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, assert_never
 
 from agent_org_network.audit import AuditEntry, AuditLog, Clock, default_clock
 from agent_org_network.classifier import Classifier
 from agent_org_network.conflict import Candidate, ConflictCase, ConflictCaseStore
 from agent_org_network.decision import Contested, Routed, Unowned
+from agent_org_network.dispatch import (
+    AwaitingWorker,
+    Delivered,
+    DispatchOutcome,
+    EscalatedToManager,
+    RuntimeDispatcher,
+)
 from agent_org_network.router import Router
-from agent_org_network.runtime import AgentRuntime, Answer, AnswerMode
+from agent_org_network.runtime import Answer, AnswerMode
 from agent_org_network.user import User
 
 
@@ -18,31 +25,87 @@ class Answered:
     sources: tuple[str, ...] = field(default_factory=tuple)
 
 
+# Pending kind 세 갈래로 확장(T6.3 슬라이스2). `dispatched`가 분산 전송의 비동기
+# 결말을 사용자向으로 흡수한다 — DispatchOutcome의 `AwaitingWorker`(미회신)와
+# `EscalatedToManager`(timeout/owner 부재)를 *둘 다* 하나로 모은다. 근거: 사용자
+# 관점에선 "담당에게 보냈는데 아직 답이 없다(사람 손으로 넘어가는 중)"로 동일하고,
+# 워커 미연결인지 Manager escalation인지는 *감춰야 할 내부값*이다(노출 불변식). kind를
+# 둘로 쪼개면(dispatched/escalated) 그 내부 구분이 사용자에게 새어나간다. 그래서 최소화.
+PendingKind = Literal["contested", "unowned", "dispatched"]
+
+
 @dataclass(frozen=True)
 class Pending:
-    kind: Literal["contested", "unowned"]
+    """담당이 사람 손에 있어 즉답이 없는 상태의 사용자向 투영.
+
+    노출 불변식: `kind`+`message`만 노출. manager_id·reason·ticket_id·후보 목록 등
+    기계/내부값은 절대 싣지 않는다(test_web `_LEAKY_KEYS`가 강제). `dispatched`는
+    분산 전송의 AwaitingWorker·EscalatedToManager를 함께 투영한 사용자 상태.
+    """
+
+    kind: PendingKind
     message: str
 
 
 OrgReply = Answered | Pending
 
 
+# 분산 전송 결말 → 사용자向 Pending 안내 문구. 둘 다 같은 `dispatched`로 모이되,
+# 문구도 내부(워커 미연결 vs escalation)를 비추지 않는 중립 안내로 통일한다.
+_DISPATCHED_MESSAGE = "담당에게 질문을 전달했어요. 답변이 준비되면 알림드릴게요."
+
+
 class AskOrg:
+    """사용자 질문을 라우팅하고 담당 답을 *디스패처 경유*로 수집해 OrgReply로 투영한다.
+
+    답 획득 경로(T6.3 슬라이스2): 동기 `AgentRuntime.answer` 직접 호출이 아니라
+    `RuntimeDispatcher.dispatch→poll`을 본다. poll 결과 `DispatchOutcome`을 `OrgReply`로
+    매핑한다 — Delivered→Answered(mode 보존), AwaitingWorker·EscalatedToManager→
+    Pending(kind="dispatched"). escalation/미회신을 동기 Answer로 *위장하지 않는다*
+    (ADR 0011 ②). in-process 데모/테스트는 `LocalRuntimeDispatcher`(즉시 Delivered)를
+    주입해 Routed→Answered가 한 호출에 끝난다.
+    """
+
     def __init__(
         self,
         router: Router,
-        runtime: AgentRuntime,
+        dispatcher: RuntimeDispatcher,
         audit_log: AuditLog,
         classifier: Classifier,
         clock: Clock = default_clock,
         case_store: ConflictCaseStore | None = None,
     ) -> None:
         self._router = router
-        self._runtime = runtime
+        self._dispatcher = dispatcher
         self._audit = audit_log
         self._classifier = classifier
         self._clock = clock
         self._case_store = case_store
+
+    def _project_outcome(
+        self, outcome: DispatchOutcome, primary_owner: str, primary_agent_id: str
+    ) -> tuple[OrgReply, Answer | None]:
+        """DispatchOutcome을 (사용자向 OrgReply, audit用 Answer|None)로 매핑한다.
+
+        Delivered→Answered(mode 보존, owner·agent_id 부착). AwaitingWorker·
+        EscalatedToManager→Pending(kind="dispatched") — 사용자엔 둘을 구분 않고 중립
+        안내만. manager_id/reason 등 기계값은 Pending에 싣지 않는다(노출 불변식).
+        audit용 Answer는 Delivered일 때만(미회신·escalation은 답이 없으니 None).
+        match+assert_never로 DispatchOutcome 망라.
+        """
+        match outcome:
+            case Delivered():
+                reply: OrgReply = Answered(
+                    text=outcome.answer.text,
+                    answered_by=(primary_owner, primary_agent_id),
+                    mode=outcome.answer.mode,
+                    sources=outcome.answer.sources,
+                )
+                return reply, outcome.answer
+            case AwaitingWorker() | EscalatedToManager():
+                return Pending(kind="dispatched", message=_DISPATCHED_MESSAGE), None
+            case _ as never:
+                assert_never(never)
 
     def handle(self, question: str, user: User) -> OrgReply:
         intent = self._classifier.classify(question)
@@ -51,12 +114,12 @@ class AskOrg:
         answer: Answer | None = None
         match decision:
             case Routed():
-                answer = self._runtime.answer(question, decision.primary)
-                reply: OrgReply = Answered(
-                    text=answer.text,
-                    answered_by=(decision.primary.owner, decision.primary.agent_id),
-                    mode=answer.mode,
-                    sources=answer.sources,
+                ticket = self._dispatcher.dispatch(question, decision.primary)
+                outcome = self._dispatcher.poll(ticket)
+                reply, answer = self._project_outcome(
+                    outcome,
+                    decision.primary.owner,
+                    decision.primary.agent_id,
                 )
             case Contested():
                 reply = Pending(

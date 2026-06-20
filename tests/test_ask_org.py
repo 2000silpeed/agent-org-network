@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.ask_org import AskOrg, Answered, Pending
@@ -11,6 +11,7 @@ from agent_org_network.conflict import (
     InMemoryConflictCaseStore,
     InMemoryPrecedentStore,
 )
+from agent_org_network.dispatch import InMemoryWorkQueueDispatcher, LocalRuntimeDispatcher
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router
 from agent_org_network.runtime import StubRuntime
@@ -46,7 +47,7 @@ def ask_org_with(
     router = Router(registry, classifier, root_user="root", precedents=precedents)
     return AskOrg(
         router=router,
-        runtime=StubRuntime(),
+        dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=InMemoryAuditLog(),
         classifier=classifier,
         clock=fixed_clock,
@@ -188,3 +189,94 @@ def test_합의_후_같은_intent_재질문시_Routed로_자동_라우팅():
     second_reply = ask.handle("환불 정책이 어떻게 되나요?", user)
     assert isinstance(second_reply, Answered)
     assert second_reply.answered_by[1] == "cs_ops"
+
+
+# ── T6.3 슬라이스2a 신규 — DispatchOutcome 비동기 결말 투영 ──────────────────
+
+BASE_TS = datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _ask_org_with_queue_dispatcher(
+    cards: list[AgentCard],
+    intent: str,
+    dispatcher: InMemoryWorkQueueDispatcher,
+) -> AskOrg:
+    """InMemoryWorkQueueDispatcher 주입 AskOrg 조립 헬퍼(비동기 결말 테스트용)."""
+    registry = Registry()
+    for c in cards:
+        registry.register(c)
+    classifier = FakeClassifier(intent)
+    router = Router(registry, classifier, root_user="root")
+    return AskOrg(
+        router=router,
+        dispatcher=dispatcher,
+        audit_log=InMemoryAuditLog(),
+        classifier=classifier,
+        clock=fixed_clock,
+    )
+
+
+def test_AwaitingWorker일_때_Pending_dispatched가_반환된다():
+    """dispatch 후 poll이 AwaitingWorker → OrgReply가 Pending(kind='dispatched')."""
+    c = card("cs_ops", ["환불"])
+    dispatcher = InMemoryWorkQueueDispatcher(clock=lambda: BASE_TS)
+    ask = _ask_org_with_queue_dispatcher([c], "환불", dispatcher)
+    user = User(id="u1")
+
+    # 워커가 claim하지 않으므로 poll → AwaitingWorker
+    reply = ask.handle("환불 되나요?", user)
+
+    assert isinstance(reply, Pending)
+    assert reply.kind == "dispatched"
+
+
+def test_EscalatedToManager일_때_Pending_dispatched가_반환된다():
+    """timeout 경과 clock 주입 → poll EscalatedToManager → Pending(kind='dispatched')."""
+    c = card("cs_ops", ["환불"])
+
+    call_count = 0
+    def timeout_clock() -> datetime:
+        nonlocal call_count
+        call_count += 1
+        # 첫 호출(dispatch enqueued_at)은 BASE_TS, 이후(poll waited 계산)는 timeout 경과
+        return BASE_TS if call_count == 1 else BASE_TS + timedelta(seconds=200)
+
+    dispatcher = InMemoryWorkQueueDispatcher(
+        clock=timeout_clock,
+        timeout=timedelta(seconds=60),
+    )
+    ask = _ask_org_with_queue_dispatcher([c], "환불", dispatcher)
+    user = User(id="u1")
+
+    reply = ask.handle("환불 되나요?", user)
+
+    assert isinstance(reply, Pending)
+    assert reply.kind == "dispatched"
+
+
+def test_Pending_dispatched에_manager_id_reason이_새지_않는다():
+    """노출 불변식: Pending(dispatched)에 manager_id·reason 필드가 없다."""
+    c = card("cs_ops", ["환불"])
+
+    call_count = 0
+    def timeout_clock() -> datetime:
+        nonlocal call_count
+        call_count += 1
+        return BASE_TS if call_count == 1 else BASE_TS + timedelta(seconds=200)
+
+    dispatcher = InMemoryWorkQueueDispatcher(
+        clock=timeout_clock,
+        timeout=timedelta(seconds=60),
+        manager_of=lambda owner_id: "boss_" + owner_id,
+    )
+    ask = _ask_org_with_queue_dispatcher([c], "환불", dispatcher)
+    user = User(id="u1")
+
+    reply = ask.handle("환불 되나요?", user)
+
+    assert isinstance(reply, Pending)
+    # Pending 데이터클래스에 manager_id·reason 필드가 존재하지 않아야 한다
+    assert not hasattr(reply, "manager_id")
+    assert not hasattr(reply, "reason")
+    assert not hasattr(reply, "ticket_id")
+    assert not hasattr(reply, "waited")

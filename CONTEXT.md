@@ -51,15 +51,23 @@ _Avoid_: Agent(단독), Client(단독 — 논리 호출 방향과 혼동), Node
 _Avoid_: Inbox(이건 Owner 처리함 — 합의 다툼, 작업 큐와 구분), Manager 큐(사람 위계 escalation), Mailbox
 
 **RuntimeDispatcher (디스패처)**:
-중앙이 owner별로 작업을 라우팅하고 답을 수집하는 포트 — `AuditLog`·`PrecedentStore`·`ConflictCaseStore`와 같은 패턴(Protocol + `InMemoryWorkQueueDispatcher`). 중앙측 `dispatch(question, card) -> WorkTicket`(작업 큐 적재·추적표 즉시 반환) · `poll(ticket) -> DispatchOutcome`(회신·대기·escalation 조회), 워커측 `claim(owner_id) -> WorkTicket | None` · `submit(ticket_id, answer)`. 동기 포트 `AgentRuntime.answer`는 폐기하지 않고 어댑터 `DispatchingRuntime`이 디스패처 위에 얹어 보존한다(dispatch→블로킹 poll). Authority·지식은 owner 환경에 있고 디스패처는 *운반·수집*만 — 답을 만들지 않는다. (ADR 0011)
+중앙이 owner별로 작업을 라우팅하고 답을 수집하는 포트 — `AuditLog`·`PrecedentStore`·`ConflictCaseStore`와 같은 패턴(Protocol + 구현체들). 중앙측 `dispatch(question, card) -> WorkTicket`(작업 큐 적재·추적표 즉시 반환) · `poll(ticket) -> DispatchOutcome`(회신·대기·escalation 조회), 워커측 `claim(owner_id) -> WorkTicket | None` · `submit(ticket_id, answer)`. **`ask_org`의 답 획득 경로**다 — `ask_org`는 동기 `AgentRuntime.answer`를 직접 부르지 않고 `dispatch→poll`로 `DispatchOutcome`을 얻어 `OrgReply`로 투영한다(ADR 0011 결정 4). 구현체: `InMemoryWorkQueueDispatcher`(in-process 작업 큐, 결정론 테스트·슬라이스1) · `LocalRuntimeDispatcher`(동기 런타임을 즉시-Delivered로 감싸는 즉답 다리) · (슬라이스2) 네트워크 디스패처. Authority·지식은 owner 환경에 있고 디스패처는 *운반·수집*만 — 답을 만들지 않는다. (ADR 0011)
 _Avoid_: Router(이건 담당 결정 — 디스패처는 작업 운반), Broker, Queue(단독 — Work Queue는 데이터, 디스패처는 그 위 포트)
+
+**LocalRuntimeDispatcher (로컬 즉답 디스패처)**:
+동기 `AgentRuntime`(StubRuntime·ClaudeCodeRuntime)을 `RuntimeDispatcher` 포트로 감싸 *항상 즉시 `Delivered`*를 돌려주는 in-process 어댑터. `dispatch`가 그 자리에서 `runtime.answer`를 호출해 답을 만들고 회신 완료 상태로 두며, `poll`은 곧장 `Delivered`(그 Answer)를 반환한다 — 네트워크·워커·대기 없음(미회신·timeout 구조적 불가). `ask_org`가 디스패처만 보게 된 뒤(ADR 0011 결정 4) in-process 데모/단위 테스트가 *즉답*을 받게 하는 다리다(Routed→Answered가 한 호출에). 분산의 *디제너레이트 케이스*(워커=중앙, 큐 길이 0)이지 별 경로가 아니며, 실제 분산이 필요한 슬라이스2 네트워크 디스패처가 이 자리를 대신한다 — 그때 비로소 `Pending(dispatched)` 분기가 살아난다. (`DispatchingRuntime`과 방향이 반대: 이건 동기 runtime→디스패처, 저건 디스패처→동기 answer.)
+_Avoid_: SyncDispatcher, InlineRuntime
+
+**DispatchingRuntime (동기 호환 어댑터)**:
+`RuntimeDispatcher` 위에 동기 `AgentRuntime.answer`를 얹는 어댑터(ADR 0011 슬라이스1 산물) — dispatch→블로킹 poll로 동기 계약을 보존한다. 단 `ask_org`는 이를 **거치지 않는다**(ask_org는 디스패처를 직접 보고 escalation/미회신을 `Pending`으로 표면화 — ADR 0011 결정 4, "Answer 위장 금지"). 이 어댑터의 `EscalatedToManager`/`AwaitingWorker` → 폴백 `Answer` 변환은 *AgentRuntime 계약(항상 Answer 반환)을 지키기 위한 어댑터 한정 동작*이지 도메인 처분을 답으로 뭉개도 된다는 뜻이 아니다 — "동기 answer를 꼭 요구하는 비-ask_org 호출처"의 호환 경로로만 남는다(현재 그런 호출처는 단위 테스트뿐, 프로덕션 경로 아님).
+_Avoid_: (ask_org의 답 경로로 오인 금지 — 그건 LocalRuntimeDispatcher)
 
 **WorkTicket (작업 추적표)**:
 중앙이 작업을 owner 큐에 넣을 때 즉시 돌려받는 추적표 — 답이 아니라 비동기 손잡이. `owner_id`(어느 owner 큐) · `agent_id`(어느 카드의 답) · `question`(워커가 로컬 claude에 넘길 원문) · `enqueued_at`(주입 clock, timeout 판정 기준) · `ticket_id`. `owner_id` 귀속이 신원/책임 연결점(회신이 진짜 그 owner에게서 왔는지, ADR 0009). 카드 본문이 아니라 식별자만 든다(`Candidate`·`ConflictCase`와 같은 정신 — 카드 출처는 Registry).
 _Avoid_: Job(단독), Task(단독), Receipt
 
 **DispatchOutcome (디스패치 결과)**:
-`poll(ticket)`이 돌려주는 결말. "타입이 곧 상태"(RoutingDecision·ConsensusOutcome 정신) — 세 결말 중 하나. **Delivered**(워커가 owner 환경에서 답을 만들어 회신 → `Answer` 도착, `mode` 보존 = Approval 게이트 합류 자리) · **AwaitingWorker**(아직 회신 없음 — 워커 미연결/생성 중 → 큐에 대기, `waited` 경과시간) · **EscalatedToManager**(timeout/owner 부재 → 미아·합의 실패와 같은 종착 처분 = Escalation, `reason`은 T5.2 Manager 큐로 넘길 근거). owner 부재·timeout escalation은 새 경로가 아니라 사람 그래프 상향(Owner→Manager) 재사용이며, 실제 Manager 큐 연결은 T5.2로 자리만 둔다(ConsensusOutcome.Deadlocked 정합). (ADR 0011)
+`poll(ticket)`이 돌려주는 결말. "타입이 곧 상태"(RoutingDecision·ConsensusOutcome 정신) — 세 결말 중 하나. **Delivered**(워커가 owner 환경에서 답을 만들어 회신 → `Answer` 도착, `mode` 보존 = Approval 게이트 합류 자리) · **AwaitingWorker**(아직 회신 없음 — 워커 미연결/생성 중 → 큐에 대기, `waited` 경과시간) · **EscalatedToManager**(timeout/owner 부재 → 미아·합의 실패와 같은 종착 처분 = Escalation. `manager_id`는 T5.2 Manager 큐가 *기계로 소비*할 1급 식별자 — owner의 `manages` 상위 User.id(루트면 `None`), 어느 큐에 적재할지. `reason`은 그 escalation의 *사람용* 자연어 근거. 둘을 분리: 큐 라우팅은 식별자로, 운영자 화면은 문장으로 — `ConsensusOutcome.Deadlocked.reason`이 사람용이듯). owner 부재·timeout escalation은 새 경로가 아니라 사람 그래프 상향(Owner→Manager) 재사용이며, 실제 Manager 큐 연결은 T5.2로 자리만 둔다(ConsensusOutcome.Deadlocked 정합). 사용자向 투영: `AwaitingWorker`·`EscalatedToManager` 둘 다 `OrgReply.Pending(kind="dispatched")`로 모인다(`manager_id`·`reason`은 사용자에게 감추는 내부값 — Pending에 싣지 않음). (ADR 0011)
 _Avoid_: Result(단독 — Answer와 혼동), DeliveryStatus
 
 **Registry**:
@@ -115,14 +123,14 @@ _Avoid_: Handoff(모호 — 프레임워크 용어·기록 의미와 혼동), De
 라우팅 기계장치(RoutingDecision·Candidate·Confidence·trace)는 실 사용자에게 감춘다. 사용자는 *처분의 결과*만 사용자 말로 받는다. `ask_org` 핸들러가 `RoutingDecision`을 아래 결과 타입으로 투영한다 — 도메인(RoutingDecision)과 표현(OrgReply)의 경계.
 
 **OrgReply**:
-실 사용자가 `ask_org`에서 돌려받는 결과. `RoutingDecision`의 사용자向 투영이며, 세 처분이 두 형태로 모인다 — **Answered**(담당이 답함) · **Pending**(사람 손으로 넘어가 아직 답이 없음). 인스턴스의 *타입*이 곧 사용자가 받은 상태다. 노출 불변식: 담당·승인 상태·출처만 보이고, confidence·trace·후보 내부는 절대 싣지 않는다.
+실 사용자가 `ask_org`에서 돌려받는 결과. `RoutingDecision`과 `DispatchOutcome`의 사용자向 투영이며, 두 형태로 모인다 — **Answered**(담당이 답함 = `Routed`→`Delivered`) · **Pending**(아직 답이 없음 — 사람 손으로 넘어갔거나 담당이 답을 만드는 중). 인스턴스의 *타입*이 곧 사용자가 받은 상태다. 노출 불변식: 담당·승인 상태·출처만 보이고, confidence·trace·후보·manager_id·reason 등 내부는 절대 싣지 않는다.
 _Avoid_: Response, Result(단독 — Answer와 혼동)
 
 **Answered**:
 Routed가 투영된 결과. `text`(Answer 본문) · `answered_by`(primary의 owner·agent_id) · `mode`(`full`/`draft_only` — Approval 게이트면 draft) · `sources`를 노출. Approval이 붙은 Routed는 `mode=draft_only`로 "초안·승인 대기"를 표시한다.
 
 **Pending**:
-Contested·Unowned가 투영된 결과 — 담당이 사람 손에 있어 즉답이 없는 상태. `kind`(`contested`/`unowned`)와 사용자向 안내 문구만 노출하고, 후보 목록·escalation 대상 같은 내부는 감춘다. Contested는 *다툼이라는 사실조차* 감추고 "담당을 확인하는 중" 류 중립 안내만(후보가 여럿이라는 내부를 비추지 않는다), Unowned는 "아직 담당이 없어 매니저에게 전달" 류.
+즉답이 없는 상태의 사용자向 투영 — 담당이 사람 손에 있거나(Contested·Unowned), 담당이 정해졌으나 분산 전송으로 답을 기다리는/사람으로 넘어가는 중(dispatched). `kind`(`contested`/`unowned`/`dispatched`)와 사용자向 안내 문구만 노출하고, 후보 목록·escalation 대상·`manager_id`·`reason`·`ticket_id` 같은 내부는 감춘다. Contested는 *다툼이라는 사실조차* 감추고 "담당을 확인하는 중" 류 중립 안내만(후보가 여럿이라는 내부를 비추지 않는다), Unowned는 "아직 담당이 없어 매니저에게 전달" 류. **dispatched**는 `DispatchOutcome`의 `AwaitingWorker`(미회신)와 `EscalatedToManager`(timeout/owner 부재)를 *함께* 투영한다 — 둘은 도메인에선 다른 처분이지만 사용자 관점에선 "담당에게 보냈는데 아직 답이 없다"로 동일하고, 워커 미연결인지 Manager escalation인지는 감춰야 할 내부값이라 한 kind로 모은다(쪼개면 내부 구분이 샌다). "담당에게 전달했고 답변이 준비되면 알림" 류 중립 안내만.
 _Avoid_: Escalation(이건 도메인 처분, Pending은 그 사용자向 표현)
 
 ### Conflict & learning

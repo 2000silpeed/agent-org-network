@@ -6,6 +6,7 @@ from agent_org_network.ask_org import AskOrg
 from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog
 from agent_org_network.classifier import FakeClassifier
 from agent_org_network.decision import Routed
+from agent_org_network.dispatch import LocalRuntimeDispatcher
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router
 from agent_org_network.runtime import StubRuntime
@@ -45,7 +46,7 @@ def _ask_org_with(
     router = Router(registry, classifier, root_user="root")
     return AskOrg(
         router=router,
-        runtime=StubRuntime(),
+        dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=audit_log,
         classifier=classifier,
         clock=_fixed_clock,

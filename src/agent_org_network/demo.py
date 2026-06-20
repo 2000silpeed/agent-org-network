@@ -19,6 +19,7 @@ from agent_org_network.conflict import (
     InMemoryPrecedentStore,
     PrecedentStore,
 )
+from agent_org_network.dispatch import LocalRuntimeDispatcher
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router
 from agent_org_network.runtime import AgentRuntime, ClaudeCodeRuntime
@@ -113,9 +114,14 @@ def build_demo(runtime: AgentRuntime | None = None) -> DemoBundle:
     precedents = InMemoryPrecedentStore()
     case_store = InMemoryConflictCaseStore()
     router = Router(registry, classifier, root_user=ROOT_USER, precedents=precedents)
+    # ask_org는 RuntimeDispatcher 경유로 답을 모은다(T6.3 슬라이스2). 데모/in-process는
+    # 분산이 아니라 즉답이 필요하므로 동기 런타임을 LocalRuntimeDispatcher로 감싼다 —
+    # dispatch가 곧 답(항상 Delivered). 실제 분산 워커·큐는 슬라이스2 네트워크 디스패처가
+    # 이 자리를 대신한다.
+    runtime_impl: AgentRuntime = runtime if runtime is not None else ClaudeCodeRuntime()
     ask = AskOrg(
         router=router,
-        runtime=runtime if runtime is not None else ClaudeCodeRuntime(),
+        dispatcher=LocalRuntimeDispatcher(runtime_impl),
         audit_log=JsonlAuditLog(Path("logs/audit.jsonl")),
         classifier=classifier,
         case_store=case_store,

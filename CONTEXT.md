@@ -34,6 +34,10 @@ _Avoid_: Account, Member
 Agent Card를 구동해 owner의 `knowledge_sources`에 근거해 질문에 답하는 실행 주체. 라우터가 호출한다. 포트로 분리 — `StubRuntime`(canned)·`LlmRuntime`(RAG). (ADR 0007)
 _Avoid_: Agent(단독), Bot
 
+**Answer**:
+Agent Runtime이 한 질문에 산출한 답. `text`(답 본문) · `sources`(근거 출처) · `mode`를 가진다. `mode`는 신뢰 상태 — `full`(그대로 사용자에게)과 `draft_only`(Approval 게이트가 걸려 사람 승인 전까지는 초안). 즉 Routed에 Approval이 붙으면 Runtime은 `draft_only`로 답한다(승인 ≠ 라우팅, 게이트만 걸림). "답에는 항상 담당·신뢰 상태(승인/초안/출처)가 붙는다"는 불변식의 그 답.
+_Avoid_: Response, Result, Reply
+
 **Registry**:
 Agent Card를 등록·보관·조회하는 모듈. 카드의 출처(YAML 파일)다.
 _Avoid_: Directory, Store, 중앙 서버
@@ -81,6 +85,21 @@ _Avoid_: Escalation(이건 게이트가 아니다)
 _Avoid_: Handoff(모호 — 프레임워크 용어·기록 의미와 혼동), Delegate, Forward
 
 > 한 **Routed** 안에서 Route(primary)·Collaboration(collaborators)·Approval(게이트)은 동시에 성립 가능한 독립 축이다. **Escalation**은 Contested/Unowned의 종착이고, **Transfer**는 배정된 primary를 사후에 바꾸는 런타임 사건이다.
+
+### User-facing outcome (실 사용자向 투영)
+
+라우팅 기계장치(RoutingDecision·Candidate·Confidence·trace)는 실 사용자에게 감춘다. 사용자는 *처분의 결과*만 사용자 말로 받는다. `ask_org` 핸들러가 `RoutingDecision`을 아래 결과 타입으로 투영한다 — 도메인(RoutingDecision)과 표현(OrgReply)의 경계.
+
+**OrgReply**:
+실 사용자가 `ask_org`에서 돌려받는 결과. `RoutingDecision`의 사용자向 투영이며, 세 처분이 두 형태로 모인다 — **Answered**(담당이 답함) · **Pending**(사람 손으로 넘어가 아직 답이 없음). 인스턴스의 *타입*이 곧 사용자가 받은 상태다. 노출 불변식: 담당·승인 상태·출처만 보이고, confidence·trace·후보 내부는 절대 싣지 않는다.
+_Avoid_: Response, Result(단독 — Answer와 혼동)
+
+**Answered**:
+Routed가 투영된 결과. `text`(Answer 본문) · `answered_by`(primary의 owner·agent_id) · `mode`(`full`/`draft_only` — Approval 게이트면 draft) · `sources`를 노출. Approval이 붙은 Routed는 `mode=draft_only`로 "초안·승인 대기"를 표시한다.
+
+**Pending**:
+Contested·Unowned가 투영된 결과 — 담당이 사람 손에 있어 즉답이 없는 상태. `kind`(`contested`/`unowned`)와 사용자向 안내 문구만 노출하고, 후보 목록·escalation 대상 같은 내부는 감춘다(Contested는 "담당이 여럿이라 합의 중", Unowned는 "아직 담당이 없어 매니저에게 전달" 류).
+_Avoid_: Escalation(이건 도메인 처분, Pending은 그 사용자向 표현)
 
 ### Conflict & learning
 

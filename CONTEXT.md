@@ -54,13 +54,17 @@ _Avoid_: Broker, Dispatcher, 중앙 서버
 후보가 여럿이라 담당이 아직 안 정해진 결정. 후보 Owner 합의 또는 Manager로 간다.
 
 **Unowned**:
-후보가 0인 미아 결정. 루트 Manager로 Escalation된다.
+후보가 0인 미아 결정. 루트 User로 Escalation된다.
 
 **Route**:
 질문을 primary Agent Card에 연결하는 진입 행위(= Routed를 만드는 것).
 
 **Candidate**:
 질문의 domains에 부분적으로 매칭되어 담당 가능성이 있는 Agent Card. 0·1·다수.
+
+**Intent**:
+질문을 분류해 얻은 주제 라벨. Router가 카드의 `domains`와 대조하는 키다. **Classifier** 포트가 질문에서 생성한다(v0 규칙 기반 → 후순위 LLM).
+_Avoid_: Topic, Category
 
 **Collaboration / Collaborator**:
 primary는 그대로 두고 추가로 끌어들이는 협업. 끌려 들어온 Card가 Collaborator. (기획서 `required_handoffs` 필드 → `collaborators`로 개명.)

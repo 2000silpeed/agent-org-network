@@ -11,10 +11,10 @@
 
 ## Phase 2 — 라우팅 코어 (읽기)
 
-- [ ] **T2.1** `Classifier` 포트 + `RuleBased` + `Fake`
-- [ ] **T2.2** 단일 매칭 → `Routed(primary)`
-- [ ] **T2.3** 0 매칭 → `Unowned(루트 User)` (불변식)
-- [ ] **T2.4** ≥2 매칭 → `Contested`
+- [x] **T2.1** `Classifier` 포트 + `RuleBased` + `Fake`
+- [x] **T2.2** 단일 매칭 → `Routed(primary)`
+- [x] **T2.3** 0 매칭 → `Unowned(루트 User)` (불변식)
+- [x] **T2.4** ≥2 매칭 → `Contested`
 - [ ] **T2.5** `Routed`에 Approval·Collaborator 부착
 
 ## Phase 3 — Walking skeleton (end-to-end 한 바퀴 보이기)

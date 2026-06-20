@@ -24,6 +24,9 @@ class Registry:
     def get(self, agent_id: str) -> AgentCard:
         return self._cards[agent_id]
 
+    def all_cards(self) -> list[AgentCard]:
+        return list(self._cards.values())
+
     def validate(self) -> None:
         for card in self._cards.values():
             if card.owner not in self._users:

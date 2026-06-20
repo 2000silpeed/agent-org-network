@@ -1,0 +1,266 @@
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Literal, Protocol
+
+Clock = Callable[[], datetime]
+
+
+def default_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _new_case_id() -> str:
+    return uuid.uuid4().hex
+
+
+@dataclass(frozen=True)
+class Resolution:
+    intent: str
+    primary: str
+    rationale: str = ""
+
+
+@dataclass(frozen=True)
+class Precedent:
+    resolution: Resolution
+    recorded_at: datetime
+
+
+class PrecedentStore(Protocol):
+    def record(self, resolution: Resolution) -> Precedent: ...
+
+    def lookup(self, intent: str) -> Precedent | None: ...
+
+
+class InMemoryPrecedentStore:
+    def __init__(self, clock: Clock = default_clock) -> None:
+        self._clock = clock
+        self._precedents: dict[str, Precedent] = {}
+        self.history: list[Precedent] = []
+
+    def record(self, resolution: Resolution) -> Precedent:
+        precedent = Precedent(resolution=resolution, recorded_at=self._clock())
+        self.history.append(precedent)
+        self._precedents[resolution.intent] = precedent
+        return precedent
+
+    def lookup(self, intent: str) -> Precedent | None:
+        return self._precedents.get(intent)
+
+
+# ── 미해소 다툼의 저장 단위: ConflictCase ─────────────────────────────
+#
+# Contested(후보 ≥2)가 나면 그 다툼을 "미해소 케이스"로 저장한다. 케이스는
+# 후보 Owner들의 처리함(Inbox)에 떠서 1인칭 합의의 데이터 원천이 된다.
+# 상태(open → resolved)는 frozen 값을 새 인스턴스로 갈아끼워 전이한다
+# (불변+새 인스턴스, RoutingDecision의 "타입이 곧 상태" 정신과 정합).
+
+
+CaseStatus = Literal["open", "resolved"]
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """다툼에 걸린 후보 한 명 — agent_id와 그 Owner(처리함 귀속 키).
+
+    Owner별 처리함 조회를 위해 owner를 함께 들고 있는다. AgentCard 전체가
+    아니라 식별자만 보관 — 케이스는 라우터向(intent)·처리함向(owner) 색인이
+    핵심이고, 카드 본문은 Registry가 출처(stale 회피)다.
+    """
+
+    agent_id: str
+    owner: str
+
+
+@dataclass(frozen=True)
+class ConflictCase:
+    """미해소 다툼의 저장 단위.
+
+    intent(어떤 분류 라벨의 다툼인지) + 후보들 + 원문 question + 상태 + 생성
+    시각(주입 clock 결정론). question 원문은 Owner가 처리함에서 "무엇을 두고
+    다투는지" 맥락을 보고 1인칭 판단을 내리기 위해 보관한다.
+
+    open → resolved 전이는 `resolve()`가 새 인스턴스를 돌려준다(파괴적 변경 X).
+    resolution은 resolved일 때만 채워지는 합의 결론(intent→primary).
+    """
+
+    intent: str
+    question: str
+    candidates: tuple[Candidate, ...]
+    opened_at: datetime
+    case_id: str = field(default_factory=_new_case_id)
+    status: CaseStatus = "open"
+    resolution: Resolution | None = None
+
+    def candidate_ids(self) -> tuple[str, ...]:
+        return tuple(c.agent_id for c in self.candidates)
+
+    def involves_owner(self, owner_id: str) -> bool:
+        return any(c.owner == owner_id for c in self.candidates)
+
+    def resolve(self, resolution: Resolution) -> "ConflictCase":
+        """합의 결론을 안은 resolved 케이스를 새로 만든다(case_id·후보 보존)."""
+        return ConflictCase(
+            intent=self.intent,
+            question=self.question,
+            candidates=self.candidates,
+            opened_at=self.opened_at,
+            case_id=self.case_id,
+            status="resolved",
+            resolution=resolution,
+        )
+
+
+# ── 1인칭 합의 액션: ConcurOnPrimary ──────────────────────────────────
+#
+# "1인칭"의 핵심: 각 후보 Owner가 자기 화면에서 자기 입장을 낸다. MVP 최소
+# 단순화안 — 후보 중 한 명을 primary로 지목하는 한 표(Concur)를 후보 Owner가
+# 던진다. claim("내가 맡는다" = 자기 카드를 지목)도 concede("쟤가 맡아" = 남을
+# 지목)도 모두 "primary는 누구"라는 같은 한 축의 표로 환원된다. 전원이 같은
+# agent_id를 지목하면 합의 성립 → Resolution. (찬반 2축·라운드·코멘트 스레드는
+# 후순위; 지금 필요한 건 "전원이 한 명을 가리켰나"뿐.)
+
+
+@dataclass(frozen=True)
+class ConcurOnPrimary:
+    """후보 Owner 한 명의 1인칭 합의 표.
+
+    `by_owner`(표를 던진 Owner User.id) 가 `on_agent`(primary로 지목한 카드의
+    agent_id) 를 담당으로 지목한다. rationale은 합의 근거(선택).
+    by_owner는 그 케이스의 후보 Owner여야 유효(해소 서비스가 강제).
+    """
+
+    by_owner: str
+    on_agent: str
+    rationale: str = ""
+
+
+class ConflictCaseStore(Protocol):
+    """open ConflictCase 보관·조회 포트 — 처리함의 데이터 원천.
+
+    audit(`AuditLog`)·판례(`PrecedentStore`)와 같은 포트 패턴(Protocol +
+    InMemory 구현). `open_for_owner`가 Owner별 처리함(자기 카드가 후보로 걸린
+    open 케이스) 조회. 전이 ≠ 기록 — 여긴 미해소 도메인 상태를 보관하는 곳이지
+    절차 기록(AuditLog)이 아니다.
+    """
+
+    def open_case(self, case: ConflictCase) -> None: ...
+
+    def get(self, case_id: str) -> ConflictCase | None: ...
+
+    def open_for_owner(self, owner_id: str) -> list[ConflictCase]: ...
+
+    def open_for_intent(self, intent: str) -> ConflictCase | None: ...
+
+    def mark_resolved(self, case: ConflictCase) -> None: ...
+
+
+class InMemoryConflictCaseStore:
+    """append-only 정신의 in-memory 처리함 저장소.
+
+    open 케이스는 `_open`(case_id 색인)에 둔다. resolved되면 `_open`에서 빼
+    `history`(append-only)에 결말을 남긴다 — 처리함 목록은 open만, 이력은 전부.
+    동일 intent의 중복 open 방지를 위해 `open_for_intent`로 먼저 조회한다.
+    """
+
+    def __init__(self) -> None:
+        self._open: dict[str, ConflictCase] = {}
+        self.history: list[ConflictCase] = []
+
+    def open_case(self, case: ConflictCase) -> None:
+        self._open[case.case_id] = case
+        self.history.append(case)
+
+    def get(self, case_id: str) -> ConflictCase | None:
+        return self._open.get(case_id)
+
+    def open_for_owner(self, owner_id: str) -> list[ConflictCase]:
+        return [c for c in self._open.values() if c.involves_owner(owner_id)]
+
+    def open_for_intent(self, intent: str) -> ConflictCase | None:
+        for c in self._open.values():
+            if c.intent == intent:
+                return c
+        return None
+
+    def mark_resolved(self, case: ConflictCase) -> None:
+        self._open.pop(case.case_id, None)
+        self.history.append(case)
+
+
+# ── 합의 시도의 결과: ConsensusOutcome ────────────────────────────────
+#
+# 후보 Owner들의 표(ConcurOnPrimary)를 모아 합의를 시도한 결과. "타입이 곧
+# 상태"(RoutingDecision·OrgReply 정신) — 세 결말 중 하나다.
+#   - Agreed:     전원이 같은 agent_id 지목 → Resolution 산출, 케이스 closed.
+#   - StillOpen:  아직 표가 덜 모였다(미완) → 케이스 open 유지, 처리함에 남음.
+#   - Deadlocked: 표가 갈렸다(교착) → 합의 실패 자리. Manager escalation은
+#                 T5.2(Manager 큐) 영역이라 여기선 *상태만* 남기고 처리는 미룬다.
+
+
+@dataclass(frozen=True)
+class Agreed:
+    resolution: Resolution
+    precedent: Precedent
+
+
+@dataclass(frozen=True)
+class StillOpen:
+    case: ConflictCase
+    pending_owners: tuple[str, ...]  # 아직 표를 안 던진 후보 Owner들
+
+
+@dataclass(frozen=True)
+class Deadlocked:
+    case: ConflictCase
+    reason: str = ""  # T5.2에서 Manager 큐로 넘길 때 근거로 쓴다
+
+
+ConsensusOutcome = Agreed | StillOpen | Deadlocked
+
+
+class ConsensusService:
+    """후보 Owner들의 표(ConcurOnPrimary)를 모아 합의를 시도하는 도메인 서비스.
+
+    Authority는 중앙(표→Resolution→Precedent). 카드 자기보고 금지.
+    표 누적은 서비스 내부 상태(_votes)에 둔다 — ConflictCase는 단순 유지.
+    """
+
+    def __init__(self, case_store: ConflictCaseStore, precedents: PrecedentStore) -> None:
+        self._case_store = case_store
+        self._precedents = precedents
+        self._votes: dict[str, dict[str, str]] = {}
+
+    def concur(self, case_id: str, vote: ConcurOnPrimary) -> ConsensusOutcome:
+        case = self._case_store.get(case_id)
+        if case is None:
+            raise ValueError(f"미존재 case: {case_id!r}")
+        if not case.involves_owner(vote.by_owner):
+            raise ValueError(f"후보 owner 아님: {vote.by_owner!r}")
+
+        if case_id not in self._votes:
+            self._votes[case_id] = {}
+        self._votes[case_id][vote.by_owner] = vote.on_agent
+
+        candidate_owners = tuple(dict.fromkeys(c.owner for c in case.candidates))
+        current_votes = self._votes[case_id]
+        pending = tuple(o for o in candidate_owners if o not in current_votes)
+
+        if pending:
+            return StillOpen(case=case, pending_owners=pending)
+
+        targets = set(current_votes.values())
+        if len(targets) > 1:
+            return Deadlocked(case=case, reason=f"표 갈림: {targets}")
+
+        primary = next(iter(targets))
+        rationale = "; ".join(
+            f"{o}→{a}" for o, a in current_votes.items()
+        )
+        resolution = Resolution(intent=case.intent, primary=primary, rationale=rationale)
+        precedent = self._precedents.record(resolution)
+        resolved_case = case.resolve(resolution)
+        self._case_store.mark_resolved(resolved_case)
+        return Agreed(resolution=resolution, precedent=precedent)

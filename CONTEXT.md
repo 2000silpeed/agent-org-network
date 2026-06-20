@@ -98,7 +98,7 @@ _Avoid_: Response, Result(단독 — Answer와 혼동)
 Routed가 투영된 결과. `text`(Answer 본문) · `answered_by`(primary의 owner·agent_id) · `mode`(`full`/`draft_only` — Approval 게이트면 draft) · `sources`를 노출. Approval이 붙은 Routed는 `mode=draft_only`로 "초안·승인 대기"를 표시한다.
 
 **Pending**:
-Contested·Unowned가 투영된 결과 — 담당이 사람 손에 있어 즉답이 없는 상태. `kind`(`contested`/`unowned`)와 사용자向 안내 문구만 노출하고, 후보 목록·escalation 대상 같은 내부는 감춘다(Contested는 "담당이 여럿이라 합의 중", Unowned는 "아직 담당이 없어 매니저에게 전달" 류).
+Contested·Unowned가 투영된 결과 — 담당이 사람 손에 있어 즉답이 없는 상태. `kind`(`contested`/`unowned`)와 사용자向 안내 문구만 노출하고, 후보 목록·escalation 대상 같은 내부는 감춘다. Contested는 *다툼이라는 사실조차* 감추고 "담당을 확인하는 중" 류 중립 안내만(후보가 여럿이라는 내부를 비추지 않는다), Unowned는 "아직 담당이 없어 매니저에게 전달" 류.
 _Avoid_: Escalation(이건 도메인 처분, Pending은 그 사용자向 표현)
 
 ### Conflict & learning
@@ -113,15 +113,35 @@ _Avoid_: Trust, Priority(단독)
 - **Gap**(후보 0, 미아 질문): Manager가 기존 Owner 지정 또는 신규 Agent Card 생성.
 두 경로 모두 결론은 Resolution → Precedent로 떨어진다.
 
+**ConflictCase (다툼 케이스)**:
+미해소 Overlap 다툼을 *조회 가능한 상태*로 저장한 단위. `Contested`는 라우터의 순간 판정일 뿐이라 후보 Owner가 1인칭 합의하려면 그 다툼이 머물 곳이 필요하다 — 그게 ConflictCase. `intent`(어떤 분류 라벨의 다툼) · `question`(원문, Owner가 처리함에서 맥락 판단) · `candidates`(다툼에 걸린 **Candidate** = `agent_id`+`owner` 식별자만, 카드 본문은 Registry가 출처) · `status`(`open`/`resolved`) · `opened_at`(주입 clock 결정론) · `case_id` · `resolution`(resolved일 때만). open→resolved 전이는 `resolve()`가 `case_id` 보존한 새 인스턴스를 돌려준다(파괴적 변경 X). `Contested.candidates`(AgentCard 객체)와 달리 식별자만 들고, owner를 함께 드는 이유는 **Owner별 처리함 조회**가 본질이라서. (ADR 0008)
+_Avoid_: Ticket, Dispute, Issue
+
+**Inbox (처리함)**:
+한 Owner에게 귀속된, 자기 카드가 후보로 걸린 open ConflictCase들의 모음. PRD 페르소나의 "Owner 처리함" 그 면이다. 데이터 원천은 **ConflictCaseStore**의 Owner별 조회(`open_for_owner`)이며, 별도 영속 상태가 아니라 open 케이스의 투영. Owner는 여기서 자기에게 온 다툼을 보고 1인칭 합의 표를 던진다.
+_Avoid_: Queue(이건 Manager 큐 — 사람 위계 escalation, 처리함과 구분), Tasklist
+
+**ConflictCaseStore (케이스 저장소)**:
+open ConflictCase를 보관·조회하는 포트 — `AuditLog`·`PrecedentStore`와 같은 패턴(Protocol + `InMemoryConflictCaseStore`). `open_for_owner(owner)`(처리함) · `open_for_intent(intent)`(중복 open 방지 선조회) · `mark_resolved(case)`(open에서 빼 history에 append) · `get(case_id)` · `open_case(case)`. **전이 ≠ 기록** — 미해소 도메인 상태를 보관하는 곳이지 운영자向 절차 로그(AuditLog)가 아니다. 같은 intent로 이미 open된 케이스가 있으면 새로 만들지 않는다(같은 다툼이 질문마다 케이스를 양산하지 않게).
+_Avoid_: CaseDB, Repository(단독)
+
+**ConcurOnPrimary (합의 표)**:
+후보 Owner 한 명의 *1인칭* 합의 입력. `by_owner`(표를 던진 Owner `User.id`)가 `on_agent`(primary로 지목한 카드 `agent_id`)를 담당으로 지목 + `rationale`(근거, 선택). claim("내가 맡는다"=자기 카드 지목)과 concede("쟤가 맡아"=남 지목)를 **같은 한 축**(primary는 누구)으로 환원한 단일 표 — 찬반 2축·라운드·코멘트 스레드는 후순위. 후보 Owner 전원이 같은 `on_agent`를 지목하면 합의 성립 → Resolution. (ADR 0008)
+_Avoid_: Vote(단독 — 다수결 아님, 전원 일치), Claim/Concede(둘로 쪼개지 않고 한 축으로)
+
+**ConsensusOutcome (합의 결과)**:
+후보 Owner들의 ConcurOnPrimary 표를 모아 합의를 시도한 결과. "타입이 곧 상태"(RoutingDecision·OrgReply 정신) — 세 결말 중 하나. **Agreed**(전원 일치 → `Resolution`+`Precedent` 산출, 케이스 closed) · **StillOpen**(표가 덜 모임 → 케이스 open 유지, `pending_owners` 남음) · **Deadlocked**(표가 갈림=교착 → 합의 실패 *자리만*, Manager escalation 처리는 T5.2 Manager 큐로 미룸). T4.2의 핵심은 Agreed→Precedent이며, Deadlocked는 도메인에 자리를 두되 처리는 미룬다.
+_Avoid_: Result(단독 — Answer와 혼동)
+
 **Manager**:
 다른 User를 `manages` 하는 User(조직장). 사람 위계의 상위 노드이며 Owner와 무관 — 에이전트를 소유할 수도, 안 할 수도 있다. 미해소 Conflict의 escalation은 카드가 아니라 사람 그래프를 타고 Owner의 manager로 올라가며, 꼭대기는 루트 User.
 _Avoid_: Admin(단독), Triage, "Owner의 일종"
 
 **Resolution**:
-한 Conflict에 대해 관련 Owner들(필요시 사람 Authority)이 합의한 결론.
+한 Conflict에 대해 관련 Owner들(필요시 사람 Authority)이 합의한 결론. `frozen` 값 객체 — `intent`(어떤 분류 라벨의 다툼인지) · `primary`(합의로 정해진 담당 `agent_id`) · `rationale`(합의 근거, 선택). "타입이 곧 상태"라 이것 자체가 합의됐다는 사실이다. Overlap에선 ConflictCase의 후보 Owner들이 ConcurOnPrimary 표로 전원 일치할 때 산출되고(`ConsensusOutcome.Agreed`), 곧장 Precedent로 기록되며 그 ConflictCase는 resolved된다.
 
 **Precedent (판례)**:
-Resolution을 append-only로 남긴 기록. 라우터가 유사한 미래 케이스에 참조한다. 구조화된 조직 암묵지이자 곧 라우팅 회귀 테스트 케이스.
+Resolution을 append-only로 남긴 기록. 라우터가 유사한 미래 케이스에 참조한다. 구조화된 조직 암묵지이자 곧 라우팅 회귀 테스트 케이스. `frozen` 값 객체 — `resolution`(무엇을 합의했나) · `recorded_at`(언제 기록됐나, 주입 clock 기반 결정론). **PrecedentStore** 포트로 보관한다 — `record(resolution) -> Precedent`(append) · `lookup(intent) -> Precedent | None`(라우터 조회). 감사 로그와 같은 append-only 메커니즘이되, 운영자向 절차 기록(AuditLog)과 달리 라우터向 intent-색인 조회 사실이라 포트를 분리한다(ADR 0002 보강).
 _Avoid_: Rule(단독), History
 
 **Confidence**:

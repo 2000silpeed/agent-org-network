@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>처리함 — 담당 합의</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --me: #2563eb;
+      --org: #ffffff;
+      --ink: #1f2933;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+        "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+    }
+    .inbox {
+      width: 100%;
+      max-width: 640px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      background: var(--bg);
+    }
+    header {
+      padding: 16px 20px;
+      font-weight: 700;
+      font-size: 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    header small { display: block; font-weight: 400; color: var(--muted); margin-top: 2px; }
+    .whoami {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      font-size: 14px;
+    }
+    .whoami label { color: var(--muted); }
+    .demo-note { font-size: 11px; color: var(--muted); margin-left: auto; text-align: right; }
+    select {
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 14px;
+      background: #fff;
+      outline: none;
+    }
+    select:focus { border-color: var(--me); }
+    #cases {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .empty {
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+      padding: 32px 16px;
+    }
+    .case {
+      background: var(--org);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .case .intent {
+      display: inline-block;
+      align-self: flex-start;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      background: #fef3c7;
+      color: #92400e;
+    }
+    .case .question {
+      font-size: 15px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .case .ask-label { font-size: 12px; color: var(--muted); }
+    .candidates {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border-top: 1px dashed var(--line);
+      padding-top: 10px;
+    }
+    .cand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .cand:hover { border-color: var(--me); }
+    .cand input { accent-color: var(--me); }
+    .cand .who { font-weight: 600; }
+    .cand .owner { color: var(--muted); font-size: 12px; }
+    .rationale {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      resize: vertical;
+      min-height: 38px;
+    }
+    .rationale:focus { border-color: var(--me); }
+    .actions { display: flex; align-items: center; gap: 10px; }
+    button {
+      padding: 9px 18px;
+      border: none;
+      border-radius: 999px;
+      background: var(--me);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .result { font-size: 13px; font-weight: 600; }
+    .result.still_open { color: #92400e; }
+    .result.agreed { color: #166534; }
+    .result.deadlocked { color: #b91c1c; }
+    .result.error { color: #b91c1c; }
+    .nav { padding: 12px 16px; font-size: 13px; }
+    .nav a { color: var(--me); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="inbox">
+    <header>
+      처리함
+      <small>내 카드가 걸린 다툼을 보고 "누가 맡을지" 1인칭으로 합의합니다.</small>
+    </header>
+    <div class="whoami">
+      <label for="owner">담당자</label>
+      <select id="owner">
+        <option value="legal_lead">legal_lead</option>
+        <option value="cs_lead" selected>cs_lead</option>
+        <option value="finance_lead">finance_lead</option>
+        <option value="root_manager">root_manager</option>
+      </select>
+      <span class="demo-note">데모용 로그인 가장 — 실제론 인증된 본인 Owner로 고정(별도 공간)</span>
+    </div>
+    <div id="cases"></div>
+    <div class="nav"><a href="/">← 채팅으로</a></div>
+  </div>
+
+  <script>
+    const ownerSel = document.getElementById("owner");
+    const casesEl = document.getElementById("cases");
+
+    function el(tag, cls, text) {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    function currentOwner() {
+      return ownerSel.value;
+    }
+
+    async function fetchCases(owner) {
+      const res = await fetch("/inbox/" + encodeURIComponent(owner));
+      if (!res.ok) throw new Error("요청 실패: " + res.status);
+      return res.json();
+    }
+
+    async function postConcur(caseId, body) {
+      const res = await fetch("/cases/" + encodeURIComponent(caseId) + "/concur", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data && data.detail ? data.detail : "요청 실패: " + res.status;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    function renderOutcome(node, outcome) {
+      node.className = "result " + outcome.type;
+      if (outcome.type === "still_open") {
+        const n = (outcome.pending_owners || []).length;
+        node.textContent = "표 접수됨 — 아직 " + n + "명 대기 중";
+      } else if (outcome.type === "agreed") {
+        node.textContent = "합의됨 → " + outcome.primary + " 담당, 판례 기록됨";
+      } else if (outcome.type === "deadlocked") {
+        node.textContent = "교착 — 표가 갈렸습니다(매니저 에스컬레이션은 추후)";
+      } else {
+        node.textContent = "";
+      }
+    }
+
+    function renderCase(c) {
+      const owner = currentOwner();
+      const wrap = el("div", "case");
+      wrap.appendChild(el("span", "intent", c.intent));
+      wrap.appendChild(el("div", "ask-label", "원문 질문"));
+      wrap.appendChild(el("div", "question", c.question));
+
+      const cands = el("div", "candidates");
+      const radioName = "primary_" + c.case_id;
+      for (const cand of c.candidates) {
+        const label = el("label", "cand");
+        const radio = el("input");
+        radio.type = "radio";
+        radio.name = radioName;
+        radio.value = cand.agent_id;
+        label.appendChild(radio);
+        const who = el("span", "who", cand.agent_id);
+        label.appendChild(who);
+        label.appendChild(el("span", "owner", "(" + cand.owner + ")"));
+        cands.appendChild(label);
+      }
+      wrap.appendChild(cands);
+
+      const rationale = el("textarea", "rationale");
+      rationale.placeholder = "지목 근거 (선택)";
+      wrap.appendChild(rationale);
+
+      const result = el("div", "result");
+      const actions = el("div", "actions");
+      const btn = el("button", null, "primary로 지목");
+      actions.appendChild(btn);
+      actions.appendChild(result);
+      wrap.appendChild(actions);
+
+      btn.addEventListener("click", async () => {
+        const picked = cands.querySelector("input:checked");
+        if (!picked) {
+          result.className = "result error";
+          result.textContent = "지목할 후보를 선택하세요.";
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const outcome = await postConcur(c.case_id, {
+            by_owner: owner,
+            on_agent: picked.value,
+            rationale: rationale.value.trim(),
+          });
+          renderOutcome(result, outcome);
+          if (outcome.type === "agreed") {
+            // 합의된 케이스는 목록에서 사라진다 — 잠깐 결과를 보여준 뒤 재조회.
+            setTimeout(load, 1200);
+          } else {
+            btn.disabled = false;
+          }
+        } catch (err) {
+          result.className = "result error";
+          result.textContent = err.message || "제출 실패";
+          btn.disabled = false;
+        }
+      });
+
+      return wrap;
+    }
+
+    async function load() {
+      const owner = currentOwner();
+      casesEl.innerHTML = "";
+      let cases;
+      try {
+        cases = await fetchCases(owner);
+      } catch (err) {
+        casesEl.appendChild(el("div", "empty", "처리함을 불러오지 못했습니다."));
+        return;
+      }
+      if (!cases.length) {
+        casesEl.appendChild(el("div", "empty", "처리할 다툼이 없습니다."));
+        return;
+      }
+      for (const c of cases) {
+        casesEl.appendChild(renderCase(c));
+      }
+    }
+
+    ownerSel.addEventListener("change", load);
+    load();
+  </script>
+</body>
+</html>

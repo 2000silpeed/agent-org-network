@@ -12,7 +12,11 @@ from typing import TYPE_CHECKING
 
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.ask_org import AskOrg
-from agent_org_network.audit import JsonlAuditLog
+from agent_org_network.audit import (
+    AuditReader,
+    InMemoryAuditLog,
+    JsonlAuditLog,
+)
 from agent_org_network.classifier import RuleBasedClassifier
 from agent_org_network.conflict import (
     ConflictCaseStore,
@@ -102,6 +106,12 @@ class DemoBundle:
     `review_store`(ADR 0012 결정 7): `ask._review_store`와 같은 인스턴스를 담아
     웹 검토 라우트·create_app이 이 bundle에서 꺼내 쓸 수 있게 한다. 주입 시에만
     채워지고 미주입이면 None(하위호환 — 검토 루프 없이 동작).
+
+    `audit_reader`(T5.1 운영 모니터링): `ask`가 쓰는 *바로 그* `AuditLog`를
+    읽기 포트(`AuditReader`)로도 노출하는 읽을 손잡이다. 두 구현체(JsonlAuditLog·
+    InMemoryAuditLog)가 record(쓰기)+records/record_at(읽기)를 다 구현하므로,
+    `ask`(쓰기)와 모니터링 면(읽기)이 *같은 인스턴스*를 본다. 그동안 build_demo가
+    audit_log를 내부 하드코딩하고 노출하지 않아 읽을 손잡이가 없던 것을 연다.
     """
 
     ask: AskOrg
@@ -109,6 +119,7 @@ class DemoBundle:
     precedents: PrecedentStore
     consensus: ConsensusService
     review_store: "BackupReviewStore | None" = None
+    audit_reader: AuditReader | None = None
 
 
 def build_demo(
@@ -116,6 +127,7 @@ def build_demo(
     dispatcher: RuntimeDispatcher | None = None,
     review_store: "BackupReviewStore | None" = None,
     manager_queue_store: "ManagerQueueStore | None" = None,
+    audit_log: "JsonlAuditLog | InMemoryAuditLog | None" = None,
 ) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
@@ -157,10 +169,18 @@ def build_demo(
     def _manager_of(uid: str) -> str | None:
         return registry.get_user(uid).manager if uid in registry.user_ids() else None
 
+    # 감사 로그(T5.1): 그동안 내부 하드코딩(JsonlAuditLog)이라 읽을 손잡이가 없었다.
+    # 이제 한 인스턴스를 잡아 `ask`(쓰기)와 `DemoBundle.audit_reader`(읽기)에 *같이*
+    # 넘긴다 — 모니터링 면이 ask가 쓴 바로 그 로그를 읽는다. 기본은 파일(JSONL),
+    # 결정론 테스트는 InMemoryAuditLog를 주입(파일 IO 없는 모니터링 라운드).
+    audit_impl: JsonlAuditLog | InMemoryAuditLog = (
+        audit_log if audit_log is not None else JsonlAuditLog(Path("logs/audit.jsonl"))
+    )
+
     ask = AskOrg(
         router=router,
         dispatcher=dispatcher_impl,
-        audit_log=JsonlAuditLog(Path("logs/audit.jsonl")),
+        audit_log=audit_impl,
         classifier=classifier,
         case_store=case_store,
         review_store=review_store,
@@ -175,6 +195,7 @@ def build_demo(
         precedents=precedents,
         consensus=consensus,
         review_store=review_store,
+        audit_reader=audit_impl,
     )
 
 

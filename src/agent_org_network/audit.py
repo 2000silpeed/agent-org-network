@@ -55,9 +55,9 @@ class AuditEntry:
         return None
 
     def to_jsonl(self) -> str:
-        return json.dumps(self._as_record(), ensure_ascii=False)
+        return json.dumps(self.as_record(), ensure_ascii=False)
 
-    def _as_record(self) -> dict[str, Any]:
+    def as_record(self) -> dict[str, Any]:
         return {
             "timestamp": self.timestamp.isoformat(),
             "user_id": self.user_id,
@@ -141,6 +141,46 @@ class AuditLog(Protocol):
     def record(self, entry: AuditEntry) -> None: ...
 
 
+class AuditReader(Protocol):
+    """운영자向 모니터링이 감사 로그를 *순수 읽기*로 보는 포트(T5.1).
+
+    `AuditLog`(쓰기 전용 `record`)와 *인터페이스를 분리*한다(ISP) — 쓰는 주체
+    (`ask_org`, 매 질문)와 읽는 주체(web/모니터링 면)가 다르기 때문이다.
+    `PrecedentStore`(record+lookup 한 포트)와 갈리는 지점: 거긴 라우터 한
+    컴포넌트가 둘 다 쓰지만, audit은 쓰기·읽기 주체가 갈려 ISP가 맞다. 두
+    구현체(`JsonlAuditLog`·`InMemoryAuditLog`)가 *둘 다* 구현해, `ask_org`는
+    `AuditLog`만, 모니터링은 `AuditReader`만 의존한다.
+
+    반환 단위는 **직렬화된 레코드(dict, `AuditEntry.as_record()` 모양)**다 —
+    `AuditEntry` 객체가 아니다. 근거: `JsonlAuditLog`는 파일을 되읽어야 하는데
+    JSONL→`AuditEntry` 역직렬화는 손실(직렬화는 `agent_id`만 남기고 `AgentCard`
+    본문·`RoutingDecision`/`DispatchOutcome`을 재구성 못 함)이라, *기록된 줄 자체*가
+    모니터링 단위다. 두 구현체가 같은 dict 모양을 돌려줘 균일한 모니터링 계약을 준다.
+
+    주소 지정은 **인덱스**(0-based, 기록 순서)다 — append-only라 인덱스가 안정적이다
+    (새 항목은 끝에 append, 기존 항목의 위치는 불변·삭제 없음). `entry_id`(uuid)는
+    결정론을 깨거나 주입 부담이 커 MVP엔 과하다. **순수 읽기**라 새 전이·새 기록을
+    만들지 않는다(전이 ≠ 기록 정합 — 모니터링은 기록을 *볼 뿐*이다).
+
+    범위 밖(자리만, 구현 shape 금지): 검색·필터·페이지네이션·실시간 푸시·Org 그래프
+    (T5.3). 지금은 목록(요약) + 인덱스 상세 읽기만.
+    """
+
+    def records(self) -> list[dict[str, Any]]:
+        """기록된 모든 감사 레코드를 기록 순서대로 돌려준다(요약 목록의 원천).
+
+        파일/메모리가 비었으면 빈 리스트(경계 — 미아 없는 빈 모니터링).
+        """
+        ...
+
+    def record_at(self, index: int) -> dict[str, Any] | None:
+        """주어진 인덱스의 감사 레코드 하나를 돌려준다(상세 보기의 원천).
+
+        범위 밖 인덱스(음수 포함)면 `None`(존재하지 않는 항목 — 조회 실패).
+        """
+        ...
+
+
 class JsonlAuditLog:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -150,6 +190,24 @@ class JsonlAuditLog:
         with self._path.open("a", encoding="utf-8") as f:
             f.write(entry.to_jsonl() + "\n")
 
+    def records(self) -> list[dict[str, Any]]:
+        if not self._path.exists():
+            return []
+        result: list[dict[str, Any]] = []
+        for line in self._path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                result.append(json.loads(line))
+        return result
+
+    def record_at(self, index: int) -> dict[str, Any] | None:
+        if index < 0:
+            return None
+        all_records = self.records()
+        if index >= len(all_records):
+            return None
+        return all_records[index]
+
 
 class InMemoryAuditLog:
     def __init__(self) -> None:
@@ -157,3 +215,11 @@ class InMemoryAuditLog:
 
     def record(self, entry: AuditEntry) -> None:
         self.entries.append(entry)
+
+    def records(self) -> list[dict[str, Any]]:
+        return [e.as_record() for e in self.entries]
+
+    def record_at(self, index: int) -> dict[str, Any] | None:
+        if index < 0 or index >= len(self.entries):
+            return None
+        return self.entries[index].as_record()

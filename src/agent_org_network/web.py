@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from agent_org_network.ask_org import Answered, OrgReply, Pending
+from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog
 from agent_org_network.conflict import (
     Agreed,
     ConcurOnPrimary,
@@ -54,6 +55,7 @@ from agent_org_network.user import User
 _WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
 _INDEX_HTML = _WEB_DIR / "index.html"
 _INBOX_HTML = _WEB_DIR / "inbox.html"
+_MONITOR_HTML = _WEB_DIR / "monitor.html"
 
 # 웹챗에서 오는 익명 end-user. (로그인은 후순위 — walking skeleton)
 _WEB_USER = User(id="web_guest")
@@ -248,6 +250,28 @@ def _serialize_manager_resolution(resolution: ManagerResolution) -> dict[str, An
     return {"action": action_dict}
 
 
+def summarize_audit_record(index: int, record: dict[str, Any]) -> dict[str, Any]:
+    """감사 레코드(dict)를 운영 모니터링 *목록 요약*向으로 줄인다(T5.1, 운영 면).
+
+    모니터링은 *운영 면*이라 내부값 노출 OK(채팅 OrgReply 불변식의 반대 — 처리함·
+    Manager 큐와 같은 면). 목록은 한눈에 보는 요약(`index`로 상세 주소 지정 — append-only
+    라 인덱스 안정)이라 큰 본문(answer text·sources·collaborators 전부)은 상세
+    (`GET /monitor/{index}`)로 미루고 요약 키만 싣는다. **순수 읽기** — 새 전이·기록 0.
+    """
+    decision: dict[str, Any] = record.get("decision") or {}
+    answer: dict[str, Any] | None = record.get("answer")
+    return {
+        "index": index,
+        "timestamp": record.get("timestamp"),
+        "user_id": record.get("user_id"),
+        "question": record.get("question"),
+        "intent": record.get("intent"),
+        "disposition": decision.get("disposition"),
+        "mode": answer.get("mode") if answer is not None else None,
+        "answered": answer is not None,
+    }
+
+
 class ManagerActionRequest(BaseModel):
     """POST /manager/items/{item_id}/act 요청 바디."""
 
@@ -305,6 +329,7 @@ def create_app(
     review_store: BackupReviewStore | None = None,
     review_service: BackupReviewService | None = None,
     manager_queue_store: ManagerQueueStore | None = None,
+    audit_log: JsonlAuditLog | InMemoryAuditLog | None = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -314,6 +339,8 @@ def create_app(
     `review_store`/`review_service`를 주입하면 백업 검토 탭을 활성화한다. 미주입이면
     검토 라우트가 404를 돌려준다(검토 기능 미사용 환경에서 안전).
     `manager_queue_store`를 주입하면 Manager 큐 라우트가 활성화된다(T5.2).
+    `audit_log`를 주입하면 그 인스턴스로 audit 기록·읽기가 동시에 된다(T5.1 결정론
+    테스트용 — InMemoryAuditLog 주입으로 실 파일 IO 없이 모니터링 라운드 검증).
     """
     app = FastAPI(title="Agent Org Network — 채팅·처리함(데모)")
     # review_store를 build_demo에도 전달 — bundle.ask._review_store가 실 store를 가리켜
@@ -324,6 +351,7 @@ def create_app(
         dispatcher=dispatcher,
         review_store=review_store,
         manager_queue_store=manager_queue_store,
+        audit_log=audit_log,
     )
     _review_store = review_store
     _review_service = review_service
@@ -444,6 +472,44 @@ def create_app(
                 raise HTTPException(status_code=404, detail=msg) from exc
             raise HTTPException(status_code=400, detail=msg) from exc
         return serialize_review_item(reviewed)
+
+    @app.get("/monitor")
+    def monitor_logs() -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+        """운영 모니터링 — 모든 Q&A 절차의 요약 목록(T5.1 운영 면, PRD §7 시나리오 5).
+
+        감사 로그를 *순수 읽기*로 본다(`bundle.audit_reader.records()` → 요약). 모니터링은
+        운영 면이라 내부값 노출 OK(채팅 OrgReply 불변식과 다른 면 — 처리함·Manager 큐와 같다).
+        각 항목의 인덱스로 상세(`GET /monitor/{index}`)를 연다(append-only라 인덱스 안정).
+        audit_reader 미주입이면 빈 목록(경계). 동작은 tdd 슬라이스가 채운다(요약 직렬화).
+        """
+        if bundle.audit_reader is None:
+            return []
+        records = bundle.audit_reader.records()
+        return [summarize_audit_record(i, r) for i, r in enumerate(records)]
+
+    # 정적 경로(/monitor/view)를 동적(/monitor/{index})보다 *먼저* 등록한다 —
+    # 그러지 않으면 "view"가 {index}(int)에 잡혀 422가 난다(FastAPI 매칭 순서).
+    @app.get("/monitor/view")
+    def monitor_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
+        """모니터링 HTML 페이지(자리). 데이터 경로(`/monitor`·`/monitor/{index}`)와
+        충돌을 피해 `/monitor/view`로 둔다(`/`·`/ask`가 갈리듯). 실 화면은 수동 시연.
+        """
+        return FileResponse(_MONITOR_HTML)
+
+    @app.get("/monitor/{index}")
+    def monitor_detail(index: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """운영 모니터링 상세 — 한 Q&A 절차의 *전체* 감사 레코드(T5.1 운영 면).
+
+        목록 인덱스로 그 줄 전체(decision·dispatch·answer 원형 — 내부값까지)를 돌려준다.
+        범위 밖 인덱스/audit_reader 미주입 → 404(존재하지 않는 항목). 상세는 요약과 달리
+        레코드 dict를 *그대로* 노출한다(운영 면 — `as_record` 전체). 순수 읽기.
+        """
+        if bundle.audit_reader is None:
+            raise HTTPException(status_code=404, detail="모니터링 로그가 비활성화되어 있습니다.")
+        record = bundle.audit_reader.record_at(index)
+        if record is None:
+            raise HTTPException(status_code=404, detail="알 수 없는 로그 인덱스")
+        return record
 
     return app
 

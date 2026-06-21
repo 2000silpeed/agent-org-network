@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>운영 모니터링 — 로그 상세 보기</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --me: #2563eb;
+      --org: #ffffff;
+      --ink: #1f2933;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+        "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+    }
+    .monitor {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 16px 20px;
+      font-weight: 700;
+      font-size: 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    header small { display: block; font-weight: 400; color: var(--muted); margin-top: 2px; }
+    .layout {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
+    .list-pane {
+      width: 360px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--line);
+      background: #fff;
+      overflow-y: auto;
+    }
+    .list-header {
+      padding: 12px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      background: #fff;
+    }
+    .detail-pane {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      background: var(--bg);
+    }
+    .empty {
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+      padding: 32px 16px;
+    }
+    .log-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      cursor: pointer;
+    }
+    .log-item:hover { background: #f9fafb; }
+    .log-item.selected { background: #eff6ff; border-left: 3px solid var(--me); }
+    .log-item .row1 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .badge.routed { background: #d1fae5; color: #065f46; }
+    .badge.unowned { background: #fee2e2; color: #b91c1c; }
+    .badge.contested { background: #fef3c7; color: #92400e; }
+    .badge.answered { background: #dbeafe; color: #1e40af; }
+    .badge.pending { background: #f3f4f6; color: #6b7280; }
+    .log-item .intent { font-size: 12px; color: var(--muted); }
+    .log-item .question {
+      font-size: 13px;
+      line-height: 1.4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 300px;
+    }
+    .log-item .ts { font-size: 11px; color: var(--muted); margin-left: auto; flex-shrink: 0; }
+    .detail-card {
+      background: var(--org);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 20px;
+    }
+    .detail-card h3 { margin: 0 0 12px; font-size: 15px; }
+    .section {
+      margin-top: 16px;
+      border-top: 1px dashed var(--line);
+      padding-top: 12px;
+    }
+    .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    pre {
+      font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+      font-size: 12px;
+      background: #f9fafb;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      overflow-x: auto;
+      margin: 0;
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 12px;
+      font-size: 13px;
+    }
+    .meta-grid dt { color: var(--muted); font-weight: 600; }
+    .meta-grid dd { margin: 0; }
+    .detail-placeholder {
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+      padding: 60px 16px;
+    }
+    .nav { padding: 12px 16px; font-size: 13px; background: #fff; border-top: 1px solid var(--line); }
+    .nav a { color: var(--me); text-decoration: none; }
+    .refresh-btn {
+      display: inline-block;
+      margin-left: 12px;
+      padding: 4px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--me);
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="monitor">
+    <header>
+      운영 모니터링
+      <small>모든 Q&amp;A 절차의 감사 로그 — 라우팅 결정·디스패치·답 내부값 포함(운영 면).</small>
+    </header>
+    <div class="layout">
+      <div class="list-pane">
+        <div class="list-header">
+          로그 목록
+          <button class="refresh-btn" id="refresh-btn">새로고침</button>
+        </div>
+        <div id="log-list"></div>
+      </div>
+      <div class="detail-pane" id="detail-pane">
+        <div class="detail-placeholder">목록에서 항목을 클릭하면 상세 내역이 여기에 표시됩니다.</div>
+      </div>
+    </div>
+    <div class="nav"><a href="/">← 채팅으로</a> &nbsp;|&nbsp; <a href="/inbox">처리함</a></div>
+  </div>
+
+  <script>
+    const listEl = document.getElementById("log-list");
+    const detailEl = document.getElementById("detail-pane");
+    let selectedIndex = null;
+
+    function el(tag, cls, text) {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      return isNaN(d) ? iso : d.toLocaleString();
+    }
+
+    function dispBadge(disposition) {
+      const cls = disposition || "unknown";
+      return cls;
+    }
+
+    function renderListItem(item) {
+      const wrap = el("div", "log-item");
+      if (item.index === selectedIndex) wrap.classList.add("selected");
+
+      const row1 = el("div", "row1");
+      const disp = item.disposition || "unknown";
+      row1.appendChild(el("span", "badge " + disp, disp));
+      if (item.answered) row1.appendChild(el("span", "badge answered", "answered"));
+      else row1.appendChild(el("span", "badge pending", "pending"));
+      row1.appendChild(el("span", "ts", fmtTime(item.timestamp)));
+      wrap.appendChild(row1);
+
+      const intentRow = el("div", "intent", "intent: " + (item.intent || "—") + "  ·  user: " + (item.user_id || "—"));
+      wrap.appendChild(intentRow);
+      wrap.appendChild(el("div", "question", item.question || "—"));
+
+      wrap.addEventListener("click", () => loadDetail(item.index));
+      return wrap;
+    }
+
+    async function loadList() {
+      listEl.innerHTML = "";
+      let items;
+      try {
+        const res = await fetch("/monitor");
+        if (!res.ok) throw new Error("요청 실패: " + res.status);
+        items = await res.json();
+      } catch (err) {
+        listEl.appendChild(el("div", "empty", "로그를 불러오지 못했습니다."));
+        return;
+      }
+      if (!items.length) {
+        listEl.appendChild(el("div", "empty", "아직 기록된 로그가 없습니다."));
+        return;
+      }
+      // 최신이 위로 오도록 역순 표시.
+      const sorted = [...items].reverse();
+      for (const item of sorted) {
+        listEl.appendChild(renderListItem(item));
+      }
+    }
+
+    function renderDetail(index, record) {
+      detailEl.innerHTML = "";
+      const card = el("div", "detail-card");
+
+      card.appendChild(el("h3", null, record.question || "—"));
+
+      // 기본 메타
+      const grid = document.createElement("dl");
+      grid.className = "meta-grid";
+      function addMeta(k, v) {
+        const dt = el("dt", null, k);
+        const dd = el("dd", null, String(v ?? "—"));
+        grid.appendChild(dt);
+        grid.appendChild(dd);
+      }
+      addMeta("인덱스", index);
+      addMeta("타임스탬프", fmtTime(record.timestamp));
+      addMeta("사용자", record.user_id);
+      addMeta("인텐트", record.intent);
+      card.appendChild(grid);
+
+      // decision 원형
+      if (record.decision) {
+        const sec = el("div", "section");
+        sec.appendChild(el("div", "section-label", "라우팅 결정 (decision)"));
+        sec.appendChild(el("pre", null, JSON.stringify(record.decision, null, 2)));
+        card.appendChild(sec);
+      }
+
+      // dispatch 원형
+      const sec2 = el("div", "section");
+      sec2.appendChild(el("div", "section-label", "디스패치 결과 (dispatch)"));
+      sec2.appendChild(el("pre", null, JSON.stringify(record.dispatch, null, 2)));
+      card.appendChild(sec2);
+
+      // answer
+      const sec3 = el("div", "section");
+      sec3.appendChild(el("div", "section-label", "답 (answer)"));
+      sec3.appendChild(el("pre", null, JSON.stringify(record.answer, null, 2)));
+      card.appendChild(sec3);
+
+      detailEl.appendChild(card);
+    }
+
+    async function loadDetail(index) {
+      selectedIndex = index;
+      // 선택 상태 갱신(목록 재렌더 없이 class만).
+      for (const item of listEl.querySelectorAll(".log-item")) {
+        item.classList.remove("selected");
+      }
+      // 인덱스 기반으로 DOM 역순 탐색이 어려우므로 전체 재렌더 대신 class 직접 추가.
+      // 간단히 loadList 재호출(데이터 적음).
+      await loadList();
+
+      let record;
+      try {
+        const res = await fetch("/monitor/" + encodeURIComponent(index));
+        if (!res.ok) throw new Error("요청 실패: " + res.status);
+        record = await res.json();
+      } catch (err) {
+        detailEl.innerHTML = "";
+        detailEl.appendChild(el("div", "detail-placeholder", "상세 로드 실패: " + err.message));
+        return;
+      }
+      renderDetail(index, record);
+    }
+
+    document.getElementById("refresh-btn").addEventListener("click", () => {
+      selectedIndex = null;
+      detailEl.innerHTML = '<div class="detail-placeholder">목록에서 항목을 클릭하면 상세 내역이 여기에 표시됩니다.</div>';
+      loadList();
+    });
+
+    loadList();
+  </script>
+</body>
+</html>

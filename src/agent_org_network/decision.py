@@ -19,6 +19,11 @@ class Routed:
       primary 자신은 포함하지 않는다(중복 금지). T2.5는 *부착*까지만 — collaborator를 실제로
       호출해 다중 답을 합치는 건 후속(자리만). 노출 불변식상 사용자向 Answered엔 *싣지
       않는다*(담당·승인·출처만 — collaborator는 조직 내부 협업 구조). audit엔 원형으로 남는다.
+    - `intent`(라우팅 단일 출처, ADR 0015): 이 결정이 *어떤 분류 라벨에서 나왔나*. router가
+      classify를 1회 하고 그 intent를 결정에 싣는다 — ask_org가 자기 classify로 따로 구하지
+      않고 `decision.intent`를 읽어(ConflictCase·AuditEntry) 두 분류 호출 divergence를 차단.
+      기본값 `""`이라 기존 직접 생성처·match가 무영향(router만 채움). *조직 내부값*이라
+      사용자向 OrgReply엔 싣지 않는다(노출 불변식 — decision→OrgReply 투영이 떨굼).
     """
 
     primary: AgentCard
@@ -26,18 +31,21 @@ class Routed:
     reason: str = ""
     requires_approval: bool = False
     collaborators: tuple[AgentCard, ...] = ()
+    intent: str = ""
 
 
 @dataclass(frozen=True)
 class Contested:
     candidates: tuple[AgentCard, ...]
     reason: str = ""
+    intent: str = ""
 
 
 @dataclass(frozen=True)
 class Unowned:
     escalated_to: str
     reason: str = ""
+    intent: str = ""
 
 
 RoutingDecision = Routed | Contested | Unowned

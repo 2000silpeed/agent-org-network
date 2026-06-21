@@ -121,7 +121,7 @@ _Avoid_: Broker, Dispatcher, 중앙 서버
 ### Routing outcomes
 
 **RoutingDecision**:
-라우터가 한 질문에 내리는 결과. 세 처분(disposition) 중 하나다 — **Routed / Contested / Unowned**. 인스턴스의 *타입*이 곧 상태이며, 각 타입은 자기 처분에 필요한 필드만 갖는다(속성값을 들여다보지 않고 타입으로 판별).
+라우터가 한 질문에 내리는 결과. 세 처분(disposition) 중 하나다 — **Routed / Contested / Unowned**. 인스턴스의 *타입*이 곧 상태이며, 각 타입은 자기 처분에 필요한 필드만 갖는다(속성값을 들여다보지 않고 타입으로 판별). **세 변이 모두 `intent: str = ""`를 든다(ADR 0015)** — 이 결정이 어떤 분류 라벨에서 나왔나. `router.route`가 classify 1회 결과를 자기가 내는 결정에 실어 *라우팅 intent 단일 출처*로 만든다(ask_org가 따로 classify 안 함). 기본값 `""`이라 기존 직접 생성처·match가 무영향(router만 채움). 래퍼(`ClassifiedDecision`)가 아니라 필드로 둔 이유: 래퍼는 반환 타입·모든 match 사이트를 바꿔 침습적이고 "타입이 곧 상태"를 흐린다 — intent는 결정의 *부속 사실*이지 결정을 감싸는 컨테이너가 아니다.
 
 **Routed**:
 담당(primary)이 정해진 결정. Collaborator·Approval을 동반할 수 있다 — `primary`(담당 카드) · `confidence` · `reason` · `requires_approval: bool`(Approval 게이트) · `collaborators: tuple[AgentCard, ...]`(끌어들인 협업 카드, primary 제외). Route(primary)·Collaboration(collaborators)·Approval(requires_approval)은 한 Routed 안 *동시 성립 독립 축*이고, 셋이 다 비어도 Routed는 성립한다(필드 기본값 빈 튜플·False — 하위호환). **부착 규칙(intent 기반 결정론, TRD §6 5단계, T2.5)**: Router가 `primary.approval_when`에 intent가 들면 `requires_approval=True`, `primary.collaborate_when`에 intent가 들면 *그 intent를 domains에 가진 다른 카드*를 collaborator로 끌어들인다(카드가 agent_id로 지목하지 않고 라우팅과 같은 domains 매칭 재사용 — 카드 자기보고 보수성·중앙 외 Authority 선언 회피). `approval_when`·`collaborate_when`은 under-claim 자기보고(ADR 0004 정합 — owner가 "사람 사인/협업 필요"로 *스스로 좁히는* 보수 신호). 부착은 `Router._attach_gates`가 Routed 생성처(판례·단일 매칭) 공통으로 수행.
@@ -139,7 +139,7 @@ _Avoid_: Broker, Dispatcher, 중앙 서버
 질문의 domains에 부분적으로 매칭되어 담당 가능성이 있는 Agent Card. 0·1·다수.
 
 **Intent**:
-질문을 분류해 얻은 주제 라벨. Router가 카드의 `domains`와 대조하는 키다. **Classifier** 포트가 질문에서 생성한다(v0 규칙 기반 → 후순위 LLM).
+질문을 분류해 얻은 주제 라벨. Router가 카드의 `domains`와 대조하는 키다. **Classifier** 포트가 질문에서 생성한다(v0 규칙 기반 `RuleBasedClassifier` → LLM `LlmClassifier` T6.2). **한 질문 처리에는 라우팅 intent가 단 하나다(ADR 0015)** — `router.route`가 classify를 1회 하고 그 intent를 자기가 내는 `RoutingDecision`(세 변이 모두)에 싣는다. `ask_org`는 자기 classify로 따로 구하지 않고 `decision.intent`를 읽어(ConflictCase·AuditEntry) 두 분류 호출 divergence를 차단한다(결정론 분류기는 우연히 일치하나, 비결정 LLM 분류 도입 시 갈려 케이스 라벨·audit이 라우팅과 어긋나는 상관관계 버그). intent는 *조직 내부값*이라 사용자向 OrgReply엔 싣지 않는다(노출 불변식 — decision→OrgReply 투영이 떨굼).
 _Avoid_: Topic, Category
 
 **Collaboration / Collaborator**:
@@ -252,6 +252,14 @@ _Avoid_: Rule(단독), History
 분류기·라우팅 품질을 검증하는 *라벨링된 평가 데이터*(ADR 0003·TRD §7). 두 출처의 합 — 누적 **Precedent**(운영에서 합의로 떨어진 실 케이스)와 **Sample question**(손으로 라벨링한 시드 질문, `samples/questions.jsonl`). 단위 테스트(결정론)가 *로직 오류*를 매 커밋 잡는다면, 골든셋은 *확률적 LLM 분류·답변 품질*을 정확도/통과율 **임계값 eval**로 잡는다 — 한 예제가 틀리는 게 실패가 아니라 임계 미달·이전 대비 하락이 실패. 같은 골든셋이 두 분류기(`RuleBasedClassifier`·후속 `LlmClassifier`)의 공통 eval 타깃이다. **골든셋 *데이터*(샘플 카드 5장 + 질문 30개)는 T6.4, eval *러너*(정확도 임계값·LLM 연동)는 T6.2** — 데이터와 러너를 분리한다(데이터는 분류기 무관, 러너는 데이터를 소비). T6.4의 자체 게이트는 *결정론*이다(샘플 질문의 `expected_intent`를 `FakeClassifier`로 주입해 라벨↔카드 coherence를 LLM 없이 검증) — 실 LLM 정확도 측정은 T6.2 러너 영역.
 _Avoid_: Test set(단독 — 단위 테스트 픽스처와 혼동), Benchmark, Corpus, Dataset(단독)
 
+**LlmClassifier (LLM 분류기)**:
+`Classifier` 포트의 LLM 구현(T6.2) — `claude -p` 헤드리스로 질문을 intent로 분류한다. `RuleBasedClassifier`와 *같은 포트*(`classify(question) -> intent`)의 다른 구현이라 Router·골든셋 eval이 공통으로 본다. **전송은 `claude -p` 헤드리스**(`ClaudeCodeRuntime`과 일관 — 중앙 API 키 0·로컬 claude 인증, ADR 0010 정신을 중앙 분류에도). Anthropic API/SDK(중앙 키 필요)는 프로젝트가 회피해 온 방향이라 채택 안 함. `runner`(`ClassifierRunner` Protocol) 주입으로 결정론 경계(`ClaudeCodeRuntime.runner` 패턴 동일 — 실 LLM은 비결정·느리므로 단위 테스트는 FakeRunner). **intent 어휘는 주입**(보통 registry domains 합집합) — LLM이 그 집합에서 하나를 고르거나, 어디에도 안 맞으면 `""`(미분류). 어휘 외 환각·형식오류·미지를 `""`로 정규화하는 게 계약이며(Router가 유효 라벨 또는 ""를 신뢰), `""`는 Router에서 0 매칭 → Unowned로 흘러 미아 없음이 보존된다. 단위 테스트는 runner fake로 결정론(프롬프트에 후보 실림·응답 파싱·미지→""), 실 분류 정확도는 eval(Golden set)로만 본다(ADR 0003). 구현은 mcp-runtime-engineer.
+_Avoid_: LlmRuntime(이건 답변 — 분류와 구분), AiClassifier
+
+**Eval runner (eval 러너)**:
+골든셋(Golden set) 정확도를 임계값으로 재는 러너(T6.2 — `eval.py`). **두 정확도**를 같은 골든셋 30개에 잰다 — ① **분류 정확도**(`classify(question) == expected_intent` 비율, 분류기를 *직접* 부름 — 라우팅 intent 단일 출처화 후에도 분류 품질은 따로 봐야 하므로 route가 아니라 classify를 잼) · ② **라우팅 정확도**(`route(question)` disposition(+routed면 primary·contested면 candidates)==expected 비율, route 결과로 잼). **한 예제 틀림이 아니라 집계 비율 vs 임계**(예 ≥0.8)가 통과를 가른다(임계 미달·이전 대비 하락이 실패, ADR 0003). **결정론 vs 실 LLM 경계**: 러너 *구조*는 결정론 테스트(주입 분류기가 expected/wrong intent를 내면 정확도 계산·임계 통과/실패가 맞나 — `FakeClassifier`, tdd-engineer)이고, 실 `LlmClassifier`로 도는 정확도 측정은 *게이트 밖*(eval/수동·야간 — 분류기 변경 시·야간 회귀, TRD §7). `EvalReport`(분류·라우팅 정확도·total·threshold·passed)를 산출. CLI 진입점은 구현 자리. 범위 밖: 임베딩 유사도·다중 LLM·프롬프트 튜닝·confusion matrix.
+_Avoid_: Test runner(단독 — pytest와 혼동), Benchmark, Scorer
+
 **Sample question (샘플 질문)**:
 골든셋의 손라벨링 시드 한 건 — `samples/questions.jsonl`의 한 줄(JSON). `question`(자연어 업무 질문) + 기대 처분 라벨(`expected_intent`·`expected_disposition`(`routed`/`contested`/`unowned`)과 disposition별 부속 `expected_primary`/`expected_candidates`·선택 `expected_approval`/`expected_collaborators`) + `note`(사람용 근거)를 든다. **샘플 질문은 Precedent가 아니다** — Precedent는 운영에서 *합의로* 떨어진 `Resolution` 기록이고(라우터가 lookup), 샘플 질문은 *사람이 미리 박은* eval 기대치다(라우터가 참조하지 않음). 둘 다 골든셋이지만 출처·생애가 다르다(시드 vs 누적). 30개는 세 처분을 다 덮도록 배분된다(Routed/Contested/Unowned). disposition별로 의미 있는 필드만 채운다 — routed면 `expected_primary`, contested면 `expected_candidates`(≥2), unowned면 둘 다 비움(0 매칭). **정적 골든셋(Precedent 0)에서 시연되는 부속은 approval(단일 domain intent의 Routed 게이트)과 cannot_answer(후보 차감 — domains+cannot_answer 양쪽에 든 intent는 후보에서 빠져 Unowned, T6.4가 `router.py`에 구현)뿐** — collaboration은 *그 intent가 2장 domains에 있어야 부착*되는데 그러면 후보 ≥2라 Contested가 되어 Routed가 안 나오므로(Precedent가 단일 primary로 고정해야 살아남), `expected_collaborators`는 스키마에만 두고 시드엔 비운다.
 _Avoid_: Test case(단독 — 단위 테스트와 혼동), Fixture, Precedent(이건 운영 누적 — 샘플 질문은 시드 라벨)
@@ -267,7 +275,7 @@ _Avoid_: Trace(단독 — 사용자에게 감추는 라우팅 내부와 혼동),
 _Avoid_: AuditQuery, MonitorStore, LogReader(단독)
 
 **AuditEntry**:
-Audit log의 한 줄. 한 질문 처리 절차의 기록 단위 — `timestamp`·`user_id`·`question`·`intent`·`decision`(RoutingDecision 원형, 내부 상세 보존)·`dispatch_outcome`(DispatchOutcome 원형, Routed일 때만; Contested/Unowned는 디스패치를 안 하므로 `None`). OrgReply가 decision·outcome을 투영해 버리는 것과 달리 **둘 다 원형을 그대로 안는다** — 한 질문 처리의 두 절차(라우팅→`decision`, 디스패치→`dispatch_outcome`)를 1급으로 기록. `EscalatedToManager`의 `manager_id`·`reason`은 사용자向 `Pending`에선 떨궈지지만 여기선 전부 남아, `Unowned.escalated_to`를 남기는 것과 *대칭*을 이룬다(둘 다 "escalation 대상" — 같은 처분이 기록 차원에서 같은 모양). `answer`는 별도 필드가 아니라 `dispatch_outcome`에서 유도하는 파생 접근자다(`Delivered.answer`만 답을 가짐 — 같은 답을 두 곳에 두지 않기 위함, SSOT는 `dispatch_outcome`).
+Audit log의 한 줄. 한 질문 처리 절차의 기록 단위 — `timestamp`·`user_id`·`question`·`intent`·`decision`(RoutingDecision 원형, 내부 상세 보존)·`dispatch_outcome`(DispatchOutcome 원형, Routed일 때만; Contested/Unowned는 디스패치를 안 하므로 `None`). `intent` 필드는 질문 처리의 1급 기록이라 명시 필드로 유지하되, **그 값의 출처는 `decision.intent` 하나다(ADR 0015)** — ask_org가 자기 classify가 아니라 라우팅 결정이 실은 intent를 넘겨, 기록된 intent가 라우팅이 실제로 본 intent와 항상 같다(divergence 차단). `decision`도 같은 intent를 들지만 audit의 명시 `intent` 필드는 기록 단위로 더 읽혀 파생 프로퍼티로 접지 않는다(`answer`는 dispatch_outcome 파생인 것과 구분 — intent는 라우팅·디스패치 모든 처분에 공통이라 1급 유지). OrgReply가 decision·outcome을 투영해 버리는 것과 달리 **둘 다 원형을 그대로 안는다** — 한 질문 처리의 두 절차(라우팅→`decision`, 디스패치→`dispatch_outcome`)를 1급으로 기록. `EscalatedToManager`의 `manager_id`·`reason`은 사용자向 `Pending`에선 떨궈지지만 여기선 전부 남아, `Unowned.escalated_to`를 남기는 것과 *대칭*을 이룬다(둘 다 "escalation 대상" — 같은 처분이 기록 차원에서 같은 모양). `answer`는 별도 필드가 아니라 `dispatch_outcome`에서 유도하는 파생 접근자다(`Delivered.answer`만 답을 가짐 — 같은 답을 두 곳에 두지 않기 위함, SSOT는 `dispatch_outcome`).
 
 ## Flagged ambiguities
 

@@ -403,7 +403,6 @@ class TestAskOrgEnqueue:
             router=router,
             dispatcher=dispatcher,
             audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
-            classifier=classifier,
             clock=_CLOCK,
             case_store=case_store,
             manager_queue_store=queue_store,
@@ -437,7 +436,6 @@ class TestAskOrgEnqueue:
             router=router,
             dispatcher=LocalRuntimeDispatcher(StubRuntime()),
             audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
-            classifier=classifier,
             clock=_CLOCK,
             case_store=case_store,
             manager_queue_store=queue_store,
@@ -497,7 +495,6 @@ class TestAskOrgEnqueue:
             router=router,
             dispatcher=LocalRuntimeDispatcher(StubRuntime()),
             audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
-            classifier=classifier,
             clock=_CLOCK,
         )
         reply = ask.handle("미분류 질문이에요", User(id="web_guest"))
@@ -558,7 +555,6 @@ class TestDeadlockEnqueue:
             router=router,
             dispatcher=LocalRuntimeDispatcher(StubRuntime()),
             audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
-            classifier=classifier,
             clock=_CLOCK,
             case_store=case_store,
             manager_queue_store=queue_store,
@@ -770,7 +766,6 @@ class TestManagerQueueServiceAct:
             router=router,
             dispatcher=LocalRuntimeDispatcher(StubRuntime()),
             audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
-            classifier=classifier,
             clock=_CLOCK,
         )
         reply = ask.handle("환불 기준 알려줘", User(id="web_guest"))

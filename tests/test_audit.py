@@ -52,7 +52,6 @@ def _ask_org_with(
         router=router,
         dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=audit_log,
-        classifier=classifier,
         clock=_fixed_clock,
     )
 
@@ -73,7 +72,6 @@ def _ask_org_with_queue(
         router=router,
         dispatcher=dispatcher,
         audit_log=audit_log,
-        classifier=classifier,
         clock=_fixed_clock,
     )
 

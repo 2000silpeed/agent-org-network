@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, assert_never
 
 from agent_org_network.audit import AuditEntry, AuditLog, Clock, default_clock
-from agent_org_network.classifier import Classifier
 from agent_org_network.conflict import Candidate, ConflictCase, ConflictCaseStore
 from agent_org_network.decision import Contested, Routed, Unowned
 from agent_org_network.dispatch import (
@@ -86,7 +85,6 @@ class AskOrg:
         router: Router,
         dispatcher: RuntimeDispatcher,
         audit_log: AuditLog,
-        classifier: Classifier,
         clock: Clock = default_clock,
         case_store: ConflictCaseStore | None = None,
         review_store: "BackupReviewStore | None" = None,
@@ -101,7 +99,6 @@ class AskOrg:
         self._router = router
         self._dispatcher = dispatcher
         self._audit = audit_log
-        self._classifier = classifier
         self._clock = clock
         self._case_store = case_store
         # 백업 답 검토 저장소(ADR 0012 결정 7). retrieve 덧씌움이 ticket_id로 조회해
@@ -354,7 +351,6 @@ class AskOrg:
         self._manager_queue_store.enqueue(item)
 
     def handle(self, question: str, user: User) -> OrgReply:
-        intent = self._classifier.classify(question)
         decision = self._router.route(question)
 
         # 디스패치 절차의 결말 — Routed일 때만 채워지고(dispatch→poll), Contested/
@@ -395,9 +391,9 @@ class AskOrg:
                     kind="contested",
                     message="담당을 확인하고 있어요. 정해지면 답변드릴게요.",
                 )
-                if self._case_store is not None and self._case_store.open_for_intent(intent) is None:
+                if self._case_store is not None and self._case_store.open_for_intent(decision.intent) is None:
                     case = ConflictCase(
-                        intent=intent,
+                        intent=decision.intent,
                         question=question,
                         candidates=tuple(
                             Candidate(agent_id=c.agent_id, owner=c.owner)
@@ -418,7 +414,7 @@ class AskOrg:
                 timestamp=self._clock(),
                 user_id=user.id,
                 question=question,
-                intent=intent,
+                intent=decision.intent,
                 decision=decision,
                 dispatch_outcome=outcome,
             )

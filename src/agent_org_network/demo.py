@@ -213,7 +213,6 @@ def build_demo(
         router=router,
         dispatcher=dispatcher_impl,
         audit_log=audit_impl,
-        classifier=classifier,
         case_store=case_store,
         review_store=review_store,
         manager_queue_store=manager_queue_store,
@@ -240,6 +239,15 @@ def build_demo_ask_org(runtime: AgentRuntime | None = None) -> AskOrg:
     분산 디스패처(WebSocketDispatcher 등)가 필요하면 `build_demo(dispatcher=...)`를 직접 쓴다.
     """
     return build_demo(runtime=runtime).ask
+
+
+def demo_keyword_intents() -> dict[str, str]:
+    """데모 키워드→intent 매핑의 복사본 — eval CLI의 `rule` 분류기 등 외부 소비용 공개 접근자.
+
+    `_KEYWORD_INTENTS`는 모듈 내부 상수라, 모듈 밖(eval.py 등)에서는 이 함수로 *복사본*을
+    받는다(private 직접 참조 회피·원본 불변 보존).
+    """
+    return dict(_KEYWORD_INTENTS)
 
 
 def cards_for_owner(owner_id: str) -> dict[str, AgentCard]:

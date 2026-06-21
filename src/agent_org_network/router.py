@@ -32,6 +32,7 @@ class Router:
                         Routed(
                             primary=card,
                             reason=f"판례 적용: intent '{intent}' → {p.resolution.primary}",
+                            intent=intent,
                         ),
                         intent,
                     )
@@ -40,12 +41,12 @@ class Router:
             if intent in c.domains and intent not in c.cannot_answer
         )
         if not candidates:
-            return Unowned(escalated_to=self._root_user, reason=f"담당 없음: {intent or '미분류'}")
+            return Unowned(escalated_to=self._root_user, reason=f"담당 없음: {intent or '미분류'}", intent=intent)
         if len(candidates) == 1:
             return self._attach_gates(
-                Routed(primary=candidates[0], reason=f"intent '{intent}' 매칭"), intent
+                Routed(primary=candidates[0], reason=f"intent '{intent}' 매칭", intent=intent), intent
             )
-        return Contested(candidates=candidates, reason=f"후보 {len(candidates)}건, Authority 미정")
+        return Contested(candidates=candidates, reason=f"후보 {len(candidates)}건, Authority 미정", intent=intent)
 
     def _attach_gates(self, routed: Routed, intent: str) -> Routed:
         """Routed에 Approval·Collaborator를 부착한다(TRD §6 라우팅 5단계, T2.5).

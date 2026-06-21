@@ -197,7 +197,6 @@ def _make_ask_org_with_review(
         router=router,
         dispatcher=disp,
         audit_log=audit or InMemoryAuditLog(),
-        classifier=_FakeClassifier(),
         clock=_fixed_clock(BASE_TS),
         review_store=review_store,
     )

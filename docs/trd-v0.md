@@ -27,8 +27,8 @@
 - **User** — 사람 노드. `id` · `manager: UserId | None`. Agent를 owns, 다른 User를 manages. (ADR 0005)
 - **AgentCard** — `frozen` 값 객체, 자기보고 필드만(ADR 0004): `agent_id` · `owner: UserId` · `maintainer: UserId | None` · `team` · `summary` · `domains` · `can_answer` · `cannot_answer` · `approval_when` · `collaborate_when` · `knowledge_sources` · `trust_labels` · `last_reviewed_at`. **`knowledge_sources`는 owner 환경의 OKF 번들(Open Knowledge Format — 마크다운+프론트매터 번들)을 가리키는 참조**(ADR 0013 — "출처 레이블뿐"에서 의미 재정의, 필드·스키마 무변경). 카드=라우팅 메타(중앙), OKF 번들=답변 지식(owner 환경)으로 분리 — 카드를 OKF에 흡수하지 않는다(admission·Authority 중앙 보존). 새 필드(`okf_bundle`) 안 더함 — under-claim 자기보고 보수성·하위호환(의미만 재정의).
 - **Registry** — User·Agent 등록 + admission 불변식. `register / register_user / get / load(dir) / validate`.
-- **Classifier 포트** — `classify(question) -> intent`. `RuleBased`(v0) · `Llm`(후순위) · `Fake`(테스트).
-- **RoutingDecision** — sealed sum `Routed | Contested | Unowned`. 타입이 곧 상태.
+- **Classifier 포트** — `classify(question) -> intent`. `RuleBasedClassifier`(v0) · `LlmClassifier`(T6.2 — `claude -p` 헤드리스, `ClassifierRunner` 주입 결정론 경계, intent 어휘 주입, 어휘 외→`""`→Unowned) · `FakeClassifier`(테스트). 구현 완료(`classifier.py` — `build_prompt`·`_parse`[정확 일치만·환각→""]·`classify`·`default_claude_classifier_runner`[Haiku·게이트 밖]).
+- **RoutingDecision** — sealed sum `Routed | Contested | Unowned`. 타입이 곧 상태. **세 변이 모두 `intent: str = ""`(ADR 0015)** — `router.route`가 classify 1회 결과를 결정에 실어 *라우팅 intent 단일 출처*(ask_org가 따로 classify 안 함, 두 분류 호출 divergence 차단). 기본값 `""`로 기존 생성처·match 무영향. 사용자向 OrgReply엔 미노출(노출 불변식).
 - **Agent Runtime 포트** — `answer(question, card) -> Answer`. `Answer(text, sources[], mode)`. `mode: Literal["full", "draft_only", "backup"]`(신뢰 상태 — `full` owner 실시간 / `draft_only` Approval 게이트 / `backup` owner 위임 백업의 스냅샷 답·신뢰 하향, ADR 0012). **`backup`은 마지막 값·넷째 없음** — staleness로 fresh/stale을 쪼개지 않는다(stale 백업은 답 안 하고 거부→escalation, 결정 9). owner 검토(`BackupReview`) 후 backup→`full` 신뢰 복원(결정 7). 답변 주체는 *owner가 위임·관리하는 환경*의 Claude Code(평상시 owner PC, 부재 시 owner 위임 백업 인스턴스 — 중앙 API 키 LLM 아님, ADR 0010+0012). 구현: `StubRuntime`(canned, 스켈레톤·테스트) → `ClaudeCodeRuntime`(`claude -p` 헤드리스, T6.1 임시·중앙 1회성·모든 카드가 로컬 claude로 답) → owner별 분산(T6.3, 아래 `RuntimeDispatcher` 경유) → owner 위임 백업 폴백(T6.6 설계, `WorkerLogic` 재사용). *분류기와 같은 포트 패턴.* **OKF 지식 소비(T6.7 구현 완료, ADR 0013)**: `ClaudeCodeRuntime`이 owner의 **OKF 번들 디렉터리를 cwd로** 두고 `claude -p`를 `--allowedTools "Read,Glob,Grep"`(읽기 전용)와 함께 돌려 claude가 번들을 *읽어* 답한다. 구현: `_run_claude_headless(prompt, /, *, cwd=None, timeout=...)` — `cwd` 주어지면 그 디렉터리+도구 플래그, `cwd=None`이면 기존 `tempfile.TemporaryDirectory()` cwd·도구 없음(하위호환). 번들 경로 규약 **`okf_root/{agent_id}`**(`knowledge_sources` 레이블을 경로로 쓰지 않고 `agent_id`가 규약으로 디렉터리를 진다·`Answer.sources` 보존), `okf_root` 명시 주입(`None`이면 번들 해석 안 함 — 중앙 무지식·암묵 cwd 추정 금지). `_build_persona_prompt`에 "cwd OKF 먼저 읽고 근거로 답, 없으면 모른다고" 지시. 벡터DB·RAG 인프라 0(Claude Code가 파일 읽는 에이전트라 cwd 주입+읽기 도구면 성립, PoC 입증·실 claude 시연 재현 — 번들 있으면 "45,000원" 구체 답/없으면 공허). T6.3 분산에서 "owner별 지식 격리"가 *번들 cwd 격리*로 실체화(각 워커가 자기 owner 번들 루트 주입). `runner` 주입(`ClaudeRunner` Protocol) 결정론 경계 보존(실 OKF 소비는 eval/수동). 샘플 번들 `okf/cs_ops`·`okf/contract_ops`, 와이어링은 `demo.py` `DEMO_OKF_ROOT`·`worker.py main()`.
 - **RuntimeDispatcher 포트 / WorkTicket / DispatchOutcome** — 분산 전송(T6.3, `dispatch.py`, ADR 0011). owner별 작업 큐에 적재·비동기 회신 수집. `dispatch(question, card) -> WorkTicket`(즉시 추적표) · `poll(ticket) -> DispatchOutcome` · 워커측 `claim(owner_id)`/`submit(ticket_id, answer)`. **`ask_org`의 답 획득 경로** — `ask_org`는 동기 `AgentRuntime.answer`를 직접 부르지 않고 `dispatch→poll`로 `DispatchOutcome`을 얻어 `OrgReply`로 투영(ADR 0011 결정 4). `DispatchOutcome` sealed sum: `Delivered(answer)` / `AwaitingWorker(waited)` / `EscalatedToManager(manager_id, reason)`(timeout·owner 부재 → 기존 Manager escalation 재사용. `manager_id: str|None`은 T5.2 Manager 큐가 기계 소비할 1급 식별자, `reason`은 사람용 자연어 — 둘 분리). `WorkTicket(owner_id·agent_id·question·enqueued_at·ticket_id)` — owner_id 귀속이 신원(ADR 0009)·`Answer.mode`가 Approval 연결점. 구현체: `InMemoryWorkQueueDispatcher`(in-process 큐, 결정론 테스트·슬라이스1) · `LocalRuntimeDispatcher`(동기 런타임을 즉시-Delivered로 감싸는 즉답 다리 — ask_org가 디스패처만 보게 된 뒤 in-process 데모/테스트의 즉답 보장) · 슬라이스2 네트워크 디스패처. 동기 포트 `AgentRuntime.answer`는 어댑터 `DispatchingRuntime`이 디스패처 위에 얹어 보존(레거시/비-ask_org 호환 — ask_org는 거치지 않음). 포트 패턴은 `ConflictCaseStore`·`PrecedentStore`와 동일(Protocol + 구현체). **전이 ≠ 기록** — 작업 큐는 미해소 작업의 도메인 보관소지 절차 로그 아님. (ADR 0011)
 - **Manager** — 다른 User를 `manages` 하는 User. Escalation은 사람 그래프를 타고 오른다.
@@ -49,12 +49,12 @@
 
 ## 6. 라우팅 알고리즘 v0 (규칙 기반)
 
-1. `classify(question) -> intent`
-2. 일치 Precedent 있으면 적용
+1. `classify(question) -> intent` — **router.route가 분류 단일 지점**(ADR 0015). 이 intent를 아래 모든 분기가 내는 `RoutingDecision`에 `intent`로 싣는다(라우팅 단일 출처). ask_org는 자기 classify 안 함 → `decision.intent`를 읽음(divergence 차단·LLM 호출 1회).
+2. 일치 Precedent 있으면 적용(이때 만드는 `Routed`도 intent를 싣는다)
 3. `candidates = intent ∈ domains 이고 cannot_answer 아닌 카드`
-4. 0 → `Unowned(루트 User)` / 1 → `Routed` / ≥2 → 중앙 Authority tie-break, 못 풀면 `Contested`
+4. 0 → `Unowned(루트 User, intent)` / 1 → `Routed(intent)` / ≥2 → 중앙 Authority tie-break, 못 풀면 `Contested(intent)` — candidates를 매칭한 그 intent와 결정에 실리는 intent가 *같은 지역변수*라 ConflictCase가 올바른 intent로 열린다.
 5. `Routed`면 `approval_when`·`collaborate_when`을 **intent 기준**(결정론, 비결정 회피)으로 평가해 부착(`Router._attach_gates`, T2.5) — primary의 `approval_when`에 intent가 들면 `requires_approval=True`, `collaborate_when`에 들면 *그 intent를 domains에 가진 다른 카드*를 `collaborators`로(primary 제외, agent_id 지목 아님 — domains 매칭 재사용). 두 필드는 under-claim 자기보고(ADR 0004). 그 뒤 Agent Runtime 호출(디스패처 경유).
-6. 모든 절차를 audit log에 기록
+6. 모든 절차를 audit log에 기록(`AuditEntry.intent`는 `decision.intent`에서 옴 — ADR 0015, 기록 intent가 라우팅이 본 intent와 항상 같음)
 
 **Approval→mode 강제 + 노출 경계(T2.5)**: `Routed.requires_approval`이면 답이 `mode="draft_only"`로 사용자에 표시된다 — *라우팅 결정*이 강제하고(워커 자기보고 아님, ADR 0012 mode 강제 패턴) 강제 자리는 `AskOrg._apply_approval_gate`(즉답 Delivered 경로). mode 우선순위: `backup`은 draft_only로 덮지 않음(더 강한 하향), `full`→`draft_only`만 격상. `collaborators`는 사용자向 `Answered`에 **싣지 않는다**(노출 불변식: 담당·승인·출처만 — audit엔 `Routed.collaborators` 원형 보관). 실 승인 행위(draft→full)는 Manager 큐와 별 탭/행위로 후속(Approval은 게이트라 escalation 수렴과 도메인 분리 — ADR 0014 결정 4). 분산 회신(retrieve) 경로 Approval 강제는 후속(tracking이 requires_approval 미보관 — 자리 선결).
 
@@ -65,7 +65,9 @@
 - **단위(결정론)** — `FakeClassifier`·`StubRuntime` 주입, 코어 로직. 매 커밋.
 - **eval(통계)** — 골든셋(= Precedent + 샘플 질문) 정확도/통과율 임계값. 분류기·런타임 변경 시·야간, 회귀 게이트.
 
-**골든셋 데이터(T6.4) ↔ eval 러너(T6.2) 분리**: 골든셋 *데이터*(샘플 카드 5장 + 샘플 질문 30개)는 분류기 무관한 자산이라 T6.4가 만들고, 정확도 임계값·LLM 연동을 소비하는 *러너*는 T6.2(`LlmClassifier`)가 만든다. T6.4의 자체 게이트는 **결정론**이다(LLM eval 아님) — 샘플 질문의 `expected_intent`를 `FakeClassifier`에 주입해 Router를 돌려 `expected_disposition`(+`expected_primary`/`expected_candidates`) 일치를 검증하면, 카드와 라벨이 *서로 모순 없음*(coherence)을 LLM 없이 박는다. 실 LLM 분류 정확도 측정은 T6.2 러너 영역(자리만, 여기선 shape 금지).
+**골든셋 데이터(T6.4) ↔ eval 러너(T6.2) 분리**: 골든셋 *데이터*(샘플 카드 5장 + 샘플 질문 30개)는 분류기 무관한 자산이라 T6.4가 만들고, 정확도 임계값·LLM 연동을 소비하는 *러너*는 T6.2(`LlmClassifier`)가 만든다. T6.4의 자체 게이트는 **결정론**이다(LLM eval 아님) — 샘플 질문의 `expected_intent`를 `FakeClassifier`에 주입해 Router를 돌려 `expected_disposition`(+`expected_primary`/`expected_candidates`) 일치를 검증하면, 카드와 라벨이 *서로 모순 없음*(coherence)을 LLM 없이 박는다.
+
+**eval 러너 shape(T6.2, `eval.py`)**: `run_eval(samples, classifier, router, threshold) -> EvalReport`. **두 정확도**를 같은 골든셋 30개에 잰다 — ① **분류 정확도**(`classify(question) == expected_intent` 비율 — classifier를 *직접* 부른다, 라우팅 intent 단일 출처화(ADR 0015) 후에도 분류 품질은 따로 봐야 하므로 route 아닌 classify) · ② **라우팅 정확도**(`route(question)` disposition(+routed면 primary·contested면 candidates)==expected 비율 — route 결과로). `EvalReport(classification_accuracy·routing_accuracy·total·threshold·passed)`. **한 예제 틀림이 아니라 집계 비율 vs 임계**(예 ≥0.8 — `DEFAULT_ACCURACY_THRESHOLD`)가 통과를 가른다(임계 미달·이전 대비 하락이 실패, ADR 0003). **결정론 vs 실 LLM 경계**: 러너 *구조*는 결정론 테스트(주입 분류기가 expected/wrong intent를 내면 정확도·임계 통과/실패가 맞나 — `FakeClassifier`, tdd-engineer가 red→green)이고, 실 `LlmClassifier`로 도는 정확도 측정은 *게이트 밖*(eval/수동·야간 — 분류기 변경 시·야간 회귀). CLI 진입점 `main` 구현 완료(`--classifier rule|llm`·`--threshold`·종료 코드). 범위 밖: 임베딩 유사도·다중 LLM·프롬프트 튜닝·confusion matrix.
 
 **샘플 질문 엔트리(`samples/questions.jsonl`, 한 줄 = 한 JSON)**:
 
@@ -110,6 +112,8 @@ okf/<agent_id>/*.md                          # owner OKF 번들(T6.7·ADR 0013) 
 registry/users.yaml · registry/agents/*.yaml   # 샘플 유저·카드 — T1.3에서 유저 4명·카드 3장. T6.4가 유저 +2(hr_lead·it_lead)·카드 +2(hr_ops·it_ops) → 유저 6명·카드 5장(PRD §8 "카드 5개 코드 수정 없이 YAML 추가"). demo._USERS·_CARDS도 동기화(데모와 골든셋이 같은 카드 셋을 봐야 함)
 samples/questions.jsonl                          # T6.4 — 샘플 질문 30개 골든셋(한 줄=한 JSON: question·expected_intent·expected_disposition·expected_primary?·expected_candidates?·expected_approval?·expected_collaborators?·note). eval 데이터(분류기 무관), 러너는 T6.2
 golden.py                                        # T6.4 — questions.jsonl → typed 엔트리 읽기 로더(SampleQuestion pydantic frozen + load_golden, 영속 상태·새 도메인 타입 0). eval 러너는 T6.2
+eval.py                                          # T6.2 — 골든셋 eval 러너(run_eval→EvalReport 분류·라우팅 두 정확도·임계 + CLI main). 결정론 구조 테스트(oracle/broken classifier)·실 LlmClassifier 측정은 게이트 밖
+classifier.py                                    # Classifier 포트 + RuleBasedClassifier·FakeClassifier·LlmClassifier(T6.2 claude -p 헤드리스·ClassifierRunner 주입·어휘 외→""·default_claude_classifier_runner 게이트 밖)
 # 예정: routing_rules.yaml
 ```
 

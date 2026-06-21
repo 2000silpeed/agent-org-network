@@ -316,7 +316,6 @@ class TestM1_EnqueueDeadlock_중복_방지:
             router=router,
             dispatcher=LocalRuntimeDispatcher(StubRuntime()),
             audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
-            classifier=classifier,
             clock=_CLOCK,
             case_store=case_store,
             manager_queue_store=queue_store,

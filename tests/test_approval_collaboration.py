@@ -67,7 +67,6 @@ def _ask_org_with(
         router=router,
         dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=InMemoryAuditLog(),
-        classifier=classifier,
         clock=_fixed_clock,
     )
 
@@ -94,7 +93,6 @@ def _ask_org_with_precedent_and_collab(
         router=router,
         dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=audit,
-        classifier=classifier,
         clock=_fixed_clock,
     )
     return ask, audit
@@ -278,7 +276,6 @@ def test_apply_approval_gate_full이면_draft_only로_격상():
         router=router,
         dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=InMemoryAuditLog(),
-        classifier=FakeClassifier("계약 검토"),
         clock=_fixed_clock,
     )
 
@@ -299,7 +296,6 @@ def test_apply_approval_gate_backup은_보존():
         router=router,
         dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=InMemoryAuditLog(),
-        classifier=FakeClassifier("계약 검토"),
         clock=_fixed_clock,
     )
 
@@ -319,7 +315,6 @@ def test_apply_approval_gate_draft_only는_그대로():
         router=router,
         dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=InMemoryAuditLog(),
-        classifier=FakeClassifier("계약 검토"),
         clock=_fixed_clock,
     )
 
@@ -339,7 +334,6 @@ def test_apply_approval_gate_requires_approval_False이면_그대로():
         router=router,
         dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=InMemoryAuditLog(),
-        classifier=FakeClassifier("계약 검토"),
         clock=_fixed_clock,
     )
 
@@ -358,7 +352,6 @@ def test_apply_approval_gate_Pending이면_그대로():
         router=router,
         dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=InMemoryAuditLog(),
-        classifier=FakeClassifier("계약 검토"),
         clock=_fixed_clock,
     )
 
@@ -446,7 +439,6 @@ def test_audit_requires_approval_보존():
         router=router,
         dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=audit,
-        classifier=classifier,
         clock=_fixed_clock,
     )
 

@@ -54,7 +54,6 @@ def ask_org_with(
         router=router,
         dispatcher=LocalRuntimeDispatcher(StubRuntime()),
         audit_log=InMemoryAuditLog(),
-        classifier=classifier,
         clock=fixed_clock,
         case_store=case_store,
     )
@@ -216,7 +215,6 @@ def _ask_org_with_queue_dispatcher(
         router=router,
         dispatcher=dispatcher,
         audit_log=InMemoryAuditLog(),
-        classifier=classifier,
         clock=fixed_clock,
     )
 
@@ -366,3 +364,82 @@ def test_retrieve가_모르는_토큰이면_None():
     ask = _ask_org_with_queue_dispatcher([c], "환불", dispatcher)
 
     assert ask.retrieve("없는토큰") is None
+
+
+# ── T6.2 — intent 단일 출처화: ask_org가 decision.intent를 소비한다 ──────────
+
+
+def test_AskOrg_생성자에_classifier_인자가_없다():
+    """구조적 보장: AskOrg.__init__이 classifier 파라미터를 받지 않는다."""
+    import inspect
+    sig = inspect.signature(AskOrg.__init__)
+    assert "classifier" not in sig.parameters
+
+
+def test_ConflictCase가_decision_intent로_열린다():
+    """Contested 분기: ConflictCase.intent == decision.intent (router가 채운 값)."""
+    from agent_org_network.conflict import InMemoryConflictCaseStore
+
+    cs = card("cs_ops", ["환불"])
+    sales = card("sales_ops", ["환불"])
+    case_store = InMemoryConflictCaseStore()
+    ask = ask_org_with([cs, sales], "환불", case_store=case_store)
+    user = User(id="u1")
+
+    ask.handle("환불 되나요?", user)
+
+    open_cases = case_store.open_for_owner("D")
+    assert len(open_cases) == 1
+    assert open_cases[0].intent == "환불"
+
+
+def test_AuditEntry_intent가_decision_intent와_일치한다():
+    """AuditEntry.intent == router가 decision에 실어준 intent (단일 출처)."""
+    from agent_org_network.audit import InMemoryAuditLog
+
+    c = card("contract_ops", ["계약 검토"])
+    audit_log = InMemoryAuditLog()
+    registry = Registry()
+    registry.register(c)
+    from agent_org_network.classifier import FakeClassifier
+    classifier = FakeClassifier("계약 검토")
+    router = Router(registry, classifier, root_user="root")
+    ask = AskOrg(
+        router=router,
+        dispatcher=LocalRuntimeDispatcher(StubRuntime()),
+        audit_log=audit_log,
+        clock=fixed_clock,
+    )
+
+    ask.handle("계약서 검토해줘", User(id="u1"))
+
+    records = audit_log.records()
+    assert len(records) == 1
+    assert records[0]["intent"] == "계약 검토"
+
+
+def test_Contested_AuditEntry_intent가_decision_intent와_일치한다():
+    """Contested 경로: AuditEntry.intent == decision.intent."""
+    from agent_org_network.audit import InMemoryAuditLog
+
+    cs = card("cs_ops", ["환불"])
+    sales = card("sales_ops", ["환불"])
+    audit_log = InMemoryAuditLog()
+    registry = Registry()
+    registry.register(cs)
+    registry.register(sales)
+    from agent_org_network.classifier import FakeClassifier
+    classifier = FakeClassifier("환불")
+    router = Router(registry, classifier, root_user="root")
+    ask = AskOrg(
+        router=router,
+        dispatcher=LocalRuntimeDispatcher(StubRuntime()),
+        audit_log=audit_log,
+        clock=fixed_clock,
+    )
+
+    ask.handle("환불 되나요?", User(id="u1"))
+
+    records = audit_log.records()
+    assert len(records) == 1
+    assert records[0]["intent"] == "환불"

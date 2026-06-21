@@ -254,7 +254,6 @@ def _make_ask_org_for_major2(
         router=router,
         dispatcher=disp,
         audit_log=audit,
-        classifier=_FakeClassifier(),
         clock=_fixed_clock(BASE_TS),
         review_store=review_store,
     )

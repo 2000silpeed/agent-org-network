@@ -163,3 +163,41 @@ def test_intent가_domains에도_cannot_answer에도_든_카드는_후보에서_
     router = Router(registry, FakeClassifier("급여이체"), root_user="root")
     decision = router.route("급여이체 처리해줘")
     assert isinstance(decision, Unowned)
+
+
+# ── T6.2 — intent 단일 출처화: router가 결정에 intent를 싣는다 ──────────────
+
+
+def test_Routed_결정에_intent가_실린다():
+    """1매칭 → Routed.intent == classify 결과."""
+    router = router_with([card("contract_ops", ["계약 검토"])], "계약 검토")
+    decision = router.route("계약 조건 바꿔도 돼?")
+    assert isinstance(decision, Routed)
+    assert decision.intent == "계약 검토"
+
+
+def test_Unowned_결정에_intent가_실린다():
+    """0매칭 → Unowned.intent == classify 결과."""
+    router = router_with([card("contract_ops", ["계약 검토"])], "주차장")
+    decision = router.route("주차장 어떻게 가나요?")
+    assert isinstance(decision, Unowned)
+    assert decision.intent == "주차장"
+
+
+def test_Contested_결정에_intent가_실린다():
+    """≥2 매칭 → Contested.intent == classify 결과."""
+    router = router_with([card("cs_ops", ["환불"]), card("sales_ops", ["환불"])], "환불")
+    decision = router.route("환불 되나요?")
+    assert isinstance(decision, Contested)
+    assert decision.intent == "환불"
+
+
+def test_판례_경로_Routed에도_intent가_보존된다():
+    """판례 경로(_attach_gates)를 거쳐도 Routed.intent가 유지된다."""
+    store = InMemoryPrecedentStore(clock=fixed_clock)
+    store.record(Resolution(intent="계약 검토", primary="contract_ops"))
+    router = router_with([card("contract_ops", ["계약 검토"])], "계약 검토", precedents=store)
+    decision = router.route("계약 확인해줘")
+    assert isinstance(decision, Routed)
+    assert "판례" in decision.reason
+    assert decision.intent == "계약 검토"

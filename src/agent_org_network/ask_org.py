@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, assert_never
 
@@ -19,6 +20,7 @@ from agent_org_network.runtime import AnswerMode
 from agent_org_network.user import User
 
 if TYPE_CHECKING:
+    from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.review import BackupReview, BackupReviewItem, BackupReviewStore
 
 
@@ -88,7 +90,14 @@ class AskOrg:
         clock: Clock = default_clock,
         case_store: ConflictCaseStore | None = None,
         review_store: "BackupReviewStore | None" = None,
+        manager_queue_store: "ManagerQueueStore | None" = None,
+        manager_of: "Callable[[str], str | None] | None" = None,
+        manager_root: str = "root",
     ) -> None:
+        # [Minor 2] manager_root 기본값 "root" 주의: 데모의 실제 root는 "root_manager".
+        # manager_queue_store 를 주입할 때 manager_root 도 함께 주입하지 않으면
+        # escalation 이 존재하지 않는 "root" 큐로 귀속돼 Manager 화면에 표시되지 않는다.
+        # manager_queue_store 주입 시 manager_root 도 주입 권장(build_demo 참고).
         self._router = router
         self._dispatcher = dispatcher
         self._audit = audit_log
@@ -98,6 +107,14 @@ class AskOrg:
         # 백업 답 검토 저장소(ADR 0012 결정 7). retrieve 덧씌움이 ticket_id로 조회해
         # 검토 결과를 우선 투영한다. 미주입이면 None(하위호환 — 검토 루프 없이 동작).
         self._review_store = review_store
+        # Manager 큐(T5.2 ADR 0014): 미해소 escalation 보관소. 미주입이면 하위호환.
+        self._manager_queue_store = manager_queue_store
+        # owner → manager 콜백(Registry.get_user(owner).manager). 미주입이면 None.
+        self._manager_of: Callable[[str], str | None] | None = manager_of
+        # root User id — manager가 없는 escalation의 최종 수신자(미아 없음).
+        # 기본값 "root"는 하위호환용이며 실제 root id 와 다를 수 있다.
+        # manager_queue_store 주입 시 manager_root 도 반드시 주입할 것.
+        self._manager_root = manager_root
         # 답 회수용 불투명 추적 토큰 → WorkTicket 매핑(ADR 0011 결정 6-5). 서버가
         # ticket을 보관하고 사용자엔 *불투명 토큰만* 준다 — 사용자向 응답에 ticket_id·
         # owner 등 내부 구조가 새지 않게 한다(노출 불변식). 토큰은 uuid4 hex(미인코딩).
@@ -266,6 +283,76 @@ class AskOrg:
         svc = BackupReviewService(self._review_store)
         svc.review(item_id, review)
 
+    def _enqueue_unowned(self, decision: Unowned, question: str) -> None:
+        """Unowned → Manager 큐 적재(T5.2). 미주입이면 no-op(하위호환)."""
+        if self._manager_queue_store is None:
+            return
+        from agent_org_network.manager_queue import (
+            FromUnowned,
+            ManagerItem,
+            manager_id_for_unowned,
+        )
+
+        mid = manager_id_for_unowned(decision)
+        source = FromUnowned(decision=decision, question=question)
+        item = ManagerItem(
+            manager_id=mid,
+            source=source,
+            created_at=self._clock(),
+        )
+        self._manager_queue_store.enqueue(item)
+
+    def _enqueue_dispatch(self, outcome: EscalatedToManager) -> None:
+        """EscalatedToManager → Manager 큐 적재(T5.2). 미주입이면 no-op."""
+        if self._manager_queue_store is None:
+            return
+        from agent_org_network.manager_queue import (
+            FromDispatch,
+            ManagerItem,
+            manager_id_for_dispatch,
+        )
+
+        mid = manager_id_for_dispatch(outcome, root=self._manager_root)
+        source = FromDispatch(outcome=outcome)
+        item = ManagerItem(
+            manager_id=mid,
+            source=source,
+            created_at=self._clock(),
+        )
+        self._manager_queue_store.enqueue(item)
+
+    def enqueue_deadlock(self, case: ConflictCase, reason: str = "") -> None:
+        """Deadlocked → Manager 큐 적재(T5.2). web/concur 엔드포인트가 호출한다.
+
+        미주입이면 no-op(하위호환). manager_of 콜백으로 첫 후보 owner의 manager를 찾는다.
+        같은 case_id 로 이미 큐에 있으면 재적재하지 않는다(중복 방지 — [Major 1]).
+        """
+        if self._manager_queue_store is None:
+            return
+        from agent_org_network.manager_queue import (
+            FromDeadlock,
+            ManagerItem,
+            manager_id_for_deadlock,
+        )
+
+        # [Major 1] 중복 방지: 같은 ConflictCase 가 이미 큐에 있으면 no-op.
+        # open_for_intent 로 Contested 중복을 막는 것과 대칭.
+        if self._manager_queue_store.get_by_case(case.case_id) is not None:
+            return
+
+        def _no_manager(uid: str) -> str | None:
+            return None
+
+        manager_of_fn = self._manager_of if self._manager_of is not None else _no_manager
+        mid = manager_id_for_deadlock(case, manager_of=manager_of_fn, root=self._manager_root)
+        source = FromDeadlock(case=case, reason=reason)
+        item = ManagerItem(
+            manager_id=mid,
+            source=source,
+            created_at=self._clock(),
+        )
+        self._manager_queue_store.enqueue(item)
+
     def handle(self, question: str, user: User) -> OrgReply:
         intent = self._classifier.classify(question)
         decision = self._router.route(question)
@@ -300,6 +387,9 @@ class AskOrg:
                 # draft_only로 *덮지 않는다* — backup 답은 owner 미검토라 승인 대기보다 약한
                 # 신뢰가 맞다. full→draft_only만 격상(게이트 표시), backup은 보존.
                 reply = self._apply_approval_gate(reply, decision)
+                # EscalatedToManager면 Manager 큐에도 적재(T5.2 ADR 0014).
+                if isinstance(outcome, EscalatedToManager):
+                    self._enqueue_dispatch(outcome)
             case Contested():
                 reply = Pending(
                     kind="contested",
@@ -321,6 +411,7 @@ class AskOrg:
                     kind="unowned",
                     message="아직 담당이 없어 매니저에게 전달했어요. 답변되면 알림드릴게요.",
                 )
+                self._enqueue_unowned(decision, question)
 
         self._audit.record(
             AuditEntry(

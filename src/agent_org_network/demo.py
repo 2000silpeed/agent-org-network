@@ -32,6 +32,7 @@ from agent_org_network.runtime import AgentRuntime, ClaudeCodeRuntime
 from agent_org_network.user import User
 
 if TYPE_CHECKING:
+    from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.review import BackupReviewStore
 
 ROOT_USER = "root_manager"
@@ -114,6 +115,7 @@ def build_demo(
     runtime: AgentRuntime | None = None,
     dispatcher: RuntimeDispatcher | None = None,
     review_store: "BackupReviewStore | None" = None,
+    manager_queue_store: "ManagerQueueStore | None" = None,
 ) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
@@ -152,6 +154,9 @@ def build_demo(
     dispatcher_impl: RuntimeDispatcher = (
         dispatcher if dispatcher is not None else LocalRuntimeDispatcher(runtime_impl)
     )
+    def _manager_of(uid: str) -> str | None:
+        return registry.get_user(uid).manager if uid in registry.user_ids() else None
+
     ask = AskOrg(
         router=router,
         dispatcher=dispatcher_impl,
@@ -159,6 +164,9 @@ def build_demo(
         classifier=classifier,
         case_store=case_store,
         review_store=review_store,
+        manager_queue_store=manager_queue_store,
+        manager_of=_manager_of,
+        manager_root=ROOT_USER,
     )
     consensus = ConsensusService(case_store=case_store, precedents=precedents)
     return DemoBundle(

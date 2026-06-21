@@ -29,6 +29,16 @@ from agent_org_network.conflict import (
 )
 from agent_org_network.demo import build_demo
 from agent_org_network.dispatch import RuntimeDispatcher
+from agent_org_network.manager_queue import (
+    AssignOwner as MgrAssignOwner,
+    Dismiss as MgrDismiss,
+    ManagerAction,
+    ManagerItem,
+    ManagerQueueService,
+    ManagerQueueStore,
+    ManagerResolution,
+    Reroute as MgrReroute,
+)
 from agent_org_network.review import (
     ApproveBackup,
     BackupReview,
@@ -160,6 +170,111 @@ def _serialize_backup_review(review: BackupReview) -> dict[str, Any]:
             assert_never(never)
 
 
+def serialize_manager_item(item: ManagerItem) -> dict[str, Any]:
+    """ManagerItem을 Manager 큐 운영 화면向 dict로 변환한다(내부값 노출 OK).
+
+    Manager 큐는 운영 면이라 manager_id·source 등 내부값을 그대로 노출한다
+    (ConflictCase가 처리함에 후보를 노출하듯 — 채팅 OrgReply 불변식과 다른 면).
+    """
+    from agent_org_network.manager_queue import FromDeadlock, FromDispatch, FromUnowned
+
+    source = item.source
+    source_dict: dict[str, Any]
+    match source:
+        case FromUnowned():
+            source_dict = {
+                "type": "from_unowned",
+                "question": source.question,
+                "escalated_to": source.decision.escalated_to,
+            }
+        case FromDeadlock():
+            source_dict = {
+                "type": "from_deadlock",
+                "case_id": source.case.case_id,
+                "intent": source.case.intent,
+                "question": source.case.question,
+                "reason": source.reason,
+            }
+        case FromDispatch():
+            source_dict = {
+                "type": "from_dispatch",
+                "ticket_id": source.outcome.ticket.ticket_id,
+                "owner_id": source.outcome.ticket.owner_id,
+                "question": source.outcome.ticket.question,
+                "manager_id": source.outcome.manager_id,
+                "reason": source.outcome.reason,
+            }
+        case _ as never:
+            assert_never(never)
+
+    d: dict[str, Any] = {
+        "item_id": item.item_id,
+        "manager_id": item.manager_id,
+        "status": item.status,
+        "created_at": item.created_at.isoformat(),
+        "source": source_dict,
+    }
+    if item.resolution is not None:
+        d["resolution"] = _serialize_manager_resolution(item.resolution)
+    return d
+
+
+def _serialize_manager_resolution(resolution: ManagerResolution) -> dict[str, Any]:
+    r = resolution
+    action_dict: dict[str, Any]
+    match r.action:
+        case MgrAssignOwner():
+            action_dict = {
+                "type": "assign_owner",
+                "by_manager": r.action.by_manager,
+                "primary": r.action.primary,
+                "rationale": r.action.rationale,
+            }
+        case MgrReroute():
+            action_dict = {
+                "type": "reroute",
+                "by_manager": r.action.by_manager,
+                "to_agent": r.action.to_agent,
+                "rationale": r.action.rationale,
+            }
+        case MgrDismiss():
+            action_dict = {
+                "type": "dismiss",
+                "by_manager": r.action.by_manager,
+                "rationale": r.action.rationale,
+            }
+        case _ as never:
+            assert_never(never)
+    return {"action": action_dict}
+
+
+class ManagerActionRequest(BaseModel):
+    """POST /manager/items/{item_id}/act 요청 바디."""
+
+    type: Literal["assign_owner", "reroute", "dismiss"]
+    by_manager: str
+    primary: str = ""
+    to_agent: str = ""
+    rationale: str = ""
+
+
+def _parse_manager_action(req: ManagerActionRequest) -> ManagerAction:
+    if req.type == "assign_owner":
+        return MgrAssignOwner(
+            by_manager=req.by_manager,
+            primary=req.primary,
+            rationale=req.rationale,
+        )
+    elif req.type == "reroute":
+        return MgrReroute(
+            by_manager=req.by_manager,
+            to_agent=req.to_agent,
+            rationale=req.rationale,
+        )
+    else:
+        return MgrDismiss(by_manager=req.by_manager, rationale=req.rationale)
+
+
 class BackupReviewRequest(BaseModel):
     """POST /backup-reviews/{item_id} 요청 바디 — 검토 type + by_owner 필수."""
 
@@ -189,6 +304,7 @@ def create_app(
     dispatcher: RuntimeDispatcher | None = None,
     review_store: BackupReviewStore | None = None,
     review_service: BackupReviewService | None = None,
+    manager_queue_store: ManagerQueueStore | None = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -197,14 +313,21 @@ def create_app(
     있다(`WebSocketDispatcher` 등) — 미주입이면 기본 즉답 디스패처.
     `review_store`/`review_service`를 주입하면 백업 검토 탭을 활성화한다. 미주입이면
     검토 라우트가 404를 돌려준다(검토 기능 미사용 환경에서 안전).
+    `manager_queue_store`를 주입하면 Manager 큐 라우트가 활성화된다(T5.2).
     """
     app = FastAPI(title="Agent Org Network — 채팅·처리함(데모)")
     # review_store를 build_demo에도 전달 — bundle.ask._review_store가 실 store를 가리켜
     # retrieve 덧씌움(web 경로 GET /ask/{tracking})이 검토 결과를 반영한다(ADR 0012 결정 7,
     # code-reviewer [Major 1] 수정). 미주입이면 None(하위호환 — 검토 없이 동작·라우트 404).
-    bundle = build_demo(runtime=runtime, dispatcher=dispatcher, review_store=review_store)
+    bundle = build_demo(
+        runtime=runtime,
+        dispatcher=dispatcher,
+        review_store=review_store,
+        manager_queue_store=manager_queue_store,
+    )
     _review_store = review_store
     _review_service = review_service
+    _manager_queue_store = manager_queue_store
 
     @app.post("/ask")
     def ask_endpoint(req: AskRequest) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
@@ -245,7 +368,51 @@ def create_app(
             outcome = bundle.consensus.concur(case_id, vote)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # [Blocker 1] Deadlocked → Manager 큐 적재(미아 없음 — 세 출처 모두 web 경로에서 종착).
+        # 도메인 헬퍼(ask_org.enqueue_deadlock)가 중복 방지·manager_id 결정을 담당한다.
+        if isinstance(outcome, Deadlocked):
+            case = bundle.case_store.get(case_id)
+            if case is not None:
+                bundle.ask.enqueue_deadlock(case, reason=outcome.reason)
         return serialize_outcome(outcome)
+
+    @app.get("/manager/{manager_id}")
+    def manager_queue(manager_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+        """Manager 큐 — 그 Manager의 pending escalation 목록(T5.2 운영 면).
+
+        Manager 큐는 운영 면이라 내부값(manager_id·source·reason) 노출 OK.
+        """
+        if _manager_queue_store is None:
+            return []
+        items = _manager_queue_store.pending_for_manager(manager_id)
+        return [serialize_manager_item(it) for it in items]
+
+    @app.post("/manager/items/{item_id}/act")
+    def manager_act(item_id: str, req: ManagerActionRequest) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """Manager 처분 — AssignOwner·Reroute·Dismiss(T5.2 운영 면).
+
+        by_manager가 item.manager_id여야 한다(1인칭 강제 — ValueError → 400).
+        item_id 미존재 → 404. manager_queue_store 미주입 → 404.
+        """
+        if _manager_queue_store is None:
+            raise HTTPException(status_code=404, detail="Manager 큐가 비활성화되어 있습니다.")
+        action = _parse_manager_action(req)
+        # [Blocker 2] precedents·case_store 주입 — AssignOwner+FromDeadlock 가
+        # Precedent 기록 + ConflictCase 종결을 수행해야 한다(ConsensusService.Agreed 대칭).
+        # bundle 이 노출하는 precedents·case_store 를 같은 인스턴스로 전달한다.
+        svc = ManagerQueueService(
+            queue_store=_manager_queue_store,
+            precedents=bundle.precedents,
+            case_store=bundle.case_store,
+        )
+        try:
+            resolved = svc.act(item_id, action)
+        except ValueError as exc:
+            msg = str(exc)
+            if "미존재" in msg:
+                raise HTTPException(status_code=404, detail=msg) from exc
+            raise HTTPException(status_code=400, detail=msg) from exc
+        return serialize_manager_item(resolved)
 
     @app.get("/inbox/{owner_id}/backup-reviews")
     def inbox_backup_reviews(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]

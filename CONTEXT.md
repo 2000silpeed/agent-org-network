@@ -107,7 +107,7 @@ _Avoid_: (ask_org의 답 경로로 오인 금지 — 그건 LocalRuntimeDispatch
 _Avoid_: Job(단독), Task(단독), Receipt
 
 **DispatchOutcome (디스패치 결과)**:
-`poll(ticket)`이 돌려주는 결말. "타입이 곧 상태"(RoutingDecision·ConsensusOutcome 정신) — 세 결말 중 하나. **Delivered**(워커가 owner 환경에서 답을 만들어 회신 → `Answer` 도착, `mode` 보존 = Approval 게이트 합류 자리) · **AwaitingWorker**(아직 회신 없음 — 워커 미연결/생성 중 → 큐에 대기, `waited` 경과시간) · **EscalatedToManager**(timeout/owner 부재 → 미아·합의 실패와 같은 종착 처분 = Escalation. `manager_id`는 T5.2 Manager 큐가 *기계로 소비*할 1급 식별자 — owner의 `manages` 상위 User.id(루트면 `None`), 어느 큐에 적재할지. `reason`은 그 escalation의 *사람용* 자연어 근거. 둘을 분리: 큐 라우팅은 식별자로, 운영자 화면은 문장으로 — `ConsensusOutcome.Deadlocked.reason`이 사람용이듯). owner 부재·timeout escalation은 새 경로가 아니라 사람 그래프 상향(Owner→Manager) 재사용이며, 실제 Manager 큐 연결은 T5.2로 자리만 둔다(ConsensusOutcome.Deadlocked 정합). 사용자向 투영: `AwaitingWorker`·`EscalatedToManager` 둘 다 `OrgReply.Pending(kind="dispatched")`로 모인다(`manager_id`·`reason`은 사용자에게 감추는 내부값 — Pending에 싣지 않음). (ADR 0011)
+`poll(ticket)`이 돌려주는 결말. "타입이 곧 상태"(RoutingDecision·ConsensusOutcome 정신) — 세 결말 중 하나. **Delivered**(워커가 owner 환경에서 답을 만들어 회신 → `Answer` 도착, `mode` 보존 = Approval 게이트 합류 자리) · **AwaitingWorker**(아직 회신 없음 — 워커 미연결/생성 중 → 큐에 대기, `waited` 경과시간) · **EscalatedToManager**(timeout/owner 부재 → 미아·합의 실패와 같은 종착 처분 = Escalation. `manager_id`는 Manager 큐가 *기계로 소비*할 1급 식별자 — owner의 `manages` 상위 User.id(루트면 `None`), 어느 큐에 적재할지. `reason`은 그 escalation의 *사람용* 자연어 근거. 둘을 분리: 큐 라우팅은 식별자로, 운영자 화면은 문장으로 — `ConsensusOutcome.Deadlocked.reason`이 사람용이듯). owner 부재·timeout escalation은 새 경로가 아니라 사람 그래프 상향(Owner→Manager) 재사용이며, **Manager 큐로 수렴**한다 — `ManagerItem`의 `EscalationSource.FromDispatch`로 적재돼 Manager가 Reroute(재지정)·처리(ADR 0014. T6.3 당시 "자리만"이던 것을 T5.2가 닫음). `manager_id`가 None(루트 owner)이면 적재자가 root로 보정(미아 없음). 사용자向 투영: `AwaitingWorker`·`EscalatedToManager` 둘 다 `OrgReply.Pending(kind="dispatched")`로 모인다(`manager_id`·`reason`은 사용자에게 감추는 내부값 — Pending에 싣지 않음). (ADR 0011)
 _Avoid_: Result(단독 — Answer와 혼동), DeliveryStatus
 
 **Registry**:
@@ -146,11 +146,11 @@ _Avoid_: Topic, Category
 primary는 그대로 두고 추가로 끌어들이는 협업. 끌려 들어온 Card가 Collaborator. (기획서 `required_handoffs` 필드 → `collaborators`로 개명.)
 
 **Approval (승인 게이트)**:
-Routed인데 실행 전 사람 사인이 필요한 상태. 라우팅은 됐고 게이트만 걸린다. (기획서 `human_approval_required`)
+Routed인데 실행 전 사람 사인이 필요한 상태. 라우팅은 됐고 게이트만 걸린다. (기획서 `human_approval_required`) 게이트 *표시*까지 구현됨(`Routed.requires_approval`→`AskOrg._apply_approval_gate`가 `mode="draft_only"`로 답을 내림, T2.5). 실 승인 행위(draft→full로 푸는 사인)는 **Manager 큐와 별 탭/행위로 후속 분리**(ADR 0014 결정 4) — Approval은 *담당 정해짐+사인 대기* 게이트라 *담당 미정* escalation(Manager 큐 수렴)과 도메인이 다르고 승인자도 manager 전용이 아니다. 같은 운영 화면에 탭으로 나란히 둘 수 있으나(owner 처리함이 합의·검토 두 탭을 갖듯) 도메인은 분리.
 _Avoid_: Escalation(이건 게이트가 아니다)
 
 **Escalation**:
-담당 자체를 사람(Manager)이 정하도록 결정을 사람에게 넘기는 것 — Contested(합의 실패)·Unowned의 종착 처분. Approval(게이트)과 구분.
+담당 자체를 사람(Manager)이 정하도록 결정을 사람에게 넘기는 것 — Contested(합의 실패)·Unowned·owner 부재/timeout의 종착 처분. Approval(게이트)과 구분. **Manager 큐 적재로 종착**(ADR 0014) — 세 출처(`Unowned`·`Deadlocked`·`EscalatedToManager`)가 하나의 `ManagerItem`로 수렴해 `pending_for_manager`에 쌓여 사람을 기다린다(미아 없음의 마지막 칸). 처분 *상태*만 남던 것이 큐 적재로 *사람 손에 닿는다*.
 
 **Transfer (이관)**:
 이미 배정된 primary를 다른 Card로 재지정하는 런타임 사건. A 빠지고 B 맡음. 전이이며, 기록은 감사 로그가 맡는다(전이 ≠ 기록).
@@ -202,12 +202,36 @@ _Avoid_: CaseDB, Repository(단독)
 _Avoid_: Vote(단독 — 다수결 아님, 전원 일치), Claim/Concede(둘로 쪼개지 않고 한 축으로)
 
 **ConsensusOutcome (합의 결과)**:
-후보 Owner들의 ConcurOnPrimary 표를 모아 합의를 시도한 결과. "타입이 곧 상태"(RoutingDecision·OrgReply 정신) — 세 결말 중 하나. **Agreed**(전원 일치 → `Resolution`+`Precedent` 산출, 케이스 closed) · **StillOpen**(표가 덜 모임 → 케이스 open 유지, `pending_owners` 남음) · **Deadlocked**(표가 갈림=교착 → 합의 실패 *자리만*, Manager escalation 처리는 T5.2 Manager 큐로 미룸). T4.2의 핵심은 Agreed→Precedent이며, Deadlocked는 도메인에 자리를 두되 처리는 미룬다.
+후보 Owner들의 ConcurOnPrimary 표를 모아 합의를 시도한 결과. "타입이 곧 상태"(RoutingDecision·OrgReply 정신) — 세 결말 중 하나. **Agreed**(전원 일치 → `Resolution`+`Precedent` 산출, 케이스 closed) · **StillOpen**(표가 덜 모임 → 케이스 open 유지, `pending_owners` 남음) · **Deadlocked**(표가 갈림=교착 → 합의 실패. **Manager 큐로 수렴** — `ManagerItem`의 `EscalationSource.FromDeadlock`으로 적재돼 Manager가 중재(AssignOwner→Resolution→Precedent로 그 ConflictCase 종결), ADR 0014. T4.2 당시 "자리만"이던 것을 T5.2가 닫음). T4.2의 핵심은 Agreed→Precedent이며, Deadlocked의 사람 종결은 Manager 큐가 받는다.
 _Avoid_: Result(단독 — Answer와 혼동)
 
 **Manager**:
 다른 User를 `manages` 하는 User(조직장). 사람 위계의 상위 노드이며 Owner와 무관 — 에이전트를 소유할 수도, 안 할 수도 있다. 미해소 Conflict의 escalation은 카드가 아니라 사람 그래프를 타고 Owner의 manager로 올라가며, 꼭대기는 루트 User.
 _Avoid_: Admin(단독), Triage, "Owner의 일종"
+
+**Manager 큐 (Manager queue)**:
+한 Manager에게 귀속된 미해소 escalation들의 모음 — PRD §4 페르소나의 "Manager 큐" 그 면이다(승인·escalation·합의 실패를 처리). **세 출처가 하나의 `ManagerItem`로 수렴**한다(ADR 0014) — `RoutingDecision.Unowned`(미아)·`ConsensusOutcome.Deadlocked`(합의 교착)·`DispatchOutcome.EscalatedToManager`(owner 부재/timeout). 셋 모두 *"담당/답을 사람이 정해야 하는 한 escalation"*이라 한 큐로 모으되, 출처 차이는 `EscalationSource` sealed sum으로 담는다(Owner 처리함이 다툼·검토를 *별 store*로 가른 것과 다른 판단 — 거긴 다른 일, 여긴 같은 일의 다른 출처). 색인 키가 **`manager_id`**(owner가 아니라 그 위 사람 — escalation은 owner가 아니라 manager에게 귀속). escalation의 Manager 큐 적재 = **미아 없음의 최종 종착**(처분 상태만 남던 마지막 칸을 채움 — 반드시 누군가의 큐에 닿고 root로 보정). 운영 면이라 내부값 노출 OK(채팅 OrgReply 불변식과 다른 면). (ADR 0014)
+_Avoid_: Inbox(이건 **Owner 처리함** — 합의·검토, Manager 큐와 구분), Work Queue(이건 owner별 작업 큐 — 분산 전송, 사람 위계 escalation과 구분), Mailbox, Triage
+
+**ManagerItem (Manager 큐 항목)**:
+Manager 큐에 쌓인 한 escalation 항목 — `ConflictCase`가 미해소 *다툼*을, `BackupReviewItem`이 미검토 *백업 답*을 담듯 이건 미해소 *escalation*을 담는다(Manager 처리함의 한 항목). `manager_id`(귀속 키 — 어느 Manager 큐, `pending_for_manager` 색인) · `source`(**EscalationSource** — 출처 원형) · `created_at`(주입 clock 결정론) · `item_id` · `status`(`open`/`resolved`, ConflictCase.status 결) · `resolution`(resolved일 때만 — **ManagerResolution**). open→resolved 전이는 `resolve()`가 `item_id`·source 보존한 새 인스턴스를 돌려준다(파괴적 변경 X — `ConflictCase.resolve()`·`BackupReviewItem.review_with()`와 같은 정신). manager_id는 끝내 None이 안 된다(적재자가 root 보정 — 미아 없음). (ADR 0014)
+_Avoid_: EscalationTicket, Case(이건 ConflictCase — 다툼), Task
+
+**EscalationSource (escalation 출처)**:
+한 `ManagerItem`이 어디서 왔나 — 세 출처의 sealed sum("타입이 곧 상태", RoutingDecision·ConsensusOutcome·DispatchOutcome 정신). **FromUnowned**(미아 → `decision`(Unowned 원형)·`question`; manager_id=root) · **FromDeadlock**(합의 교착 → `case`(ConflictCase 원형)·`reason`; manager_id=후보 Owner의 manager) · **FromDispatch**(owner 부재 → `outcome`(EscalatedToManager 원형); manager_id=outcome.manager_id). 각 출처가 *원형 처분을 그대로 안아* Manager가 전체 맥락(후보·owner/agent_id·root)을 본다(audit이 decision·dispatch_outcome 원형을 안는 정신). FromUnowned·FromDeadlock은 *담당 미정* escalation, FromDispatch는 *담당 정해졌으나 답 부재*(가용성) escalation이라 처리 행위가 갈린다. (ADR 0014)
+_Avoid_: EscalationKind, EscalationType, Reason(단독 — 사람용 자연어와 혼동)
+
+**ManagerAction (Manager 처분)**:
+Manager가 한 항목에 내리는 1인칭 처분 — sealed sum(`ConcurOnPrimary`·`BackupReview` 정신, `by_manager` 1인칭). **AssignOwner**(담당 지정 — 미아·교착의 사람 종결; intent 있으면 `Resolution`(intent→primary)→**Precedent 학습**, CONTEXT Conflict "두 경로 모두 Resolution→Precedent"; FromDeadlock이면 그 ConflictCase도 resolved) · **Reroute**(재지정 — owner 부재의 운영 판단, **Transfer**에 해당, Precedent 안 만듦 — 일회 가용성 사건이지 담당 규칙 변경 아님) · **Dismiss**(종결 — "확인했고 조치 안 함", 처리 완료 사실은 남김, Precedent X). 처리 서비스(`ManagerQueueService`)가 `item.manager_id == by_manager` 강제(ConsensusService·BackupReviewService 정신). T5.2는 자리+기본 처리까지 — 출처-행위 적합성 강제·멀티홉·처리 시 자동 통지·신규 카드 생성은 후속. (ADR 0014)
+_Avoid_: ManagerDecision, Verdict, Triage(단독)
+
+**ManagerResolution (Manager 처리 결론)**:
+한 `ManagerItem`의 처리 결말 — `action`(Manager가 내린 ManagerAction 원형, by_manager 보존) · `resolution`(AssignOwner가 Precedent로 흘린 conflict **Resolution**; Reroute/Dismiss면 None). conflict `Resolution`(intent→primary, 합의 결론)과 *구분* — ManagerResolution은 "이 escalation을 사람이 이렇게 종결했다"는 큐 항목의 결말이고 그 *안에* (AssignOwner면) conflict Resolution을 담는다. (ADR 0014)
+_Avoid_: Resolution(단독 — 이건 다툼 합의 결론, ManagerResolution은 큐 항목 결말)
+
+**ManagerQueueStore (Manager 큐 저장소)**:
+미해소 `ManagerItem`을 보관·조회하는 포트 — `ConflictCaseStore`·`BackupReviewStore`·`AuditLog`·`PrecedentStore`와 *같은 포트 패턴*(Protocol + `InMemoryManagerQueueStore`)의 세 번째 인스턴스. `enqueue(item)`(open_case/add 대응) · `get(item_id)` · `pending_for_manager(manager_id)`(=`open_for_owner`/`pending_for_owner`, Manager 처리함 — "내 큐에 쌓인 escalation들") · `get_by_case(case_id)`(FromDeadlock 중복 적재 방지 — 같은 ConflictCase가 두 번 안 들게, `open_for_intent` 정신) · `mark_resolved(item)`. **색인 키가 `owner`가 아니라 `manager_id`** — escalation은 owner가 아니라 그 위 사람에게 귀속(ConflictCaseStore·BackupReviewStore와 그 점만 다름, 패턴은 100% 재사용). **전이 ≠ 기록** — 미해소 escalation 도메인 상태 보관이지 절차 로그(AuditLog)가 아니다(escalation은 audit에 이미 남음 — ADR 0011 결정 5). (ADR 0014)
+_Avoid_: QueueDB, EscalationStore(단독), Repository(단독)
 
 **Resolution**:
 한 Conflict에 대해 관련 Owner들(필요시 사람 Authority)이 합의한 결론. `frozen` 값 객체 — `intent`(어떤 분류 라벨의 다툼인지) · `primary`(합의로 정해진 담당 `agent_id`) · `rationale`(합의 근거, 선택). "타입이 곧 상태"라 이것 자체가 합의됐다는 사실이다. Overlap에선 ConflictCase의 후보 Owner들이 ConcurOnPrimary 표로 전원 일치할 때 산출되고(`ConsensusOutcome.Agreed`), 곧장 Precedent로 기록되며 그 ConflictCase는 resolved된다.

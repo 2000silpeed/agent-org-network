@@ -315,7 +315,7 @@ def main() -> None:
     import argparse
     import os
 
-    from agent_org_network.demo import cards_for_owner
+    from agent_org_network.demo import DEMO_OKF_ROOT, cards_for_owner
 
     parser = argparse.ArgumentParser(description="Agent Org Network — Owner Worker(수동 시연)")
     parser.add_argument(
@@ -359,8 +359,14 @@ def main() -> None:
             f"[worker:{owner_id}] 경고: 데모 샘플에 owner '{owner_id}'의 카드가 없습니다. "
             "(legal_lead / cs_lead / finance_lead 중 하나여야 함)"
         )
+    # owner OKF 번들 cwd 소비(ADR 0013, T6.7): 워커의 ClaudeCodeRuntime에 owner 번들 루트를
+    # 주입한다 — 답할 카드의 규약 경로(okf_root/{agent_id})에 번들이 있으면 그 디렉터리를
+    # cwd로 읽어 답한다(없으면 기존 tempfile 동작). 데모는 repo okf/지만 의미상 owner 환경.
     logic = WorkerLogic(
-        owner_id=owner_id, cards=cards, runtime=ClaudeCodeRuntime(), role=role
+        owner_id=owner_id,
+        cards=cards,
+        runtime=ClaudeCodeRuntime(okf_root=DEMO_OKF_ROOT),
+        role=role,
     )
     print(
         f"[worker:{owner_id}|{role}] 카드 {len(cards)}개({', '.join(cards) or '없음'}) — "

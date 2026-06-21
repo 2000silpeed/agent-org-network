@@ -34,13 +34,18 @@ def card(
 
 
 class _RecordingRunner:
-    """프롬프트를 받아 고정 응답을 돌려주며, 마지막 프롬프트를 기록한다."""
+    """프롬프트를 받아 고정 응답을 돌려주며, 마지막 프롬프트를 기록한다.
+
+    `cwd`는 ClaudeRunner Protocol(ADR 0013 OKF 소비)의 선택 키워드 — 이 테스트들은 OKF
+    번들을 두지 않아(okf_root 미주입) cwd가 전달되지 않지만, 시그니처로 흡수해 Protocol에
+    부합한다(행위 불변).
+    """
 
     def __init__(self, reply: str) -> None:
         self.reply = reply
         self.last_prompt: str | None = None
 
-    def __call__(self, prompt: str) -> str:
+    def __call__(self, prompt: str, *, cwd: str | None = None) -> str:
         self.last_prompt = prompt
         return self.reply
 
@@ -102,7 +107,7 @@ def test_빈_도메인_출처_없는_카드도_프롬프트_구성된다():
 
 def test_빈_응답이면_폴백_Answer():
     c = card(knowledge_sources=["위키/환불정책"])
-    runtime = ClaudeCodeRuntime(runner=lambda _p: "   \n  ")
+    runtime = ClaudeCodeRuntime(runner=_RecordingRunner("   \n  "))
 
     ans = runtime.answer("환불 되나요?", c)
 
@@ -114,7 +119,7 @@ def test_빈_응답이면_폴백_Answer():
 def test_timeout이면_폴백_Answer():
     c = card(knowledge_sources=["위키/환불정책"])
 
-    def _boom(_prompt: str) -> str:
+    def _boom(_prompt: str, *, cwd: str | None = None) -> str:
         raise subprocess.TimeoutExpired(cmd="claude", timeout=120)
 
     runtime = ClaudeCodeRuntime(runner=_boom)
@@ -130,7 +135,7 @@ def test_timeout이면_폴백_Answer():
 def test_비정상_종료_예외면_폴백_Answer():
     c = card()
 
-    def _boom(_prompt: str) -> str:
+    def _boom(_prompt: str, *, cwd: str | None = None) -> str:
         raise RuntimeError("claude -p exited with 1: boom")
 
     runtime = ClaudeCodeRuntime(runner=_boom)

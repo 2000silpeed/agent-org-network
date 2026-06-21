@@ -38,6 +38,12 @@ ROOT_USER = "root_manager"
 
 _REVIEWED = date(2026, 6, 20)
 
+# 데모 owner들의 OKF 번들 루트(ADR 0013, T6.7). repo 루트의 `okf/`를 owner 환경으로
+# 간주한다 — 의미상 owner 소유(개인 PC·격리 저장소)지만 데모는 repo가 그 자리. 절대
+# 경로로 잡아 워커를 *어디서 실행하든*(cwd 무관) 같은 번들을 cwd로 읽게 한다. 분산
+# (T6.3)에선 각 owner 워커가 자기 환경의 루트를 주입한다(번들 cwd 격리).
+DEMO_OKF_ROOT = Path(__file__).resolve().parent.parent.parent / "okf"
+
 _USERS: tuple[User, ...] = (
     User(id=ROOT_USER),
     User(id="legal_lead", manager=ROOT_USER),
@@ -140,7 +146,9 @@ def build_demo(
     # 분산이 아니라 즉답이 필요하므로 동기 런타임을 LocalRuntimeDispatcher로 감싼다 —
     # dispatch가 곧 답(항상 Delivered). 분산 회수 경로(2b-i)를 검증할 땐 WebSocketDispatcher
     # 를 주입해 dispatched→retrieve 흐름을 결정론으로 본다.
-    runtime_impl: AgentRuntime = runtime if runtime is not None else ClaudeCodeRuntime()
+    runtime_impl: AgentRuntime = (
+        runtime if runtime is not None else ClaudeCodeRuntime(okf_root=DEMO_OKF_ROOT)
+    )
     dispatcher_impl: RuntimeDispatcher = (
         dispatcher if dispatcher is not None else LocalRuntimeDispatcher(runtime_impl)
     )

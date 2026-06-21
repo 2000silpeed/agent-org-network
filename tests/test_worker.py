@@ -30,13 +30,17 @@ BASE_TS = datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
 
 
 class _RecordingRunner:
-    """프롬프트를 받아 고정 응답을 돌려주며 마지막 프롬프트를 기록(실 claude 대역)."""
+    """프롬프트를 받아 고정 응답을 돌려주며 마지막 프롬프트를 기록(실 claude 대역).
+
+    `cwd`는 ClaudeRunner Protocol(ADR 0013 OKF 소비)의 선택 키워드 — 이 테스트들은 OKF
+    번들을 두지 않아 cwd가 전달되지 않지만, 시그니처로 흡수해 Protocol에 부합한다(행위 불변).
+    """
 
     def __init__(self, reply: str) -> None:
         self.reply = reply
         self.last_prompt: str | None = None
 
-    def __call__(self, prompt: str) -> str:
+    def __call__(self, prompt: str, *, cwd: str | None = None) -> str:
         self.last_prompt = prompt
         return self.reply
 

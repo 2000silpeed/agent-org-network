@@ -1,6 +1,6 @@
 # Manager 큐 — 세 escalation 출처를 하나의 ManagerItem으로 수렴하고 manager_id로 귀속
 
-상태: proposed (2026-06-21, 설계·shape — domain-architect) · 구현은 후속(tdd-engineer)
+상태: accepted (2026-06-21, 설계·shape — domain-architect) · **구현 accepted (2026-06-21, T5.2 — tdd-engineer)**: `ManagerItem`·`EscalationSource`(`FromUnowned`/`FromDeadlock`/`FromDispatch`)·`ManagerAction`(`AssignOwner`→Resolution+Precedent·case 종결 / `Reroute` / `Dismiss`)·`ManagerResolution`·`ManagerQueueStore`(색인 키 manager_id)·`ManagerQueueService`(1인칭 강제) 구현 + 세 출처 큐 적재(`ask_org` 핸들·합의/web concur 경로)·web 라우트(`GET /manager/queue`·`POST /manager/items/{id}/act`). 게이트 414 passed(회귀 0), pyright 0, ruff 0.
 
 ADR 0008은 `ConsensusOutcome.Deadlocked`(합의 교착)를, ADR 0011은 `DispatchOutcome.EscalatedToManager`(owner 부재/timeout)를 각각 "자리만 남기고 **T5.2 Manager 큐로 미룬다**"고 명시했다. `RoutingDecision.Unowned`(미아)도 PRD §7 시나리오 4가 "Manager 큐로"라 적었다. 세 출처가 모두 *"담당/답을 사람(Manager)이 정해야 하는 미해소 escalation"*인데, 지금껏 처분 *상태*만 남기고 사람 손에 닿는 마지막 한 칸이 비어 있었다. T5.2가 그 칸을 채운다 — **Manager 큐로 수렴**.
 

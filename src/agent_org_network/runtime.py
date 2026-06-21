@@ -2,9 +2,12 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from agent_org_network.agent_card import AgentCard
+
+if TYPE_CHECKING:
+    from agent_org_network.git_gateway import GitGateway
 
 # 신뢰 상태(CONTEXT Answer 절, ADR 0012 결정 4):
 #   full:        owner 실시간 답, 그대로 사용자에게
@@ -18,6 +21,11 @@ class Answer:
     text: str
     sources: tuple[str, ...] = field(default_factory=tuple)
     mode: AnswerMode = "full"
+    # 답이 *어느 OKF 커밋 스냅샷*으로 만들어졌나(ADR 0018 결정 4 — "이 답은 이 커밋 기준"
+    # 감사 메타). 커밋 스냅샷 모드에서 `git archive <sha>` 추출본을 cwd로 읽었을 때 그 SHA가
+    # 실린다. 기본 None — working tree 직독(T6.7)·스텁/canned 경로엔 SHA 없음(하위호환).
+    # `mode`·`sources`와 같은 답에 붙는 신뢰/출처 메타의 연장(노출 불변식: 운영 면 노출 OK).
+    snapshot_sha: str | None = None
 
 
 class AgentRuntime(Protocol):
@@ -140,26 +148,20 @@ class ClaudeCodeRuntime:
     claude가 번들 마크다운을 *읽어* 답하게 한다(벡터DB·RAG 0). 번들이 없으면 기존
     동작(tempfile cwd, 도구 없음)으로 카드 맥락만으로 답한다(하위호환).
 
-    번들 경로 규약(ADR 0013 결정 2 안 B): `okf_root/{agent_id}`. `knowledge_sources`는
-    카드 스키마 무변경으로 그 OKF 번들을 가리키는 *참조*(레이블)이며 `Answer.sources`로
-    그대로 흐른다 — 레이블 문자열을 경로로 쓰지 않고 `agent_id` 규약으로 디렉터리를
-    해석한다(기존 레이블 보존). `okf_root`는 **명시 주입**이다 — owner 환경(데모는 repo
-    `okf/`)이 자기 번들 루트를 넘긴다(번들 cwd 격리, 분산 T6.3 정합). `okf_root=None`(기본)
-    이면 번들 해석을 아예 하지 않아 항상 기존 동작(tempfile cwd) — 중앙 무지식·하위호환:
-    암묵 cwd-상대 경로로 owner 지식을 *추정*하지 않는다(owner 환경이 명시 제공해야 소비).
-
-    실제 호출은 비결정·느리므로 `runner`를 주입 가능하게 둬 단위테스트는 FakeRunner로
-    고정한다. `runner`는 프롬프트(위치 인자)와 `cwd`(키워드, 번들 있을 때만 전달)를 받는다 —
-    번들이 없으면 `cwd`를 *넘기지 않아* 1-인자 runner와도 호환된다.
+    커밋 스냅샷 모드(ADR 0018 결정 4): `git_gateway` 주입 시 `head_sha` → `extract_snapshot`
+    → 추출 디렉터리를 cwd로 runner 호출 → `Answer.snapshot_sha=sha`. `okf_root`만 주면
+    기존 working tree 직독(snapshot_sha=None, T6.7 하위호환).
     """
 
     def __init__(
         self,
         runner: ClaudeRunner = _run_claude_headless,
         okf_root: str | Path | None = None,
+        git_gateway: "GitGateway | None" = None,
     ) -> None:
         self._runner = runner
         self._okf_root = Path(okf_root) if okf_root is not None else None
+        self._git_gateway = git_gateway
 
     def build_prompt(self, question: str, card: AgentCard) -> str:
         return _build_persona_prompt(question, card)
@@ -180,6 +182,48 @@ class ClaudeCodeRuntime:
     def answer(self, question: str, card: AgentCard) -> Answer:
         prompt = self.build_prompt(question, card)
         sources = tuple(card.knowledge_sources)
+
+        # 커밋 스냅샷 모드(ADR 0018 결정 4): git_gateway 주입 시 HEAD 스냅샷을 추출해
+        # 그 디렉터리를 cwd로 runner 호출. snapshot_sha를 Answer에 실어 감사 메타 제공.
+        if self._git_gateway is not None:
+            try:
+                sha = self._git_gateway.head_sha(card.agent_id)
+            except (ValueError, KeyError):
+                sha = None
+
+            if sha is not None:
+                try:
+                    with tempfile.TemporaryDirectory() as workdir:
+                        snap_dir = self._git_gateway.extract_snapshot(
+                            sha, card.agent_id, Path(workdir)
+                        )
+                        try:
+                            raw = self._runner(prompt, cwd=str(snap_dir))
+                        except subprocess.TimeoutExpired:
+                            return Answer(
+                                text=f"[{card.agent_id}] 담당자 응답 생성이 시간 내에 끝나지 않았습니다.",
+                                sources=sources,
+                                mode="full",
+                                snapshot_sha=sha,
+                            )
+                        text = raw.strip()
+                        if not text:
+                            return Answer(
+                                text=f"[{card.agent_id}] 담당자 응답이 비어 있습니다.",
+                                sources=sources,
+                                mode="full",
+                                snapshot_sha=sha,
+                            )
+                        return Answer(text=text, sources=sources, mode="full", snapshot_sha=sha)
+                except Exception as exc:
+                    return Answer(
+                        text=f"[{card.agent_id}] 담당자 응답 생성에 실패했습니다: {exc}",
+                        sources=sources,
+                        mode="full",
+                        snapshot_sha=sha,
+                    )
+
+        # 기존 working tree 직독 경로(T6.7 하위호환 — git_gateway 없음)
         bundle = self.bundle_dir(card)
         try:
             if bundle is not None:

@@ -43,6 +43,13 @@ from agent_org_network.conflict import (
 )
 from agent_org_network.demo import build_demo
 from agent_org_network.dispatch import RuntimeDispatcher
+from agent_org_network.git_gateway import (
+    BuilderCommitRequest,
+    FakeGitGateway,
+    GitGateway,
+    OkfFile,
+    commit_okf_bundle,
+)
 from agent_org_network.manager_queue import (
     AssignOwner as MgrAssignOwner,
     Dismiss as MgrDismiss,
@@ -474,6 +481,18 @@ def validate_card_for_builder(
     return {"ok": True, "yaml": yaml_text}
 
 
+class BuilderOkfCommitRequest(BaseModel):
+    """POST /builder/okf/commit 요청 바디 — OKF 번들 파일 커밋(ADR 0018 결정 1·5).
+
+    `agent_id`·`files`·`message`를 body에서 받는다. **`author`는 세션 신원**으로 채워진다
+    (ADR 0016 위조 차단 — body가 아닌 세션). `files`는 번들 내 상대 경로+내용 리스트.
+    """
+
+    agent_id: str
+    files: list[dict[str, str]]
+    message: str = ""
+
+
 class ManagerActionRequest(BaseModel):
     """POST /manager/items/{item_id}/act 요청 바디.
 
@@ -541,6 +560,7 @@ def create_app(
     manager_queue_store: ManagerQueueStore | None = None,
     audit_log: JsonlAuditLog | InMemoryAuditLog | None = None,
     session_secret: str | None = None,
+    git_gateway: GitGateway | None = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -548,6 +568,8 @@ def create_app(
     `session_secret`(T6.5·ADR 0016): 운영 면 세션 서명 키. 주입 시 `SessionMiddleware`를
     부착해 운영 엔드포인트가 세션 신원을 요구한다 — 테스트는 고정 키 주입(결정론),
     운영은 env. 커밋 금지. **미주입이면 세션 미부착**(하위호환 — 기존 동작·기존 테스트 보존).
+    `git_gateway`(T7.2·ADR 0018): OKF 번들 커밋 포트. 미주입이면 `FakeGitGateway`(안전한
+    기본 — 실 git subprocess는 `SubprocessGitGateway`를 명시 주입).
     """
     from starlette.middleware.sessions import SessionMiddleware
 
@@ -569,6 +591,7 @@ def create_app(
     _review_store = review_store
     _review_service = review_service
     _manager_queue_store = manager_queue_store
+    _git_gateway: GitGateway = git_gateway if git_gateway is not None else FakeGitGateway()
 
     # NotAuthenticatedError → 401 매핑
     from fastapi import Request as FastApiRequest
@@ -802,6 +825,55 @@ def create_app(
                     detail=f"자기 카드만 구성할 수 있습니다(세션 {session_owner!r} ≠ owner {req.owner!r}).",
                 )
         return validate_card_for_builder(req, bundle.registry)
+
+    @app.post("/builder/okf/commit")
+    def builder_okf_commit(req: BuilderOkfCommitRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """OKF 번들 파일을 owner author로 커밋한다(ADR 0018 결정 1·5).
+
+        author는 세션 신원에서 채워진다(ADR 0016 위조 차단 — body 아님). Owner 스코프:
+        세션 신원 ≠ 대상 카드 owner → 403, 미로그인 → 401, 카드 미존재 → 404,
+        파일 없음/경로 탈출 → 400.
+        """
+        session_owner = _session_identity(request)  # 미로그인 → 401
+
+        # agent_id 형식 검증(validate_card_for_builder와 대칭 — m3)
+        if not req.agent_id or not req.agent_id.strip():
+            raise HTTPException(status_code=400, detail="agent_id는 비어 있을 수 없습니다.")
+
+        # 대상 카드 존재 및 owner 스코프 확인
+        try:
+            card = bundle.registry.get(req.agent_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"카드 미존재: {req.agent_id!r}")
+
+        if card.owner != session_owner:
+            raise HTTPException(
+                status_code=403,
+                detail=f"자기 번들만 커밋할 수 있습니다(세션 {session_owner!r} ≠ owner {card.owner!r}).",
+            )
+
+        # files 입력 검증 및 OkfFile 변환
+        if not req.files:
+            raise HTTPException(status_code=400, detail="커밋할 파일이 없습니다.")
+        try:
+            okf_files = tuple(
+                OkfFile(path=f["path"], content=f["content"]) for f in req.files
+            )
+        except (KeyError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=f"파일 형식 오류: {exc}") from exc
+
+        commit_req = BuilderCommitRequest(
+            agent_id=req.agent_id,
+            owner=session_owner,
+            files=okf_files,
+            message=req.message,
+        )
+        try:
+            result = commit_okf_bundle(commit_req, _git_gateway)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return {"sha": result.sha, "agent_id": result.agent_id}
 
     @app.get("/builder")
     def builder_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]

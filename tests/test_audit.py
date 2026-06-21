@@ -342,3 +342,87 @@ def test_AwaitingWorker_audit_waited_seconds_포함() -> None:
     assert record["dispatch"]["disposition"] == "awaiting_worker"
     assert "waited_seconds" in record["dispatch"]
     assert record["dispatch"]["waited_seconds"] == 0.0
+
+
+# ── M1: audit 레코드에 snapshot_sha 기록 ──────────────────────────────────────
+
+
+def test_snapshot_sha_있는_Answer_audit_레코드에_sha_실린다() -> None:
+    """M1: Answer.snapshot_sha가 있으면 audit 레코드 answer["snapshot_sha"]에 나타난다."""
+    from agent_org_network.audit import AuditEntry
+    from agent_org_network.decision import Routed
+    from agent_org_network.dispatch import Delivered, WorkTicket
+    from agent_org_network.runtime import Answer
+
+    sha = "abc1234" * 5
+    answer = Answer(text="스냅샷 답", mode="full", snapshot_sha=sha)
+    card = _card("cs_ops", ["환불"])
+    decision = Routed(primary=card, confidence=1.0, reason="test")
+    ticket = WorkTicket(owner_id="cs_lead", agent_id="cs_ops", question="환불?", enqueued_at=_FIXED_DT)
+    outcome = Delivered(ticket=ticket, answer=answer)
+    entry = AuditEntry(
+        timestamp=_FIXED_DT,
+        user_id="u1",
+        question="환불?",
+        intent="환불",
+        decision=decision,
+        dispatch_outcome=outcome,
+    )
+
+    record = entry.as_record()
+    assert record["answer"] is not None
+    assert record["answer"]["snapshot_sha"] == sha
+
+
+def test_snapshot_sha_None인_Answer_audit_레코드에_키_없음() -> None:
+    """M1: snapshot_sha=None이면 기존 모양 유지 — 키가 없다."""
+    from agent_org_network.audit import AuditEntry
+    from agent_org_network.decision import Routed
+    from agent_org_network.dispatch import Delivered, WorkTicket
+    from agent_org_network.runtime import Answer
+
+    answer = Answer(text="일반 답", mode="full", snapshot_sha=None)
+    card = _card("cs_ops", ["환불"])
+    decision = Routed(primary=card, confidence=1.0, reason="test")
+    ticket = WorkTicket(owner_id="cs_lead", agent_id="cs_ops", question="환불?", enqueued_at=_FIXED_DT)
+    outcome = Delivered(ticket=ticket, answer=answer)
+    entry = AuditEntry(
+        timestamp=_FIXED_DT,
+        user_id="u1",
+        question="환불?",
+        intent="환불",
+        decision=decision,
+        dispatch_outcome=outcome,
+    )
+
+    record = entry.as_record()
+    assert record["answer"] is not None
+    assert "snapshot_sha" not in record["answer"]
+
+
+def test_snapshot_sha_JSONL_직렬화_왕복() -> None:
+    """M1: to_jsonl → json.loads 왕복 시 snapshot_sha 보존(문자열 그대로)."""
+    import json
+
+    from agent_org_network.audit import AuditEntry
+    from agent_org_network.decision import Routed
+    from agent_org_network.dispatch import Delivered, WorkTicket
+    from agent_org_network.runtime import Answer
+
+    sha = "deadbeef" * 5
+    answer = Answer(text="왕복 답", mode="full", snapshot_sha=sha)
+    card = _card("legal_ops", ["계약 검토"])
+    decision = Routed(primary=card, confidence=1.0, reason="test")
+    ticket = WorkTicket(owner_id="legal_lead", agent_id="legal_ops", question="계약?", enqueued_at=_FIXED_DT)
+    outcome = Delivered(ticket=ticket, answer=answer)
+    entry = AuditEntry(
+        timestamp=_FIXED_DT,
+        user_id="u2",
+        question="계약?",
+        intent="계약 검토",
+        decision=decision,
+        dispatch_outcome=outcome,
+    )
+
+    roundtripped = json.loads(entry.to_jsonl())
+    assert roundtripped["answer"]["snapshot_sha"] == sha

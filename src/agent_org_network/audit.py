@@ -101,7 +101,10 @@ def _decision_record(d: RoutingDecision) -> dict[str, Any]:
 def _answer_record(a: Answer | None) -> dict[str, Any] | None:
     if a is None:
         return None
-    return {"text": a.text, "mode": a.mode, "sources": list(a.sources)}
+    rec: dict[str, Any] = {"text": a.text, "mode": a.mode, "sources": list(a.sources)}
+    if a.snapshot_sha is not None:
+        rec["snapshot_sha"] = a.snapshot_sha
+    return rec
 
 
 def _dispatch_record(o: DispatchOutcome | None) -> dict[str, Any] | None:

@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Org 그래프 — 전체 그림(운영자)</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --me: #2563eb;
+      --ink: #1f2933;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --user-bg: #dbeafe;
+      --user-border: #93c5fd;
+      --card-bg: #d1fae5;
+      --card-border: #6ee7b7;
+      --edge-color: #9ca3af;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+        "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 16px 20px;
+      font-weight: 700;
+      font-size: 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    header small { display: block; font-weight: 400; color: var(--muted); margin-top: 2px; }
+    .login-banner {
+      padding: 16px 20px;
+      background: #fef3c7;
+      border-bottom: 1px solid #fcd34d;
+      font-size: 14px;
+      color: #92400e;
+    }
+    .login-form {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .login-form input {
+      padding: 6px 10px;
+      border: 1px solid #fcd34d;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .login-form button {
+      padding: 6px 14px;
+      background: #d97706;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .main {
+      flex: 1;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .graph-section {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .graph-section h2 {
+      margin: 0 0 16px;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .columns {
+      display: flex;
+      gap: 32px;
+      align-items: flex-start;
+    }
+    .col {
+      flex: 1;
+      min-width: 0;
+    }
+    .col-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .node-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .node-card {
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .node-card.user {
+      background: var(--user-bg);
+      border: 1px solid var(--user-border);
+    }
+    .node-card.card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+    }
+    .node-title {
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .node-meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+    }
+    .node-domains {
+      font-size: 12px;
+      color: #065f46;
+      margin-top: 3px;
+    }
+    .edge-section {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .edge-section h2 {
+      margin: 0 0 12px;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .edge-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 14px;
+    }
+    .edge-tab {
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--bg);
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .edge-tab.active {
+      background: var(--me);
+      color: #fff;
+      border-color: var(--me);
+    }
+    .edge-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .edge-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      padding: 6px 10px;
+      background: var(--bg);
+      border-radius: 6px;
+    }
+    .edge-row .source { font-weight: 600; }
+    .edge-row .arrow { color: var(--muted); font-size: 16px; }
+    .edge-row .target { font-weight: 600; }
+    .edge-type-badge {
+      margin-left: auto;
+      padding: 1px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      background: #e0e7ff;
+      color: #3730a3;
+    }
+    .empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
+    .error-banner {
+      background: #fee2e2;
+      border: 1px solid #fca5a5;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 13px;
+      color: #991b1b;
+    }
+    .refresh-btn {
+      padding: 5px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--me);
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      cursor: pointer;
+      margin-left: 12px;
+    }
+    .nav {
+      padding: 12px 16px;
+      font-size: 13px;
+      background: #fff;
+      border-top: 1px solid var(--line);
+    }
+    .nav a { color: var(--me); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <header>
+    Org 그래프
+    <small>User · Agent Card 2노드 그래프 — owns · manages · maintains(운영 면, 레지스트리 파생).</small>
+  </header>
+
+  <div id="login-banner" class="login-banner" style="display:none;">
+    <strong>로그인이 필요합니다.</strong> 운영 면 — 신원을 선택하세요.
+    <div class="login-form">
+      <input id="login-input" type="text" placeholder="user_id (예: cs_lead)" />
+      <button id="login-btn">로그인</button>
+    </div>
+    <div id="login-error" style="margin-top:6px; font-size:12px; color:#b91c1c;"></div>
+  </div>
+
+  <div class="main" id="main-content" style="display:none;">
+    <div class="graph-section">
+      <h2>
+        노드
+        <button class="refresh-btn" id="refresh-btn">새로고침</button>
+      </h2>
+      <div class="columns">
+        <div class="col">
+          <div class="col-label">User 노드</div>
+          <div class="node-list" id="user-nodes"></div>
+        </div>
+        <div class="col">
+          <div class="col-label">Agent Card 노드</div>
+          <div class="node-list" id="card-nodes"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="edge-section">
+      <h2>엣지</h2>
+      <div class="edge-tabs">
+        <button class="edge-tab active" data-type="owns">owns</button>
+        <button class="edge-tab" data-type="manages">manages</button>
+        <button class="edge-tab" data-type="maintains">maintains</button>
+      </div>
+      <div class="edge-list" id="edge-list"></div>
+    </div>
+
+    <div id="error-area"></div>
+  </div>
+
+  <div class="nav">
+    <a href="/">← 채팅으로</a> &nbsp;|&nbsp;
+    <a href="/monitor/view">모니터링</a> &nbsp;|&nbsp;
+    <a href="/inbox">처리함</a> &nbsp;|&nbsp;
+    <a href="/builder">Agent 빌더</a>
+  </div>
+
+  <script>
+    let graphData = null;
+    let activeEdgeType = "owns";
+
+    function el(tag, cls, text) {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    function renderUserNode(node) {
+      const card = el("div", "node-card user");
+      card.appendChild(el("div", "node-title", node.id));
+      const meta = node.manager ? `manager: ${node.manager}` : "루트 (manager 없음)";
+      card.appendChild(el("div", "node-meta", meta));
+      return card;
+    }
+
+    function renderCardNode(node) {
+      const card = el("div", "node-card card");
+      card.appendChild(el("div", "node-title", node.agent_id));
+      card.appendChild(el("div", "node-meta", `owner: ${node.owner}  ·  team: ${node.team}`));
+      if (node.domains && node.domains.length) {
+        card.appendChild(el("div", "node-domains", "domains: " + node.domains.join(", ")));
+      }
+      if (node.maintainer) {
+        card.appendChild(el("div", "node-meta", `maintainer: ${node.maintainer}`));
+      }
+      return card;
+    }
+
+    function renderEdges(type) {
+      const listEl = document.getElementById("edge-list");
+      listEl.innerHTML = "";
+      if (!graphData) return;
+      const edges = graphData.edges.filter(e => e.type === type);
+      if (!edges.length) {
+        listEl.appendChild(el("div", "empty", `${type} 엣지 없음`));
+        return;
+      }
+      for (const edge of edges) {
+        const row = el("div", "edge-row");
+        row.appendChild(el("span", "source", edge.source));
+        row.appendChild(el("span", "arrow", "→"));
+        row.appendChild(el("span", "target", edge.target));
+        const badge = el("span", "edge-type-badge", edge.type);
+        row.appendChild(badge);
+        listEl.appendChild(row);
+      }
+    }
+
+    function renderGraph(data) {
+      graphData = data;
+
+      const userEl = document.getElementById("user-nodes");
+      const cardEl = document.getElementById("card-nodes");
+      userEl.innerHTML = "";
+      cardEl.innerHTML = "";
+
+      const userNodes = data.nodes.filter(n => n.type === "user");
+      const cardNodes = data.nodes.filter(n => n.type === "card");
+
+      if (!userNodes.length) userEl.appendChild(el("div", "empty", "유저 없음"));
+      for (const n of userNodes) userEl.appendChild(renderUserNode(n));
+
+      if (!cardNodes.length) cardEl.appendChild(el("div", "empty", "카드 없음"));
+      for (const n of cardNodes) cardEl.appendChild(renderCardNode(n));
+
+      renderEdges(activeEdgeType);
+    }
+
+    async function loadGraph() {
+      const errorArea = document.getElementById("error-area");
+      errorArea.innerHTML = "";
+      try {
+        const res = await fetch("/org/graph");
+        if (res.status === 401) {
+          document.getElementById("main-content").style.display = "none";
+          document.getElementById("login-banner").style.display = "block";
+          return;
+        }
+        if (!res.ok) throw new Error("요청 실패: " + res.status);
+        const data = await res.json();
+        document.getElementById("main-content").style.display = "flex";
+        document.getElementById("login-banner").style.display = "none";
+        renderGraph(data);
+      } catch (err) {
+        errorArea.appendChild(el("div", "error-banner", "그래프 로드 실패: " + err.message));
+      }
+    }
+
+    // 엣지 탭 전환
+    document.querySelectorAll(".edge-tab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".edge-tab").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        activeEdgeType = btn.dataset.type;
+        renderEdges(activeEdgeType);
+      });
+    });
+
+    // 새로고침
+    document.getElementById("refresh-btn").addEventListener("click", () => loadGraph());
+
+    // 로그인
+    document.getElementById("login-btn").addEventListener("click", async () => {
+      const userId = document.getElementById("login-input").value.trim();
+      if (!userId) return;
+      const errEl = document.getElementById("login-error");
+      errEl.textContent = "";
+      try {
+        const res = await fetch("/login", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({user_id: userId}),
+        });
+        if (res.status === 401) {
+          errEl.textContent = "미존재 사용자입니다.";
+          return;
+        }
+        if (!res.ok) throw new Error("로그인 실패: " + res.status);
+        await loadGraph();
+      } catch (err) {
+        errEl.textContent = String(err);
+      }
+    });
+
+    loadGraph();
+  </script>
+</body>
+</html>

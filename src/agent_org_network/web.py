@@ -25,7 +25,7 @@ OrgReply(Answered | Pending)를 JSON으로 직렬화해 돌려준다.
 
 import os
 from pathlib import Path
-from typing import Any, Literal, assert_never
+from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -65,10 +65,15 @@ from agent_org_network.review import (
 from agent_org_network.runtime import AgentRuntime
 from agent_org_network.user import User
 
+if TYPE_CHECKING:
+    from agent_org_network.registry import Registry
+
 _WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
 _INDEX_HTML = _WEB_DIR / "index.html"
 _INBOX_HTML = _WEB_DIR / "inbox.html"
 _MONITOR_HTML = _WEB_DIR / "monitor.html"
+_ORG_HTML = _WEB_DIR / "org.html"
+_BUILDER_HTML = _WEB_DIR / "builder.html"
 
 # 웹챗에서 오는 익명 end-user. 채팅(`/ask`·`/`)은 운영 세션을 요구하지 않는다
 # (ADR 0009·0016 — 실 사용자 면은 운영 면과 다른 별개 공간, 익명 유지).
@@ -314,6 +319,159 @@ def summarize_audit_record(index: int, record: dict[str, Any]) -> dict[str, Any]
         "mode": answer.get("mode") if answer is not None else None,
         "answered": answer is not None,
     }
+
+
+def serialize_org_graph(registry: "Registry") -> dict[str, Any]:
+    """Registry를 Org 그래프 운영 화면向 {nodes, edges}로 *순수 파생*한다(T5.3).
+
+    새 도메인 상태·전이 0 — 이미 admission으로 무결성 보증된 Registry(진실)를 읽어
+    User·Agent Card 2노드 그래프(CONTEXT Graph model·ADR 0005)로 투영할 뿐이다.
+    모니터링이 감사 로그를 순수 읽기로 투영하듯, 여긴 원천이 registry다. 운영 면이라
+    내부값(domains 등) 노출 OK(채팅 OrgReply 불변식의 반대).
+
+    노드: User(`{type:"user", id, manager?}`) + Agent Card(`{type:"card", agent_id,
+    owner, team, domains, maintainer?}`).
+    엣지: `owns`(owner User→card) · `manages`(user.manager→user) · `maintains`
+    (maintainer User→card, **카드에 maintainer 있을 때만** — MVP는 owns가 대신, ADR 0005).
+
+    web과 분리(`serialize_reply`·`summarize_audit_record`와 같은 경계) — 순수 함수라
+    결정론 테스트(레지스트리 주입→노드/엣지 단언).
+    """
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+    # 유저 노드 (id 정렬 — 결정론)
+    for uid in sorted(registry.user_ids()):
+        user = registry.get_user(uid)
+        node: dict[str, Any] = {"type": "user", "id": user.id}
+        if user.manager is not None:
+            node["manager"] = user.manager
+        else:
+            node["manager"] = None
+        nodes.append(node)
+
+    # 카드 노드 (agent_id 정렬 — 결정론)
+    for card in sorted(registry.all_cards(), key=lambda c: c.agent_id):
+        card_node: dict[str, Any] = {
+            "type": "card",
+            "agent_id": card.agent_id,
+            "owner": card.owner,
+            "team": card.team,
+            "domains": list(card.domains),
+        }
+        if card.maintainer is not None:
+            card_node["maintainer"] = card.maintainer
+        nodes.append(card_node)
+
+    # owns 엣지 (카드마다 owner→card, agent_id 정렬)
+    for card in sorted(registry.all_cards(), key=lambda c: c.agent_id):
+        edges.append({"type": "owns", "source": card.owner, "target": card.agent_id})
+
+    # manages 엣지 (user.manager 있을 때만, id 정렬)
+    for uid in sorted(registry.user_ids()):
+        user = registry.get_user(uid)
+        if user.manager is not None:
+            edges.append({"type": "manages", "source": user.manager, "target": user.id})
+
+    # maintains 엣지 (card.maintainer 있을 때만, agent_id 정렬)
+    for card in sorted(registry.all_cards(), key=lambda c: c.agent_id):
+        if card.maintainer is not None:
+            edges.append({"type": "maintains", "source": card.maintainer, "target": card.agent_id})
+
+    return {"nodes": nodes, "edges": edges}
+
+
+class BuilderValidateRequest(BaseModel):
+    """POST /builder/validate 요청 바디 — Agent 빌더 카드 구성 검증(T5.3).
+
+    카드 필드를 그대로 받는다(`AgentCard` 필드 미러). 핸들러가 `AgentCard.model_validate`
+    (필수 필드·타입) + admission 규칙(owner 실재·참조 무결성, `Registry.validate`와 같은
+    검사)을 돌려 통과면 YAML 미리보기, 실패면 사유를 낸다. 라이브 레지스트리 mutation은
+    하지 않는다(편집 채널 = git/PR, CONTEXT Maintainer). 새 도메인 타입 0.
+
+    `last_reviewed_at`은 ISO date 문자열로 받는다(pydantic이 date로 강제). 선택 필드는
+    빈 기본값(AgentCard와 동일) — 폼에서 비우면 빈 리스트/None.
+    """
+
+    agent_id: str
+    owner: str
+    team: str
+    summary: str
+    domains: list[str]
+    last_reviewed_at: str
+    maintainer: str | None = None
+    can_answer: list[str] = []
+    cannot_answer: list[str] = []
+    approval_when: list[str] = []
+    collaborate_when: list[str] = []
+    knowledge_sources: list[str] = []
+    trust_labels: list[str] = []
+
+
+def validate_card_for_builder(
+    req: BuilderValidateRequest, registry: "Registry"
+) -> dict[str, Any]:
+    """빌더 카드 후보를 admission 규칙으로 검증해 결과 dict를 낸다(T5.3, 순수 함수).
+
+    절차: ① `AgentCard.model_validate`(필수 필드·타입·date 파싱) — 실패면
+    `{ok: False, errors: [...]}`. ② admission 참조 무결성 — `card.owner`가 Registry에
+    실재하는 User여야 한다(`Registry.validate` 정신; maintainer 있으면 그것도 실재 검사).
+    실패면 `{ok: False, errors: [...]}`. ③ 통과면 `{ok: True, yaml: "<registry/agents/
+    {agent_id}.yaml 텍스트>"}`(PyYAML safe_dump). **라이브 등록 안 함** — YAML은 Owner가
+    복사→git 커밋(PR)할 편집 채널 출력일 뿐(CONTEXT Maintainer).
+
+    web과 분리한 순수 함수라 결정론 테스트(레지스트리 주입→유효/무효 카드 단언).
+    """
+    import yaml
+    from pydantic import ValidationError
+
+    from agent_org_network.agent_card import AgentCard
+
+    # ① 빈 agent_id 거부
+    if not req.agent_id or not req.agent_id.strip():
+        return {"ok": False, "errors": ["agent_id는 비어 있을 수 없습니다."]}
+
+    # ② AgentCard.model_validate — 필수 필드·타입·date 파싱
+    try:
+        card = AgentCard.model_validate(req.model_dump())
+    except ValidationError as exc:
+        return {"ok": False, "errors": [str(e["msg"]) for e in exc.errors()]}
+
+    # ③ admission 참조 무결성
+    admission_errors: list[str] = []
+    if card.owner not in registry.user_ids():
+        admission_errors.append(f"미등록 owner: {card.owner}")
+    if card.maintainer is not None and card.maintainer not in registry.user_ids():
+        admission_errors.append(f"미등록 maintainer: {card.maintainer}")
+    if admission_errors:
+        return {"ok": False, "errors": admission_errors}
+
+    # ④ YAML 직렬화 (registry/agents/{agent_id}.yaml 형태)
+    card_dict: dict[str, Any] = {
+        "agent_id": card.agent_id,
+        "owner": card.owner,
+        "team": card.team,
+        "summary": card.summary,
+        "domains": list(card.domains),
+        "last_reviewed_at": card.last_reviewed_at.isoformat(),
+    }
+    if card.maintainer is not None:
+        card_dict["maintainer"] = card.maintainer
+    if card.can_answer:
+        card_dict["can_answer"] = list(card.can_answer)
+    if card.cannot_answer:
+        card_dict["cannot_answer"] = list(card.cannot_answer)
+    if card.approval_when:
+        card_dict["approval_when"] = list(card.approval_when)
+    if card.collaborate_when:
+        card_dict["collaborate_when"] = list(card.collaborate_when)
+    if card.knowledge_sources:
+        card_dict["knowledge_sources"] = list(card.knowledge_sources)
+    if card.trust_labels:
+        card_dict["trust_labels"] = list(card.trust_labels)
+
+    yaml_text: str = yaml.safe_dump(card_dict, allow_unicode=True, sort_keys=False)
+    return {"ok": True, "yaml": yaml_text}
 
 
 class ManagerActionRequest(BaseModel):
@@ -608,6 +766,46 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=404, detail="알 수 없는 로그 인덱스")
         return record
+
+    # ── T5.3: Org 그래프(운영자 면 — 레지스트리 순수 파생) ───────────────────────
+
+    @app.get("/org/graph")
+    def org_graph(request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """Org 그래프 데이터 — Registry를 {nodes, edges}로 순수 파생(T5.3).
+
+        모니터링과 같은 인증 결(인증 활성 시 로그인 필요, 세분 역할 없이 인증만 —
+        ADR 0016 결정 5). 새 전이·기록 0(레지스트리 읽기 파생). 운영 면이라 내부값 노출 OK.
+        """
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+        return serialize_org_graph(bundle.registry)
+
+    @app.get("/org/view")
+    def org_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
+        return FileResponse(_ORG_HTML)
+
+    # ── T5.3: Agent 빌더(Owner 면 — 카드 구성·검증·YAML 미리보기) ────────────────
+
+    @app.post("/builder/validate")
+    def builder_validate(req: BuilderValidateRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """빌더 카드 검증 — admission 통과면 YAML 미리보기, 실패면 사유(T5.3).
+
+        라이브 등록 안 함(편집 채널 = git/PR, CONTEXT Maintainer) — YAML은 Owner가
+        복사→커밋할 출력. **Owner 스코프(ADR 0016)**: 인증 활성 시 세션 신원 ≠ 카드
+        `owner`면 403(자기 카드만 깎음 — 운영 스코프), 미로그인 401. 인증 OFF는 자유 구성.
+        """
+        if _auth_enabled:
+            session_owner = _session_identity(request)  # 미로그인 401
+            if req.owner != session_owner:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"자기 카드만 구성할 수 있습니다(세션 {session_owner!r} ≠ owner {req.owner!r}).",
+                )
+        return validate_card_for_builder(req, bundle.registry)
+
+    @app.get("/builder")
+    def builder_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
+        return FileResponse(_BUILDER_HTML)
 
     # ── 하위호환 path 라우트 (인증 OFF 환경 전용 — 데모/기존 테스트) ───────────────
     # **인증 ON(session_secret 주입)이면 이 path 가장 경로를 *등록하지 않는다*** — 그래야

@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent 빌더 — 자기 카드 구성(Owner)</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --me: #2563eb;
+      --ink: #1f2933;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+        "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+    }
+    .builder {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 16px 20px;
+      font-weight: 700;
+      font-size: 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    header small { display: block; font-weight: 400; color: var(--muted); margin-top: 2px; }
+    .login-banner {
+      padding: 14px 20px;
+      background: #fef3c7;
+      border-bottom: 1px solid #fcd34d;
+      font-size: 14px;
+      color: #92400e;
+    }
+    .login-form {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .login-form input {
+      padding: 6px 10px;
+      border: 1px solid #fcd34d;
+      border-radius: 6px;
+      font-size: 13px;
+      flex: 1;
+      max-width: 240px;
+    }
+    .login-form button {
+      padding: 6px 14px;
+      background: #d97706;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .whoami {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      background: #eff6ff;
+      border-bottom: 1px solid #bfdbfe;
+      font-size: 13px;
+      color: #1e40af;
+    }
+    .whoami strong { font-weight: 700; }
+    .logout-btn {
+      margin-left: auto;
+      padding: 3px 10px;
+      font-size: 12px;
+      background: none;
+      border: 1px solid #93c5fd;
+      border-radius: 999px;
+      color: #1e40af;
+      cursor: pointer;
+    }
+    .main {
+      flex: 1;
+      padding: 20px;
+    }
+    .notice {
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 13px;
+      color: #166534;
+      margin-bottom: 20px;
+    }
+    .form-card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .form-card h2 {
+      margin: 0 0 18px;
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .field {
+      margin-bottom: 14px;
+    }
+    .field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 5px;
+    }
+    .field label .req { color: #dc2626; margin-left: 2px; }
+    .field input, .field textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: inherit;
+      color: var(--ink);
+      background: #fff;
+    }
+    .field input:focus, .field textarea:focus {
+      outline: none;
+      border-color: var(--me);
+    }
+    .field .hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .field textarea { resize: vertical; min-height: 56px; }
+    .field-row {
+      display: flex;
+      gap: 12px;
+    }
+    .field-row .field { flex: 1; }
+    .submit-btn {
+      width: 100%;
+      padding: 10px;
+      font-size: 14px;
+      font-weight: 700;
+      background: var(--me);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-top: 6px;
+    }
+    .submit-btn:disabled {
+      background: #93c5fd;
+      cursor: not-allowed;
+    }
+    .result-area {
+      margin-top: 20px;
+    }
+    .result-ok {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .result-ok h3 {
+      margin: 0 0 4px;
+      font-size: 14px;
+      font-weight: 700;
+      color: #065f46;
+    }
+    .result-ok .sub {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .yaml-box {
+      font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+      font-size: 12px;
+      background: #f9fafb;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      white-space: pre;
+      overflow-x: auto;
+      max-height: 360px;
+      overflow-y: auto;
+    }
+    .copy-btn {
+      margin-top: 10px;
+      padding: 5px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #065f46;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .copy-msg {
+      font-size: 12px;
+      color: #065f46;
+      margin-left: 8px;
+      display: none;
+    }
+    .commit-guide {
+      margin-top: 12px;
+      padding: 10px 14px;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #166534;
+    }
+    .commit-guide code {
+      font-family: ui-monospace, monospace;
+      background: #dcfce7;
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .result-error {
+      background: #fff;
+      border: 1px solid #fca5a5;
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .result-error h3 {
+      margin: 0 0 10px;
+      font-size: 14px;
+      font-weight: 700;
+      color: #991b1b;
+    }
+    .error-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .error-list li {
+      font-size: 13px;
+      color: #b91c1c;
+      padding: 4px 0;
+      border-bottom: 1px dashed #fecaca;
+    }
+    .error-list li:last-child { border-bottom: none; }
+    .nav {
+      padding: 12px 16px;
+      font-size: 13px;
+      background: #fff;
+      border-top: 1px solid var(--line);
+    }
+    .nav a { color: var(--me); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="builder">
+    <header>
+      Agent 빌더
+      <small>카드 필드를 구성 → 검증(admission) → YAML 미리보기. 실제 등록은 git/PR(YAML 커밋).</small>
+    </header>
+
+    <div id="login-banner" class="login-banner" style="display:none;">
+      <strong>로그인이 필요합니다.</strong> 자기 카드만 구성할 수 있습니다(Owner 스코프).
+      <div class="login-form">
+        <input id="login-input" type="text" placeholder="user_id (예: cs_lead)" />
+        <button id="login-btn">로그인</button>
+      </div>
+      <div id="login-error" style="margin-top:6px; font-size:12px; color:#b91c1c;"></div>
+    </div>
+
+    <div id="whoami-bar" class="whoami" style="display:none;">
+      로그인: <strong id="whoami-name">—</strong>
+      <span style="color:var(--muted); font-size:12px;">— owner 필드는 이 신원으로 고정됩니다.</span>
+      <button class="logout-btn" id="logout-btn">로그아웃</button>
+    </div>
+
+    <div class="main">
+      <div class="notice">
+        이 빌더는 카드를 <strong>검증·미리보기</strong>만 합니다. YAML을 복사해
+        <code style="font-family:ui-monospace,monospace; background:#dcfce7; padding:1px 5px; border-radius:3px;">registry/agents/{agent_id}.yaml</code>에 커밋(PR)해야 실제 등록됩니다.
+        라이브 레지스트리 쓰기는 하지 않습니다.
+      </div>
+
+      <div class="form-card">
+        <h2>카드 구성</h2>
+        <div class="field-row">
+          <div class="field">
+            <label>agent_id <span class="req">*</span></label>
+            <input id="f-agent-id" type="text" placeholder="예: new_ops" />
+          </div>
+          <div class="field">
+            <label>owner <span class="req">*</span></label>
+            <input id="f-owner" type="text" placeholder="예: cs_lead" />
+            <div class="hint">인증 ON이면 로그인 신원으로 자동 채워집니다.</div>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>team <span class="req">*</span></label>
+            <input id="f-team" type="text" placeholder="예: cs" />
+          </div>
+          <div class="field">
+            <label>last_reviewed_at <span class="req">*</span></label>
+            <input id="f-date" type="date" />
+            <div class="hint">ISO date (YYYY-MM-DD)</div>
+          </div>
+        </div>
+        <div class="field">
+          <label>summary <span class="req">*</span></label>
+          <textarea id="f-summary" rows="2" placeholder="이 카드가 담당하는 내용 한 줄 요약"></textarea>
+        </div>
+        <div class="field">
+          <label>domains <span class="req">*</span></label>
+          <input id="f-domains" type="text" placeholder="쉼표로 구분: 환불, 보상" />
+          <div class="hint">쉼표로 구분해 입력 — 라우터가 이 도메인으로 질문을 라우팅합니다.</div>
+        </div>
+        <div class="field">
+          <label>maintainer <small style="font-weight:400;">(선택)</small></label>
+          <input id="f-maintainer" type="text" placeholder="예: root_manager" />
+          <div class="hint">카드 유지관리자 user_id — Registry에 실재해야 합니다.</div>
+        </div>
+        <div class="field">
+          <label>knowledge_sources <small style="font-weight:400;">(선택)</small></label>
+          <input id="f-ks" type="text" placeholder="쉼표로 구분: 위키/환불정책, Notion/가이드" />
+        </div>
+        <div class="field">
+          <label>can_answer <small style="font-weight:400;">(선택)</small></label>
+          <input id="f-can" type="text" placeholder="쉼표로 구분" />
+        </div>
+        <div class="field">
+          <label>cannot_answer <small style="font-weight:400;">(선택)</small></label>
+          <input id="f-cannot" type="text" placeholder="쉼표로 구분" />
+        </div>
+        <div class="field">
+          <label>approval_when <small style="font-weight:400;">(선택)</small></label>
+          <input id="f-approval" type="text" placeholder="쉼표로 구분" />
+        </div>
+        <div class="field">
+          <label>collaborate_when <small style="font-weight:400;">(선택)</small></label>
+          <input id="f-collab" type="text" placeholder="쉼표로 구분" />
+        </div>
+        <button class="submit-btn" id="validate-btn">검증 및 YAML 미리보기</button>
+      </div>
+
+      <div class="result-area" id="result-area"></div>
+    </div>
+
+    <div class="nav">
+      <a href="/">← 채팅으로</a> &nbsp;|&nbsp;
+      <a href="/org/view">Org 그래프</a> &nbsp;|&nbsp;
+      <a href="/inbox">처리함</a>
+    </div>
+  </div>
+
+  <script>
+    let sessionOwner = null;
+
+    function splitCsv(val) {
+      return val.split(",").map(s => s.trim()).filter(Boolean);
+    }
+
+    function buildPayload() {
+      return {
+        agent_id: document.getElementById("f-agent-id").value.trim(),
+        owner: document.getElementById("f-owner").value.trim(),
+        team: document.getElementById("f-team").value.trim(),
+        summary: document.getElementById("f-summary").value.trim(),
+        domains: splitCsv(document.getElementById("f-domains").value),
+        last_reviewed_at: document.getElementById("f-date").value.trim(),
+        maintainer: document.getElementById("f-maintainer").value.trim() || null,
+        knowledge_sources: splitCsv(document.getElementById("f-ks").value),
+        can_answer: splitCsv(document.getElementById("f-can").value),
+        cannot_answer: splitCsv(document.getElementById("f-cannot").value),
+        approval_when: splitCsv(document.getElementById("f-approval").value),
+        collaborate_when: splitCsv(document.getElementById("f-collab").value),
+      };
+    }
+
+    function renderOk(yamlText) {
+      const area = document.getElementById("result-area");
+      area.innerHTML = "";
+      const box = document.createElement("div");
+      box.className = "result-ok";
+
+      const h3 = document.createElement("h3");
+      h3.textContent = "검증 통과 — YAML 미리보기";
+      box.appendChild(h3);
+
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = "아래 YAML을 복사해 registry/agents/{agent_id}.yaml 에 커밋(PR)하면 등록됩니다. 이 화면은 라이브 등록을 하지 않습니다.";
+      box.appendChild(sub);
+
+      const pre = document.createElement("pre");
+      pre.className = "yaml-box";
+      pre.textContent = yamlText;
+      box.appendChild(pre);
+
+      const copyBtn = document.createElement("button");
+      copyBtn.className = "copy-btn";
+      copyBtn.textContent = "YAML 복사";
+      const copyMsg = document.createElement("span");
+      copyMsg.className = "copy-msg";
+      copyMsg.textContent = "복사됨!";
+      copyBtn.addEventListener("click", () => {
+        navigator.clipboard.writeText(yamlText).then(() => {
+          copyMsg.style.display = "inline";
+          setTimeout(() => { copyMsg.style.display = "none"; }, 2000);
+        });
+      });
+      box.appendChild(copyBtn);
+      box.appendChild(copyMsg);
+
+      const guide = document.createElement("div");
+      guide.className = "commit-guide";
+      guide.innerHTML = [
+        "등록 절차(편집 채널 = git/PR):",
+        "① 위 YAML을 복사해 <code>registry/agents/{agent_id}.yaml</code> 파일로 저장",
+        "② git add + commit + PR — 리뷰 후 main 병합 시 실제 등록",
+        "③ 라이브 레지스트리는 서버 재시작 후 적용됩니다.",
+      ].join("<br/>");
+      box.appendChild(guide);
+
+      area.appendChild(box);
+    }
+
+    function renderError(errors) {
+      const area = document.getElementById("result-area");
+      area.innerHTML = "";
+      const box = document.createElement("div");
+      box.className = "result-error";
+
+      const h3 = document.createElement("h3");
+      h3.textContent = "검증 실패";
+      box.appendChild(h3);
+
+      const ul = document.createElement("ul");
+      ul.className = "error-list";
+      for (const e of errors) {
+        const li = document.createElement("li");
+        li.textContent = e;
+        ul.appendChild(li);
+      }
+      box.appendChild(ul);
+      area.appendChild(box);
+    }
+
+    async function doValidate() {
+      const btn = document.getElementById("validate-btn");
+      btn.disabled = true;
+      btn.textContent = "검증 중…";
+      document.getElementById("result-area").innerHTML = "";
+
+      const payload = buildPayload();
+      try {
+        const res = await fetch("/builder/validate", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload),
+        });
+        if (res.status === 401) {
+          document.getElementById("login-banner").style.display = "block";
+          document.getElementById("whoami-bar").style.display = "none";
+          sessionOwner = null;
+          return;
+        }
+        if (res.status === 403) {
+          renderError(["자기 카드만 구성할 수 있습니다. owner 필드가 로그인 신원과 일치해야 합니다."]);
+          return;
+        }
+        const data = await res.json();
+        if (data.ok) {
+          renderOk(data.yaml);
+        } else {
+          renderError(data.errors || ["알 수 없는 오류"]);
+        }
+      } catch (err) {
+        renderError(["요청 실패: " + err.message]);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "검증 및 YAML 미리보기";
+      }
+    }
+
+    async function tryLogin() {
+      const userId = document.getElementById("login-input").value.trim();
+      if (!userId) return;
+      const errEl = document.getElementById("login-error");
+      errEl.textContent = "";
+      try {
+        const res = await fetch("/login", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({user_id: userId}),
+        });
+        if (res.status === 401) {
+          errEl.textContent = "미존재 사용자입니다.";
+          return;
+        }
+        if (!res.ok) throw new Error("로그인 실패: " + res.status);
+        sessionOwner = userId;
+        document.getElementById("login-banner").style.display = "none";
+        document.getElementById("whoami-bar").style.display = "flex";
+        document.getElementById("whoami-name").textContent = userId;
+        // owner 필드 자동 채움
+        document.getElementById("f-owner").value = userId;
+      } catch (err) {
+        errEl.textContent = String(err);
+      }
+    }
+
+    async function doLogout() {
+      await fetch("/logout", {method: "POST"});
+      sessionOwner = null;
+      document.getElementById("whoami-bar").style.display = "none";
+      document.getElementById("login-banner").style.display = "block";
+      document.getElementById("f-owner").value = "";
+    }
+
+    async function checkSession() {
+      // /builder/validate에 빈 요청을 보내 401 여부로 세션 확인
+      // 대신 /org/graph GET으로 조용히 세션 확인
+      try {
+        const res = await fetch("/org/graph");
+        if (res.status === 401) {
+          document.getElementById("login-banner").style.display = "block";
+        }
+        // 200이면 세션 있음 — whoami는 서버에서 별도 조회 없이 숨겨둠(인증 OFF도 허용)
+      } catch (_) {
+        // 무시
+      }
+    }
+
+    document.getElementById("validate-btn").addEventListener("click", doValidate);
+    document.getElementById("login-btn").addEventListener("click", tryLogin);
+    document.getElementById("login-input").addEventListener("keydown", e => {
+      if (e.key === "Enter") tryLogin();
+    });
+    document.getElementById("logout-btn").addEventListener("click", doLogout);
+
+    // 오늘 날짜 기본값
+    const today = new Date().toISOString().slice(0, 10);
+    document.getElementById("f-date").value = today;
+
+    checkSession();
+  </script>
+</body>
+</html>

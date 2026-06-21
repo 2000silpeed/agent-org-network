@@ -177,6 +177,72 @@ def test_register_frame에_token이_실린다():
     assert reg.token == "secret-123"
 
 
+# ── ③-b role: 등록 프레임에 워커 등급이 실린다(ADR 0012 결정 2, T6.6 슬라이스 iv) ──
+
+
+def test_role_미지정이면_primary로_등록된다():
+    # 하위호환: role 인자 없이 만들면 기본 primary(기존 워커는 그대로 1차 워커).
+    logic, _ = _logic()
+
+    assert logic.role == "primary"
+    reg = logic.register_frame()
+    assert reg.role == "primary"
+
+
+def test_backup_role이_등록_프레임에_실린다():
+    runner = _RecordingRunner("백업 답")
+    card = _card()
+    logic = WorkerLogic(
+        owner_id=card.owner,
+        cards={card.agent_id: card},
+        runtime=ClaudeCodeRuntime(runner=runner),
+        role="backup",
+    )
+
+    assert logic.role == "backup"
+    reg = logic.register_frame()
+    # 등급은 register_frame에 실려 중앙이 등급별 레지스트리에 올린다(결정 2).
+    assert reg.role == "backup"
+    assert reg.owner_id == "cs_lead"
+
+
+def test_backup_워커도_같은_로직으로_답한다():
+    # backup도 같은 WorkerLogic·같은 카드로 답한다 — 답 신뢰 하향(mode=backup)은 워커가
+    # 아니라 디스패처가 연결 등급을 진실로 강제한다(결정 4). 워커는 full로 답한다.
+    runner = _RecordingRunner("백업이 만든 답")
+    card = _card()
+    logic = WorkerLogic(
+        owner_id=card.owner,
+        cards={card.agent_id: card},
+        runtime=ClaudeCodeRuntime(runner=runner),
+        role="backup",
+    )
+
+    submit = logic.handle_push_work(_push(ticket_id="tkt-b"))
+
+    assert isinstance(submit, SubmitAnswer)
+    assert submit.ticket_id == "tkt-b"
+    assert submit.answer.text == "백업이 만든 답"
+    # 워커 자기보고는 full — backup 하향은 디스패처 몫(연결 등급이 진실, 결정 4).
+    assert submit.answer.mode == "full"
+
+
+def test_role이_register_frame_token과_함께_실린다():
+    runner = _RecordingRunner("답")
+    card = _card()
+    logic = WorkerLogic(
+        owner_id=card.owner,
+        cards={card.agent_id: card},
+        runtime=ClaudeCodeRuntime(runner=runner),
+        role="backup",
+    )
+
+    reg = logic.register_frame(token="tok-9")
+
+    assert reg.role == "backup"
+    assert reg.token == "tok-9"
+
+
 # ── ④ backoff_seconds: 지수 증가·cap·음수 방어(순수 로직) ───────────────────
 
 

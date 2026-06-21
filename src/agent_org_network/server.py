@@ -176,16 +176,57 @@ def create_central_app() -> FastAPI:
     `web.create_app(dispatcher=...)`로 채팅·처리함·회수 라우트를 얹고, (2) 그 위에
     `/worker` WS 엔드포인트를 추가한다(같은 디스패처 공유).
 
+    백업 검토 end-to-end(ADR 0012 결정 4·7, T6.6 슬라이스 iv): backup 워커가 owner 이름으로
+    낸 답이 미검토 검토 항목으로 쌓이고 owner가 처리함에서 검토하려면, `BackupReviewStore`·
+    `BackupReviewService` *하나씩*을 만들어 세 곳에 **같은 인스턴스**로 주입해야 한다 —
+      (1) `WebSocketDispatcher(review_store=...)`: backup 답 종착 시 검토 항목을 add(생성
+          트리거, 결정 7-1),
+      (2) `create_app(review_store=, review_service=)`: 처리함 검토 탭(GET/POST)과 retrieve
+          덧씌움(검토 결과 재노출, 결정 7-3) — create_app이 그 store를 `build_demo`에도 넘겨
+          `ask._review_store`가 같은 인스턴스를 가리키게 한다(retrieve가 검토를 반영).
+    셋이 같은 인스턴스를 봐야 "backup이 답함→처리함에 뜸→owner가 검토→재회수에 반영"이 한
+    바퀴 돈다.
+
+    위임 스냅샷(`register_delegation`, 결정 3·9): backup이 그 owner의 영역을 답하려면 owner가
+    *명시적으로 위임*했어야 한다(opt-in, Authority 중앙 — 카드 자기보고 아님). staleness 임계를
+    두고 데모 owner들(legal_lead·cs_lead·finance_lead)의 위임 스냅샷을 fresh하게 등록해 backup
+    push가 허용되게 한다. 임계 초과(stale)면 backup이 거부되고 escalation으로 종착한다("모르면
+    넘김", 결정 9). 실 동기화 파이프라인·실 데이터 스냅샷은 후속(연결점만, ADR 0012 범위 밖).
+
     이 앱은 실 owner 워커 프로세스가 붙는 *수동 시연용* 진입점이다(`uvicorn`으로 띄움). 결정론
     테스트는 여전히 `create_worker_app`(주입 디스패처)·`web.create_app`을 따로 쓴다 — 이
     팩토리는 기본 시계·기본 큐로 실제 한 바퀴를 돌리는 조립이라 게이트가 보지 않는다.
     """
     # 지연 import — server.py는 web.py에 의존하지 않는 게 기본(web은 server를 import할 수
     # 있어 순환 위험). 통합 진입점에서만 web을 끌어와 단방향으로 합친다.
+    from datetime import timedelta
+
+    from agent_org_network.demo import demo_delegations
+    from agent_org_network.review import BackupReviewService, InMemoryBackupReviewStore
     from agent_org_network.web import create_app
 
-    dispatcher = WebSocketDispatcher()
-    app = create_app(dispatcher=dispatcher)
+    # 검토 store·service 하나씩 — 디스패처(생성 트리거)와 web(검토 탭·retrieve 덧씌움)이
+    # 같은 인스턴스를 봐야 검토 루프가 end-to-end로 닫힌다(결정 7).
+    review_store = InMemoryBackupReviewStore()
+    review_service = BackupReviewService(review_store)
+
+    # staleness 임계 — 데모는 넉넉히(30일). 위임 스냅샷이 이 임계 내 fresh여야 backup이
+    # 그 영역을 답한다(결정 9). 데모 스냅샷은 fresh로 등록하므로 backup push가 허용된다.
+    staleness_threshold = timedelta(days=30)
+    dispatcher = WebSocketDispatcher(
+        staleness_threshold=staleness_threshold,
+        review_store=review_store,
+    )
+    # 데모 owner들의 위임 스냅샷을 주입(opt-in 위임 — owner가 자기 영역을 백업에 위임).
+    # 없으면 staleness_threshold가 설정된 상태에서 backup push가 거부된다(결정 9).
+    for snapshot in demo_delegations():
+        dispatcher.register_delegation(snapshot)
+
+    app = create_app(
+        dispatcher=dispatcher,
+        review_store=review_store,
+        review_service=review_service,
+    )
     _mount_worker_endpoint(app, dispatcher)
     return app
 

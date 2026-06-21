@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>처리함 — 담당 합의</title>
+  <title>처리함 — 담당 합의 · 백업 검토</title>
   <style>
     :root {
       --bg: #f4f5f7;
@@ -51,6 +51,39 @@
     }
     .whoami label { color: var(--muted); }
     .demo-note { font-size: 11px; color: var(--muted); margin-left: auto; text-align: right; }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 0 16px;
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+    }
+    .tab {
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      cursor: pointer;
+    }
+    .tab:hover { color: var(--ink); }
+    .tab.active { color: var(--me); border-bottom-color: var(--me); }
+    .tab .count {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 0 7px;
+      border-radius: 999px;
+      background: #fee2e2;
+      color: #b91c1c;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .tab .count.zero { display: none; }
+    .panel { display: none; flex: 1; flex-direction: column; min-height: 0; }
+    .panel.active { display: flex; }
     select {
       padding: 8px 12px;
       border: 1px solid var(--line);
@@ -60,7 +93,7 @@
       outline: none;
     }
     select:focus { border-color: var(--me); }
-    #cases {
+    #cases, #reviews {
       flex: 1;
       overflow-y: auto;
       padding: 16px;
@@ -133,7 +166,7 @@
       min-height: 38px;
     }
     .rationale:focus { border-color: var(--me); }
-    .actions { display: flex; align-items: center; gap: 10px; }
+    .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     button {
       padding: 9px 18px;
       border: none;
@@ -145,6 +178,34 @@
       cursor: pointer;
     }
     button:disabled { opacity: 0.5; cursor: default; }
+    button.secondary { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+    button.secondary:hover { border-color: var(--me); color: var(--me); }
+    button.ghost { background: #fff; color: var(--muted); border: 1px solid var(--line); }
+    button.ghost:hover { border-color: #b91c1c; color: #b91c1c; }
+    .review .badge {
+      display: inline-block;
+      align-self: flex-start;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      background: #fee2e2;
+      color: #b91c1c;
+    }
+    .review .meta { font-size: 12px; color: var(--muted); }
+    .review .answer-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .review .answer {
+      font-size: 14px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #f9fafb;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .correct-box { display: none; flex-direction: column; gap: 6px; }
+    .correct-box.open { display: flex; }
     .result { font-size: 13px; font-weight: 600; }
     .result.still_open { color: #92400e; }
     .result.agreed { color: #166534; }
@@ -158,7 +219,7 @@
   <div class="inbox">
     <header>
       처리함
-      <small>내 카드가 걸린 다툼을 보고 "누가 맡을지" 1인칭으로 합의합니다.</small>
+      <small>내 카드가 걸린 다툼 합의와, 내가 자리를 비운 동안 백업이 내 이름으로 낸 답 검토.</small>
     </header>
     <div class="whoami">
       <label for="owner">담당자</label>
@@ -170,13 +231,26 @@
       </select>
       <span class="demo-note">데모용 로그인 가장 — 실제론 인증된 본인 Owner로 고정(별도 공간)</span>
     </div>
-    <div id="cases"></div>
+    <div class="tabs">
+      <button class="tab active" data-tab="cases" id="tab-cases">담당 합의</button>
+      <button class="tab" data-tab="reviews" id="tab-reviews">
+        백업 검토<span class="count zero" id="review-count">0</span>
+      </button>
+    </div>
+    <div class="panel active" id="panel-cases">
+      <div id="cases"></div>
+    </div>
+    <div class="panel" id="panel-reviews">
+      <div id="reviews"></div>
+    </div>
     <div class="nav"><a href="/">← 채팅으로</a></div>
   </div>
 
   <script>
     const ownerSel = document.getElementById("owner");
     const casesEl = document.getElementById("cases");
+    const reviewsEl = document.getElementById("reviews");
+    const reviewCountEl = document.getElementById("review-count");
 
     function el(tag, cls, text) {
       const node = document.createElement(tag);
@@ -187,6 +261,21 @@
 
     function currentOwner() {
       return ownerSel.value;
+    }
+
+    // ── 탭 전환 ──────────────────────────────────────────────────────────
+    let activeTab = "cases";
+    function selectTab(name) {
+      activeTab = name;
+      for (const t of document.querySelectorAll(".tab")) {
+        t.classList.toggle("active", t.dataset.tab === name);
+      }
+      for (const p of document.querySelectorAll(".panel")) {
+        p.classList.toggle("active", p.id === "panel-" + name);
+      }
+    }
+    for (const t of document.querySelectorAll(".tab")) {
+      t.addEventListener("click", () => selectTab(t.dataset.tab));
     }
 
     async function fetchCases(owner) {
@@ -288,7 +377,138 @@
       return wrap;
     }
 
-    async function load() {
+    // ── 백업 검토 탭 ──────────────────────────────────────────────────────
+
+    async function fetchReviews(owner) {
+      const res = await fetch("/inbox/" + encodeURIComponent(owner) + "/backup-reviews");
+      if (!res.ok) throw new Error("요청 실패: " + res.status);
+      return res.json();
+    }
+
+    async function postReview(itemId, body) {
+      const res = await fetch("/backup-reviews/" + encodeURIComponent(itemId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data && data.detail ? data.detail : "요청 실패: " + res.status;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      return isNaN(d) ? iso : d.toLocaleString();
+    }
+
+    function renderReview(item) {
+      const owner = currentOwner();
+      const wrap = el("div", "case review");
+      wrap.appendChild(el("span", "badge", "미검토 백업 답"));
+      wrap.appendChild(
+        el(
+          "div",
+          "meta",
+          item.agent_id + " · 스냅샷 " + fmtTime(item.snapshot_at) + " · 답변 " + fmtTime(item.answered_at)
+        )
+      );
+      wrap.appendChild(el("div", "ask-label", "원문 질문"));
+      wrap.appendChild(el("div", "question", item.question));
+      wrap.appendChild(el("div", "answer-label", "백업이 내 이름으로 낸 답"));
+      wrap.appendChild(el("div", "answer", item.backup_answer_text));
+
+      // 정정 입력(정정 버튼 누르면 펼침).
+      const correctBox = el("div", "correct-box");
+      const correctText = el("textarea", "rationale");
+      correctText.placeholder = "정정할 답 내용";
+      correctBox.appendChild(correctText);
+      wrap.appendChild(correctBox);
+
+      const result = el("div", "result");
+      const actions = el("div", "actions");
+      const approveBtn = el("button", null, "승인");
+      const correctBtn = el("button", "secondary", "정정");
+      const dismissBtn = el("button", "ghost", "무시");
+      actions.appendChild(approveBtn);
+      actions.appendChild(correctBtn);
+      actions.appendChild(dismissBtn);
+      actions.appendChild(result);
+      wrap.appendChild(actions);
+
+      function disableAll(v) {
+        approveBtn.disabled = v;
+        correctBtn.disabled = v;
+        dismissBtn.disabled = v;
+      }
+
+      async function submit(body) {
+        disableAll(true);
+        try {
+          const reviewed = await postReview(item.item_id, body);
+          result.className = "result agreed";
+          const t = reviewed.review ? reviewed.review.type : body.type;
+          const label = t === "approve" ? "승인" : t === "correct" ? "정정" : "무시";
+          result.textContent = "검토 완료 — " + label + ". 재조회합니다.";
+          setTimeout(load, 1000);
+        } catch (err) {
+          result.className = "result error";
+          result.textContent = err.message || "검토 실패";
+          disableAll(false);
+        }
+      }
+
+      approveBtn.addEventListener("click", () =>
+        submit({ type: "approve", by_owner: owner })
+      );
+      dismissBtn.addEventListener("click", () =>
+        submit({ type: "dismiss", by_owner: owner })
+      );
+      correctBtn.addEventListener("click", () => {
+        if (!correctBox.classList.contains("open")) {
+          // 첫 클릭: 입력칸 펼치기.
+          correctBox.classList.add("open");
+          correctText.focus();
+          return;
+        }
+        const text = correctText.value.trim();
+        if (!text) {
+          result.className = "result error";
+          result.textContent = "정정할 답 내용을 입력하세요.";
+          return;
+        }
+        submit({ type: "correct", by_owner: owner, corrected_text: text });
+      });
+
+      return wrap;
+    }
+
+    async function loadReviews() {
+      const owner = currentOwner();
+      reviewsEl.innerHTML = "";
+      let items;
+      try {
+        items = await fetchReviews(owner);
+      } catch (err) {
+        reviewsEl.appendChild(el("div", "empty", "백업 검토 목록을 불러오지 못했습니다."));
+        reviewCountEl.classList.add("zero");
+        return;
+      }
+      reviewCountEl.textContent = String(items.length);
+      reviewCountEl.classList.toggle("zero", items.length === 0);
+      if (!items.length) {
+        reviewsEl.appendChild(el("div", "empty", "검토할 백업 답이 없습니다."));
+        return;
+      }
+      for (const it of items) {
+        reviewsEl.appendChild(renderReview(it));
+      }
+    }
+
+    async function loadCases() {
       const owner = currentOwner();
       casesEl.innerHTML = "";
       let cases;
@@ -305,6 +525,11 @@
       for (const c of cases) {
         casesEl.appendChild(renderCase(c));
       }
+    }
+
+    async function load() {
+      // 두 탭을 모두 갱신한다 — 합의/검토가 서로 영향 없이 같은 owner를 본다.
+      await Promise.all([loadCases(), loadReviews()]);
     }
 
     ownerSel.addEventListener("change", load);

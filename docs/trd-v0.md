@@ -75,10 +75,11 @@ src/agent_org_network/
   dispatch.py                                  # 분산 전송 포트·타입(RuntimeDispatcher·WorkTicket·DispatchOutcome·InMemoryWorkQueueDispatcher·release_claims, T6.3·ADR 0011). T6.6 보강 자리(설계): t1/t2 timeout 예산·wake_backup hook·staleness 거부(ADR 0012 결정 8~10)
   # (T6.6 후속) review.py 또는 dispatch.py    # owner 복귀 검토 루프(BackupReviewItem·BackupReview[Approve|Correct|Dismiss]·BackupReviewStore — ConflictCase/Inbox 패턴 재사용, ADR 0012 결정 7). 위치는 구현 단계 판단
   transport.py                                 # WebSocket 전송층(Transport Frame DTO·WebSocketDispatcher=큐 도메인 합성·프레임↔도메인 변환, T6.3 슬라이스2b·ADR 0011 결정 6)
-  server.py                                    # 중앙 WS 핸들러(create_worker_app·@app.websocket("/worker") 워커 연결 수신 + create_central_app/central_app: web+워커WS를 한 dispatcher로, 수동 시연 진입점, T6.3 슬라이스2b-i·2b-ii)
-  worker.py                                    # owner 워커 프로세스(WorkerLogic=프레임 핸들링 결정론 코어 + run_worker=실 아웃바운드 WS·재연결 + main CLI, T6.3 슬라이스2b-ii·ADR 0011 결정 6)
-  demo.py  web.py                              # 데모 조립(cards_for_owner 포함) + 웹 어댑터(POST /ask·GET /ask/{tracking} 회수 조회)
-web/index.html  web/inbox.html   logs/audit.jsonl   tests/
+  server.py                                    # 중앙 WS 핸들러(create_worker_app·@app.websocket("/worker") 워커 연결 수신 + create_central_app/central_app: web+워커WS를 한 dispatcher로, 검토 store·service·위임 스냅샷 와이어링, 수동 시연 진입점, T6.3 슬라이스2b·T6.6 슬라이스 iv)
+  worker.py                                    # owner 워커 프로세스(WorkerLogic=프레임 핸들링 결정론 코어 + role primary|backup + run_worker=실 아웃바운드 WS·재연결 + main CLI --role, T6.3 슬라이스2b·T6.6 슬라이스 iv·ADR 0011 결정 6·ADR 0012)
+  review.py                                    # owner 복귀 검토 루프(BackupReviewItem·BackupReview·BackupReviewStore·BackupReviewService, T6.6 슬라이스 iii·ADR 0012 결정 7)
+  demo.py  web.py                              # 데모 조립(cards_for_owner·demo_delegations 포함) + 웹 어댑터(POST /ask·GET /ask/{tracking} 회수·검토 탭 라우트)
+web/index.html  web/inbox.html(담당 합의·백업 검토 탭)   logs/audit.jsonl   tests/
 # 예정: registry/agents/*.yaml · routing_rules.yaml · samples/questions.jsonl
 ```
 

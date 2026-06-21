@@ -39,6 +39,7 @@ from agent_org_network.transport import (
     RegisterWorker,
     SubmitAnswer,
     Welcome,
+    WorkerRole,
     from_ticket_frame,
     to_answer_frame,
 )
@@ -113,6 +114,13 @@ class WorkerLogic:
 
     카드 매핑: `agent_id → AgentCard`(자기 owner의 카드들). 못 찾는 agent_id는 graceful
     폴백 답을 회신한다 — 작업이 미아로 큐에 떠 있지 않게(SubmitAnswer로 중앙 큐 종착).
+
+    등급(`role`, ADR 0012 결정 2, T6.6 슬라이스 iv): 이 워커가 그 owner 안에서 primary
+    (owner PC 워커)인지 backup(owner 위임 격리 인스턴스)인지. 등록 프레임(`register_frame`)에
+    실려 중앙이 등급별 레지스트리에 올린다. backup 워커도 *같은* WorkerLogic·같은 카드로
+    답한다 — 답의 신뢰 하향(mode=backup)은 워커가 아니라 *연결 등급*을 진실로 디스패처가
+    강제한다(결정 4, 워커 자기보고 아님). 데모는 같은 카드 데이터를 쓰고, 실 동기화 스냅샷
+    기반 카드는 후속(ADR 0012 결정 9 — 연결점만).
     """
 
     def __init__(
@@ -120,9 +128,14 @@ class WorkerLogic:
         owner_id: str,
         cards: dict[str, AgentCard],
         runtime: ClaudeCodeRuntime | None = None,
+        role: WorkerRole = "primary",
     ) -> None:
         self._owner_id = owner_id
         self._cards = cards
+        # 이 워커의 등급(그 owner 안에서의 push 우선순위). 등록 프레임에 실린다 — 하위호환
+        # 기본은 primary(기존 워커는 그대로 1차 워커). backup도 같은 로직·카드로 답하고,
+        # 신뢰 하향은 디스패처가 연결 등급을 진실로 강제한다(결정 4).
+        self._role: WorkerRole = role
         # 로컬 claude 호출은 runtime.py의 ClaudeCodeRuntime을 그대로 재사용한다(재구현 금지).
         # 미주입이면 기본 생성자(실 `claude -p`) — 단위 테스트는 FakeRunner 박은 인스턴스 주입.
         self._runtime = runtime if runtime is not None else ClaudeCodeRuntime()
@@ -131,12 +144,17 @@ class WorkerLogic:
     def owner_id(self) -> str:
         return self._owner_id
 
+    @property
+    def role(self) -> WorkerRole:
+        return self._role
+
     def register_frame(self, token: str | None = None) -> RegisterWorker:
-        """연결 직후 보낼 등록 프레임을 만든다(owner 신원 선언, 결정 6-5).
+        """연결 직후 보낼 등록 프레임을 만든다(owner 신원·등급 선언, 결정 6-5·ADR 0012 결정 2).
 
         `token`은 owner 인증 자리(ADR 0009 → T6.5) — 지금은 None 허용(거부 hook만 존재).
+        `role`은 이 워커의 등급(primary/backup)을 실어 중앙이 등급별 레지스트리에 올린다.
         """
-        return RegisterWorker(owner_id=self._owner_id, token=token)
+        return RegisterWorker(owner_id=self._owner_id, token=token, role=self._role)
 
     def handle_push_work(self, push: PushWork) -> SubmitAnswer:
         """`PushWork` 한 건을 처리해 회신할 `SubmitAnswer` 프레임을 만든다(결정론 코어).
@@ -204,12 +222,16 @@ def run_worker(
                 ws.send(logic.register_frame(token).model_dump_json())
                 first = parse_central_frame(_loads(ws.recv()))
                 if isinstance(first, AuthError):
-                    print(f"[worker:{logic.owner_id}] 등록 거부(AuthError): {first.reason}")
+                    print(
+                        f"[worker:{logic.owner_id}|{logic.role}] 등록 거부(AuthError): {first.reason}"
+                    )
                     return
                 if not isinstance(first, Welcome):
-                    print(f"[worker:{logic.owner_id}] 예상치 못한 첫 응답 — 재연결 시도")
+                    print(
+                        f"[worker:{logic.owner_id}|{logic.role}] 예상치 못한 첫 응답 — 재연결 시도"
+                    )
                     raise _Reconnect
-                print(f"[worker:{logic.owner_id}] 중앙에 등록됨({url}). 작업 대기.")
+                print(f"[worker:{logic.owner_id}|{logic.role}] 중앙에 등록됨({url}). 작업 대기.")
                 attempt = 0  # 연결 성공 → 백오프 리셋
                 _serve(ws, logic)
         except _Reconnect:
@@ -248,13 +270,13 @@ def _serve(ws: Any, logic: WorkerLogic) -> None:
         frame = parse_central_frame(_loads(ws.recv()))
         if isinstance(frame, PushWork):
             print(
-                f"[worker:{logic.owner_id}] 작업 수신 "
+                f"[worker:{logic.owner_id}|{logic.role}] 작업 수신 "
                 f"ticket={frame.ticket.ticket_id[:8]} agent={frame.ticket.agent_id} "
                 f"— 로컬 claude 호출 중…"
             )
             submit = logic.handle_push_work(frame)
             ws.send(submit.model_dump_json())
-            print(f"[worker:{logic.owner_id}] 답 회신 ticket={submit.ticket_id[:8]}")
+            print(f"[worker:{logic.owner_id}|{logic.role}] 답 회신 ticket={submit.ticket_id[:8]}")
         elif isinstance(frame, Ping):
             ws.send(Heartbeat().model_dump_json())
         # Welcome/AuthError/미지 프레임은 수신 루프에선 무시(등록은 끝났다).
@@ -281,7 +303,14 @@ def main() -> None:
     owner_id를 CLI(`--owner`)/env(`OWNER_ID`)로 받고, 데모 샘플(`cards_for_owner`)에서 그
     owner의 카드 매핑을 채워 `WorkerLogic`을 만든 뒤 실 WS로 중앙에 붙는다(`run_worker`).
     중앙 URL은 `--url`/env(`CENTRAL_URL`, 기본 `ws://127.0.0.1:8000/worker`). 인증 토큰
-    자리(`--token`)는 ADR 0009 → T6.5(지금은 거부 hook만). 수동 시연이라 게이트 밖이다.
+    자리(`--token`)는 ADR 0009 → T6.5(지금은 거부 hook만).
+
+    등급(`--role primary|backup`, ADR 0012 결정 2, T6.6 슬라이스 iv): 이 워커가 owner PC
+    1차 워커(primary, 기본)인지 owner 위임 격리 백업(backup)인지. backup으로 띄우면 primary가
+    부재(미연결/회수)일 때 그 owner 작업을 받아 *같은* 로컬 claude로 답한다 — 답은 디스패처가
+    연결 등급을 진실로 mode=backup으로 강제 하향하고(결정 4), owner 처리함에 미검토 검토 항목이
+    쌓인다(결정 7). 데모는 같은 카드 데이터로 backup 동작을 보인다(실 동기화 스냅샷은 후속).
+    수동 시연이라 게이트 밖이다.
     """
     import argparse
     import os
@@ -305,6 +334,12 @@ def main() -> None:
         help="owner 인증 토큰 자리(ADR 0009 → T6.5, 지금은 거부 hook만)",
     )
     parser.add_argument(
+        "--role",
+        default=os.environ.get("WORKER_ROLE", "primary"),
+        choices=["primary", "backup"],
+        help="워커 등급(ADR 0012 결정 2): primary=owner PC 1차, backup=owner 위임 격리 백업 (env WORKER_ROLE, 기본 primary)",
+    )
+    parser.add_argument(
         "--no-reconnect",
         action="store_true",
         help="끊기면 재연결하지 않고 종료(디버그용)",
@@ -314,6 +349,7 @@ def main() -> None:
     owner_id: str | None = args.owner
     if not owner_id:
         parser.error("owner를 지정하세요: --owner <id> 또는 env OWNER_ID")
+    role: WorkerRole = cast(WorkerRole, args.role)
 
     cards = cards_for_owner(owner_id)
     if not cards:
@@ -323,9 +359,11 @@ def main() -> None:
             f"[worker:{owner_id}] 경고: 데모 샘플에 owner '{owner_id}'의 카드가 없습니다. "
             "(legal_lead / cs_lead / finance_lead 중 하나여야 함)"
         )
-    logic = WorkerLogic(owner_id=owner_id, cards=cards, runtime=ClaudeCodeRuntime())
+    logic = WorkerLogic(
+        owner_id=owner_id, cards=cards, runtime=ClaudeCodeRuntime(), role=role
+    )
     print(
-        f"[worker:{owner_id}] 카드 {len(cards)}개({', '.join(cards) or '없음'}) — "
+        f"[worker:{owner_id}|{role}] 카드 {len(cards)}개({', '.join(cards) or '없음'}) — "
         f"중앙 {args.url} 연결 시도."
     )
     run_worker(logic, url=args.url, token=args.token, reconnect=not args.no_reconnect)

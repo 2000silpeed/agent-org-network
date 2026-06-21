@@ -145,3 +145,21 @@ def test_store_주입됐지만_해당_intent_판례_없으면_0건은_Unowned가
     router = router_with([], "계약 검토", precedents=store)
     decision = router.route("계약 검토 부탁해요")
     assert isinstance(decision, Unowned)
+
+
+def test_intent가_domains에도_cannot_answer에도_든_카드는_후보에서_제외된다():
+    """cannot_answer 차감: domains에 있어도 cannot_answer에도 있으면 후보 제외 → Unowned."""
+    domain_card = AgentCard(
+        agent_id="hr_ops",
+        owner="D",
+        team="hr",
+        summary="HR",
+        domains=["급여이체"],
+        cannot_answer=["급여이체"],
+        last_reviewed_at=date(2026, 6, 20),
+    )
+    registry = Registry()
+    registry.register(domain_card)
+    router = Router(registry, FakeClassifier("급여이체"), root_user="root")
+    decision = router.route("급여이체 처리해줘")
+    assert isinstance(decision, Unowned)

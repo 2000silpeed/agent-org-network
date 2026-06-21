@@ -246,6 +246,16 @@ _Avoid_: Rule(단독), History
 **Trust Label**:
 카드·답변의 취급 제약 태그(`internal_only` 등). Authority·Confidence와 구분.
 
+### Eval (골든셋)
+
+**Golden set (골든셋)**:
+분류기·라우팅 품질을 검증하는 *라벨링된 평가 데이터*(ADR 0003·TRD §7). 두 출처의 합 — 누적 **Precedent**(운영에서 합의로 떨어진 실 케이스)와 **Sample question**(손으로 라벨링한 시드 질문, `samples/questions.jsonl`). 단위 테스트(결정론)가 *로직 오류*를 매 커밋 잡는다면, 골든셋은 *확률적 LLM 분류·답변 품질*을 정확도/통과율 **임계값 eval**로 잡는다 — 한 예제가 틀리는 게 실패가 아니라 임계 미달·이전 대비 하락이 실패. 같은 골든셋이 두 분류기(`RuleBasedClassifier`·후속 `LlmClassifier`)의 공통 eval 타깃이다. **골든셋 *데이터*(샘플 카드 5장 + 질문 30개)는 T6.4, eval *러너*(정확도 임계값·LLM 연동)는 T6.2** — 데이터와 러너를 분리한다(데이터는 분류기 무관, 러너는 데이터를 소비). T6.4의 자체 게이트는 *결정론*이다(샘플 질문의 `expected_intent`를 `FakeClassifier`로 주입해 라벨↔카드 coherence를 LLM 없이 검증) — 실 LLM 정확도 측정은 T6.2 러너 영역.
+_Avoid_: Test set(단독 — 단위 테스트 픽스처와 혼동), Benchmark, Corpus, Dataset(단독)
+
+**Sample question (샘플 질문)**:
+골든셋의 손라벨링 시드 한 건 — `samples/questions.jsonl`의 한 줄(JSON). `question`(자연어 업무 질문) + 기대 처분 라벨(`expected_intent`·`expected_disposition`(`routed`/`contested`/`unowned`)과 disposition별 부속 `expected_primary`/`expected_candidates`·선택 `expected_approval`/`expected_collaborators`) + `note`(사람용 근거)를 든다. **샘플 질문은 Precedent가 아니다** — Precedent는 운영에서 *합의로* 떨어진 `Resolution` 기록이고(라우터가 lookup), 샘플 질문은 *사람이 미리 박은* eval 기대치다(라우터가 참조하지 않음). 둘 다 골든셋이지만 출처·생애가 다르다(시드 vs 누적). 30개는 세 처분을 다 덮도록 배분된다(Routed/Contested/Unowned). disposition별로 의미 있는 필드만 채운다 — routed면 `expected_primary`, contested면 `expected_candidates`(≥2), unowned면 둘 다 비움(0 매칭). **정적 골든셋(Precedent 0)에서 시연되는 부속은 approval(단일 domain intent의 Routed 게이트)과 cannot_answer(후보 차감 — domains+cannot_answer 양쪽에 든 intent는 후보에서 빠져 Unowned, T6.4가 `router.py`에 구현)뿐** — collaboration은 *그 intent가 2장 domains에 있어야 부착*되는데 그러면 후보 ≥2라 Contested가 되어 Routed가 안 나오므로(Precedent가 단일 primary로 고정해야 살아남), `expected_collaborators`는 스키마에만 두고 시드엔 비운다.
+_Avoid_: Test case(단독 — 단위 테스트와 혼동), Fixture, Precedent(이건 운영 누적 — 샘플 질문은 시드 라벨)
+
 ### Audit (운영자向 기록)
 
 **Audit log (감사 로그)**:

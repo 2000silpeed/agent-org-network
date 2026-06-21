@@ -6,3 +6,7 @@ users:
     manager: root_manager
   - id: finance_lead
     manager: root_manager
+  - id: hr_lead
+    manager: root_manager
+  - id: it_lead
+    manager: root_manager

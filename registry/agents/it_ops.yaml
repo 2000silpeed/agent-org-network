@@ -1,0 +1,15 @@
+agent_id: it_ops
+owner: it_lead
+team: it
+summary: 계정 관리, 접근 권한 요청, 보안 사고 대응을 안내합니다.
+domains:
+  - 계정
+  - 접근권한
+  - 보안
+approval_when:
+  - 접근권한
+last_reviewed_at: "2026-06-20"
+knowledge_sources:
+  - 위키/계정정책
+  - Notion/접근권한가이드
+  - 위키/보안대응절차

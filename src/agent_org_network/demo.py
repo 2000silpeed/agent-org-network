@@ -1,7 +1,7 @@
 """데모 조립 팩토리 — 하드코딩 샘플로 AskOrg를 한 개 만든다.
 
-T1.3 YAML 로더·T6.4 샘플 골든셋이 아직이라 인라인으로 카드/유저를 박는다.
-눈으로 보는 end-to-end 한 바퀴(웹챗)를 돌리기 위한 walking-skeleton 조립이다.
+인라인 `_USERS`/`_CARDS`는 `registry/`의 YAML(T1.3 로더·T6.4 골든셋)과 *내용 같은 다른 출처*다 —
+둘을 동기화해 데모와 골든셋이 같은 카드 셋을 본다. 눈으로 보는 end-to-end 한 바퀴(웹챗)용 조립이다.
 """
 
 from dataclasses import dataclass
@@ -54,6 +54,8 @@ _USERS: tuple[User, ...] = (
     User(id="legal_lead", manager=ROOT_USER),
     User(id="cs_lead", manager=ROOT_USER),
     User(id="finance_lead", manager=ROOT_USER),
+    User(id="hr_lead", manager=ROOT_USER),
+    User(id="it_lead", manager=ROOT_USER),
 )
 
 _CARDS: tuple[AgentCard, ...] = (
@@ -84,6 +86,27 @@ _CARDS: tuple[AgentCard, ...] = (
         last_reviewed_at=_REVIEWED,
         knowledge_sources=["Notion/가격표", "위키/할인규정"],
     ),
+    AgentCard(
+        agent_id="hr_ops",
+        owner="hr_lead",
+        team="hr",
+        summary="채용 절차, 휴가 정책, 직원 평가 기준을 안내합니다. 급여이체 실행은 담당하지 않습니다.",
+        domains=["채용", "휴가", "평가", "급여이체"],
+        cannot_answer=["급여이체"],
+        approval_when=["평가"],
+        last_reviewed_at=_REVIEWED,
+        knowledge_sources=["위키/채용가이드", "Notion/휴가규정", "위키/평가기준"],
+    ),
+    AgentCard(
+        agent_id="it_ops",
+        owner="it_lead",
+        team="it",
+        summary="계정 관리, 접근 권한 요청, 보안 사고 대응을 안내합니다.",
+        domains=["계정", "접근권한", "보안"],
+        approval_when=["접근권한"],
+        last_reviewed_at=_REVIEWED,
+        knowledge_sources=["위키/계정정책", "Notion/접근권한가이드", "위키/보안대응절차"],
+    ),
 )
 
 _KEYWORD_INTENTS: dict[str, str] = {
@@ -91,6 +114,15 @@ _KEYWORD_INTENTS: dict[str, str] = {
     "환불": "환불",
     "가격": "가격",
     "보상": "보상",
+    "채용": "채용",
+    "입사": "채용",
+    "휴가": "휴가",
+    "연차": "휴가",
+    "평가": "평가",
+    "급여이체": "급여이체",
+    "계정": "계정",
+    "접근권한": "접근권한",
+    "보안": "보안",
 }
 
 
@@ -131,8 +163,8 @@ def build_demo(
 ) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
-    카드 3종(contract_ops·cs_ops·finance_ops) + 루트 매니저 포함 유저 4명.
-    분류기는 키워드 규칙(계약/환불/가격/보상).
+    카드 5종(contract_ops·cs_ops·finance_ops·hr_ops·it_ops) + 루트 매니저 포함 유저 6명.
+    분류기는 키워드 규칙(계약/환불/가격/보상/채용·휴가·평가·급여이체/계정·접근권한·보안).
     런타임은 기본 `ClaudeCodeRuntime`(웹에서 진짜 Claude 답) — 단 결정론이 필요한
     테스트는 `StubRuntime`(또는 FakeRunner 주입한 ClaudeCodeRuntime)을 넘긴다.
     cs_ops·finance_ops가 "보상" domain을 공유 → "보상" 질문은 Contested(다툼) 시연.

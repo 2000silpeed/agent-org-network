@@ -1,0 +1,18 @@
+agent_id: hr_ops
+owner: hr_lead
+team: hr
+summary: 채용 절차, 휴가 정책, 직원 평가 기준을 안내합니다. 급여이체 실행은 담당하지 않습니다.
+domains:
+  - 채용
+  - 휴가
+  - 평가
+  - 급여이체
+cannot_answer:
+  - 급여이체
+approval_when:
+  - 평가
+last_reviewed_at: "2026-06-20"
+knowledge_sources:
+  - 위키/채용가이드
+  - Notion/휴가규정
+  - 위키/평가기준

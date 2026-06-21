@@ -196,8 +196,8 @@ def test_샘플_registry_load_validate_통과() -> None:
     registry = Registry()
     registry.load(registry_dir)
     registry.validate()
-    assert len(registry.all_cards()) == 3
-    assert len(registry.user_ids()) == 4
+    assert len(registry.all_cards()) == 5
+    assert len(registry.user_ids()) == 6
 
 
 def test_샘플_registry_카드_agent_id_집합() -> None:
@@ -206,7 +206,7 @@ def test_샘플_registry_카드_agent_id_집합() -> None:
     registry = Registry()
     registry.load(registry_dir)
     ids = {c.agent_id for c in registry.all_cards()}
-    assert ids == {"contract_ops", "cs_ops", "finance_ops"}
+    assert ids == {"contract_ops", "cs_ops", "finance_ops", "hr_ops", "it_ops"}
 
 
 def test_샘플_registry_유저_id_집합() -> None:
@@ -215,7 +215,7 @@ def test_샘플_registry_유저_id_집합() -> None:
     registry = Registry()
     registry.load(registry_dir)
     ids = set(registry.user_ids())
-    assert ids == {"root_manager", "legal_lead", "cs_lead", "finance_lead"}
+    assert ids == {"root_manager", "legal_lead", "cs_lead", "finance_lead", "hr_lead", "it_lead"}
 
 
 def test_샘플_registry_카드_내용이_demo와_일치() -> None:

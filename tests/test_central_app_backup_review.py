@@ -54,8 +54,8 @@ def _http_post(client: TestClient, url: str, payload: dict[str, Any]) -> Any:
 def test_demo_delegations가_owner별_위임을_만든다() -> None:
     snaps = demo_delegations()
     owners = {s.owner_id for s in snaps}
-    # 데모 카드 3 owner가 각각 위임을 갖는다.
-    assert owners == {"legal_lead", "cs_lead", "finance_lead"}
+    # 데모 카드 5장 owner가 각각 위임을 갖는다.
+    assert owners == {"legal_lead", "cs_lead", "finance_lead", "hr_lead", "it_lead"}
 
 
 def test_demo_delegations의_agent_ids가_그_owner의_카드다() -> None:

@@ -65,6 +65,25 @@
 - **단위(결정론)** — `FakeClassifier`·`StubRuntime` 주입, 코어 로직. 매 커밋.
 - **eval(통계)** — 골든셋(= Precedent + 샘플 질문) 정확도/통과율 임계값. 분류기·런타임 변경 시·야간, 회귀 게이트.
 
+**골든셋 데이터(T6.4) ↔ eval 러너(T6.2) 분리**: 골든셋 *데이터*(샘플 카드 5장 + 샘플 질문 30개)는 분류기 무관한 자산이라 T6.4가 만들고, 정확도 임계값·LLM 연동을 소비하는 *러너*는 T6.2(`LlmClassifier`)가 만든다. T6.4의 자체 게이트는 **결정론**이다(LLM eval 아님) — 샘플 질문의 `expected_intent`를 `FakeClassifier`에 주입해 Router를 돌려 `expected_disposition`(+`expected_primary`/`expected_candidates`) 일치를 검증하면, 카드와 라벨이 *서로 모순 없음*(coherence)을 LLM 없이 박는다. 실 LLM 분류 정확도 측정은 T6.2 러너 영역(자리만, 여기선 shape 금지).
+
+**샘플 질문 엔트리(`samples/questions.jsonl`, 한 줄 = 한 JSON)**:
+
+| 필드 | 필수/선택 | 의미 | disposition별 |
+|------|-----------|------|---------------|
+| `question` | 필수 | 자연어 업무 질문 | 전부 |
+| `expected_intent` | 필수 | 분류기 타깃 라벨(카드 `domains` 어휘) | 전부 |
+| `expected_disposition` | 필수 | `routed`/`contested`/`unowned` | 전부 |
+| `expected_primary` | routed면 필수 | 담당 `agent_id` | routed만 의미 |
+| `expected_candidates` | contested면 필수 | 후보 `agent_id` 집합(≥2) | contested만 의미 |
+| `expected_approval` | 선택(기본 false) | Approval 게이트 기대 | routed 부속 |
+| `expected_collaborators` | 선택(기본 []) | 끌어들일 협업 `agent_id` 집합 | routed 부속 |
+| `note` | 필수 | 사람용 근거(왜 이 처분인가) | 전부 |
+
+unowned는 `expected_primary`·`expected_candidates`를 비운다(0 매칭). 로더는 JSONL→typed 엔트리 읽기만(영속 상태·새 도메인 타입 0), 위치는 구현 단계 판단(`golden.py` 또는 `eval.py`).
+
+**`expected_collaborators`는 정적 30개 시드에선 비운다(라우터 구조)**: collaboration은 *단일 primary Routed인데 그 intent를 가진 다른 카드도 존재*해야 부착되는데(§6 5단계·`Router._collaborators_for`), 그 intent가 2장 domains에 있으면 후보 ≥2라 **Contested**(Routed 아님)가 된다. full route collaboration은 **Precedent가 그 intent를 단일 primary로 먼저 고정**(판례 경로)해야 살아나므로, Precedent 0인 정적 골든셋에선 collaboration intent가 contested로 처분된다. `expected_collaborators` 필드는 스키마에 두되(Precedent 누적 후·T6.2 eval에서 의미) T6.4 시드엔 채우지 않는다. 정적으로 시연되는 부속은 **approval**(단일 domain intent)과 **cannot_answer**(후보 차감)뿐. (`cannot_answer` 후보 차감은 T6.4가 `router.py`에 구현했다 — TRD §6 step 3 정렬. hr_ops가 급여이체를 domains+cannot_answer *양쪽*에 둬 차감→0매칭→Unowned로 처분한다. 차감 전엔 hr_ops로 Routed돼 틀렸고, 골든셋 coherence 테스트가 이 수정을 red→green 구동했다.)
+
 ## 8. 프론트 면 (5)
 
 실 사용자 채팅 · Agent 빌더 · Owner 처리함(후보 합의 1인칭) · Manager 큐 · 운영 모니터링(로그·상세 = T5.1 / Org 그래프 = T5.3). 모두 같은 백엔드 공유 — 단 **페르소나별 분리된 공간**이라 접근 주체는 인증으로 분리(최종 필수). walking skeleton 처리함의 owner 선택 드롭다운은 인증 전 시연 장치다(ADR 0009). 모니터링은 감사 로그를 `AuditReader`로 *순수 읽기* 투영(T5.1 — `GET /monitor` 요약·`GET /monitor/{index}` 상세, 운영 면이라 내부값 노출).
@@ -88,8 +107,10 @@ src/agent_org_network/
   mcp_server.py                                # 중앙 MCP 서버 진입점(reply_to_mcp_text 투영·create_mcp_server FastMCP 도구 ask_org·main stdio, T3.2·ADR 0006). 공식 mcp SDK·표현층 어댑터(web.py와 같은 경계)
 web/index.html  web/inbox.html(담당 합의·백업 검토 탭)   logs/audit.jsonl   tests/
 okf/<agent_id>/*.md                          # owner OKF 번들(T6.7·ADR 0013) — 마크다운+YAML 프론트매터·type 자유·index.md 권장. 규약 경로 okf_root/{agent_id}(레이블 아닌 agent_id가 경로를 진다). 워커 ClaudeCodeRuntime이 cwd로 소비(--allowedTools "Read,Glob,Grep"). 데모는 repo okf/지만 의미상 owner 환경. 현재: okf/cs_ops/ · okf/contract_ops/
-registry/users.yaml · registry/agents/*.yaml   # T1.3 완료 — 샘플 유저 4명·카드 3장(demo._USERS·_CARDS와 동일 내용)
-# 예정: routing_rules.yaml · samples/questions.jsonl
+registry/users.yaml · registry/agents/*.yaml   # 샘플 유저·카드 — T1.3에서 유저 4명·카드 3장. T6.4가 유저 +2(hr_lead·it_lead)·카드 +2(hr_ops·it_ops) → 유저 6명·카드 5장(PRD §8 "카드 5개 코드 수정 없이 YAML 추가"). demo._USERS·_CARDS도 동기화(데모와 골든셋이 같은 카드 셋을 봐야 함)
+samples/questions.jsonl                          # T6.4 — 샘플 질문 30개 골든셋(한 줄=한 JSON: question·expected_intent·expected_disposition·expected_primary?·expected_candidates?·expected_approval?·expected_collaborators?·note). eval 데이터(분류기 무관), 러너는 T6.2
+golden.py                                        # T6.4 — questions.jsonl → typed 엔트리 읽기 로더(SampleQuestion pydantic frozen + load_golden, 영속 상태·새 도메인 타입 0). eval 러너는 T6.2
+# 예정: routing_rules.yaml
 ```
 
 ## 10. 핵심 불변식

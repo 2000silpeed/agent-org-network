@@ -35,7 +35,10 @@ class Router:
                         ),
                         intent,
                     )
-        candidates = tuple(c for c in self._registry.all_cards() if intent in c.domains)
+        candidates = tuple(
+            c for c in self._registry.all_cards()
+            if intent in c.domains and intent not in c.cannot_answer
+        )
         if not candidates:
             return Unowned(escalated_to=self._root_user, reason=f"담당 없음: {intent or '미분류'}")
         if len(candidates) == 1:

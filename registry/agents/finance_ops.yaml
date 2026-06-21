@@ -1,0 +1,11 @@
+agent_id: finance_ops
+owner: finance_lead
+team: finance
+summary: 가격 정책과 견적 기준을 안내합니다.
+domains:
+  - 가격
+  - 보상
+last_reviewed_at: "2026-06-20"
+knowledge_sources:
+  - Notion/가격표
+  - 위키/할인규정

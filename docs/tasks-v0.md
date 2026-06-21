@@ -7,7 +7,7 @@
 - [x] **T0.1** 스캐폴드(uv·pytest·pydantic·ruff·pyright)
 - [x] **T1.1** `AgentCard` + `Registry.register/get`
 - [x] **T1.2** 참조 무결성(User/Agent 그래프, `validate`)
-- [ ] **T1.3** `Registry.load(dir)` YAML 로더 + `validate` CLI
+- [x] **T1.3** `Registry.load(dir)` YAML 로더 + `validate` CLI
 
 ## Phase 2 — 라우팅 코어 (읽기)
 

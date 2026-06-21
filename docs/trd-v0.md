@@ -81,7 +81,8 @@ src/agent_org_network/
   demo.py  web.py                              # 데모 조립(cards_for_owner·demo_delegations 포함) + 웹 어댑터(POST /ask·GET /ask/{tracking} 회수·검토 탭 라우트)
 web/index.html  web/inbox.html(담당 합의·백업 검토 탭)   logs/audit.jsonl   tests/
 okf/<agent_id>/*.md                          # owner OKF 번들(T6.7·ADR 0013) — 마크다운+YAML 프론트매터·type 자유·index.md 권장. 규약 경로 okf_root/{agent_id}(레이블 아닌 agent_id가 경로를 진다). 워커 ClaudeCodeRuntime이 cwd로 소비(--allowedTools "Read,Glob,Grep"). 데모는 repo okf/지만 의미상 owner 환경. 현재: okf/cs_ops/ · okf/contract_ops/
-# 예정: registry/agents/*.yaml · routing_rules.yaml · samples/questions.jsonl
+registry/users.yaml · registry/agents/*.yaml   # T1.3 완료 — 샘플 유저 4명·카드 3장(demo._USERS·_CARDS와 동일 내용)
+# 예정: routing_rules.yaml · samples/questions.jsonl
 ```
 
 ## 10. 핵심 불변식

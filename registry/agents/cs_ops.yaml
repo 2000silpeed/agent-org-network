@@ -1,0 +1,10 @@
+agent_id: cs_ops
+owner: cs_lead
+team: cs
+summary: 환불 정책과 처리 절차를 안내합니다.
+domains:
+  - 환불
+  - 보상
+last_reviewed_at: "2026-06-20"
+knowledge_sources:
+  - 위키/환불정책

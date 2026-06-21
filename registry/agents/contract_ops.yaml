@@ -1,0 +1,10 @@
+agent_id: contract_ops
+owner: legal_lead
+team: legal
+summary: 계약 검토와 조건 변경 가능 여부를 안내합니다.
+domains:
+  - 계약 검토
+last_reviewed_at: "2026-06-20"
+knowledge_sources:
+  - 위키/계약가이드
+  - Notion/표준계약서

@@ -1,0 +1,8 @@
+users:
+  - id: root_manager
+  - id: legal_lead
+    manager: root_manager
+  - id: cs_lead
+    manager: root_manager
+  - id: finance_lead
+    manager: root_manager

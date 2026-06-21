@@ -31,11 +31,11 @@ _Avoid_: Editor, Admin
 _Avoid_: Account, Member
 
 **Agent Runtime**:
-Agent Card를 구동해 질문에 답하는 실행 주체. 라우터가 호출한다. 답변 주체는 각 Owner의 Claude Code다 — 중앙 API 키 LLM이 아니라(ADR 0010). 포트로 분리 — `StubRuntime`(canned, 테스트·스켈레톤) → `ClaudeCodeRuntime`(`claude -p` 헤드리스, T6.1 임시·중앙 1회성·모든 카드가 로컬 claude로 답) → owner별 분산 Claude Code(MCP/A2A, T6.3 — 그때 owner별 지식 격리 성립). `knowledge_sources`는 현재 `Answer.sources` 출처 레이블이며 진짜 문서 RAG는 후속. (ADR 0007·0010)
+Agent Card를 구동해 질문에 답하는 실행 주체. 라우터가 호출한다. 답변 주체는 *owner가 위임·관리하는 환경*의 Claude Code다 — 평상시 owner PC, owner PC 부재 시 owner 위임 백업 인스턴스(ADR 0010+0012). 어느 쪽이든 owner가 답하며 중앙 API 키 LLM이 아니다(중앙 무지식 보존). 포트로 분리 — `StubRuntime`(canned, 테스트·스켈레톤) → `ClaudeCodeRuntime`(`claude -p` 헤드리스, T6.1 임시·중앙 1회성·모든 카드가 로컬 claude로 답) → owner별 분산 Claude Code(MCP/A2A, T6.3 — 그때 owner별 지식 격리 성립). `knowledge_sources`는 현재 `Answer.sources` 출처 레이블이며 진짜 문서 RAG는 후속. (ADR 0007·0010)
 _Avoid_: Agent(단독), Bot
 
 **Answer**:
-Agent Runtime이 한 질문에 산출한 답. `text`(답 본문) · `sources`(근거 출처) · `mode`를 가진다. `mode`는 신뢰 상태 — `full`(그대로 사용자에게)과 `draft_only`(Approval 게이트가 걸려 사람 승인 전까지는 초안). 즉 Routed에 Approval이 붙으면 Runtime은 `draft_only`로 답한다(승인 ≠ 라우팅, 게이트만 걸림). "답에는 항상 담당·신뢰 상태(승인/초안/출처)가 붙는다"는 불변식의 그 답.
+Agent Runtime이 한 질문에 산출한 답. `text`(답 본문) · `sources`(근거 출처) · `mode`를 가진다. `mode`는 신뢰 상태 — `full`(owner 실시간 답, 그대로 사용자에게) · `draft_only`(Approval 게이트가 걸려 사람 승인 전까지는 초안) · `backup`(owner 위임 백업 워커의 스냅샷 기반 답, owner 미검토 — 신뢰 하향, ADR 0012). 즉 Routed에 Approval이 붙으면 Runtime은 `draft_only`로 답하고(승인 ≠ 라우팅, 게이트만 걸림), owner PC 부재로 백업이 답하면 `backup`으로 신뢰가 하향된다(둘이 겹치면 `backup`이 우선 — 백업은 어차피 owner 미검토라 더 강한 하향). **`backup`은 셋의 마지막 값이고 넷째 값은 없다** — staleness로 fresh/stale을 쪼개지 않는다(stale 백업은 답을 안 하고 거부→escalation이라 *답이 나가는* 백업은 다 fresh, ADR 0012 결정 9). owner가 복귀해 백업 답을 검토(`BackupReview`)하면 backup→`full`로 *신뢰 복원*(승인·정정 모두 — owner 검토를 거쳤으므로, 재노출 시 적용, ADR 0012 결정 7). "답에는 항상 담당·신뢰 상태(승인/초안/백업/출처)가 붙는다"는 불변식의 그 답. `mode`는 *원래 노출하는 신뢰 상태값*이라 사용자向 `Answered`에 그대로 실린다(조직 내부 구조가 아님 — 노출 불변식과 양립).
 _Avoid_: Response, Result, Reply
 
 ### Distributed transport (분산 전송)
@@ -45,6 +45,30 @@ owner PC는 서버를 노출하지 않는다(NAT/방화벽 뒤·고정 IP 없음
 **Owner Worker (오너 워커)**:
 각 Owner PC에서 도는 작은 실행 주체. 중앙에 *아웃바운드 WebSocket*으로 연결(ADR 0011 결정 6 — 폴링이 아니라 WS로 확정)해 자기 owner 작업 큐의 작업을 받아(중앙이 그 소켓으로 `PushWork`), 로컬 Claude Code(`ClaudeCodeRuntime` 재사용)로 답을 만들어 중앙에 회신(`SubmitAnswer`)한다. 중앙이 owner PC로 인바운드 연결을 *걸지 않는다* — 연결을 거는 쪽은 항상 워커다. owner PC는 간헐 연결이 정상이라 끊김·재연결·중복 전달이 핵심 실패 모드다(ADR 0011 결정 6-4). 진짜 그 owner인지는 인증으로 강제한다(ADR 0009 연결점, 실 검증 T6.5). 선례: Claude Code Remote Control(owner claude가 claude.ai에 아웃바운드 연결). 구현(`worker.py`, 슬라이스2b-ii): 프레임 핸들링 결정론 코어(`WorkerLogic`=`PushWork`→`ClaudeCodeRuntime`→`SubmitAnswer`·`backoff_seconds`·`parse_central_frame`, 단위 테스트)와 실 아웃바운드 WS·재연결 셸(`run_worker`, 수동 시연)을 분리. 자기 owner 카드(`agent_id→AgentCard`)는 owner 환경에 들고(`PushWork`는 식별자만 싣고 워커가 카드 복원), 한 owner = 한 워커 프로세스.
 _Avoid_: Agent(단독), Client(단독 — 논리 호출 방향과 혼동), Node
+
+**Backup Worker (백업 워커)**:
+owner PC 워커가 부재(미연결/timeout)일 때 그 owner를 *대신 답하게* 하는 워커 — 단, 중앙 공용 LLM이 아니라 **owner가 명시적으로 위임한 자기 데이터·자기 신원의 격리 인스턴스**다(ADR 0012). 물리적으론 중앙 인프라에 호스팅되지만 논리적으론 *여전히 owner가 답한다* — 그래서 ADR 0010("답변 주체 = owner Claude Code")을 깨지 않고 "owner가 위임·관리하는 환경(owner PC **또는** owner 백업 인스턴스)"으로 보강한다. 새 타입이 아니라 **`WorkerLogic` 재사용** — `PushWork`→`ClaudeCodeRuntime`→`SubmitAnswer`의 같은 프레임 흐름을 타고, 다른 건 *어디서 도는가*(중앙 호스팅 격리)와 *무엇을 들고 도는가*(owner PC 실데이터가 아니라 위임 스냅샷=`DelegationSnapshot`)뿐(둘 다 생성자 인자로 흡수, `worker.py` 무변경). 답은 owner 미검토·스냅샷 기반이라 **신뢰 하향**(`Answer.mode="backup"`). 책임은 여전히 owner(opt-in 위임이므로 — `answered_by`=owner 불변). 폴백 사슬: owner PC 워커 → (부재) Backup Worker → (백업도 부재/실패) Manager escalation(미아 없음 — 반드시 종착). 진짜 그 owner가 위임한 백업인지는 인증으로 강제(ADR 0009 → T6.5).
+_Avoid_: Fallback LLM(중앙 공용 추론과 혼동), Agent(단독), Standby(상시/기동 무관)
+
+**WorkerRole (워커 등급)**:
+한 owner에 붙은 워커의 우선순위 등급 — `primary`(owner PC 워커, 1차)와 `backup`(owner 위임 백업 워커, 2차). 같은 owner 안에서 *어느 연결로 먼저 push하나*를 가른다(신원=`owner_id`는 같고, 등급은 그 owner 안의 우선순위). `RegisterWorker`에 실려 워커가 자기 등급을 선언하고(PC=기본 `primary`, 백업=`backup`), `WebSocketDispatcher`의 연결 레지스트리가 owner당 등급별 연결(`owner_id → {role → send}`)로 보관해 push 시 우선순위 선택(primary 있으면 primary, 없으면 backup, 둘 다 없으면 큐 대기→timeout escalation). (ADR 0012)
+_Avoid_: WorkerType(타입이 아니라 우선순위), Priority(단독 — 디스패치 결정과 혼동)
+
+**DelegationSnapshot (위임 스냅샷)**:
+owner가 백업 워커에 *명시적으로 위임한* 격리 스냅샷의 메타 — `owner_id` · `agent_ids`(위임 대상 카드, 어느 담당 영역을 백업이 답하나) · `snapshot_at`(스냅샷 뜬 시각, staleness 판정 기준). **이 레코드는 위임 사실과 최신성만 든다** — 실 지식 본체(문서·인덱스)는 owner별 격리 저장소에 있고 *백업 인스턴스만* owner 키로 접근한다(중앙 무지식 보존 — 중앙·디스패처는 이 메타만 보고 실 데이터는 안 본다). AgentCard 자기보고 필드가 *아니라* 별 레코드인 이유: 위임은 가용성·보안 정책이지 담당 영역 선언이 아니고(Authority 중앙·ADR 0004 정합), opt-in이 1급으로 드러나야 위임 없는 owner가 백업 단계를 건너뛰어 곧장 escalation으로 떨어진다(폴백 사슬 정합). **staleness 정책(ADR 0012 결정 9)**: `snapshot_at`이 정책 임계를 넘으면 백업은 *신뢰를 더 낮춰 답하는 게 아니라 아예 거부*하고 escalation으로 떨어진다(너무 오래된 데이터로 답하느니 사람 — "모르면 안전하게 넘긴다"). 그래서 *답이 나가는* 백업은 모두 임계 내 fresh라 `mode`는 `backup` 하나로 충분하다(fresh/stale을 mode로 쪼개지 않음 — staleness는 *답 여부*를 가르는 메타이지 *나간 답의 mode*를 가르는 축이 아니다). `snapshot_at`은 검토 시 owner가 "얼마나 오래된 스냅샷으로 답했나" 참고하는 맥락 메타로도 `BackupReviewItem`에 실린다. 동기화 트리거는 owner 수동+주기+지식 변경 이벤트(정책, 실 파이프라인 후속). 암호화·owner 키 핸들은 *연결점만*(실 구현 후속, ADR 0009 연계). (ADR 0012)
+_Avoid_: Backup(단독 — 워커와 혼동), Mirror, Replica
+
+**BackupReviewItem (백업 답 검토 항목)**:
+백업이 owner 이름으로 답한 한 건의 *검토 대기* 항목 — owner가 복귀해 보고·정정·승격할 대상(ADR 0012 결정 7). `ConflictCase`가 미해소 *다툼*을 담듯 이건 미검토 *백업 답*을 담는다(Owner 처리함 Inbox의 두 번째 면). `owner_id`(처리함 귀속 키) · `agent_id`(어느 담당 영역) · `question`(원 질문) · `backup_answer_text`(백업이 낸 답 본문 — owner가 정정 판단 근거로 봄, ConflictCase가 question 원문 보관하는 정신) · `ticket_id`(어느 작업의 답인가 — audit·재노출 연결 키, `item_id`로 재사용) · `snapshot_at`(그 답이 쓴 위임 스냅샷 시각, staleness 맥락) · `answered_at`(주입 clock 결정론) · `status`(`pending_review`/`reviewed`, ConflictCase.status와 같은 결) · `review`(reviewed일 때만 — `BackupReview`). pending_review→reviewed 전이는 `review_with()`가 `item_id` 보존한 새 인스턴스를 돌려준다(파괴적 변경 X — `ConflictCase.resolve()`와 같은 정신). **생성 트리거**: 백업 연결 답이 회신될 때 디스패처가 `mode=backup` 강제 하향과 *함께* `BackupReviewStore.add`를 호출한다(backup이란 사실=연결 등급이 진실이라 생성도 디스패처 책임 — 한 사건의 두 면). primary·full 답엔 생성 안 함(검토 불요). **미검토 백업 답이 처리함에 쌓이는 것 자체가** "owner가 자리를 비운 동안 자기 이름으로 나간 답"의 가시화다(다툼이 Inbox에 쌓이듯). (ADR 0012 결정 7)
+_Avoid_: BackupAnswer(단독 — Answer와 혼동), ReviewTask, PendingAnswer
+
+**BackupReview (백업 답 검토 결과)**:
+owner가 미검토 백업 답에 내리는 1인칭 처분 — 세 결말 중 하나의 sealed sum("타입이 곧 상태", RoutingDecision·ConsensusOutcome·DispatchOutcome 정신). **Approve**(승인 — "이대로 맞다", 재노출 시 `mode` backup→full 승격, text 그대로) · **Correct**(정정 — owner가 새 답 발행해 기존 backup 답 대체, `corrected_text`·`sources`, 재노출 시 `mode=full` owner 실답) · **Dismiss**(무시 — "검토했고 조치 안 함", 검토 *완료* 사실은 남아 미검토와 구분). 모두 `by_owner`가 자기 책임 답을 1인칭으로 처분(검토 서비스가 `item.owner_id == by_owner` 강제 — ConsensusService가 후보 owner 강제하듯). `ConcurOnPrimary`와 같은 1인칭 표 정신. "보류"는 별 결말이 아니라 status가 여전히 `pending_review`인 것(StillOpen이 별 결말 아니라 미완 상태이듯). **Approve·Correct 모두 backup→full 신뢰 복원**(owner 검토를 거쳤으므로) — 차이는 Correct는 text까지 바뀌고 Approve는 mode만. **Precedent를 만들지 *않는다*** — 검토는 *답이 맞나*의 판단이지 *누가 담당인가*(라우팅 판례)가 아니다(담당은 이미 그 owner). 검토 기록은 audit(절차 기록)에만, `PrecedentStore`엔 안 들어간다. (ADR 0012 결정 7)
+_Avoid_: ReviewOutcome, Verdict, Resolution(이건 다툼 합의 결론 — 검토 결과와 구분)
+
+**BackupReviewStore (검토 저장소)**:
+미검토 `BackupReviewItem`을 보관·조회하는 포트 — `ConflictCaseStore`·`AuditLog`·`PrecedentStore`와 *같은 포트 패턴*(Protocol + `InMemoryBackupReviewStore`). `add(item)`(open_case 대응) · `get(item_id)` · `pending_for_owner(owner_id)`(=`open_for_owner`, 처리함 — owner 복귀 시 "내가 검토할 백업 답들" 조회) · `mark_reviewed(item)`(mark_resolved 대응). **`ConflictCaseStore`를 그대로 재사용하지 않고 별 포트**인 이유: 담는 값이 다르다(다툼·후보 vs 백업 답·검토) — 한 store에 두 타입을 섞으면 `open_for_owner`가 무엇을 돌려주는지 모호해지고 망라가 깨진다. 그러나 *패턴은 100% 재사용*(검증된 모양의 두 번째 인스턴스, 새 메커니즘 0). **전이 ≠ 기록** — 미검토 도메인 상태 보관이지 절차 로그(AuditLog)가 아니다. (ADR 0012 결정 7)
+_Avoid_: ReviewDB, Repository(단독)
 
 **Work Queue (작업 큐)**:
 중앙이 owner별로 질문 작업을 적재하는 큐. owner Worker가 연결돼 있을 때 가져가고, owner 부재/PC 꺼짐이면 작업은 *대기*한다(비동기 — 답은 즉시 보장되지 않는다). 미해소 작업의 도메인 보관소지 절차 로그가 아니다(전이 ≠ 기록 — AuditLog와 별개). 큐에 든 작업은 회신되거나 escalation되거나 둘 중 하나로 반드시 종착한다(미아 없음).
@@ -59,7 +83,7 @@ _Avoid_: Router(이건 담당 결정 — 디스패처는 작업 운반), Broker,
 _Avoid_: SyncDispatcher, InlineRuntime
 
 **WebSocketDispatcher (WS 전송 디스패처)**:
-`InMemoryWorkQueueDispatcher`(작업 큐 도메인)를 *합성해 재사용*하고 그 위에 WebSocket 전송만 얹는 `RuntimeDispatcher` 구현(ADR 0011 결정 6, 슬라이스2b). 새 큐 도메인이 아니다 — 큐 상태기계(queued↔claimed↔answered↔expired·단조 종착·timeout escalation·owner별 격리)는 합성한 in-memory 큐가 소유하고(미아 없음·idempotency 1차 보증), WS는 `claim`/`submit`을 *전송*으로 중계할 뿐. 포트 무변경: `claim(owner_id)`의 pull은 "중앙 핸들러가 워커 대신 claim해 `PushWork`로 push"로 의미 보존(워커가 직접 호출 안 함, 트리거 주체만 이동), `submit`은 "워커가 보낸 `SubmitAnswer`를 핸들러가 받아 내부 submit 호출"로. 연결 레지스트리(owner_id→소켓 send 콜백)를 들어 dispatch 시 연결된 워커에 push(미연결이면 큐 대기=기존 `AwaitingWorker`). 실패 모드(결정 6-4): 끊김 시 `release_claims`(미회신 claimed→queued re-queue, 단조성 보존), 중복은 `ticket_id` 멱등(answered 재submit 무시 — 큐가 보장), heartbeat 생존 판정, 워커 인증 거부 hook(ADR 0009 연결점). `transport.py`. **중앙 WS 핸들러**(`server.py`의 `create_worker_app(dispatcher)` + `@app.websocket("/worker")`)가 워커 아웃바운드 연결을 받아 이 디스패처로 프레임을 중계한다 — 채팅·처리함 어댑터(`web.py`)와 책임 분리. (ADR 0011 결정 6, 구현 슬라이스2b-i)
+`InMemoryWorkQueueDispatcher`(작업 큐 도메인)를 *합성해 재사용*하고 그 위에 WebSocket 전송만 얹는 `RuntimeDispatcher` 구현(ADR 0011 결정 6, 슬라이스2b). 새 큐 도메인이 아니다 — 큐 상태기계(queued↔claimed↔answered↔expired·단조 종착·timeout escalation·owner별 격리)는 합성한 in-memory 큐가 소유하고(미아 없음·idempotency 1차 보증), WS는 `claim`/`submit`을 *전송*으로 중계할 뿐. 포트 무변경: `claim(owner_id)`의 pull은 "중앙 핸들러가 워커 대신 claim해 `PushWork`로 push"로 의미 보존(워커가 직접 호출 안 함, 트리거 주체만 이동), `submit`은 "워커가 보낸 `SubmitAnswer`를 핸들러가 받아 내부 submit 호출"로. 연결 레지스트리(owner_id→소켓 send 콜백)를 들어 dispatch 시 연결된 워커에 push(미연결이면 큐 대기=기존 `AwaitingWorker`). 실패 모드(결정 6-4): 끊김 시 `release_claims`(미회신 claimed→queued re-queue, 단조성 보존), 중복은 `ticket_id` 멱등(answered 재submit 무시 — 큐가 보장), heartbeat 생존 판정, 워커 인증 거부 hook(ADR 0009 연결점). **가용성 확장(ADR 0012, 설계)**: 연결 레지스트리를 owner당 등급별(`owner_id → {WorkerRole → send}`)로 확장해 owner PC(`primary`) 부재 시 owner 위임 백업(`backup`)으로 push를 폴백한다 — push 대상 선택만 우선순위로 바뀌고(primary→backup→큐 대기→timeout escalation) claim/submit/큐 도메인은 무변경. 백업 연결로 처리된 답은 `submit` 시 `Answer.mode`를 `backup`으로 강제 하향(백업이라는 사실은 *연결 등급*이 진실 — 워커 자기보고에 맡기지 않음). **timeout 예산(결정 8)**: 단일 timeout을 t1(primary 대기)+t2(backup 대기) 2단으로 — primary 미연결은 *즉시* 백업, primary 연결됐으나 무응답은 t1 후 claim 해제(`release_claims` 재사용)→backup 전환(중복 답은 `ticket_id` 멱등이 흡수, 먼저 온 답 채택·MVP 순차). **staleness(결정 9)**: backup push 전 `DelegationSnapshot.snapshot_at`이 임계 초과면 push 안 하고 큐 대기→escalation(stale 거부). **cold 연결점(결정 10)**: warm이 MVP(백업 미리 연결)이고, cold는 디스패처 *기동 요청 hook*(`wake_backup: Callable[[str], None] | None` 주입, `manager_of` 정신)만 연결점으로 둔다 — cold의 "기동 대기"는 기존 큐 대기(`AwaitingWorker`)가 표현(새 상태 0), 기동 실패는 기존 timeout escalation 흡수. `transport.py`. **중앙 WS 핸들러**(`server.py`의 `create_worker_app(dispatcher)` + `@app.websocket("/worker")`)가 워커 아웃바운드 연결을 받아 이 디스패처로 프레임을 중계한다 — 채팅·처리함 어댑터(`web.py`)와 책임 분리. (ADR 0011 결정 6, 구현 슬라이스2b-i)
 _Avoid_: Broker, WsServer(단독 — 디스패처는 포트 구현, WS 서버 핸들러는 그 위 어댑터)
 
 **Transport Frame (전송 프레임)**:
@@ -158,7 +182,7 @@ _Avoid_: Trust, Priority(단독)
 _Avoid_: Ticket, Dispute, Issue
 
 **Inbox (처리함)**:
-한 Owner에게 귀속된, 자기 카드가 후보로 걸린 open ConflictCase들의 모음. PRD 페르소나의 "Owner 처리함" 그 면이다. 데이터 원천은 **ConflictCaseStore**의 Owner별 조회(`open_for_owner`)이며, 별도 영속 상태가 아니라 open 케이스의 투영. Owner는 여기서 자기에게 온 다툼을 보고 1인칭 합의 표를 던진다.
+한 Owner에게 귀속된 미해소 항목들의 모음 — PRD 페르소나의 "Owner 처리함" 그 면이다. **두 면(탭)을 가진다**: ① 자기 카드가 후보로 걸린 open ConflictCase들(다툼 합의 — 데이터 원천 **ConflictCaseStore**.`open_for_owner`), ② owner 부재 중 백업이 자기 이름으로 답한 미검토 백업 답들(검토 — 데이터 원천 **BackupReviewStore**.`pending_for_owner`, ADR 0012 결정 7). 둘 다 "Owner별 미해소 항목 보관·조회"라는 한 패턴의 두 인스턴스이며, 별도 영속 상태가 아니라 각 store의 open/pending 투영이다. Owner는 ①에서 1인칭 합의 표(ConcurOnPrimary)를 던지고, ②에서 백업 답을 1인칭으로 처분(BackupReview — 승인/정정/무시)한다. ②가 결정 5의 "백업 답도 owner 책임"을 명목에서 실질로 만든다(owner가 복귀하면 자기 이름으로 나간 답을 반드시 마주한다).
 _Avoid_: Queue(이건 Manager 큐 — 사람 위계 escalation, 처리함과 구분), Tasklist
 
 **ConflictCaseStore (케이스 저장소)**:
@@ -193,7 +217,7 @@ _Avoid_: Rule(단독), History
 ### Audit (운영자向 기록)
 
 **Audit log (감사 로그)**:
-운영자向 append-only JSONL 기록. 한 질문 처리의 전체 절차(질문·intent·라우팅 처분·디스패치 결말)를 *내부값까지* 담는다 — OrgReply(사용자向)가 감춘 `confidence`·`candidates`·`escalated_to`·`primary`, 그리고 `Pending(dispatched)`가 떨군 디스패치 escalation의 `manager_id`·`reason`까지 여기선 전부 기록. 미래 모니터링(질문→절차→답)의 데이터 원천. 전이가 아니라 기록(전이 ≠ 기록).
+운영자向 append-only JSONL 기록. 한 질문 처리의 전체 절차(질문·intent·라우팅 처분·디스패치 결말)를 *내부값까지* 담는다 — OrgReply(사용자向)가 감춘 `confidence`·`candidates`·`escalated_to`·`primary`, 그리고 `Pending(dispatched)`가 떨군 디스패치 escalation의 `manager_id`·`reason`까지 여기선 전부 기록. 백업 답을 owner가 사후 검토(`BackupReview`)하면 그 검토 *전이*도 같은 ticket_id를 키로 *사후 줄*로 append된다(라우팅→디스패치→검토, 한 질문의 세 번째 절차 — 원 답 줄은 append-only라 불변, ADR 0012 결정 7-3). 미래 모니터링(질문→절차→답)의 데이터 원천. 전이가 아니라 기록(전이 ≠ 기록).
 _Avoid_: Trace(단독 — 사용자에게 감추는 라우팅 내부와 혼동), Log(단독)
 
 **AuditEntry**:

@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass, field
-from typing import Literal, assert_never
+from typing import TYPE_CHECKING, Literal, assert_never
 
 from agent_org_network.audit import AuditEntry, AuditLog, Clock, default_clock
 from agent_org_network.classifier import Classifier
@@ -17,6 +17,9 @@ from agent_org_network.dispatch import (
 from agent_org_network.router import Router
 from agent_org_network.runtime import AnswerMode
 from agent_org_network.user import User
+
+if TYPE_CHECKING:
+    from agent_org_network.review import BackupReview, BackupReviewItem, BackupReviewStore
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,7 @@ class AskOrg:
         classifier: Classifier,
         clock: Clock = default_clock,
         case_store: ConflictCaseStore | None = None,
+        review_store: "BackupReviewStore | None" = None,
     ) -> None:
         self._router = router
         self._dispatcher = dispatcher
@@ -91,6 +95,9 @@ class AskOrg:
         self._classifier = classifier
         self._clock = clock
         self._case_store = case_store
+        # 백업 답 검토 저장소(ADR 0012 결정 7). retrieve 덧씌움이 ticket_id로 조회해
+        # 검토 결과를 우선 투영한다. 미주입이면 None(하위호환 — 검토 루프 없이 동작).
+        self._review_store = review_store
         # 답 회수용 불투명 추적 토큰 → WorkTicket 매핑(ADR 0011 결정 6-5). 서버가
         # ticket을 보관하고 사용자엔 *불투명 토큰만* 준다 — 사용자向 응답에 ticket_id·
         # owner 등 내부 구조가 새지 않게 한다(노출 불변식). 토큰은 uuid4 hex(미인코딩).
@@ -138,6 +145,14 @@ class AskOrg:
         Answered로, 아직이면 Pending(dispatched, 같은 토큰 유지)로 투영한다. 모르는
         토큰이면 None(존재하지 않는 추적은 조회 실패). 푸시(SSE/WS)는 범위 밖.
 
+        검토 store 덧씌움(ADR 0012 결정 7-3): poll 결과가 Delivered(backup 답)인 경우,
+        그 ticket의 BackupReviewItem을 *먼저 조회*해 reviewed면 검토 결과를 우선 투영한다.
+          - CorrectBackup: 정정 text + mode=full(owner 실답으로 신뢰 복원).
+          - ApproveBackup: 큐의 원 text + mode=full(승인으로 신뢰 복원).
+          - DismissBackup: 큐의 원 text + mode=backup 유지(정정 없음·mode 그대로).
+          - pending_review(미검토): 큐의 poll 결과 그대로(mode=backup 유지).
+        큐 도메인 무변경(덮어쓰지 않고 읽기만 덧씌움) — 큐 멱등·단조성 보존.
+
         EscalatedToManager 종착도 사용자엔 `dispatched` 유지가 *의도*다 — 워커 미연결과
         Manager escalation의 구분은 감출 내부값(노출 불변식, ADR 0011 결정 4). escalation의
         사용자 통지(무한 조회 대신)는 별도 후속(Manager 큐 T5.2 연계).
@@ -146,7 +161,73 @@ class AskOrg:
         if ticket is None:
             return None
         outcome = self._dispatcher.poll(ticket)
+        # 검토 store 덧씌움: Delivered backup 답에 검토 결과를 우선 투영(큐 무변경).
+        if isinstance(outcome, Delivered) and self._review_store is not None:
+            reviewed = self._review_store.get_by_ticket(ticket.ticket_id)
+            if reviewed is not None and reviewed.status == "reviewed":
+                return self._project_review_outcome(reviewed, ticket, tracking)
         return self._project_outcome(outcome, ticket.owner_id, ticket.agent_id, tracking)
+
+    def _project_review_outcome(
+        self, reviewed_item: "BackupReviewItem", ticket: WorkTicket, tracking: str
+    ) -> OrgReply:
+        """BackupReviewItem(reviewed)을 사용자向 Answered로 투영한다(검토 덧씌움).
+
+        CorrectBackup → 정정 text + mode=full(owner가 직접 발행한 실답 — 신뢰 복원).
+        ApproveBackup → 큐의 원 backup text + mode=full(owner 검토 완료 — 신뢰 복원).
+        DismissBackup → 큐의 원 backup text + mode=backup(정정 없음 — mode 유지).
+        answered_by는 어느 경우든 owner(책임 불변, 정정도 owner가 발행).
+        노출 불변식: 검토 내부 구조(item_id·review_service·store 존재)는 밖으로 새지 않음.
+        match+assert_never로 BackupReview sealed sum을 망라 — _serialize_backup_review(web.py)와 대칭.
+        reviewed인데 review 필드가 None인 경우는 구조적으로 불가하므로 명시 방어.
+        """
+        from typing import assert_never as _assert_never
+
+        from agent_org_network.review import ApproveBackup, CorrectBackup, DismissBackup
+
+        review = reviewed_item.review
+        if review is None:
+            # reviewed 상태인데 review 필드가 None — 구조적 불변식 위반(발생 불가).
+            # 방어적으로 큐 poll 결과로 폴백한다.
+            outcome = self._dispatcher.poll(ticket)
+            return self._project_outcome(outcome, ticket.owner_id, ticket.agent_id, tracking)
+        match review:
+            case CorrectBackup():
+                return Answered(
+                    text=review.corrected_text,
+                    answered_by=(ticket.owner_id, ticket.agent_id),
+                    mode="full",
+                    sources=review.sources,
+                )
+            case ApproveBackup():
+                return Answered(
+                    text=reviewed_item.backup_answer_text,
+                    answered_by=(ticket.owner_id, ticket.agent_id),
+                    mode="full",
+                )
+            case DismissBackup():
+                return Answered(
+                    text=reviewed_item.backup_answer_text,
+                    answered_by=(ticket.owner_id, ticket.agent_id),
+                    mode="backup",
+                )
+            case _ as never:
+                _assert_never(never)
+
+    def record_review(self, item_id: str, review: "BackupReview") -> None:
+        """검토 전이를 적용한다(전이만 — 검토 기록은 BackupReviewStore.history가 담당).
+
+        BackupReviewService를 통해 상태 전이만 수행한다. audit에는 *아무것도 남기지 않는다* —
+        검토 기록은 BackupReviewStore.history(append-only 전이 보관소)가 책임지고, audit은
+        질문→라우팅→디스패치→답의 절차 전용이다(전이≠기록, ADR 0012 결정 7).
+        review_store 미주입이면 no-op(하위호환). 1인칭 검증은 BackupReviewService가 담당.
+        """
+        from agent_org_network.review import BackupReviewService
+
+        if self._review_store is None:
+            return
+        svc = BackupReviewService(self._review_store)
+        svc.review(item_id, review)
 
     def handle(self, question: str, user: User) -> OrgReply:
         intent = self._classifier.classify(question)

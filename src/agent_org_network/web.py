@@ -12,7 +12,7 @@ OrgReply(Answered | Pending)를 JSON으로 직렬화해 돌려준다.
 """
 
 from pathlib import Path
-from typing import Any, assert_never
+from typing import Any, Literal, assert_never
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -29,6 +29,15 @@ from agent_org_network.conflict import (
 )
 from agent_org_network.demo import build_demo
 from agent_org_network.dispatch import RuntimeDispatcher
+from agent_org_network.review import (
+    ApproveBackup,
+    BackupReview,
+    BackupReviewItem,
+    BackupReviewService,
+    BackupReviewStore,
+    CorrectBackup,
+    DismissBackup,
+)
 from agent_org_network.runtime import AgentRuntime
 from agent_org_network.user import User
 
@@ -113,18 +122,89 @@ def serialize_outcome(outcome: ConsensusOutcome) -> dict[str, Any]:
             assert_never(outcome)
 
 
+def serialize_review_item(item: BackupReviewItem) -> dict[str, Any]:
+    """BackupReviewItem을 처리함 운영 화면向 dict로 변환한다(내부값 노출 OK).
+
+    검토는 *운영 면*(처리함)이라 내부값 노출 OK(채팅 OrgReply 불변식과 다른 면).
+    """
+    d: dict[str, Any] = {
+        "item_id": item.item_id,
+        "owner_id": item.owner_id,
+        "agent_id": item.agent_id,
+        "question": item.question,
+        "backup_answer_text": item.backup_answer_text,
+        "ticket_id": item.ticket_id,
+        "snapshot_at": item.snapshot_at.isoformat(),
+        "answered_at": item.answered_at.isoformat(),
+        "status": item.status,
+        "review": _serialize_backup_review(item.review) if item.review is not None else None,
+    }
+    return d
+
+
+def _serialize_backup_review(review: BackupReview) -> dict[str, Any]:
+    match review:
+        case ApproveBackup():
+            return {"type": "approve", "by_owner": review.by_owner, "rationale": review.rationale}
+        case CorrectBackup():
+            return {
+                "type": "correct",
+                "by_owner": review.by_owner,
+                "corrected_text": review.corrected_text,
+                "sources": list(review.sources),
+                "rationale": review.rationale,
+            }
+        case DismissBackup():
+            return {"type": "dismiss", "by_owner": review.by_owner, "rationale": review.rationale}
+        case _ as never:
+            assert_never(never)
+
+
+class BackupReviewRequest(BaseModel):
+    """POST /backup-reviews/{item_id} 요청 바디 — 검토 type + by_owner 필수."""
+
+    type: Literal["approve", "correct", "dismiss"]
+    by_owner: str
+    corrected_text: str = ""
+    sources: list[str] = []
+    rationale: str = ""
+
+
+def _parse_backup_review(req: BackupReviewRequest) -> BackupReview:
+    if req.type == "approve":
+        return ApproveBackup(by_owner=req.by_owner, rationale=req.rationale)
+    elif req.type == "correct":
+        return CorrectBackup(
+            by_owner=req.by_owner,
+            corrected_text=req.corrected_text,
+            sources=tuple(req.sources),
+            rationale=req.rationale,
+        )
+    else:
+        return DismissBackup(by_owner=req.by_owner, rationale=req.rationale)
+
+
 def create_app(
     runtime: AgentRuntime | None = None,
     dispatcher: RuntimeDispatcher | None = None,
+    review_store: BackupReviewStore | None = None,
+    review_service: BackupReviewService | None = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
     결정론이 필요한 테스트는 `runtime=StubRuntime()`을 넘겨 실제 claude 호출을 막는다.
     `dispatcher`를 주입하면 분산 회수 경로(dispatched→retrieve)를 결정론으로 검증할 수
     있다(`WebSocketDispatcher` 등) — 미주입이면 기본 즉답 디스패처.
+    `review_store`/`review_service`를 주입하면 백업 검토 탭을 활성화한다. 미주입이면
+    검토 라우트가 404를 돌려준다(검토 기능 미사용 환경에서 안전).
     """
     app = FastAPI(title="Agent Org Network — 채팅·처리함(데모)")
-    bundle = build_demo(runtime=runtime, dispatcher=dispatcher)
+    # review_store를 build_demo에도 전달 — bundle.ask._review_store가 실 store를 가리켜
+    # retrieve 덧씌움(web 경로 GET /ask/{tracking})이 검토 결과를 반영한다(ADR 0012 결정 7,
+    # code-reviewer [Major 1] 수정). 미주입이면 None(하위호환 — 검토 없이 동작·라우트 404).
+    bundle = build_demo(runtime=runtime, dispatcher=dispatcher, review_store=review_store)
+    _review_store = review_store
+    _review_service = review_service
 
     @app.post("/ask")
     def ask_endpoint(req: AskRequest) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
@@ -166,6 +246,37 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return serialize_outcome(outcome)
+
+    @app.get("/inbox/{owner_id}/backup-reviews")
+    def inbox_backup_reviews(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+        """owner 처리함의 백업 검토 탭 — pending 항목 조회(ADR 0012 결정 7, T6.6 슬라이스 iii).
+
+        검토는 *운영 면*(처리함)이라 내부값(backup_answer_text·ticket_id·snapshot_at) 노출 OK.
+        채팅 OrgReply 노출 불변식과 다른 면. review_store 미주입이면 빈 목록.
+        """
+        if _review_store is None:
+            return []
+        items = _review_store.pending_for_owner(owner_id)
+        return [serialize_review_item(it) for it in items]
+
+    @app.post("/backup-reviews/{item_id}")
+    def review_backup(item_id: str, req: BackupReviewRequest) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """백업 답 검토 — Approve·Correct·Dismiss 1인칭 처분(ADR 0012 결정 7, T6.6 슬라이스 iii).
+
+        by_owner가 item.owner_id여야 한다(1인칭 강제 — ValueError → 400).
+        item_id 미존재 → 404. review_store/review_service 미주입 → 404(검토 기능 비활성).
+        """
+        if _review_store is None or _review_service is None:
+            raise HTTPException(status_code=404, detail="검토 기능이 비활성화되어 있습니다.")
+        review = _parse_backup_review(req)
+        try:
+            reviewed = _review_service.review(item_id, review)
+        except ValueError as exc:
+            msg = str(exc)
+            if "미존재" in msg:
+                raise HTTPException(status_code=404, detail=msg) from exc
+            raise HTTPException(status_code=400, detail=msg) from exc
+        return serialize_review_item(reviewed)
 
     return app
 

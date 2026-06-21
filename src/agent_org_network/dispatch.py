@@ -385,6 +385,17 @@ class InMemoryWorkQueueDispatcher:
                 released.append(ticket)
         return released
 
+    def get_ticket(self, ticket_id: str) -> WorkTicket | None:
+        """ticket_id로 WorkTicket 메타를 조회한다(전이 없음 — history 검색).
+
+        BackupReviewItem 생성 트리거(ADR 0012 결정 7)가 ticket 메타(owner_id·agent_id·
+        question)를 복원할 때 사용한다. dispatch 시점에 history에 기록되므로 상태와 무관.
+        """
+        for ticket in self.history:
+            if ticket.ticket_id == ticket_id:
+                return ticket
+        return None
+
     def stale_claims(self, owner_id: str) -> list[WorkTicket]:
         """그 owner의 claimed 작업 중 *claim 후 t1 경과*한 것을 골라 `queued`로 회수한다.
 

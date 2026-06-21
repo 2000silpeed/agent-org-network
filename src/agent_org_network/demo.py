@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from typing import TYPE_CHECKING
+
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.ask_org import AskOrg
 from agent_org_network.audit import JsonlAuditLog
@@ -24,6 +26,9 @@ from agent_org_network.registry import Registry
 from agent_org_network.router import Router
 from agent_org_network.runtime import AgentRuntime, ClaudeCodeRuntime
 from agent_org_network.user import User
+
+if TYPE_CHECKING:
+    from agent_org_network.review import BackupReviewStore
 
 ROOT_USER = "root_manager"
 
@@ -82,17 +87,23 @@ class DemoBundle:
     (`consensus`)가 모두 *같은* store 인스턴스를 공유해야 화면 간 합의가
     반영된다(처리함서 Agreed → 채팅서 자동 Routed). 웹이 이 한 벌을 받아
     모든 라우트가 같은 상태를 본다.
+
+    `review_store`(ADR 0012 결정 7): `ask._review_store`와 같은 인스턴스를 담아
+    웹 검토 라우트·create_app이 이 bundle에서 꺼내 쓸 수 있게 한다. 주입 시에만
+    채워지고 미주입이면 None(하위호환 — 검토 루프 없이 동작).
     """
 
     ask: AskOrg
     case_store: ConflictCaseStore
     precedents: PrecedentStore
     consensus: ConsensusService
+    review_store: "BackupReviewStore | None" = None
 
 
 def build_demo(
     runtime: AgentRuntime | None = None,
     dispatcher: RuntimeDispatcher | None = None,
+    review_store: "BackupReviewStore | None" = None,
 ) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
@@ -135,6 +146,7 @@ def build_demo(
         audit_log=JsonlAuditLog(Path("logs/audit.jsonl")),
         classifier=classifier,
         case_store=case_store,
+        review_store=review_store,
     )
     consensus = ConsensusService(case_store=case_store, precedents=precedents)
     return DemoBundle(
@@ -142,6 +154,7 @@ def build_demo(
         case_store=case_store,
         precedents=precedents,
         consensus=consensus,
+        review_store=review_store,
     )
 
 

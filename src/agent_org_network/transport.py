@@ -41,6 +41,7 @@ from agent_org_network.dispatch import (
 if TYPE_CHECKING:
     # 어댑터 시그니처 예고용 — 런타임 import 순환을 피해 타입 체크 시에만 끌어온다.
     from agent_org_network.agent_card import AgentCard
+    from agent_org_network.review import BackupReviewStore
     from agent_org_network.runtime import Answer
 
 
@@ -262,6 +263,7 @@ class WebSocketDispatcher:
         clock: Clock = default_clock,
         queue: InMemoryWorkQueueDispatcher | None = None,
         staleness_threshold: timedelta | None = None,
+        review_store: "BackupReviewStore | None" = None,
     ) -> None:
         # 작업 큐 도메인은 합성으로 재사용 — 큐 상태기계·단조 종착·timeout escalation은
         # 이 객체가 소유한다(WS는 그 위 전송층). 주입 가능하게 둬 결정론 테스트가 고정
@@ -289,6 +291,10 @@ class WebSocketDispatcher:
         # — 6.6-i의 위임 없는 backup push 동작 보존). 설정되면 backup push 전 그 owner의
         # 위임 스냅샷이 있어야 하고 snapshot_at이 임계 내여야 push한다(없거나 stale이면 거부).
         self._staleness_threshold = staleness_threshold
+        # 백업 답 검토 저장소(ADR 0012 결정 7 — 생성 트리거). backup 연결로 처리된 답이
+        # 종착될 때 여기에 BackupReviewItem을 add한다 — "mode=backup 강제 하향"과 한 사건의
+        # 두 면. 미주입이면 None(하위호환 — 검토 루프 없이 동작).
+        self._review_store = review_store
 
     # ── 중앙측(질문 측): 내부 큐에 위임 ──────────────────────────────────────
 
@@ -355,9 +361,18 @@ class WebSocketDispatcher:
         진실이라(워커 자기보고 아님) 디스패처가 책임진다. primary push 답은 mode 보존.
         멱등은 그대로 큐가 보장하므로 이 강제는 *큐에 넣기 전 값 보정*일 뿐 큐 도메인 무변경.
         """
-        if ticket_id in self._backup_tickets:
+        is_backup = ticket_id in self._backup_tickets
+        if is_backup:
             answer = self._force_backup_mode(answer)
-        self._queue.submit(ticket_id, answer)
+        # 큐에 회신 전 답(mode 보정 완료본)과 backup 여부를 보관해 두고 큐에 넣는다.
+        # 큐 멱등(answered/expired 재submit 무시) — 검토 항목 생성도 같이 멱등화.
+        answer_to_submit = answer
+        self._queue.submit(ticket_id, answer_to_submit)
+        # 생성 트리거(ADR 0012 결정 7): backup 답이 종착하면 검토 항목을 자동 생성한다.
+        # "mode=backup 강제 하향"과 한 사건의 두 면 — 연결 등급이 진실이라 디스패처가
+        # 여기서 책임(워커 자기보고 아님). review_store 미주입이면 no-op(하위호환).
+        if is_backup and self._review_store is not None:
+            self._add_review_item(ticket_id, answer_to_submit)
         # 종착 후 표식 정리 — 무한 누적 방지(경계 B). backup 표식과 primary 회수 신호
         # 둘 다 떨어낸다(종착한 작업은 더는 라우팅 대상이 아님). submit은 멱등(answered
         # 재submit 무시)이라 이 discard도 멱등.
@@ -375,6 +390,40 @@ class WebSocketDispatcher:
         if answer.mode == "backup":
             return answer
         return _Answer(text=answer.text, sources=answer.sources, mode="backup")
+
+    def _add_review_item(self, ticket_id: str, answer: "Answer") -> None:
+        """backup 답 종착 시 BackupReviewStore에 검토 항목을 추가한다(생성 트리거).
+
+        ticket_id로 큐에서 해당 WorkTicket 메타(owner_id·agent_id·question)를 복원해
+        BackupReviewItem을 구성한다. 위임 스냅샷이 있으면 snapshot_at을 싣고 없으면
+        answered_at을 대신 쓴다(staleness 맥락, 결정 9 정신). 멱등: 이미 항목이 있으면
+        덮지 않는다(submit 자체가 멱등이라 이중 add는 발생 안 하지만 방어).
+        """
+        from agent_org_network.review import BackupReviewItem as _BRI  # 순환 import 회피
+
+        assert self._review_store is not None
+        # ticket_id로 WorkTicket 메타 복원 — 큐에 보관된 스냅샷에서 가져온다.
+        ticket_meta = self._queue.get_ticket(ticket_id)
+        if ticket_meta is None:
+            return  # 미존재 ticket(멱등 방어)
+        # 위임 스냅샷이 있으면 그 snapshot_at, 없으면 clock으로 채운다.
+        snapshot = self._delegations.get(ticket_meta.owner_id)
+        snapshot_at = snapshot.snapshot_at if snapshot is not None else self._queue.now()
+        answered_at = self._queue.now()
+
+        item = _BRI(
+            owner_id=ticket_meta.owner_id,
+            agent_id=ticket_meta.agent_id,
+            question=ticket_meta.question,
+            backup_answer_text=answer.text,
+            ticket_id=ticket_id,
+            snapshot_at=snapshot_at,
+            answered_at=answered_at,
+            item_id=ticket_id,  # 1 답 1 검토 — ticket_id를 item_id로 재사용
+        )
+        # 멱등: 이미 동일 item_id로 추가된 항목이 있으면 건너뛴다.
+        if self._review_store.get(ticket_id) is None:
+            self._review_store.add(item)
 
     # ── WS 연결 생명주기(중앙 핸들러가 호출) ─────────────────────────────────
 

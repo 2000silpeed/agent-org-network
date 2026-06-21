@@ -211,7 +211,7 @@ BackupReview = Approve | Correct | Dismiss
 
 사용자는 *이미* backup 답을 받았다(retrieve로). owner가 `Correct`하면 그 정정을 어떻게 이력화·전달하나.
 
-- **검토는 사후 *전이*, 기록은 audit(전이 ≠ 기록 그대로).** 검토 결과(`BackupReview`)는 *도메인 전이*(BackupReviewItem: pending_review→reviewed)다. 그 전이의 *기록*은 audit에 남긴다 — 새 `AuditEntry`류 또는 기존 entry에 검토 사후 기록을 append(append-only라 원 답 entry는 불변, 검토는 *뒤에 덧붙는 줄*). **원 백업 답 audit(결정 5의 `dispatch_outcome`)은 그대로 두고**, 검토는 그 ticket_id를 키로 *별개의 사후 줄*을 남긴다(라우팅→`decision`, 디스패치→`dispatch_outcome`에 이어 검토→사후 기록, 한 질문의 세 번째 절차).
+- **검토는 사후 *전이*, 기록은 `BackupReviewStore.history`(전이 ≠ 기록 그대로).** 검토 결과(`BackupReview`)는 *도메인 전이*(BackupReviewItem: pending_review→reviewed)다. 그 전이의 *기록*은 `BackupReviewStore.history`(append-only 전이 보관소)가 담당한다 — `mark_reviewed`가 reviewed 항목을 `history`에 append한다(원 pending 항목과 reviewed 항목 모두 남음). **audit은 질문→라우팅→디스패치→답의 절차 전용**이라 검토 전이를 audit에 남기지 않는다(`record_review`는 전이 위임만 하고 `AuditEntry`를 기록하지 않는다 — 거짓 `decision=Unowned` 기록 방지, code-reviewer [Major 2] 확정). 원 백업 답 audit(결정 5의 `dispatch_outcome`)은 그대로 두고, 검토 전이는 store.history가 독립적으로 보관한다.
 - **사용자向 재노출 = 조회 경로 재사용 + 검토 store 우선 조회(큐 종착은 안 덮음), 노출 불변식 유지.** `Correct`로 새 답이 나오면 사용자에게 닿아야 한다 — 그러나 푸시는 ADR 0011 결정 6-5가 *범위 밖*(조회로 한정)이라 **재노출도 조회 경로(`retrieve(tracking)`)를 재사용**한다. **중요(큐 단조성 보존):** 정정은 큐의 answered(첫 답 고정·단조 종착, 결정 6-4 멱등)를 *덮지 않는다* — 큐는 "백업이 낸 첫 답"을 그대로 들고, 검토 결과는 **`BackupReviewStore`(검토 store)에 따로** 산다. `retrieve(tracking)`이 그 ticket의 `BackupReviewItem`을 *먼저 조회*해 reviewed면 검토 결과를 투영하고(Correct→정정 text·`mode=full`, Approve→큐의 원 text·`mode=full`), pending_review거나 검토 항목 없으면 기존대로 `poll`을 투영한다(backup 답 그대로). 즉 재노출은 *큐 종착 위에 검토 store를 덧씌운 읽기*지 큐 상태 변경이 아니다 — 큐 도메인 무변경·멱등·단조성 모두 보존(결정 6-2 정신 그대로). `tracking→ticket` 매핑(ask_org `_tracking`)은 검토 시점까지 살아 있어야 하므로 MVP의 "프로세스 수명=토큰 수명"으로 충분하다(TTL/GC는 후속).
 - **노출 불변식 그대로.** 재노출도 `Answered(text, answered_by, mode, sources)`만, 조직 내부(검토자·item_id·검토 store 존재)는 안 샌다. `answered_by`는 여전히 owner(정정도 owner가 함).
 - **정정의 mode = `full`(owner 실답).** `Correct`는 owner가 *직접* 발행한 답이라 backup 하향이 풀린다 — `mode=full`. 즉 검토 정정은 "신뢰 복원" 경로이기도 하다(backup→full, owner 실시간 검토를 거쳤으므로). 이게 7-4의 "Approve→승격"과 다른 점: Approve는 *큐의 원 backup 답 text를 그대로 두고* mode만 full로, Correct는 *검토 store의 새 text로 대체*(둘 다 큐 자체는 불변, 차이는 검토 store가 text를 바꾸나 마나).
@@ -228,7 +228,7 @@ BackupReview = Approve | Correct | Dismiss
 검토 승인이 Precedent를 만드나? **아니다 — 명확히 구분한다.**
 
 - **Precedent는 *라우팅* 판례다**(어떤 intent의 다툼을 누가 맡기로 합의했나 — ConsensusOutcome.Agreed→Resolution→Precedent). 백업 답 검토는 *그 답이 맞나*의 판단이지 *누가 담당인가*의 판단이 아니다 — 담당은 이미 그 owner로 정해졌다(backup도 그 owner가 답한 것). 검토는 라우팅 결정을 바꾸지 않는다.
-- **그래서 검토는 `PrecedentStore`에 안 들어간다.** 검토 기록은 audit(절차 기록)에 남고, Precedent(라우터 색인)는 건드리지 않는다. 라우터가 다음 같은 질문에 참조할 건 여전히 *담당 판례*지 *답 검토 이력*이 아니다. (만약 owner가 Correct를 반복해 "백업 스냅샷이 이 영역을 자꾸 틀린다"가 드러나면, 그건 *동기화 backlog 신호*(결정 9)지 라우팅 판례가 아니다.)
+- **그래서 검토는 `PrecedentStore`에 안 들어간다.** 검토 기록은 `BackupReviewStore.history`(전이 보관소)에 남고, Precedent(라우터 색인)는 건드리지 않는다. 라우터가 다음 같은 질문에 참조할 건 여전히 *담당 판례*지 *답 검토 이력*이 아니다. (만약 owner가 Correct를 반복해 "백업 스냅샷이 이 영역을 자꾸 틀린다"가 드러나면, 그건 *동기화 backlog 신호*(결정 9)지 라우팅 판례가 아니다.)
 
 #### 7-6. 책임 실질화 = 이 루프가 결정 5의 "owner 책임"을 명목에서 실질로, PRD "누가 책임지지" 완성
 

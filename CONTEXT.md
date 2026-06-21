@@ -63,11 +63,11 @@ _Avoid_: Backup(단독 — 워커와 혼동), Mirror, Replica
 _Avoid_: BackupAnswer(단독 — Answer와 혼동), ReviewTask, PendingAnswer
 
 **BackupReview (백업 답 검토 결과)**:
-owner가 미검토 백업 답에 내리는 1인칭 처분 — 세 결말 중 하나의 sealed sum("타입이 곧 상태", RoutingDecision·ConsensusOutcome·DispatchOutcome 정신). **Approve**(승인 — "이대로 맞다", 재노출 시 `mode` backup→full 승격, text 그대로) · **Correct**(정정 — owner가 새 답 발행해 기존 backup 답 대체, `corrected_text`·`sources`, 재노출 시 `mode=full` owner 실답) · **Dismiss**(무시 — "검토했고 조치 안 함", 검토 *완료* 사실은 남아 미검토와 구분). 모두 `by_owner`가 자기 책임 답을 1인칭으로 처분(검토 서비스가 `item.owner_id == by_owner` 강제 — ConsensusService가 후보 owner 강제하듯). `ConcurOnPrimary`와 같은 1인칭 표 정신. "보류"는 별 결말이 아니라 status가 여전히 `pending_review`인 것(StillOpen이 별 결말 아니라 미완 상태이듯). **Approve·Correct 모두 backup→full 신뢰 복원**(owner 검토를 거쳤으므로) — 차이는 Correct는 text까지 바뀌고 Approve는 mode만. **Precedent를 만들지 *않는다*** — 검토는 *답이 맞나*의 판단이지 *누가 담당인가*(라우팅 판례)가 아니다(담당은 이미 그 owner). 검토 기록은 audit(절차 기록)에만, `PrecedentStore`엔 안 들어간다. (ADR 0012 결정 7)
+owner가 미검토 백업 답에 내리는 1인칭 처분 — 세 결말 중 하나의 sealed sum("타입이 곧 상태", RoutingDecision·ConsensusOutcome·DispatchOutcome 정신). **Approve**(승인 — "이대로 맞다", 재노출 시 `mode` backup→full 승격, text 그대로) · **Correct**(정정 — owner가 새 답 발행해 기존 backup 답 대체, `corrected_text`·`sources`, 재노출 시 `mode=full` owner 실답) · **Dismiss**(무시 — "검토했고 조치 안 함", 검토 *완료* 사실은 남아 미검토와 구분). 모두 `by_owner`가 자기 책임 답을 1인칭으로 처분(검토 서비스가 `item.owner_id == by_owner` 강제 — ConsensusService가 후보 owner 강제하듯). `ConcurOnPrimary`와 같은 1인칭 표 정신. "보류"는 별 결말이 아니라 status가 여전히 `pending_review`인 것(StillOpen이 별 결말 아니라 미완 상태이듯). **Approve·Correct 모두 backup→full 신뢰 복원**(owner 검토를 거쳤으므로) — 차이는 Correct는 text까지 바뀌고 Approve는 mode만. **Precedent를 만들지 *않는다*** — 검토는 *답이 맞나*의 판단이지 *누가 담당인가*(라우팅 판례)가 아니다(담당은 이미 그 owner). 검토 *기록*은 `BackupReviewStore.history`(append-only 전이 보관소)가 담당하며, audit(절차 기록)에는 남기지 않는다 — audit은 질문→라우팅→디스패치→답의 절차 전용이고 검토 전이는 `PrecedentStore`에도 들어가지 않는다. (ADR 0012 결정 7)
 _Avoid_: ReviewOutcome, Verdict, Resolution(이건 다툼 합의 결론 — 검토 결과와 구분)
 
 **BackupReviewStore (검토 저장소)**:
-미검토 `BackupReviewItem`을 보관·조회하는 포트 — `ConflictCaseStore`·`AuditLog`·`PrecedentStore`와 *같은 포트 패턴*(Protocol + `InMemoryBackupReviewStore`). `add(item)`(open_case 대응) · `get(item_id)` · `pending_for_owner(owner_id)`(=`open_for_owner`, 처리함 — owner 복귀 시 "내가 검토할 백업 답들" 조회) · `mark_reviewed(item)`(mark_resolved 대응). **`ConflictCaseStore`를 그대로 재사용하지 않고 별 포트**인 이유: 담는 값이 다르다(다툼·후보 vs 백업 답·검토) — 한 store에 두 타입을 섞으면 `open_for_owner`가 무엇을 돌려주는지 모호해지고 망라가 깨진다. 그러나 *패턴은 100% 재사용*(검증된 모양의 두 번째 인스턴스, 새 메커니즘 0). **전이 ≠ 기록** — 미검토 도메인 상태 보관이지 절차 로그(AuditLog)가 아니다. (ADR 0012 결정 7)
+미검토 `BackupReviewItem`을 보관·조회하는 포트 — `ConflictCaseStore`·`AuditLog`·`PrecedentStore`와 *같은 포트 패턴*(Protocol + `InMemoryBackupReviewStore`). `add(item)`(open_case 대응) · `get(item_id)` · `pending_for_owner(owner_id)`(=`open_for_owner`, 처리함 — owner 복귀 시 "내가 검토할 백업 답들" 조회) · `mark_reviewed(item)`(mark_resolved 대응). **`ConflictCaseStore`를 그대로 재사용하지 않고 별 포트**인 이유: 담는 값이 다르다(다툼·후보 vs 백업 답·검토) — 한 store에 두 타입을 섞으면 `open_for_owner`가 무엇을 돌려주는지 모호해지고 망라가 깨진다. 그러나 *패턴은 100% 재사용*(검증된 모양의 두 번째 인스턴스, 새 메커니즘 0). **전이 ≠ 기록** — 미검토 도메인 상태 보관이지 절차 로그(AuditLog)가 아니다. `history`(append-only)가 검토 전이의 단일 기록 보관소이며, audit은 이 역할을 맡지 않는다. (ADR 0012 결정 7)
 _Avoid_: ReviewDB, Repository(단독)
 
 **Work Queue (작업 큐)**:
@@ -217,7 +217,7 @@ _Avoid_: Rule(단독), History
 ### Audit (운영자向 기록)
 
 **Audit log (감사 로그)**:
-운영자向 append-only JSONL 기록. 한 질문 처리의 전체 절차(질문·intent·라우팅 처분·디스패치 결말)를 *내부값까지* 담는다 — OrgReply(사용자向)가 감춘 `confidence`·`candidates`·`escalated_to`·`primary`, 그리고 `Pending(dispatched)`가 떨군 디스패치 escalation의 `manager_id`·`reason`까지 여기선 전부 기록. 백업 답을 owner가 사후 검토(`BackupReview`)하면 그 검토 *전이*도 같은 ticket_id를 키로 *사후 줄*로 append된다(라우팅→디스패치→검토, 한 질문의 세 번째 절차 — 원 답 줄은 append-only라 불변, ADR 0012 결정 7-3). 미래 모니터링(질문→절차→답)의 데이터 원천. 전이가 아니라 기록(전이 ≠ 기록).
+운영자向 append-only JSONL 기록. 한 질문 처리의 전체 절차(질문·intent·라우팅 처분·디스패치 결말)를 *내부값까지* 담는다 — OrgReply(사용자向)가 감춘 `confidence`·`candidates`·`escalated_to`·`primary`, 그리고 `Pending(dispatched)`가 떨군 디스패치 escalation의 `manager_id`·`reason`까지 여기선 전부 기록. **검토 전이(`BackupReview`)는 audit에 남기지 않는다** — 검토 기록은 `BackupReviewStore.history`(전이 보관소)가 담당하고 audit은 질문→라우팅→디스패치→답의 절차 전용이다(ADR 0012 결정 7 확정). 미래 모니터링(질문→절차→답)의 데이터 원천. 전이가 아니라 기록(전이 ≠ 기록).
 _Avoid_: Trace(단독 — 사용자에게 감추는 라우팅 내부와 혼동), Log(단독)
 
 **AuditEntry**:

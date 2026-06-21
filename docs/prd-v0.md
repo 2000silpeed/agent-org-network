@@ -38,7 +38,7 @@
 - Conflict → 후보 합의(1인칭) → Resolution → **Precedent 학습**
 - **Agent Runtime — 카드가 실제로 답함.** 답변 주체는 각 Owner의 Claude Code(중앙 API 키 LLM 아님, ADR 0010). 스켈레톤 stub/canned → `claude -p` 임시 1회성(T6.1) → owner별 분산 Claude Code 답(T6.3)
 - **owner 지식 구성 = OKF 번들(ADR 0013).** owner가 자기 지식을 마크다운+프론트매터 번들로 owner 환경에 두면, 워커의 Claude Code가 그 번들을 cwd로 *읽어* 답한다(Read/Glob/Grep — RAG 인프라 0). 카드(라우팅 메타·중앙)와 번들(답변 지식·owner 환경)은 분리. `knowledge_sources`가 카드→번들 참조. **설계·shape 확정(T6.7 자리)** — 실 소비 구현(`ClaudeCodeRuntime` cwd+도구·샘플 번들·동기화)은 후속 슬라이스
-- **중앙 MCP 서버 `ask_org`** — 사용자가 어느 클라이언트(웹챗·Slack·자기 Claude/IDE)에서든 질문
+- **중앙 MCP 서버 `ask_org`** — 사용자가 어느 클라이언트(웹챗·Slack·자기 Claude/IDE)에서든 질문. **구현 완료(T3.2)** — 공식 `mcp` SDK(FastMCP)로 `ask_org(question)` 도구 노출, `OrgReply`를 텍스트로 투영해 담당·신뢰 상태·출처를 박는다(ADR 0006 — 일반 클라이언트엔 텍스트로 노출, 내용 보존). 노출 불변식 유지(내부값 미노출, web `serialize_reply`와 같은 경계). 실 stdio 기동은 수동 시연
 - **실 사용자 채팅(웹)** + 운영 모니터링 + Agent 빌더 + Owner 처리함 + Manager 큐
 - append-only 감사 로그 + 그 위의 **운영 모니터링(T5.1)** — 감사 로그를 `AuditReader`로 *순수 읽기* 투영해 운영자가 모든 Q&A의 질문→절차→답을 추적(목록 `GET /monitor` + 인덱스 상세 `GET /monitor/{index}`, 운영 면이라 내부값 노출). Org 그래프는 T5.3
 

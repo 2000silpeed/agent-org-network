@@ -26,6 +26,9 @@ from agent_org_network.demo import demo_delegations
 def _client() -> TestClient:
     from agent_org_network.server import create_central_app
 
+    # 데모 모드(session_secret 미주입=인증 OFF): 레거시 path(/inbox/{owner_id}/...)가
+    # 허용된다. 프로덕션(OPERATOR_SESSION_SECRET 주입) 인증 회귀는
+    # tests/test_security_regression.py TestB1_CentralApp_인증_우회_차단에서 검증.
     return TestClient(create_central_app())
 
 

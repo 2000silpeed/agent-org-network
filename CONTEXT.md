@@ -277,6 +277,20 @@ _Avoid_: AuditQuery, MonitorStore, LogReader(단독)
 **AuditEntry**:
 Audit log의 한 줄. 한 질문 처리 절차의 기록 단위 — `timestamp`·`user_id`·`question`·`intent`·`decision`(RoutingDecision 원형, 내부 상세 보존)·`dispatch_outcome`(DispatchOutcome 원형, Routed일 때만; Contested/Unowned는 디스패치를 안 하므로 `None`). `intent` 필드는 질문 처리의 1급 기록이라 명시 필드로 유지하되, **그 값의 출처는 `decision.intent` 하나다(ADR 0015)** — ask_org가 자기 classify가 아니라 라우팅 결정이 실은 intent를 넘겨, 기록된 intent가 라우팅이 실제로 본 intent와 항상 같다(divergence 차단). `decision`도 같은 intent를 들지만 audit의 명시 `intent` 필드는 기록 단위로 더 읽혀 파생 프로퍼티로 접지 않는다(`answer`는 dispatch_outcome 파생인 것과 구분 — intent는 라우팅·디스패치 모든 처분에 공통이라 1급 유지). OrgReply가 decision·outcome을 투영해 버리는 것과 달리 **둘 다 원형을 그대로 안는다** — 한 질문 처리의 두 절차(라우팅→`decision`, 디스패치→`dispatch_outcome`)를 1급으로 기록. `EscalatedToManager`의 `manager_id`·`reason`은 사용자向 `Pending`에선 떨궈지지만 여기선 전부 남아, `Unowned.escalated_to`를 남기는 것과 *대칭*을 이룬다(둘 다 "escalation 대상" — 같은 처분이 기록 차원에서 같은 모양). `answer`는 별도 필드가 아니라 `dispatch_outcome`에서 유도하는 파생 접근자다(`Delivered.answer`만 답을 가짐 — 같은 답을 두 곳에 두지 않기 위함, SSOT는 `dispatch_outcome`).
 
+### Authn & planes (운영 면 인증)
+
+**Operational plane (운영 면)**:
+실 사용자 채팅(`/ask`·index.html)과 *구분되는* 운영자/Owner/Manager의 화면 — Owner 처리함(`/inbox*`)·Manager 큐(`/manager*`)·운영 모니터링(`/monitor*`). ADR 0009가 "인증으로 분리된 별개 공간"으로 못박은 그 면이다. **운영 면은 로그인(세션 신원)을 요구**하고 채팅은 익명 유지(다른 공간) — 한 세션이 운영 신원 1개로 고정돼 *페르소나 혼입*(한 화면에서 여러 면 임의 전환)을 막는다. 운영 면은 내부값 노출 OK(인증된 운영자가 봄 — 채팅 OrgReply 불변식과 다른 면). (ADR 0009·0016)
+_Avoid_: Admin panel(단독), Dashboard, Backoffice
+
+**Operator session (운영 세션)**:
+운영 면 진입에 요구되는 *무비밀번호 세션 신원* — 서명 쿠키에 담긴 `user_id` 하나(ADR 0016). 자격증명·비밀번호·SSO·OAuth·JWT는 v0 범위 밖(PRD §6 후속)이고, v0는 *신원 선택*을 세션에 고정해 per-request 가장을 차단하는 것까지다. `POST /login`(body `user_id`, **Registry에 실재하는 User여야** — 없으면 401)이 세션을 set하고 `POST /logout`이 클리어. 메커니즘은 starlette `SessionMiddleware`(`itsdangerous` 서명, secret는 env/주입·커밋 금지)이되, *읽는 코드는 헬퍼 한 곳*(`_session_identity`)으로 격리해 메커니즘 교체에 엔드포인트가 안 흔들린다(헥사고날). **신원 출처 이동(핵심 보안)**: 운영 엔드포인트의 1인칭(`by_owner`·`by_manager`)·귀속 키(`owner_id`·`manager_id`)는 *path/body가 아니라 세션*에서 온다 — body·path는 신원 출처가 아니다(위조 차단). 도메인 1인칭 강제(ConsensusService·BackupReviewService·ManagerQueueService의 ValueError)는 그대로이되 그 값의 *출처가 세션*이라 가장이 불가능. (ADR 0016)
+_Avoid_: Login(단독 — 행위와 상태 혼동), Auth token, Credential, JWT, Persona(이건 PRD 화면 주체 — 세션은 그 신원 고정 메커니즘)
+
+**Operational scope (운영 스코프 — 자기 것만)**:
+세션 신원이 *자기에게 귀속된* 대상만 보고 처리하는 경계 — Owner는 자기 소유 카드의 처리함만(ADR 0009 기준 2), Manager는 자기 큐만. **구조적 강제**: 자기 면 조회는 path param을 *제거*해(`/inbox/cases`·`/inbox/backup-reviews`·`/manager/queue` — 세션 신원으로) "남의 것을 path로 지목"할 표면 자체를 없앴다. 1인칭 처분(concur·review·manager act)은 세션 신원이 그 대상의 owner/manager가 아니면 거부 — 도메인 ValueError를 **403**(자기 권한 밖)으로 매핑. 실패 코드: 미로그인 **401** · 스코프 위반 **403** · 대상 미존재 **404** · 입력 형식 오류 **400**. **역할은 그래프에서 파생**(별 role DB·RBAC 매트릭스 없음) — owns면 Owner면·자기 manager_id 큐면 Manager면. 모니터링(`/monitor*`)은 세분 역할 없이 *인증만* 요구(로그인하면 봄, 운영자 역할 분리는 후속). 깊은 RBAC·권한 매트릭스·CSRF·rate limit은 범위 밖. (ADR 0009·0016)
+_Avoid_: RBAC(이건 깊은 역할 — v0는 그래프 파생 스코프), Permission matrix, ACL, Authorization(단독 — 자기 것만의 좁은 강제)
+
 ## Flagged ambiguities
 
 **"Agent" 단독 사용 금지**: 도메인 모델·코드·이 문서에서 맨 단어 "Agent"는 쓰지 않는다 — 항상 **Owner / Agent Card / Agent Runtime** 중 하나로 한정. (제품·마케팅 산문에서는 "에이전트" 자유 사용 OK.)

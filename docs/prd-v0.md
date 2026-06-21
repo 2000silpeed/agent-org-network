@@ -47,7 +47,7 @@
 - 분산 전송 — 각 Owner PC의 Claude Code 연결(로컬 PC 도달·연결 유지)로 답변 주체가 그 owner 환경(ADR 0010). 스켈레톤은 in-process stub, T6.1 임시는 중앙 `claude -p` 1회성, owner별 분산은 후순위(T6.3)
 - **가용성 — owner PC 오프라인 폴백 = owner 위임 백업 워커**(ADR 0012). owner PC 부재 시 owner가 위임한 격리 인스턴스가 답하고(신뢰 하향), 백업도 부재면 Manager escalation. **설계·shape만 확정(T6.6 자리)** — 4축 보강 완료: ① owner 복귀 검토 루프(처리함에서 백업 답 승인·정정·무시) ② timeout 예산 분배(primary t1→백업 t2→escalation) ③ 동기화·staleness(오래된 위임은 백업 거부→사람) ④ cold start(warm MVP·cold는 기동 hook 연결점). 실 구현(데이터 동기화·격리 인스턴스 배치·암호화·키 관리·검토 UI·기동 오케스트레이션)은 사용자 합의 후 후속 슬라이스.
 - LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위
-- SSO·정식 인증 — v0는 git PR/처리함 owner 선택 가장으로 대체. **단 최종 제품은 페르소나별 인증 분리가 필수**(실 사용자/운영 면 분리, Owner는 자기 처리함만 — ADR 0009)
+- SSO·정식 인증 — **v0는 무비밀번호 세션 신원으로 페르소나별 인증 분리를 실체화한다(T6.5, ADR 0009·0016)**: 운영 면(처리함·Manager 큐·모니터링)은 `POST /login`(Registry 실재 User 선택, 비밀번호 없음)이 세팅한 *세션 신원 1개*로 진입하고, 실 사용자 채팅은 익명(다른 공간). 신원이 *세션*에서 와 path/body 가장이 불가능하고, Owner는 자기 처리함만(스코프 위반 403). `inbox.html` owner 가장 드롭다운은 로그인 폼으로 대체. **자격증명·비밀번호 해시·SSO·OAuth·JWT·세분 RBAC·CSRF·rate limit은 후속**(v0 최소 인증의 의도된 경계 — "신원 선택을 세션 고정해 가장 차단"까지).
 - Manager 계층 LCA(공통 상위) 트리 등반 · 멀티홉 위임
 
 ## 7. 핵심 시나리오 (end-to-end)

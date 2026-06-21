@@ -19,6 +19,7 @@ escalation)는 합성한 `WebSocketDispatcher`(→`InMemoryWorkQueueDispatcher`)
 """
 
 import asyncio
+import os
 from typing import Any, cast
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -166,7 +167,7 @@ def _mount_worker_endpoint(app: FastAPI, dispatcher: WebSocketDispatcher) -> Non
         await _handle_worker(websocket, dispatcher)
 
 
-def create_central_app() -> FastAPI:
+def create_central_app(session_secret: str | None = None) -> FastAPI:
     """end-to-end 한 프로세스 중앙 앱 — 사용자 web 라우트 + owner 워커 WS를 *한 dispatcher*로.
 
     end-to-end(중앙↔워커↔실 claude↔답 회수)를 닫으려면 사용자 질문(`POST /ask`)이 만드는
@@ -192,6 +193,10 @@ def create_central_app() -> FastAPI:
     두고 데모 owner들(legal_lead·cs_lead·finance_lead)의 위임 스냅샷을 fresh하게 등록해 backup
     push가 허용되게 한다. 임계 초과(stale)면 backup이 거부되고 escalation으로 종착한다("모르면
     넘김", 결정 9). 실 동기화 파이프라인·실 데이터 스냅샷은 후속(연결점만, ADR 0012 범위 밖).
+
+    `session_secret`(T6.5·ADR 0016 결정 1): 운영 면 세션 서명 키. 주입 시 SessionMiddleware를
+    부착해 운영 엔드포인트가 세션 신원을 요구한다 — 미주입 시 인증 OFF(데모·하위호환).
+    프로덕션은 OPERATOR_SESSION_SECRET env 변수로 주입한다. 커밋 금지.
 
     이 앱은 실 owner 워커 프로세스가 붙는 *수동 시연용* 진입점이다(`uvicorn`으로 띄움). 결정론
     테스트는 여전히 `create_worker_app`(주입 디스패처)·`web.create_app`을 따로 쓴다 — 이
@@ -226,10 +231,13 @@ def create_central_app() -> FastAPI:
         dispatcher=dispatcher,
         review_store=review_store,
         review_service=review_service,
+        session_secret=session_secret,
     )
     _mount_worker_endpoint(app, dispatcher)
     return app
 
 
 # `uvicorn agent_org_network.server:central_app`로 띄우는 모듈 수준 ASGI 앱(수동 시연).
-central_app = create_central_app()
+# OPERATOR_SESSION_SECRET env 설정 시 인증 ON(프로덕션), 미설정 시 인증 OFF(데모).
+# 프로덕션에서는 반드시 OPERATOR_SESSION_SECRET 환경변수를 설정할 것. 하드코딩 금지.
+central_app = create_central_app(session_secret=os.environ.get("OPERATOR_SESSION_SECRET"))

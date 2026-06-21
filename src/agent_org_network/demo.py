@@ -150,6 +150,7 @@ class DemoBundle:
     case_store: ConflictCaseStore
     precedents: PrecedentStore
     consensus: ConsensusService
+    registry: Registry
     review_store: "BackupReviewStore | None" = None
     audit_reader: AuditReader | None = None
 
@@ -225,6 +226,7 @@ def build_demo(
         case_store=case_store,
         precedents=precedents,
         consensus=consensus,
+        registry=registry,
         review_store=review_store,
         audit_reader=audit_impl,
     )

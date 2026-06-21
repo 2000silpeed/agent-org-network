@@ -5,6 +5,7 @@ description = "개인별 업무 에이전트 + 중앙 라우터 조직형 멀티
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.138.0",
+    "itsdangerous>=2.2.0",
     "mcp>=1.28.0",
     "pydantic>=2",
     "uvicorn[standard]>=0.49.0",

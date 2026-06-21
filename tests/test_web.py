@@ -321,19 +321,21 @@ def test_concur_표가_갈리면_deadlocked():
     assert res.body["type"] == "deadlocked"
 
 
-def test_concur_미존재_case_id는_400():
+def test_concur_미존재_case_id는_404():
+    """ADR 0016 결정 4: 대상 미존재 → 404 (기존 400은 틀린 기대였음)."""
     client = _client()
 
     res = _post(client, "/cases/없는케이스/concur", {"by_owner": "cs_lead", "on_agent": "cs_ops"})
-    assert res.status == 400
+    assert res.status == 404
 
 
-def test_concur_비후보_Owner는_400():
+def test_concur_비후보_Owner는_403():
+    """비후보 owner의 concur — 스코프 위반이라 403(ADR 0016 결정 4 재배선)."""
     client = _client()
     case_id = _open_case_id(client)
 
     res = _post(client, f"/cases/{case_id}/concur", {"by_owner": "legal_lead", "on_agent": "cs_ops"})
-    assert res.status == 400
+    assert res.status == 403
 
 
 # ── T6.3 슬라이스2b-i — 답 회수 조회(GET /ask/{tracking}) + 노출 불변식 ──────

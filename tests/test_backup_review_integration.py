@@ -436,12 +436,13 @@ def test_POST_backup_reviews_Dismiss_검토() -> None:
     assert r.body["review"]["type"] == "dismiss"
 
 
-def test_POST_backup_reviews_타인_검토_400() -> None:
+def test_POST_backup_reviews_타인_검토_403() -> None:
+    """타인 item 검토 — 스코프 위반이라 403(ADR 0016 결정 4 재배선)."""
     client, review_store, _ = _make_review_app()
     review_store.add(_make_item())
 
     r = _post(client, "/backup-reviews/item-001", {"type": "approve", "by_owner": "bob"})
-    assert r.status == 400
+    assert r.status == 403
 
 
 def test_POST_backup_reviews_미존재_item_404() -> None:

@@ -837,7 +837,8 @@ class TestManagerWebRoutes:
         res = _result(cast(Response, client.get("/manager/root_manager")))  # pyright: ignore[reportUnknownMemberType]
         assert res.body == []
 
-    def test_POST_act_1인칭_위반_400(self) -> None:
+    def test_POST_act_1인칭_위반_403(self) -> None:
+        """1인칭 위반 — 스코프 위반이라 403(ADR 0016 결정 4 재배선)."""
         app, _ = _make_web_app()
         client = TestClient(app)
         res = _result(
@@ -846,7 +847,7 @@ class TestManagerWebRoutes:
                 json={"type": "dismiss", "by_manager": "남의매니저"},
             ))
         )
-        assert res.status == 400
+        assert res.status == 403
 
     def test_POST_act_미존재_404(self) -> None:
         app, _ = _make_web_app()

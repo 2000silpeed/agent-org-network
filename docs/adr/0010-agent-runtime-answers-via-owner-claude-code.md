@@ -1,6 +1,6 @@
 # Agent Runtime의 답변 주체는 각 Owner의 Claude Code다 — 중앙 API 키 LLM이 아니라
 
-상태: accepted (2026-06-20) · ADR 0007의 "stub → LlmRuntime(RAG)"를 "owner Claude Code"로 구체화
+상태: accepted (2026-06-20) · ADR 0007의 "stub → LlmRuntime(RAG)"를 "owner Claude Code"로 구체화 · **→ ADR 0017로 재정의(번복 아님, 분리)**: "답변 주체=owner Claude Code(실행)"와 "최종 T6.3 분산"을 분리·강등한다 — 답의 *지식 출처·책임*은 owner(거버넌스)이되 *실행*은 중앙 `claude -p`가 owner 통제 OKF의 최신을 읽어 만든다(owner가 *관리 주체*이지 *실행 주체*는 아니다). 아래 본문의 "최종(T6.3) 분산 실행"은 *기본 경로에서 제외*돼 사설 데이터 커넥터 옵션으로 이동. **유효 근거는 보존** — 중앙 API 키 LLM RAG 회피(`claude -p` 로컬 인증·키/비용/모델 운영 회피)는 그대로다.
 
 ADR 0007은 Agent Runtime을 포트로 올리며 실서비스 구현을 `LlmRuntime`(owner `knowledge_sources` RAG)로 적었다. 그 라인은 *중앙이 API 키로 LLM을 직접 부르고 owner 문서를 중앙에서 RAG* 하는 그림을 암시한다. 그러나 PRD §2·§3의 비전은 "구성원이 자기 업무 에이전트를 만들어 **자기 지식으로 답**하고, 중앙은 연결자일 뿐 **답은 담당이 한다**"이다. 중앙이 지식을 들고 RAG로 답해 버리면 이 비전과 어긋나고(중앙 지식 소유, ADR 0006 위반), API 키·비용·모델 운영을 중앙이 떠안는다.
 

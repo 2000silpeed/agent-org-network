@@ -1,6 +1,8 @@
-# owner PC 오프라인 폴백은 owner가 위임한 백업 워커로 한다 — 중앙 공용 LLM이 아니라
+# owner PC 오프라인 폴백은 owner가 위임한 백업 워커로 한다 — 중앙 공용 LLM이 아니라 (→ ADR 0017로 옵션 B 하위 케이스 강등)
 
 상태: accepted (2026-06-21, 결정 1~6) · **보강 accepted (2026-06-21, 결정 7~10 — ① owner 복귀 검토 루프 ② timeout 예산 분배 ③ 동기화·staleness ④ cold start, 4축. 결정 1~6의 정밀화·확장이지 번복 아님)** · ADR 0010("답변 주체 = owner Claude Code")의 *답변 환경* 보강 · ADR 0011(분산 전송·디스패처·작업 큐)의 폴백 단계 확장 · **→ ADR 0017로 재포지셔닝(번복 아님)**: 백업 워커는 *기본 가용성 경로*에서 **사설 데이터 커넥터 옵션(옵션 B)의 하위 케이스**로 강등된다 — 중앙 실행이 기본(24/7·최신 읽기)이라 owner PC 부재 폴백이 1급 가용성 문제가 아니게 됐다. 단 백업의 *owner 위임·신뢰 하향·복귀 검토 루프*(`BackupReview`)는 ADR 0017이 거버넌스 능력("답 검토·정정")으로 **승격·보존**한다. 백업이 *가용하려면 중앙 호스팅*이라는 자기모순(결정 1~2)이 "중앙 실행이 기본"의 직접 근거가 됐다. · **구현 accepted (2026-06-21, T6.6 슬라이스 i~iv — mcp-runtime·tdd-engineer)**: 등급 라우팅(primary→backup 폴백 push·`mode=backup` 강제 하향, 슬라이스 i)·t1/t2 timeout 예산+staleness 거부(슬라이스 ii)·owner 복귀 검토 루프(`BackupReviewItem`·`BackupReview`[Approve/Correct/Dismiss]·`BackupReviewStore`, 슬라이스 iii)·백업 워커 실 배치 시연+검토 UI 와이어링(슬라이스 iv). 게이트 313 passed, pyright 0, ruff 0. **실 claude backup end-to-end 시연 성공** — primary 부재→backup 실 claude 답·`mode=backup`·owner 검토. *실 데이터 동기화·격리 인스턴스 배치·암호화·키 관리·cold 기동 오케스트레이션은 연결점/후속*(설계만, 손대지 않음).
+
+> ⚠️ **재포지셔닝 — ADR 0017 (2026-06-21).** 중앙 실행이 기본(24/7·owner OKF 최신 읽기)이라 "owner PC 부재 폴백"은 1급 가용성 문제가 아니다 — 백업 워커는 **사설 데이터 커넥터 옵션(B)의 하위 케이스**로 강등. 단 **복귀 검토 루프(`BackupReview` — 승인·정정·무시)는 owner 거버넌스 능력("답 검토·정정")으로 승격·보존**된다. (백업이 *가용하려면 중앙 호스팅*이라는 이 ADR의 자기모순이 "중앙 실행이 기본"의 직접 근거가 됐다.) 아래 본문은 *가용성 설계 기록*으로 보존(역사). 현재 아키텍처는 **ADR 0017**.
 
 ## 맥락
 

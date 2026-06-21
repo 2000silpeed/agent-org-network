@@ -1,6 +1,6 @@
 # 분산 전송은 owner 워커의 역방향 아웃바운드 연결 + 중앙 작업 큐로 한다 — owner PC는 서버를 노출하지 않는다
 
-상태: accepted (2026-06-20, 결정 1~3) · 보강 accepted (2026-06-21, 결정 4 — ask_org 비동기화·manager_id 분리, 슬라이스2 진입 전) · 보강 accepted (2026-06-21, 결정 5 — escalation의 audit 기록, 슬라이스2b 진입 전 선결 ①) · 보강 accepted (2026-06-21, 결정 6 — 전송 채널=WebSocket·WS 전송층은 작업 큐 도메인 재사용·실패 모드·사용자 답 회수, 슬라이스2b 본체 설계) · **구현 accepted (2026-06-21, 슬라이스2b-i — 중앙 WS 핸들러·프레임 변환·실패 모드·회수 조회, 전부 결정론 188 passed; 답 회수는 6-5의 "서버가 ticket 보관" 대안 채택)** · ADR 0010의 *전송 계층* 보강(답변 주체=owner Claude Code는 그대로, "어떻게 그 환경에 도달하나"를 못박음)
+상태: accepted (2026-06-20, 결정 1~3) · 보강 accepted (2026-06-21, 결정 4 — ask_org 비동기화·manager_id 분리, 슬라이스2 진입 전) · 보강 accepted (2026-06-21, 결정 5 — escalation의 audit 기록, 슬라이스2b 진입 전 선결 ①) · 보강 accepted (2026-06-21, 결정 6 — 전송 채널=WebSocket·WS 전송층은 작업 큐 도메인 재사용·실패 모드·사용자 답 회수, 슬라이스2b 본체 설계) · 구현 accepted (2026-06-21, 슬라이스2b-i — 중앙 WS 핸들러·프레임 변환·실패 모드·회수 조회, 전부 결정론 188 passed; 답 회수는 6-5의 "서버가 ticket 보관" 대안 채택) · **구현 accepted (2026-06-21, 슬라이스2b-ii — owner 워커 프로세스(`worker.py`: 결정론 `WorkerLogic`/`backoff_seconds`/`parse_central_frame` + 실 WS `run_worker`)·통합 진입점 `server.central_app`(web+워커WS 한 dispatcher)·데모 스크립트·실 전송 스모크(질문→실 소켓 워커 회신→회수, 미아 없음 재연결 회복). 새 의존 `websockets>=16.0`(WS 클라이언트, 의존성 0개·동기 클라이언트). 게이트 206 passed[+워커 18 결정론], 실 claude·실 WS는 게이트 밖)** · ADR 0010의 *전송 계층* 보강(답변 주체=owner Claude Code는 그대로, "어떻게 그 환경에 도달하나"를 못박음)
 
 ADR 0010은 Agent Runtime의 답변 주체를 각 Owner의 Claude Code로 못박았고, 최종(T6.3)은 "각 Owner PC의 Claude Code에 분산 연결(MCP/A2A 등록·호출)"이라 적었다. TRD §5도 "각 Owner Claude Code가 MCP/A2A로 중앙에 등록·연결, 중앙이 client로 호출, 로컬 PC 도달은 후순위"라 적었다. T6.3은 그 *전송 계층*을 채운다 — **중앙이 owner 환경에 실제로 어떻게 도달하는가**. 되돌리기 어려운 결정 두 가지: (1) 연결 방향(누가 누구에게 연결을 거는가), (2) 동기/비동기(중앙 핸들러가 답을 어떻게 기다리는가).
 
@@ -135,7 +135,7 @@ owner PC 간헐 연결이라 실패 경로가 본체다. 네 축:
 이 결정의 산출이 방대하므로 구현을 둘로 나눈다 — 그래야 각 슬라이스가 게이트 그린을 독립적으로 지킨다.
 
 - **슬라이스 2b-i (중앙 WS + 프로토콜 + 실패 모드, 전부 결정론):** `transport.py`(프레임 DTO + `WebSocketDispatcher` 합성) + 중앙 `@app.websocket` 핸들러 + 사용자 답 회수 조회 엔드포인트. 검증은 전부 `TestClient` WebSocket(Fake 워커). re-queue·멱등·인증 거부 hook·heartbeat 판정까지 여기서 결정론으로 닫는다. **실 claude·실 프로세스 0.** → tdd-engineer 주도, mcp-runtime-engineer가 WS 핸들러 통합.
-- **슬라이스 2b-ii (owner 워커 프로세스 + 실 claude, 수동 시연):** `demo_worker.py`(실 아웃바운드 WS 연결→`PushWork` 수신→`ClaudeCodeRuntime`로 로컬 claude 호출→`SubmitAnswer` 회신) + 데모 스크립트(중앙 띄우고 워커 붙이고 질문→실 답 회수까지 한 바퀴). 게이트 밖 수동. → mcp-runtime-engineer 주도.
+- **슬라이스 2b-ii (owner 워커 프로세스 + 실 claude, 수동 시연):** `worker.py`(파일명은 `demo_worker.py` 대신 `worker.py` — 결정론 코어가 데모 전용이 아니므로). **결정론 코어**(게이트): `WorkerLogic`(`PushWork`→`ClaudeCodeRuntime` 재사용→`SubmitAnswer`, 카드 없으면 폴백으로 미아 방지)·`backoff_seconds`·`parse_central_frame`. **실 전송 셸**(게이트 밖): `run_worker`(실 아웃바운드 WS·재연결)·`main` CLI. **통합 진입점** `server.create_central_app`/`central_app`(사용자 web + `/worker` WS를 *같은 `WebSocketDispatcher` 하나*로 — 질문→push→submit→retrieve가 한 큐를 통과) + 데모 스크립트(`scripts/run_central.sh`·`run_worker.sh`·`demo_e2e.md`). 새 의존 `websockets>=16.0`(WS 클라이언트, 외부 의존성 0개·동기 클라이언트 — httpx-ws의 4개 의존 대비). 실 전송 스모크로 한 바퀴(질문→실 소켓 워커 회신→회수)·미아 없음(워커 죽인 동안 적재→재기동 재push 회복) 확인. 게이트 밖 수동(실 claude·실 WS는 비결정). → mcp-runtime-engineer 주도.
 
 2b-i가 그린이면 "프레임·멱등·재연결·회수"가 검증된 채로 닫히고, 2b-ii는 그 위에 실 전송만 입힌다 — 실패해도 게이트(결정론)는 흔들리지 않는다.
 

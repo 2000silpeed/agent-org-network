@@ -43,7 +43,7 @@ _Avoid_: Response, Result, Reply
 owner PC는 서버를 노출하지 않는다(NAT/방화벽 뒤·고정 IP 없음·상시 가동 X). 그래서 owner PC의 워커가 중앙에 *역방향 아웃바운드*로 연결해 작업을 가져가고, 중앙은 owner별 작업 큐에 적재해 비동기로 답을 수집한다. 논리적 호출 방향(질문 중앙→owner)과 물리적 연결 방향(소켓은 owner→중앙)은 분리된다. (ADR 0011 — Agent Runtime의 도달 방식, 답변 주체=owner Claude Code는 ADR 0010 그대로.)
 
 **Owner Worker (오너 워커)**:
-각 Owner PC에서 도는 작은 실행 주체. 중앙에 *아웃바운드 WebSocket*으로 연결(ADR 0011 결정 6 — 폴링이 아니라 WS로 확정)해 자기 owner 작업 큐의 작업을 받아(중앙이 그 소켓으로 `PushWork`), 로컬 Claude Code(`ClaudeCodeRuntime` 재사용)로 답을 만들어 중앙에 회신(`SubmitAnswer`)한다. 중앙이 owner PC로 인바운드 연결을 *걸지 않는다* — 연결을 거는 쪽은 항상 워커다. owner PC는 간헐 연결이 정상이라 끊김·재연결·중복 전달이 핵심 실패 모드다(ADR 0011 결정 6-4). 진짜 그 owner인지는 인증으로 강제한다(ADR 0009 연결점, 실 검증 T6.5). 선례: Claude Code Remote Control(owner claude가 claude.ai에 아웃바운드 연결).
+각 Owner PC에서 도는 작은 실행 주체. 중앙에 *아웃바운드 WebSocket*으로 연결(ADR 0011 결정 6 — 폴링이 아니라 WS로 확정)해 자기 owner 작업 큐의 작업을 받아(중앙이 그 소켓으로 `PushWork`), 로컬 Claude Code(`ClaudeCodeRuntime` 재사용)로 답을 만들어 중앙에 회신(`SubmitAnswer`)한다. 중앙이 owner PC로 인바운드 연결을 *걸지 않는다* — 연결을 거는 쪽은 항상 워커다. owner PC는 간헐 연결이 정상이라 끊김·재연결·중복 전달이 핵심 실패 모드다(ADR 0011 결정 6-4). 진짜 그 owner인지는 인증으로 강제한다(ADR 0009 연결점, 실 검증 T6.5). 선례: Claude Code Remote Control(owner claude가 claude.ai에 아웃바운드 연결). 구현(`worker.py`, 슬라이스2b-ii): 프레임 핸들링 결정론 코어(`WorkerLogic`=`PushWork`→`ClaudeCodeRuntime`→`SubmitAnswer`·`backoff_seconds`·`parse_central_frame`, 단위 테스트)와 실 아웃바운드 WS·재연결 셸(`run_worker`, 수동 시연)을 분리. 자기 owner 카드(`agent_id→AgentCard`)는 owner 환경에 들고(`PushWork`는 식별자만 싣고 워커가 카드 복원), 한 owner = 한 워커 프로세스.
 _Avoid_: Agent(단독), Client(단독 — 논리 호출 방향과 혼동), Node
 
 **Work Queue (작업 큐)**:

@@ -154,3 +154,15 @@ def build_demo_ask_org(runtime: AgentRuntime | None = None) -> AskOrg:
     분산 디스패처(WebSocketDispatcher 등)가 필요하면 `build_demo(dispatcher=...)`를 직접 쓴다.
     """
     return build_demo(runtime=runtime).ask
+
+
+def cards_for_owner(owner_id: str) -> dict[str, AgentCard]:
+    """데모 샘플에서 그 owner가 owns 하는 카드들을 `agent_id → AgentCard`로 추린다.
+
+    Owner Worker(T6.3 슬라이스2b-ii)가 자기 owner 환경의 카드(담당 영역·지식 출처)를
+    들고 로컬 claude로 답하기 위한 출처다 — `PushWork`의 `TicketFrame`은 `agent_id`만
+    싣고 카드 본문은 안 싣으므로(CONTEXT — 식별자만), 워커가 `agent_id`로 카드를
+    되찾는다. 분산 정신상 카드는 owner 환경에 있는 게 맞다(ADR 0011). 데모는 인라인
+    `_CARDS`가 출처지만, 실제로는 각 owner PC가 자기 카드 YAML을 들 자리(T1.3·T6.5).
+    """
+    return {card.agent_id: card for card in _CARDS if card.owner == owner_id}

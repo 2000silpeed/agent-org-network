@@ -20,7 +20,7 @@
 
 ## 3. 바운디드 컨텍스트
 
-단일 컨텍스트 **Routing**. 모듈(현재): `registry · classifier · router · decision · conflict · runtime · ask_org · audit · demo · web · dispatch`(분산 전송 포트·타입, T6.3) · `transport`(WebSocket 전송층 — 프레임 DTO·`WebSocketDispatcher`, T6.3 슬라이스2b·ADR 0011 결정 6) · `server`(중앙 WS 핸들러 — 워커 아웃바운드 연결 수신, T6.3 슬라이스2b-i).
+단일 컨텍스트 **Routing**. 모듈(현재): `registry · classifier · router · decision · conflict · runtime · ask_org · audit · demo · web · dispatch`(분산 전송 포트·타입, T6.3) · `transport`(WebSocket 전송층 — 프레임 DTO·`WebSocketDispatcher`, T6.3 슬라이스2b·ADR 0011 결정 6) · `server`(중앙 WS 핸들러 — 워커 아웃바운드 연결 수신 + `central_app` 통합 진입점, T6.3 슬라이스2b-i·2b-ii) · `worker`(owner 워커 프로세스 — 프레임 핸들링 결정론 코어 + 실 아웃바운드 WS·재연결, T6.3 슬라이스2b-ii).
 
 ## 4. 도메인 모델 · 포트
 
@@ -72,9 +72,9 @@ src/agent_org_network/
   runtime.py  ask_org.py  audit.py             # 런타임·핸들러·감사
   dispatch.py                                  # 분산 전송 포트·타입(RuntimeDispatcher·WorkTicket·DispatchOutcome·InMemoryWorkQueueDispatcher·release_claims, T6.3·ADR 0011)
   transport.py                                 # WebSocket 전송층(Transport Frame DTO·WebSocketDispatcher=큐 도메인 합성·프레임↔도메인 변환, T6.3 슬라이스2b·ADR 0011 결정 6)
-  server.py                                    # 중앙 WS 핸들러(create_worker_app + @app.websocket("/worker") — 워커 아웃바운드 연결 수신·프레임 중계, T6.3 슬라이스2b-i)
-  demo.py  web.py                              # 데모 조립 + 웹 어댑터(POST /ask·GET /ask/{tracking} 회수 조회)
-  # 예정: demo_worker.py(실 owner 워커 프로세스, 2b-ii 수동 데모)
+  server.py                                    # 중앙 WS 핸들러(create_worker_app·@app.websocket("/worker") 워커 연결 수신 + create_central_app/central_app: web+워커WS를 한 dispatcher로, 수동 시연 진입점, T6.3 슬라이스2b-i·2b-ii)
+  worker.py                                    # owner 워커 프로세스(WorkerLogic=프레임 핸들링 결정론 코어 + run_worker=실 아웃바운드 WS·재연결 + main CLI, T6.3 슬라이스2b-ii·ADR 0011 결정 6)
+  demo.py  web.py                              # 데모 조립(cards_for_owner 포함) + 웹 어댑터(POST /ask·GET /ask/{tracking} 회수 조회)
 web/index.html  web/inbox.html   logs/audit.jsonl   tests/
 # 예정: registry/agents/*.yaml · routing_rules.yaml · samples/questions.jsonl
 ```

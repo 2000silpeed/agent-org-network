@@ -146,9 +146,45 @@ def create_worker_app(dispatcher: WebSocketDispatcher) -> FastAPI:
     WebSocket으로 검증한다(실 네트워크·실 claude 0).
     """
     app = FastAPI(title="Agent Org Network — 중앙 워커 WS")
+    _mount_worker_endpoint(app, dispatcher)
+    return app
+
+
+def _mount_worker_endpoint(app: FastAPI, dispatcher: WebSocketDispatcher) -> None:
+    """`@app.websocket("/worker")`를 주어진 앱에 단다(단독·통합 앱 공용 조립).
+
+    `create_worker_app`(단독)과 `create_central_app`(web과 한 앱·한 dispatcher)이 같은
+    엔드포인트 등록을 공유하게 뽑아낸다 — 워커 연결 처리는 한 곳(`_handle_worker`)에서.
+    """
 
     @app.websocket("/worker")
     async def worker_endpoint(websocket: WebSocket) -> None:  # pyright: ignore[reportUnusedFunction]
         await _handle_worker(websocket, dispatcher)
 
+
+def create_central_app() -> FastAPI:
+    """end-to-end 한 프로세스 중앙 앱 — 사용자 web 라우트 + owner 워커 WS를 *한 dispatcher*로.
+
+    end-to-end(중앙↔워커↔실 claude↔답 회수)를 닫으려면 사용자 질문(`POST /ask`)이 만드는
+    작업과 워커 회신(`/worker` WS의 `SubmitAnswer`)이 *같은 `WebSocketDispatcher` 인스턴스*를
+    통과해야 한다 — dispatch로 큐에 든 작업이 연결된 워커에게 push되고, 워커의 submit이 그
+    사용자의 `GET /ask/{tracking}` 회수로 도달하게. 그래서 디스패처 하나를 만들어 (1)
+    `web.create_app(dispatcher=...)`로 채팅·처리함·회수 라우트를 얹고, (2) 그 위에
+    `/worker` WS 엔드포인트를 추가한다(같은 디스패처 공유).
+
+    이 앱은 실 owner 워커 프로세스가 붙는 *수동 시연용* 진입점이다(`uvicorn`으로 띄움). 결정론
+    테스트는 여전히 `create_worker_app`(주입 디스패처)·`web.create_app`을 따로 쓴다 — 이
+    팩토리는 기본 시계·기본 큐로 실제 한 바퀴를 돌리는 조립이라 게이트가 보지 않는다.
+    """
+    # 지연 import — server.py는 web.py에 의존하지 않는 게 기본(web은 server를 import할 수
+    # 있어 순환 위험). 통합 진입점에서만 web을 끌어와 단방향으로 합친다.
+    from agent_org_network.web import create_app
+
+    dispatcher = WebSocketDispatcher()
+    app = create_app(dispatcher=dispatcher)
+    _mount_worker_endpoint(app, dispatcher)
     return app
+
+
+# `uvicorn agent_org_network.server:central_app`로 띄우는 모듈 수준 ASGI 앱(수동 시연).
+central_app = create_central_app()

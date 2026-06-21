@@ -64,7 +64,8 @@
 
 ## Phase 6 — 깊게 (실서비스화)
 
-- [ ] **T6.1** `ClaudeCodeRuntime`(`claude -p` 헤드리스 1회성, 임시·중앙 단일·모든 카드가 로컬 claude로 답) — StubRuntime 대체. 답변 주체 = Owner의 Claude Code(중앙 API 키 LLM 아님, ADR 0010). API 키 불필요·로컬 claude 인증 사용. 한계: owner별 지식 격리 없음(T6.3에서), `knowledge_sources`는 출처 레이블뿐.
+- [x] **T6.1** `ClaudeCodeRuntime`(`claude -p` 헤드리스 1회성, 임시·중앙 단일·모든 카드가 로컬 claude로 답) — StubRuntime 대체. 답변 주체 = Owner의 Claude Code(중앙 API 키 LLM 아님, ADR 0010). API 키 불필요·로컬 claude 인증 사용. 한계: owner별 지식 격리 없음(T6.3에서), `knowledge_sources`는 출처 레이블뿐.
+  - **구현 완료(커밋 96c21b9, 2026-06-20)** — `runtime.py` `ClaudeCodeRuntime`(`runner` 주입 결정론 경계·`ClaudeRunner` Protocol)·`_run_claude_headless`·`_build_persona_prompt`. `tests/test_claude_runtime.py`. T6.7(OKF cwd 소비)이 이 위에 확장. **실 claude 시연 입증(2026-06-21)**: 웹 `POST /ask` "20일·단순변심·10만원 환불?" → cs_ops가 `okf/cs_ops` 번들 읽고 "45,000원" 계산, 번들 없는 finance_ops는 "문서 없어 모른다"로 대조(중앙 무지식·"모르면 안 지어냄" 입증). (체크박스 stale 정정 — 구현은 진작 됨.)
 - [x] **T6.2** `LlmClassifier` + 골든셋 eval 러너(정확도 임계값)
   - 선행 주의(결론남 → ADR 0015): 현재 `ask_org`·`router`가 같은 질문을 각자 `classify`(결정론 분류기라 무해). 비결정 LLM 분류 도입 시 두 intent가 갈려 케이스 intent와 라우팅 intent가 어긋남 → `RoutingDecision`에 intent를 실어 단일 출처화 선행(채택, 아래 파트 1).
   - **설계·shape 완료(domain-architect, 2026-06-21)** — 결정 1~13 확정, **선행 리팩터 intent 단일 출처화** ADR 0015 + `decision.py` 필드 구현(세 변이 `intent: str = ""`), `LlmClassifier`·eval 러너 shape stub(NotImplementedError), CONTEXT(Intent·RoutingDecision·LlmClassifier·Eval runner·AuditEntry)·TRD §4·§6·§7·§9 갱신. 게이트 보존(465 passed·pyright 0·ruff 0 — decision 필드는 하위호환, stub은 미실행).

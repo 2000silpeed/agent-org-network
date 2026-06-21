@@ -15,7 +15,9 @@
 - [x] **T2.2** 단일 매칭 → `Routed(primary)`
 - [x] **T2.3** 0 매칭 → `Unowned(루트 User)` (불변식)
 - [x] **T2.4** ≥2 매칭 → `Contested`
-- [ ] **T2.5** `Routed`에 Approval·Collaborator 부착
+- [x] **T2.5** `Routed`에 Approval·Collaborator 부착
+  - **설계·shape 완료(domain-architect, 2026-06-21)** — 새 ADR 없음(기존 ADR 0004 Authority 중앙·0011 노출 불변식·0012 mode 강제 패턴의 *적용*). 결정: ① `Routed`에 `requires_approval: bool=False`·`collaborators: tuple[AgentCard,...]=()` 추가(기본값 하위호환, 동시 성립 독립 축). ② 부착은 **intent 기반 결정론**(`Router._attach_gates`) — `approval_when`에 intent들면 Approval, `collaborate_when`에 들면 *그 intent를 domains에 가진 다른 카드*가 collaborator(agent_id 지목 아님 — domains 매칭 재사용, 중앙 외 Authority 회피). ③ Approval→`mode="draft_only"` 강제는 `AskOrg._apply_approval_gate`(라우팅 결정이 강제, 워커 자기보고 X — ADR 0012 패턴; `backup`은 안 덮음·`full`→`draft_only`만). ④ collaborators **사용자向 미노출**(노출 불변식 — 담당·승인·출처만; audit엔 원형 보관, `_decision_record`에 추가). ⑤ 경계: 실 승인 행위(draft→full)는 T5.2 Manager 큐, collaborator 실 호출(다중 답)·분산 retrieve 경로 Approval 강제는 후속(자리만). **shape(미구현 통과 stub)**: `decision.py`(Routed 2필드) · `router.py`(`_attach_gates`/`_collaborators_for` no-op 통과 stub) · `ask_org.py`(`_apply_approval_gate` no-op 통과 stub·handle Routed 분기 호출) · `audit.py`(Routed 직렬화에 2필드, 동작). 게이트 **342 passed**(보존), pyright 0, ruff 0. CONTEXT(Routed·Answered)·TRD §6 갱신.
+  - **red→green 구현 완료(tdd-engineer, 2026-06-21)** — stub 3곳 동작으로 채움. `router.py`: `_collaborators_for`(intent∈domains·primary 제외·agent_id 정렬), `_attach_gates`(approval_when/collaborate_when intent 평가·dataclasses.replace·no-op이면 routed 그대로). `ask_org.py`: `_apply_approval_gate`(requires_approval+Answered(mode≠backup)→draft_only; backup 보존; Pending 그대로). 신규 테스트 27개(`tests/test_approval_collaboration.py`). 게이트 **369 passed**(342+27 회귀 0), pyright 0, ruff 0.
 
 ## Phase 3 — Walking skeleton (end-to-end 한 바퀴 보이기)
 

@@ -72,12 +72,17 @@ class AuditEntry:
 def _decision_record(d: RoutingDecision) -> dict[str, Any]:
     match d:
         case Routed():
+            # decision 원형 보존(audit 계약): T2.5 Approval·Collaborator도 내부값까지
+            # 남긴다(노출 불변식과 무관 — audit는 내부값 기록이 목적). collaborators는
+            # 식별자(agent_id)만(카드 출처는 Registry — Contested.candidates와 같은 정신).
             return {
                 "disposition": "routed",
                 "primary": d.primary.agent_id,
                 "owner": d.primary.owner,
                 "confidence": d.confidence,
                 "reason": d.reason,
+                "requires_approval": d.requires_approval,
+                "collaborators": [c.agent_id for c in d.collaborators],
             }
         case Contested():
             return {

@@ -137,6 +137,37 @@ class AskOrg:
             case _ as never:
                 assert_never(never)
 
+    def _apply_approval_gate(self, reply: OrgReply, decision: Routed) -> OrgReply:
+        """Approval 게이트를 사용자向 답에 강제 반영한다(T2.5, ADR 0012 mode 강제 패턴).
+
+        `decision.requires_approval`이면 *라우팅 결정*이 답을 `mode="draft_only"`로 내린다 —
+        워커 자기보고가 아니라 라우팅이 강제(디스패처가 backup을 강제 하향하는 정신).
+        `dataclasses.replace`로 mode만 갈아끼운 새 Answered를 돌려준다(frozen 보존).
+
+        적용 범위:
+          - Answered(=Delivered 투영)에만 적용한다. Pending(dispatched, 아직 답 없음)엔 무관 —
+            답 자체가 없으니 mode도 없다(답이 회신될 때 retrieve가 같은 게이트를 다시 적용).
+          - mode 우선순위(ADR 0012): `backup`은 draft_only로 *덮지 않는다*(backup이 더 강한
+            하향 — owner 미검토 답이라 승인 대기보다 약한 신뢰가 맞다). `full`→`draft_only`만
+            격상. `draft_only`는 그대로(이미 게이트).
+          - `requires_approval`이 False면 reply 그대로.
+
+        collaborators는 여기서 다루지 않는다 — Answered에 싣지 않으므로(노출 불변식: 담당·
+        승인·출처만, collaborator는 조직 내부 협업 구조). audit이 decision 원형으로 보관한다.
+
+        주의(T2.5 경계): 이건 *게이트 표시*(draft_only로 보이기)까지다. 실 승인 행위(사람이
+        draft를 승인해 full로 풀기)는 T5.2 Manager 큐 영역 — 여기선 승인 *상태만* 노출한다.
+        """
+        import dataclasses
+
+        if not decision.requires_approval:
+            return reply
+        if not isinstance(reply, Answered):
+            return reply
+        if reply.mode == "backup":
+            return reply
+        return dataclasses.replace(reply, mode="draft_only")
+
     def retrieve(self, tracking: str) -> OrgReply | None:
         """불투명 추적 토큰으로 답을 *조회*한다(ADR 0011 결정 6-5, pull 한정).
 
@@ -156,6 +187,12 @@ class AskOrg:
         EscalatedToManager 종착도 사용자엔 `dispatched` 유지가 *의도*다 — 워커 미연결과
         Manager escalation의 구분은 감출 내부값(노출 불변식, ADR 0011 결정 4). escalation의
         사용자 통지(무한 조회 대신)는 별도 후속(Manager 큐 T5.2 연계).
+
+        Approval 게이트(T2.5)는 여기 retrieve(dispatched 회신) 경로에선 *아직* 강제하지
+        않는다 — `_tracking`은 `tracking→WorkTicket`만 보관하고 `requires_approval`(라우팅
+        결정)을 들지 않아서다. 즉답(Delivered) 경로의 Approval은 `handle`이 강제하고(데모는
+        `LocalRuntimeDispatcher`라 PRD §7 시나리오 2가 즉답으로 시연됨), 분산 회신 경로의
+        Approval 강제는 후속(tracking→requires_approval 보관 자리 추가가 선결).
         """
         ticket = self._tracking.get(tracking)
         if ticket is None:
@@ -255,6 +292,14 @@ class AskOrg:
                     decision.primary.agent_id,
                     tracking,
                 )
+                # Approval 게이트 강제(T2.5, ADR 0012 mode 강제 패턴): Routed에 Approval이
+                # 붙었으면 *라우팅 결정*이 답을 draft_only로 내린다 — 워커 자기보고가 아니라
+                # 라우팅이 강제한다(디스패처가 backup을 강제 하향하듯). Delivered(실 답이
+                # 도착)에만 적용하고, 아직 답이 없는 Pending(dispatched)엔 무관(답 자체가
+                # 없으니 mode도 없음). mode 우선순위(ADR 0012): backup이 더 강한 하향이라
+                # draft_only로 *덮지 않는다* — backup 답은 owner 미검토라 승인 대기보다 약한
+                # 신뢰가 맞다. full→draft_only만 격상(게이트 표시), backup은 보존.
+                reply = self._apply_approval_gate(reply, decision)
             case Contested():
                 reply = Pending(
                     kind="contested",

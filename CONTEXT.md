@@ -124,7 +124,7 @@ _Avoid_: Broker, Dispatcher, 중앙 서버
 라우터가 한 질문에 내리는 결과. 세 처분(disposition) 중 하나다 — **Routed / Contested / Unowned**. 인스턴스의 *타입*이 곧 상태이며, 각 타입은 자기 처분에 필요한 필드만 갖는다(속성값을 들여다보지 않고 타입으로 판별).
 
 **Routed**:
-담당(primary)이 정해진 결정. Collaborator·Approval을 동반할 수 있다.
+담당(primary)이 정해진 결정. Collaborator·Approval을 동반할 수 있다 — `primary`(담당 카드) · `confidence` · `reason` · `requires_approval: bool`(Approval 게이트) · `collaborators: tuple[AgentCard, ...]`(끌어들인 협업 카드, primary 제외). Route(primary)·Collaboration(collaborators)·Approval(requires_approval)은 한 Routed 안 *동시 성립 독립 축*이고, 셋이 다 비어도 Routed는 성립한다(필드 기본값 빈 튜플·False — 하위호환). **부착 규칙(intent 기반 결정론, TRD §6 5단계, T2.5)**: Router가 `primary.approval_when`에 intent가 들면 `requires_approval=True`, `primary.collaborate_when`에 intent가 들면 *그 intent를 domains에 가진 다른 카드*를 collaborator로 끌어들인다(카드가 agent_id로 지목하지 않고 라우팅과 같은 domains 매칭 재사용 — 카드 자기보고 보수성·중앙 외 Authority 선언 회피). `approval_when`·`collaborate_when`은 under-claim 자기보고(ADR 0004 정합 — owner가 "사람 사인/협업 필요"로 *스스로 좁히는* 보수 신호). 부착은 `Router._attach_gates`가 Routed 생성처(판례·단일 매칭) 공통으로 수행.
 
 **Contested**:
 후보가 여럿이라 담당이 아직 안 정해진 결정. 후보 Owner 합의 또는 Manager로 간다.
@@ -167,7 +167,7 @@ _Avoid_: Handoff(모호 — 프레임워크 용어·기록 의미와 혼동), De
 _Avoid_: Response, Result(단독 — Answer와 혼동)
 
 **Answered**:
-Routed가 투영된 결과. `text`(Answer 본문) · `answered_by`(primary의 owner·agent_id) · `mode`(`full`/`draft_only` — Approval 게이트면 draft) · `sources`를 노출. Approval이 붙은 Routed는 `mode=draft_only`로 "초안·승인 대기"를 표시한다.
+Routed가 투영된 결과. `text`(Answer 본문) · `answered_by`(primary의 owner·agent_id) · `mode`(`full`/`draft_only`/`backup`) · `sources`를 노출. **Approval 게이트 강제(T2.5, ADR 0012 mode 강제 패턴)**: `Routed.requires_approval`이면 `ask_org`가 답을 `mode="draft_only"`로 내려 "초안·승인 대기"를 표시한다 — 워커 자기보고가 아니라 *라우팅 결정*이 강제하고(디스패처가 backup을 강제 하향하는 정신), 강제 자리는 `AskOrg._apply_approval_gate`(즉답 Delivered 경로). mode 우선순위: `backup`은 draft_only로 덮지 않는다(backup이 더 강한 하향 — owner 미검토 답이라 승인 대기보다 약한 신뢰가 맞다), `full`→`draft_only`만 격상. **collaborators는 Answered에 *싣지 않는다*** — 노출 불변식(담당·승인 상태·출처만)상 collaborator는 조직 내부 협업 구조라 사용자向에 비추지 않는다(audit이 `Routed.collaborators` 원형으로 보관). T2.5는 *게이트 표시*까지 — 실 승인 행위(draft→full)는 T5.2 Manager 큐. **분산 회신(retrieve) 경로의 Approval 강제는 후속** — `_tracking`이 `requires_approval`을 안 들어 자리 추가가 선결이고, 데모는 `LocalRuntimeDispatcher` 즉답이라 즉답 경로로 PRD §7 시나리오 2가 시연된다.
 
 **Pending**:
 즉답이 없는 상태의 사용자向 투영 — 담당이 사람 손에 있거나(Contested·Unowned), 담당이 정해졌으나 분산 전송으로 답을 기다리는/사람으로 넘어가는 중(dispatched). `kind`(`contested`/`unowned`/`dispatched`)와 사용자向 안내 문구만 노출하고, 후보 목록·escalation 대상·`manager_id`·`reason`·`ticket_id` 같은 내부는 감춘다. Contested는 *다툼이라는 사실조차* 감추고 "담당을 확인하는 중" 류 중립 안내만(후보가 여럿이라는 내부를 비추지 않는다), Unowned는 "아직 담당이 없어 매니저에게 전달" 류. **dispatched**는 `DispatchOutcome`의 `AwaitingWorker`(미회신)와 `EscalatedToManager`(timeout/owner 부재)를 *함께* 투영한다 — 둘은 도메인에선 다른 처분이지만 사용자 관점에선 "담당에게 보냈는데 아직 답이 없다"로 동일하고, 워커 미연결인지 Manager escalation인지는 감춰야 할 내부값이라 한 kind로 모은다(쪼개면 내부 구분이 샌다). "담당에게 전달했고 답변이 준비되면 알림" 류 중립 안내만. 답 회수(ADR 0011 결정 6-5, 슬라이스2b-i 구현): `dispatched`는 *불투명 추적 토큰*(`tracking`)을 동반해(internal 구조 노출 없는 ID 1개) 사용자/데모 UI가 그 토큰으로 답을 *조회*(pull)한다 — 워커가 나중에 회신한 실 claude 답이 사용자에게 도달하는 경로. **구현 방침**: 서버(`AskOrg._tracking`)가 `tracking→WorkTicket` 매핑을 보관하고, 토큰은 `ticket_id`와 *분리된* 별도 `uuid4().hex`다(ticket_id조차 노출하지 않음 — 6-5의 "서버가 ticket 보관" 대안 채택). 조회는 `AskOrg.retrieve(tracking)`(`poll` 재노출) → web `GET /ask/{tracking}`. 사용자向 푸시(SSE/WS)는 범위 밖(조회로 한정).

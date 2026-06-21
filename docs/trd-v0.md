@@ -52,8 +52,10 @@
 2. 일치 Precedent 있으면 적용
 3. `candidates = intent ∈ domains 이고 cannot_answer 아닌 카드`
 4. 0 → `Unowned(루트 User)` / 1 → `Routed` / ≥2 → 중앙 Authority tie-break, 못 풀면 `Contested`
-5. `Routed`면 `approval_when`·`collaborate_when` 평가 → Approval·Collaborator 부착, Agent Runtime 호출
+5. `Routed`면 `approval_when`·`collaborate_when`을 **intent 기준**(결정론, 비결정 회피)으로 평가해 부착(`Router._attach_gates`, T2.5) — primary의 `approval_when`에 intent가 들면 `requires_approval=True`, `collaborate_when`에 들면 *그 intent를 domains에 가진 다른 카드*를 `collaborators`로(primary 제외, agent_id 지목 아님 — domains 매칭 재사용). 두 필드는 under-claim 자기보고(ADR 0004). 그 뒤 Agent Runtime 호출(디스패처 경유).
 6. 모든 절차를 audit log에 기록
+
+**Approval→mode 강제 + 노출 경계(T2.5)**: `Routed.requires_approval`이면 답이 `mode="draft_only"`로 사용자에 표시된다 — *라우팅 결정*이 강제하고(워커 자기보고 아님, ADR 0012 mode 강제 패턴) 강제 자리는 `AskOrg._apply_approval_gate`(즉답 Delivered 경로). mode 우선순위: `backup`은 draft_only로 덮지 않음(더 강한 하향), `full`→`draft_only`만 격상. `collaborators`는 사용자向 `Answered`에 **싣지 않는다**(노출 불변식: 담당·승인·출처만 — audit엔 `Routed.collaborators` 원형 보관). 실 승인 행위(draft→full)는 T5.2 Manager 큐. 분산 회신(retrieve) 경로 Approval 강제는 후속(tracking이 requires_approval 미보관 — 자리 선결).
 
 ## 7. 테스트 전략 (ADR 0003)
 

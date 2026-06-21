@@ -65,6 +65,30 @@ class WorkTicket:
     ticket_id: str = field(default_factory=_new_ticket_id)
 
 
+# ── 위임 스냅샷: DelegationSnapshot ──────────────────────────────────────
+#
+# owner가 백업 워커에 *명시적으로 위임한* 격리 스냅샷의 메타(ADR 0012 결정 3·9).
+# 이 레코드 자체는 위임 사실과 최신성만 든다 — 실 지식 본체(문서·인덱스)는 owner별
+# 격리 저장소에 있고 백업 인스턴스만 접근한다(중앙 무지식 보존). 중앙/디스패처는 이
+# 메타로 "백업이 답할 수 있는가·얼마나 최신인가"만 판단한다. AgentCard 자기보고 필드가
+# *아니라* 별 레코드인 이유: 위임은 가용성·보안 정책이지 담당 영역 선언이 아니고
+# (Authority 중앙·ADR 0004 정합), 디스패처가 *주입*받아 보관한다(카드 자기보고 금지).
+
+
+@dataclass(frozen=True)
+class DelegationSnapshot:
+    """owner가 백업 워커에 위임한 격리 스냅샷의 메타(실 데이터 본체는 격리 저장소).
+
+    `agent_ids`는 위임 대상 카드(어느 담당 영역을 백업이 답하나), `snapshot_at`은
+    스냅샷을 뜬 시각 — staleness 판정·신뢰 맥락의 기준(ADR 0012 결정 9). 실 데이터
+    위치·암호화 키 핸들은 *연결점만*(실 구현 후속, 이 ADR 범위 밖).
+    """
+
+    owner_id: str
+    agent_ids: tuple[str, ...]
+    snapshot_at: datetime
+
+
 # ── 작업 큐 상태: WorkStatus ─────────────────────────────────────────────
 #
 # 큐에 적재된 작업의 수명. "타입이 곧 상태"(RoutingDecision·ConsensusOutcome
@@ -184,18 +208,48 @@ class InMemoryWorkQueueDispatcher:
         clock: Clock = default_clock,
         timeout: timedelta = timedelta(seconds=120),
         manager_of: Callable[[str], str] | None = None,
+        t1: timedelta | None = None,
     ) -> None:
         self._clock = clock
         self._timeout = timeout
+        # t1(primary 무응답 한계, ADR 0012 결정 8): primary가 claim한 뒤 t1 안에 답이
+        # 없으면 그 claim을 회수해 backup으로 전환할 수 있게 *판정만* 제공한다(회수+재push
+        # 오케스트레이션은 transport). None이면 단일 timeout 동작 그대로(하위호환 — t1
+        # 분배 없이 enqueued_at 기준 단일 escalation). 전체 escalation 한계는 여전히
+        # `timeout`(t2는 그 안에 흡수 — "합이 기존 단일 timeout 근처", 결정 8-1).
+        #
+        # t1 < timeout 전제(결정 8-1): t1이 전체 timeout 이상이면 backup 전환 단계가
+        # *조용히 무력화*된다 — t1 경과 전에 이미 전체 timeout으로 escalation돼 backup이
+        # 끼어들 틈이 없다. 그런 설정은 backup 가용성 목적을 죽이므로 구성 오류로 거부한다
+        # (조용한 무력화보다 명시적 ValueError). t1=None(하위호환)은 분배 자체가 없어 무관.
+        if t1 is not None and t1 >= timeout:
+            raise ValueError(
+                f"t1({t1})은 timeout({timeout})보다 작아야 한다 — "
+                "t1 >= timeout이면 backup 전환 단계가 무력화된다(ADR 0012 결정 8-1)"
+            )
+        self._t1 = t1
         # owner_id -> 그 owner의 Manager User.id (timeout escalation 대상). 사람
         # 그래프 상향은 본디 Registry/Manager 영역 — 디스패처는 주입으로 받아 결합 회피.
         self._manager_of = manager_of
         self._queues: dict[str, list[WorkTicket]] = {}
         self._claimed: set[str] = set()  # claimed ticket_id 집합
+        # claimed ticket_id → claim 시각(주입 clock). t1 경과 판정 기준(결정 8) —
+        # enqueued_at(큐 적재)이 아니라 *claim 시점*부터 재므로 primary가 늦게 가져가도
+        # primary 처리 시간만 t1로 잰다. release_claims로 되돌리면 함께 정리된다.
+        self._claimed_at: dict[str, datetime] = {}
         self._answers: dict[str, "Answer"] = {}
         self._status: dict[str, WorkStatus] = {}  # ticket_id → WorkStatus
         # append-only 정신의 이력(전이 ≠ 기록 — audit과 별개의 도메인 상태 보관).
         self.history: list[WorkTicket] = []
+
+    def now(self) -> datetime:
+        """현재 시각(주입 clock) — 합성 측(transport)이 staleness 판정에 같은 시계를 쓰게.
+
+        ADR 0012 결정 8-3·9 정신: t1/t2·staleness 모두 *주입 clock 하나*로 결정론. 큐가
+        그 clock을 소유하므로, transport가 별 clock을 또 들지 않고 이 공개 접근으로 같은
+        시각을 본다(시각 조회일 뿐 — 단조 종착·멱등·큐 상태기계에 무영향).
+        """
+        return self._clock()
 
     def dispatch(self, question: str, card: "AgentCard") -> WorkTicket:
         ticket = WorkTicket(
@@ -246,10 +300,54 @@ class InMemoryWorkQueueDispatcher:
             tid = ticket.ticket_id
             status = self._status.get(tid, "queued")
             if status == "queued":
-                self._claimed.add(tid)
-                self._status[tid] = "claimed"
+                self._mark_claimed(tid)
                 return ticket
         return None
+
+    def claimable(self, owner_id: str) -> list[WorkTicket]:
+        """그 owner 큐의 *queued*(아직 claim 안 된) 작업을 FIFO로 조회한다(전이 없음).
+
+        ADR 0012 결정 8·9, head-of-line 해소: `claim`은 FIFO 첫 queued 하나만 꺼내므로,
+        앞의 작업이 "claim해도 push 못 하는"(backup 부재·stale 위임) 경우 뒤의 push 가능한
+        작업까지 막혔다(transport `_push_pending`이 거부 시 멈춤). transport가 *어느 작업을
+        push할지 ticket별로 고르려면* 후보 목록을 먼저 봐야 한다 — 이 조회가 그 목록을
+        준다. 조회일 뿐 전이는 없다(claim은 `claim_ticket`이 ticket별로 수행). claimed/
+        answered/expired는 후보가 아니므로 제외. FIFO 순서 보존(큐에 쌓인 순서 그대로).
+        """
+        return [
+            ticket
+            for ticket in self._queues.get(owner_id, [])
+            if self._status.get(ticket.ticket_id, "queued") == "queued"
+        ]
+
+    def claim_ticket(self, ticket_id: str) -> bool:
+        """*특정* ticket을 queued→claimed로 전이한다(push 가능 확정 시 transport가 호출).
+
+        ADR 0012 결정 8·9, head-of-line 해소: `claim`(FIFO 첫 queued)과 달리 transport가
+        `claimable`로 후보를 본 뒤 *push할 그 작업만* 집어 claim한다 — 앞의 거부 작업을
+        건너뛰고 뒤의 push 가능한 작업을 claim할 수 있다(FIFO 첫 작업 강제 해소). queued가
+        아니면 no-op False(이미 claimed/answered/expired면 단조성상 무변경 — 멱등). claim
+        시각도 `claim`과 동일하게 기록해 t1 경과 판정(`stale_claims`) 대상이 되게 한다.
+
+        반환: 실제로 claim했으면 True, 아니면 False(transport가 push 여부 판단에 사용).
+        """
+        # `_status`에 *명시적으로 queued로 등록된* 작업만 claim한다. 미존재 ticket은 키가
+        # 없으므로 거부(get 기본값에 기대 미등록 ticket을 claim하지 않게 — dispatch만이
+        # 작업을 큐에 등록한다). claimed/answered/expired는 단조성상 무변경(멱등).
+        if self._status.get(ticket_id) != "queued":
+            return False
+        self._mark_claimed(ticket_id)
+        return True
+
+    def _mark_claimed(self, ticket_id: str) -> None:
+        """ticket_id를 claimed로 전이하고 claim 시각을 기록한다(`claim`/`claim_ticket` 공유).
+
+        claim 시각(주입 clock)은 t1 경과 판정 기준(결정 8) — enqueued_at이 아니라 claim
+        시점부터 잰다(primary가 늦게 가져가도 처리 시간만 t1로). 재claim 시 갱신된다.
+        """
+        self._claimed.add(ticket_id)
+        self._status[ticket_id] = "claimed"
+        self._claimed_at[ticket_id] = self._clock()
 
     def submit(self, ticket_id: str, answer: "Answer") -> None:
         status = self._status.get(ticket_id, "queued")
@@ -261,6 +359,8 @@ class InMemoryWorkQueueDispatcher:
             return
         self._answers[ticket_id] = answer
         self._status[ticket_id] = "answered"
+        # 종착 — claim 시각 추적 정리(무한 누적 방지, t1 판정 대상 아님).
+        self._claimed_at.pop(ticket_id, None)
 
     def release_claims(self, owner_id: str) -> list[WorkTicket]:
         """그 owner의 미회신 `claimed` 작업을 `queued`로 되돌린다(WS 끊김 회수).
@@ -280,9 +380,42 @@ class InMemoryWorkQueueDispatcher:
             # answered/expired는 종착이라 단조성상 손대지 않는다(부활 금지).
             if self._status.get(tid) == "claimed":
                 self._claimed.discard(tid)
+                self._claimed_at.pop(tid, None)
                 self._status[tid] = "queued"
                 released.append(ticket)
         return released
+
+    def stale_claims(self, owner_id: str) -> list[WorkTicket]:
+        """그 owner의 claimed 작업 중 *claim 후 t1 경과*한 것을 골라 `queued`로 회수한다.
+
+        ADR 0012 결정 8 — primary가 작업을 가져갔는데(claimed) t1 안에 답이 없으면,
+        그 작업을 backup으로 *재전환*할 수 있게 claim을 회수한다(claimed→queued, 단조성
+        보존). `release_claims`(owner 단위 전량 회수, 끊김용)와 달리 *t1 경과분만* 선택
+        회수한다 — 멀쩡히 진행 중인(t1 전) primary 작업은 건드리지 않는다(primary 우선
+        보존, 결정 8-2). t1 미설정이면 회수 없음(빈 리스트 — 단일 timeout 동작 그대로).
+
+        반환: 회수한 ticket 목록(transport가 이걸 받아 backup으로 재push). 회수만 하고
+        재push·primary 제외 신호는 transport 책임(전이 ≠ 전송). answered/expired는
+        종착이라 손대지 않는다(부활 금지). 멱등 — 같은 ticket은 한 번 회수되면 queued라
+        다음 호출에선 대상 아님.
+        """
+        if self._t1 is None:
+            return []
+        now = self._clock()
+        recovered: list[WorkTicket] = []
+        for ticket in self._queues.get(owner_id, []):
+            tid = ticket.ticket_id
+            if self._status.get(tid) != "claimed":
+                continue
+            claimed_at = self._claimed_at.get(tid)
+            if claimed_at is None:
+                continue
+            if now - claimed_at > self._t1:
+                self._claimed.discard(tid)
+                self._claimed_at.pop(tid, None)
+                self._status[tid] = "queued"
+                recovered.append(ticket)
+        return recovered
 
 
 # ── 로컬 즉답 디스패처: LocalRuntimeDispatcher ───────────────────────────

@@ -49,6 +49,12 @@ _REVIEWED = date(2026, 6, 20)
 # (T6.3)에선 각 owner 워커가 자기 환경의 루트를 주입한다(번들 cwd 격리).
 DEMO_OKF_ROOT = Path(__file__).resolve().parent.parent.parent / "okf"
 
+# 감사 로그(T5.1) 기본 파일 경로. `build_demo(audit_log=None)`이 폴백하는 production
+# 기본값을 모듈 상수로 노출해, 결정론 테스트가 conftest autouse fixture에서 tmp 경로로
+# 치환(monkeypatch)해 실제 `logs/`를 더럽히지 않게 한다(TRD §7 격리). 모듈 전역 조회라
+# 호출 시점에 치환이 반영된다.
+_DEFAULT_AUDIT_LOG_PATH = Path("logs/audit.jsonl")
+
 _USERS: tuple[User, ...] = (
     User(id=ROOT_USER),
     User(id="legal_lead", manager=ROOT_USER),
@@ -207,7 +213,7 @@ def build_demo(
     # 넘긴다 — 모니터링 면이 ask가 쓴 바로 그 로그를 읽는다. 기본은 파일(JSONL),
     # 결정론 테스트는 InMemoryAuditLog를 주입(파일 IO 없는 모니터링 라운드).
     audit_impl: JsonlAuditLog | InMemoryAuditLog = (
-        audit_log if audit_log is not None else JsonlAuditLog(Path("logs/audit.jsonl"))
+        audit_log if audit_log is not None else JsonlAuditLog(_DEFAULT_AUDIT_LOG_PATH)
     )
 
     ask = AskOrg(

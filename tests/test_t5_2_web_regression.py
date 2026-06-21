@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -30,7 +29,7 @@ from httpx import Response
 
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.ask_org import AskOrg
-from agent_org_network.audit import JsonlAuditLog
+from agent_org_network.audit import InMemoryAuditLog
 from agent_org_network.classifier import FakeClassifier
 from agent_org_network.conflict import (
     InMemoryConflictCaseStore,
@@ -315,7 +314,7 @@ class TestM1_EnqueueDeadlock_중복_방지:
         ask = AskOrg(
             router=router,
             dispatcher=LocalRuntimeDispatcher(StubRuntime()),
-            audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
+            audit_log=InMemoryAuditLog(),
             clock=_CLOCK,
             case_store=case_store,
             manager_queue_store=queue_store,

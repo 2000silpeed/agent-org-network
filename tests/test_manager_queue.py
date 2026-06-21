@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -384,7 +383,7 @@ class TestAskOrgEnqueue:
         use_queue_dispatcher: bool = False,
     ) -> Any:
         from agent_org_network.ask_org import AskOrg
-        from agent_org_network.audit import JsonlAuditLog
+        from agent_org_network.audit import InMemoryAuditLog
         from agent_org_network.classifier import FakeClassifier
         from agent_org_network.conflict import InMemoryConflictCaseStore, InMemoryPrecedentStore
         from agent_org_network.dispatch import InMemoryWorkQueueDispatcher
@@ -402,7 +401,7 @@ class TestAskOrgEnqueue:
         return AskOrg(
             router=router,
             dispatcher=dispatcher,
-            audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
+            audit_log=InMemoryAuditLog(),
             clock=_CLOCK,
             case_store=case_store,
             manager_queue_store=queue_store,
@@ -412,7 +411,7 @@ class TestAskOrgEnqueue:
 
     def test_unowned_큐_적재(self) -> None:
         from agent_org_network.ask_org import AskOrg, Pending
-        from agent_org_network.audit import JsonlAuditLog
+        from agent_org_network.audit import InMemoryAuditLog
         from agent_org_network.classifier import FakeClassifier
         from agent_org_network.conflict import InMemoryConflictCaseStore, InMemoryPrecedentStore
         from agent_org_network.dispatch import LocalRuntimeDispatcher
@@ -435,7 +434,7 @@ class TestAskOrgEnqueue:
         ask = AskOrg(
             router=router,
             dispatcher=LocalRuntimeDispatcher(StubRuntime()),
-            audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
+            audit_log=InMemoryAuditLog(),
             clock=_CLOCK,
             case_store=case_store,
             manager_queue_store=queue_store,
@@ -472,7 +471,7 @@ class TestAskOrgEnqueue:
     def test_pending_투영_불변(self) -> None:
         """큐 적재가 기존 Pending(unowned) 투영을 깨지 않는다 — 미주입 하위호환."""
         from agent_org_network.ask_org import AskOrg, Pending
-        from agent_org_network.audit import JsonlAuditLog
+        from agent_org_network.audit import InMemoryAuditLog
         from agent_org_network.classifier import FakeClassifier
         from agent_org_network.conflict import InMemoryPrecedentStore
         from agent_org_network.dispatch import LocalRuntimeDispatcher
@@ -494,7 +493,7 @@ class TestAskOrgEnqueue:
         ask = AskOrg(
             router=router,
             dispatcher=LocalRuntimeDispatcher(StubRuntime()),
-            audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
+            audit_log=InMemoryAuditLog(),
             clock=_CLOCK,
         )
         reply = ask.handle("미분류 질문이에요", User(id="web_guest"))
@@ -508,7 +507,7 @@ class TestDeadlockEnqueue:
     def test_deadlocked_큐_적재(self) -> None:
         from agent_org_network.agent_card import AgentCard
         from agent_org_network.ask_org import AskOrg, Pending
-        from agent_org_network.audit import JsonlAuditLog
+        from agent_org_network.audit import InMemoryAuditLog
         from agent_org_network.classifier import FakeClassifier
         from agent_org_network.conflict import (
             ConsensusService,
@@ -554,7 +553,7 @@ class TestDeadlockEnqueue:
         ask = AskOrg(
             router=router,
             dispatcher=LocalRuntimeDispatcher(StubRuntime()),
-            audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
+            audit_log=InMemoryAuditLog(),
             clock=_CLOCK,
             case_store=case_store,
             manager_queue_store=queue_store,
@@ -713,7 +712,7 @@ class TestManagerQueueServiceAct:
         """AssignOwner+intent → Precedent → 같은 intent 재질문이 자동 Routed."""
         from agent_org_network.agent_card import AgentCard
         from agent_org_network.ask_org import AskOrg, Answered
-        from agent_org_network.audit import JsonlAuditLog
+        from agent_org_network.audit import InMemoryAuditLog
         from agent_org_network.classifier import FakeClassifier
         from agent_org_network.dispatch import LocalRuntimeDispatcher
         from agent_org_network.registry import Registry
@@ -765,7 +764,7 @@ class TestManagerQueueServiceAct:
         ask = AskOrg(
             router=router,
             dispatcher=LocalRuntimeDispatcher(StubRuntime()),
-            audit_log=JsonlAuditLog(Path("logs/audit-test.jsonl")),
+            audit_log=InMemoryAuditLog(),
             clock=_CLOCK,
         )
         reply = ask.handle("환불 기준 알려줘", User(id="web_guest"))

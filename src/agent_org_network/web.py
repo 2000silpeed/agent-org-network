@@ -28,6 +28,7 @@ from agent_org_network.conflict import (
     StillOpen,
 )
 from agent_org_network.demo import build_demo
+from agent_org_network.dispatch import RuntimeDispatcher
 from agent_org_network.runtime import AgentRuntime
 from agent_org_network.user import User
 
@@ -64,11 +65,20 @@ def serialize_reply(reply: OrgReply) -> dict[str, Any]:
                 "sources": list(reply.sources),
             }
         case Pending():
-            return {
+            body: dict[str, Any] = {
                 "type": "pending",
                 "kind": reply.kind,
                 "message": reply.message,
             }
+            # 답 회수용 불투명 추적 토큰(dispatched에만 존재, ADR 0011 결정 6-5).
+            # 사용자/UI가 이 토큰으로 GET /ask/{tracking}을 폴링한다. 토큰은 uuid4 hex라
+            # owner_id·ticket_id·구조를 비추지 않는다 — 노출 불변식의 정밀화(_LEAKY_KEYS
+            # 의 조직 내부값은 여전히 안 샌다). contested/unowned는 tracking이 None이라 생략.
+            if reply.tracking is not None:
+                body["tracking"] = reply.tracking
+            return body
+        case _ as never:
+            assert_never(never)
 
 
 def serialize_case(case: ConflictCase) -> dict[str, Any]:
@@ -103,17 +113,32 @@ def serialize_outcome(outcome: ConsensusOutcome) -> dict[str, Any]:
             assert_never(outcome)
 
 
-def create_app(runtime: AgentRuntime | None = None) -> FastAPI:
+def create_app(
+    runtime: AgentRuntime | None = None,
+    dispatcher: RuntimeDispatcher | None = None,
+) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
     결정론이 필요한 테스트는 `runtime=StubRuntime()`을 넘겨 실제 claude 호출을 막는다.
+    `dispatcher`를 주입하면 분산 회수 경로(dispatched→retrieve)를 결정론으로 검증할 수
+    있다(`WebSocketDispatcher` 등) — 미주입이면 기본 즉답 디스패처.
     """
     app = FastAPI(title="Agent Org Network — 채팅·처리함(데모)")
-    bundle = build_demo(runtime=runtime)
+    bundle = build_demo(runtime=runtime, dispatcher=dispatcher)
 
     @app.post("/ask")
     def ask_endpoint(req: AskRequest) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         reply = bundle.ask.handle(req.question, _WEB_USER)
+        return serialize_reply(reply)
+
+    @app.get("/ask/{tracking}")
+    def retrieve_endpoint(tracking: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        # 답 회수 조회(ADR 0011 결정 6-5, pull 한정). dispatched로 받은 불투명 토큰으로
+        # 나중에 회신된 답을 가져온다 — 워커가 회신했으면 Answered, 아직이면 dispatched
+        # (같은 토큰 유지)로 투영. 모르는 토큰은 404(존재하지 않는 추적). 푸시는 범위 밖.
+        reply = bundle.ask.retrieve(tracking)
+        if reply is None:
+            raise HTTPException(status_code=404, detail="알 수 없는 추적 토큰")
         return serialize_reply(reply)
 
     @app.get("/")

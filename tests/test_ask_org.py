@@ -11,10 +11,15 @@ from agent_org_network.conflict import (
     InMemoryConflictCaseStore,
     InMemoryPrecedentStore,
 )
-from agent_org_network.dispatch import InMemoryWorkQueueDispatcher, LocalRuntimeDispatcher
+from agent_org_network.dispatch import (
+    InMemoryWorkQueueDispatcher,
+    LocalRuntimeDispatcher,
+    RuntimeDispatcher,
+)
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router
-from agent_org_network.runtime import StubRuntime
+from agent_org_network.runtime import Answer, StubRuntime
+from agent_org_network.transport import WebSocketDispatcher
 from agent_org_network.user import User
 
 
@@ -199,9 +204,9 @@ BASE_TS = datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
 def _ask_org_with_queue_dispatcher(
     cards: list[AgentCard],
     intent: str,
-    dispatcher: InMemoryWorkQueueDispatcher,
+    dispatcher: RuntimeDispatcher,
 ) -> AskOrg:
-    """InMemoryWorkQueueDispatcher 주입 AskOrg 조립 헬퍼(비동기 결말 테스트용)."""
+    """RuntimeDispatcher 주입 AskOrg 조립 헬퍼(비동기 결말·회수 테스트용)."""
     registry = Registry()
     for c in cards:
         registry.register(c)
@@ -280,3 +285,84 @@ def test_Pending_dispatched에_manager_id_reason이_새지_않는다():
     assert not hasattr(reply, "reason")
     assert not hasattr(reply, "ticket_id")
     assert not hasattr(reply, "waited")
+
+
+# ── T6.3 슬라이스2b-i — 답 회수(retrieve) + 불투명 추적 토큰 ────────────────
+
+
+def test_dispatched면_불투명_tracking_토큰이_실린다():
+    """미회신(AwaitingWorker)이면 Pending(dispatched)에 tracking 토큰이 채워진다."""
+    c = card("cs_ops", ["환불"])
+    dispatcher = InMemoryWorkQueueDispatcher(clock=lambda: BASE_TS)
+    ask = _ask_org_with_queue_dispatcher([c], "환불", dispatcher)
+
+    reply = ask.handle("환불 되나요?", User(id="u1"))
+
+    assert isinstance(reply, Pending)
+    assert reply.kind == "dispatched"
+    assert reply.tracking is not None
+    assert len(reply.tracking) > 0
+
+
+def test_tracking_토큰은_ticket_id를_노출하지_않는다():
+    """불투명성: tracking 토큰이 내부 ticket_id와 다른 별도 ID여야 한다(구조 미인코딩)."""
+    c = card("cs_ops", ["환불"])
+    dispatcher = InMemoryWorkQueueDispatcher(clock=lambda: BASE_TS)
+    ask = _ask_org_with_queue_dispatcher([c], "환불", dispatcher)
+
+    reply = ask.handle("환불 되나요?", User(id="u1"))
+
+    assert isinstance(reply, Pending)
+    assert reply.tracking is not None
+    # dispatcher.history에 쌓인 ticket_id·owner가 tracking에 인코딩돼 있지 않아야 한다.
+    ticket = dispatcher.history[0]
+    assert reply.tracking != ticket.ticket_id
+    assert ticket.ticket_id not in reply.tracking
+    assert ticket.owner_id not in reply.tracking
+
+
+def test_retrieve가_회신_전에는_dispatched_같은_토큰을_유지한다():
+    """워커가 아직 회신 안 했으면 retrieve는 Pending(dispatched, 같은 토큰)을 돌려준다."""
+    c = card("cs_ops", ["환불"])
+    dispatcher = WebSocketDispatcher(clock=lambda: BASE_TS)
+    ask = _ask_org_with_queue_dispatcher([c], "환불", dispatcher)
+
+    first = ask.handle("환불 되나요?", User(id="u1"))
+    assert isinstance(first, Pending)
+    assert first.tracking is not None
+
+    again = ask.retrieve(first.tracking)
+    assert isinstance(again, Pending)
+    assert again.kind == "dispatched"
+    assert again.tracking == first.tracking
+
+
+def test_retrieve가_워커_회신_후_Answered를_돌려준다():
+    """워커가 submit하면 같은 토큰으로 retrieve 시 Answered(담당·출처)로 투영된다."""
+    c = card("cs_ops", ["환불"], owner="D", knowledge_sources=["위키/환불정책"])
+    dispatcher = WebSocketDispatcher(clock=lambda: BASE_TS)
+    ask = _ask_org_with_queue_dispatcher([c], "환불", dispatcher)
+
+    pending = ask.handle("환불 되나요?", User(id="u1"))
+    assert isinstance(pending, Pending)
+    assert pending.tracking is not None
+
+    # 워커가 (claim 후) 회신 — claim은 dispatch가 연결 없으면 안 했으므로 직접 claim.
+    ticket = dispatcher.claim("D")
+    assert ticket is not None
+    dispatcher.submit(ticket.ticket_id, Answer(text="환불 가능합니다", sources=("위키/환불정책",), mode="full"))
+
+    answered = ask.retrieve(pending.tracking)
+    assert isinstance(answered, Answered)
+    assert answered.text == "환불 가능합니다"
+    assert answered.answered_by == ("D", "cs_ops")
+    assert "위키/환불정책" in answered.sources
+
+
+def test_retrieve가_모르는_토큰이면_None():
+    """존재하지 않는 추적 토큰은 None(조회 실패)."""
+    c = card("cs_ops", ["환불"])
+    dispatcher = WebSocketDispatcher(clock=lambda: BASE_TS)
+    ask = _ask_org_with_queue_dispatcher([c], "환불", dispatcher)
+
+    assert ask.retrieve("없는토큰") is None

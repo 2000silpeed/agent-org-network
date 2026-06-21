@@ -1,6 +1,6 @@
 # 분산 전송은 owner 워커의 역방향 아웃바운드 연결 + 중앙 작업 큐로 한다 — owner PC는 서버를 노출하지 않는다
 
-상태: accepted (2026-06-20, 결정 1~3) · 보강 accepted (2026-06-21, 결정 4 — ask_org 비동기화·manager_id 분리, 슬라이스2 진입 전) · 보강 accepted (2026-06-21, 결정 5 — escalation의 audit 기록, 슬라이스2b 진입 전 선결 ①) · ADR 0010의 *전송 계층* 보강(답변 주체=owner Claude Code는 그대로, "어떻게 그 환경에 도달하나"를 못박음)
+상태: accepted (2026-06-20, 결정 1~3) · 보강 accepted (2026-06-21, 결정 4 — ask_org 비동기화·manager_id 분리, 슬라이스2 진입 전) · 보강 accepted (2026-06-21, 결정 5 — escalation의 audit 기록, 슬라이스2b 진입 전 선결 ①) · 보강 accepted (2026-06-21, 결정 6 — 전송 채널=WebSocket·WS 전송층은 작업 큐 도메인 재사용·실패 모드·사용자 답 회수, 슬라이스2b 본체 설계) · **구현 accepted (2026-06-21, 슬라이스2b-i — 중앙 WS 핸들러·프레임 변환·실패 모드·회수 조회, 전부 결정론 188 passed; 답 회수는 6-5의 "서버가 ticket 보관" 대안 채택)** · ADR 0010의 *전송 계층* 보강(답변 주체=owner Claude Code는 그대로, "어떻게 그 환경에 도달하나"를 못박음)
 
 ADR 0010은 Agent Runtime의 답변 주체를 각 Owner의 Claude Code로 못박았고, 최종(T6.3)은 "각 Owner PC의 Claude Code에 분산 연결(MCP/A2A 등록·호출)"이라 적었다. TRD §5도 "각 Owner Claude Code가 MCP/A2A로 중앙에 등록·연결, 중앙이 client로 호출, 로컬 PC 도달은 후순위"라 적었다. T6.3은 그 *전송 계층*을 채운다 — **중앙이 owner 환경에 실제로 어떻게 도달하는가**. 되돌리기 어려운 결정 두 가지: (1) 연결 방향(누가 누구에게 연결을 거는가), (2) 동기/비동기(중앙 핸들러가 답을 어떻게 기다리는가).
 
@@ -68,11 +68,82 @@ owner 부재·PC 꺼짐이 정상 상태다. 따라서 답은 **즉시 보장되
 
 - **이번 범위 밖 — 두 경계(2a→2b 리뷰 Minor, 의도된 결정).** 이 결정은 *escalation*의 audit 기록만 닫는다. (a) **`Delivered`의 ticket 식별자 생략은 의도적이다** — `_dispatch_record`의 `Delivered`는 처분 라벨만 남기고 `ticket_id`를 싣지 않는다. 답 본문은 상위 `answer` 키가, 담당은 `decision.primary`가 이미 담아 정상 경로 추적엔 충분하다(`decision`도 Routed에서 필요한 식별자만 남기듯, "원형"이 곧 전 필드는 아니다). 큐 작업↔entry 연결(`ticket_id`)이 필요해지면 운영 모니터링(T5.1)에서 보강한다. (b) **`AwaitingWorker`의 audit은 poll 시점 *스냅샷*이다** — 현재 `ask_org`는 dispatch→poll 1회라, 미회신(`AwaitingWorker`)으로 찍힌 entry는 그 질문이 나중에 Delivered/Escalated로 종착해도 재기록되지 않는다. 종착 재기록은 폴링/콜백이 생기는 슬라이스2 네트워크 디스패처의 몫이며, 그때 "큐의 작업은 반드시 종착한다"가 기록 차원에서도 닫힌다.
 
+### 6. 전송 채널 = WebSocket · WS는 작업 큐 도메인을 재사용하는 전송층 · 실패 모드 1급 · 사용자 답 회수 (슬라이스2b 본체)
+
+결정 1은 연결 방향(owner 워커가 중앙에 아웃바운드)을 못박되 *물리 채널*을 "폴링 또는 WebSocket/SSE"로 열어뒀다. 슬라이스2b 본체에서 그 미결을 닫고, 실 전송이 떠안는 실패 모드와 사용자向 답 회수까지 설계한다.
+
+#### 6-1. 채널 = WebSocket (long-polling 기각)
+
+owner 워커↔중앙 채널은 **WebSocket**으로 한다. 연결 방향은 결정 1 그대로 — **owner 워커가 중앙에 아웃바운드 WS 연결**을 걸고(중앙은 `@app.websocket`로 *받기만*), NAT/방화벽을 통과한다.
+
+- **근거 = 프로덕션 실시간 비전.** 이 제품은 단순 작업 전달을 넘어 (a) 답 토큰 스트리밍(워커의 로컬 claude가 생성하는 답을 토막내 사용자에게 실시간 표시), (b) 양방향(중앙→워커 작업 push·취소·하트비트 + 워커→중앙 진행·부분답·완료), (c) 단일 영속 연결(워커 1개가 한 소켓으로 다중 작업 수신)을 지향한다. WS는 이 셋을 *한 채널*로 준다.
+- **long-polling 기각.** 워커↔중앙 *작업 전달 지연*만 보면 long-poll로도 0에 수렴한다(워커가 항상 대기 요청을 걸어둠). 그러나 그 위층 — 답 스트리밍·중앙발 양방향 메시지(취소·하트비트) — 을 long-poll은 깔끔히 주지 못한다(서버→클라 푸시가 응답 1회로 끊김, 토큰 스트림에 부적합). 실시간 비전을 채널 선택의 결정 기준으로 삼아 WS를 택한다.
+- **트레이드오프(떠안는 비용).** WS는 *연결 수명*을 1급 문제로 만든다 — (a) 연결 끊김·재연결(owner PC는 간헐 연결이 정상), (b) 다중 중앙 인스턴스로 스케일아웃 시 "그 owner의 워커가 붙은 인스턴스"로 작업을 보내야 함(sticky 라우팅 또는 인스턴스 간 브로커 필요). 폴링이라면 무상태 HTTP라 이 둘이 거의 없다. **owner PC가 간헐 연결이라 실패 모드(끊김·재연결·중복 전달)가 이 슬라이스의 핵심 무게**다 — 정상 경로보다 실패 경로 설계에 비중을 둔다. 스케일아웃(다중 인스턴스 sticky/브로커)은 **이번 범위 밖**으로 명시(MVP는 단일 중앙 프로세스 + in-memory 큐).
+
+#### 6-2. WS는 작업 큐 도메인(`InMemoryWorkQueueDispatcher`)을 *재사용*하는 전송층이다 (별 구현 아님)
+
+WS 디스패처는 **새 큐 도메인을 만들지 않는다.** 슬라이스1의 `InMemoryWorkQueueDispatcher`가 이미 큐 도메인 전부를 결정론으로 보유한다 — `queued↔claimed↔answered↔expired` 수명, timeout escalation(`EscalatedToManager`), 단조 종착(한 번 Delivered/Escalated면 늦은 submit이 부활 못 시킴), owner별 큐 격리. **이 도메인이 미아 없음·idempotency의 1차 보증**이다. WS는 그 위에 얹는 *전송*만 한다.
+
+- **`WebSocketDispatcher`(신규, 슬라이스2b)는 `InMemoryWorkQueueDispatcher`를 *내부에 합성*(compose)한다** — 상속이 아니라 위임. 중앙측 면(`dispatch`/`poll`)은 그대로 내부 큐에 위임하고, 워커측 면(`claim`/`submit`)은 "연결된 워커 레지스트리"를 거쳐 WS 메시지로 *전송*한 뒤 내부 큐의 `claim`/`submit`을 호출한다. 즉 `WebSocketDispatcher`도 `RuntimeDispatcher` 포트를 구현하되, 큐 상태기계는 합성한 in-memory 큐가 소유한다.
+- **포트 불일치(claim=pull vs WS=push) 해소 — 포트 무변경.** `RuntimeDispatcher.claim(owner_id) -> WorkTicket | None`은 "그 owner 큐의 다음 작업을 꺼낸다"는 *큐 연산*이다. WS에선 워커가 직접 claim을 호출하지 않는다 — 대신 **중앙 WS 핸들러가 워커 연결을 대신해 claim을 호출**해 작업을 꺼내 그 소켓으로 push한다. claim의 *의미*(큐에서 다음 작업을 꺼내 그 워커에게 귀속)는 보존되고, "누가 claim을 트리거하나"만 워커→중앙핸들러로 옮겨간다. `submit`도 동일 — 워커가 WS로 보낸 답 메시지를 핸들러가 받아 내부 `submit(ticket_id, answer)`을 호출한다. **기존 in-process 구현(`InMemoryWorkQueueDispatcher`·`LocalRuntimeDispatcher`·`DispatchingRuntime`)과 그 테스트(143 passed)는 포트가 안 바뀌므로 그대로 산다.**
+- **왜 합성인가(상속·재작성 기각).** 상속하면 큐 내부 상태(`_status`·`_claimed`)에 WS가 결합돼 단조 종착 불변식이 두 곳으로 샌다. 별 큐를 재작성하면 슬라이스1이 검증한 도메인(20여 결정론 테스트)을 잃는다. 합성은 검증된 도메인을 그대로 두고 전송만 새로 검증하게 한다 — 포트 패턴(`Protocol` + 구현체 교체)의 정신.
+
+#### 6-3. WS 메시지 프로토콜 (양방향, pydantic 봉투)
+
+워커↔중앙은 JSON 메시지를 주고받는다. 모든 메시지는 `type` 판별 필드를 가진 **봉투(envelope)** 며, pydantic v2 모델로 검증한다(프레임은 frozen 도메인 값 객체가 아니라 *전송 DTO* — `transport.py`에 격리). 두 방향:
+
+- **워커→중앙(업스트림):**
+  - `RegisterWorker{owner_id, token?}` — 연결 직후 1회. 워커가 자기 owner 신원을 선언(인증 연결점, 6-5). 중앙은 이 owner를 "연결됨"으로 레지스트리에 올린다.
+  - `SubmitAnswer{ticket_id, answer{text, sources, mode}}` — 로컬 claude가 만든 답 회신. 내부 `submit(ticket_id, answer)` 트리거.
+  - `Heartbeat{}` / `Ack{ticket_id}` — 연결 생존·작업 수신 확인(6-4).
+- **중앙→워커(다운스트림):**
+  - `Welcome{}` 또는 `AuthError{reason}` — 등록 수락/거부.
+  - `PushWork{ticket{ticket_id, agent_id, question, enqueued_at}}` — claim으로 꺼낸 작업을 워커에 전달. `owner_id`는 연결 귀속이라 생략 가능(그 소켓이 곧 그 owner).
+  - `Ping{}` — 중앙발 생존 확인(워커는 `Heartbeat`/`Ack`로 응답).
+
+라벨링: 이 DTO들은 `WorkTicket`/`Answer`(도메인 값 객체)와 *구분*된다 — 프레임은 와이어 포맷이고 도메인 객체는 코어 타입이다. 핸들러가 경계에서 변환(`PushWork.ticket` ↔ `WorkTicket`, `SubmitAnswer.answer` ↔ `Answer`). CONTEXT에 **Transport Frame**(전송 프레임)으로 용어 등재(_Avoid_: Message 단독·Event).
+
+#### 6-4. 실패 모드 (이 슬라이스의 핵심 무게)
+
+owner PC 간헐 연결이라 실패 경로가 본체다. 네 축:
+
+- **연결 끊김 → in-flight 작업 유실 금지.** 워커가 작업을 push 받고(claimed) 답을 보내기 전에 끊기면, 그 작업은 `claimed`로 떠 있어 다른 워커도 못 가져가고 답도 안 온다(영구 미아 위험). **해소: 끊김 감지 시 그 owner의 `claimed`(미회신) 작업을 `queued`로 되돌린다(re-queue)** — `InMemoryWorkQueueDispatcher`에 `release_claims(owner_id)` 같은 *되돌리기 연산*을 추가(claimed→queued, 단 이미 answered/expired면 손대지 않음 = 단조성 보존). 워커 재연결 시 그 작업이 다시 claim돼 push된다. timeout(escalation)은 그대로 작동 — 워커가 영영 안 돌아오면 결정 3의 `EscalatedToManager`로 종착.
+- **중복 전달(at-least-once → idempotency).** WS·재연결은 같은 메시지를 두 번 나르기 쉽다(push 후 ack 전 끊김 → 재push, 또는 submit 후 ack 전 끊김 → 재submit). **ticket_id 기준 멱등으로 흡수**한다 — 이미 슬라이스1의 단조 종착이 *일부* 보장한다(`submit`은 expired면 무시, `poll`은 종착 후 같은 결말 반환). 그 위에: (a) `submit`을 answered에도 멱등화(이미 answered면 첫 답 유지·재submit 무시 — 현재는 expired만 무시하므로 *answered 재submit 무시를 추가*), (b) push 중복은 워커 측 idempotency(같은 ticket_id 재수신 시 이미 처리 중/완료면 무시) + `Ack`로 중앙이 재push를 멈춤. **idempotency 키 = `ticket_id`**(이미 `WorkTicket`이 보유, 새 필드 불요).
+- **heartbeat / 연결 생존 판정.** 중앙은 워커별 마지막 수신 시각(주입 clock)을 들고, `Heartbeat`/`Ack`/`SubmitAnswer` 어느 것이든 갱신한다. 일정 시간 무신호면 "끊김"으로 판정 → 위 re-queue 트리거 + 레지스트리에서 해당 owner 제거. (실 소켓 close 이벤트가 1차 신호, heartbeat는 *반쯤 죽은 연결* 보강.)
+- **워커 인증 연결점(ADR 0009 → T6.5, *연결점만*).** `RegisterWorker`의 `token`으로 owner 신원을 인증하고, **미인증/토큰 불일치 연결의 `SubmitAnswer`는 거부**한다(그 ticket의 owner_id ≠ 연결 owner_id면 거부 — 회신이 진짜 그 owner에게서 왔는지 검증). 이번 슬라이스는 *거부 지점(hook)만* 두고 실 토큰 검증 로직은 T6.5. `WorkTicket.owner_id`가 이미 귀속을 들어 검증 자리가 마련돼 있다(결정 1 Consequences).
+
+#### 6-5. 사용자↔중앙 답 회수 (end-to-end 닫기 — 조회로 한정)
+
+현재 `ask_org`는 `Routed→dispatch→poll 1회→보통 Pending(dispatched)`를 돌려준다(결정 4). 워커가 *나중에* 답해도 **사용자가 받을 길이 없다** — "실 claude까지" 시연이 닫히지 않는다. 이 슬라이스에서 회수 경로를 연다.
+
+- **범위 = 답 *조회*(pull)로 한정. 푸시(SSE/WS to 사용자)는 이번 범위 밖.** 사용자向 푸시까지 하면 사용자 측 WS/SSE·알림·연결 관리가 또 한 겹 붙어 슬라이스가 비대해진다. MVP는 **`ticket_id`로 답을 조회하는 경로**만 연다 — `Pending(dispatched)`가 사용자에게 *추적 손잡이*를 주고(노출 불변식 안에서, 6-5 주의 참조), 사용자(또는 데모 UI)가 그 손잡이로 답을 폴링한다.
+- **회수 면(shape):** 디스패처에 이미 `poll(ticket) -> DispatchOutcome`이 있다 — 회수는 *새 도메인이 아니라 기존 poll의 재노출*이다. web 어댑터에 조회 엔드포인트(예: `GET /ask/{ticket_id}`)를 두고, 핸들러가 `ticket_id`로 `WorkTicket`을 복원해 `poll`한 뒤 결과를 `serialize_reply`로 투영한다(Delivered면 `Answered`, 미회신이면 `Pending(dispatched)` 그대로). 데모 UI는 답이 올 때까지 이 엔드포인트를 폴링한다.
+- **노출 불변식 주의 — `ticket_id`는 사용자向 추적 손잡이로만.** 결정 4·CONTEXT는 `ticket_id`를 "사용자에게 감추는 내부값"으로 못박았다(`Pending`은 `kind`+`message`만). 회수를 열려면 사용자가 `ticket_id`를 *알아야* 하므로 이 둘이 충돌한다. **해소: `ticket_id`를 "답 조회용 불투명 추적 토큰"으로 재포지셔닝**한다 — `Pending(dispatched)`에 `tracking` 같은 *불투명 토큰* 필드를 더해(내부 구조 노출 없는 ID 1개) 그것으로만 조회하게 한다. owner_id·manager_id·후보 등 *진짜 내부값*은 여전히 안 샌다. 이 변경은 노출 불변식의 *완화가 아니라 정밀화* — "추적에 필요한 불투명 ID 1개는 노출 OK, 조직 내부 구조는 금지". **이 작은 모델 변경(Pending에 tracking 추가, test_web `_LEAKY_KEYS` 갱신)은 결정 6의 산물로 명시**하며, 더 단순한 대안(서버가 세션에 ticket을 들고 사용자는 "내 마지막 질문 답 줘"로 조회)이 낫다고 판단되면 구현 단계에서 택해도 좋다(둘 다 푸시 없이 조회로 닫는다는 본 결정과 정합).
+- **왜 이게 범위에 드나.** "워커 프로세스 + 실 claude까지"가 슬라이스 범위인데, 답이 사용자에게 못 도달하면 그 시연이 무의미하다. 회수는 end-to-end를 닫는 *최소* 추가다.
+- **구현 결과(2b-i, 2026-06-21) — "서버가 ticket 보관" 대안 채택.** 위 두 대안 중 *서버 보관* 쪽을 택해 노출을 더 좁혔다. `AskOrg`가 `tracking → WorkTicket` 매핑을 내부에 보관하고(`AskOrg._tracking`), 사용자向 `Pending(dispatched)`엔 `ticket_id`와 *분리된* 별도 불투명 토큰(`uuid4().hex`)만 싣는다 — 즉 `ticket_id`를 재포지셔닝해 노출하는 게 아니라 *ticket_id조차 노출하지 않는다*. 회수는 `AskOrg.retrieve(tracking)`이 매핑으로 ticket을 복원해 `poll`을 재노출하고(Delivered→`Answered`, 미회신→`Pending(dispatched)` 같은 토큰 유지), web은 `GET /ask/{tracking}`로 얇게 감싼다(모르는 토큰 404). `_LEAKY_KEYS`는 무변경 — `tracking`은 조직 내부 구조를 비추지 않는 불투명 ID 1개라 leaky가 아니고, 토큰이 `ticket_id`·`owner_id`를 인코딩하지 않음을 테스트로 강제했다(`test_web`·`test_ask_org`). 중앙 WS 핸들러는 채팅·처리함 어댑터(`web.py`)와 책임을 분리해 **신규 `server.py`**(`create_worker_app(dispatcher)` + `@app.websocket("/worker")`)에 뒀다.
+
+#### 6-6. 결정론 테스트 vs 수동 시연 — 경계 (결정론은 in-process, 실 전송은 데모)
+
+결정 5의 "결정론은 in-process, 실 전송은 데모" 원칙을 WS로 확장한다.
+
+- **결정론 테스트(`.venv` pytest, ADR 0003):** 중앙 WS 핸들러 로직·메시지 프로토콜(프레임 직렬화/검증)·idempotency(재submit 무시·re-queue)·재연결 상태기계·인증 거부 hook. **FastAPI `TestClient`의 WebSocket 지원**으로 in-process 검증(Fake 워커 = TestClient WS 세션이 프레임을 주고받음, 실 네트워크·실 claude 0). 큐 도메인 자체는 슬라이스1 테스트가 이미 커버하므로, 여기선 *전송층*(프레임↔도메인 변환·연결 생명주기·멱등)만 새로 검증한다.
+- **수동 시연/데모 스크립트(게이트 밖):** 실제 owner 워커 *별 프로세스* + 실 아웃바운드 WS 연결 + 실 `claude` CLI 회신 + 실 네트워크. 결정·비결정이 섞이고 느리므로 단위 테스트가 아니라 데모 스크립트로 한 바퀴 돌려 눈으로 확인한다(`scripts/` 또는 `demo_worker.py`).
+- **경계 원칙:** "프레임이 오갈 때 무슨 일이 나는가"는 결정론, "소켓이 진짜 뚫리고 claude가 진짜 답하는가"는 수동. 이 경계가 슬라이스를 더 쪼개는 선이기도 하다(아래 슬라이스 제안).
+
+#### 6-7. 슬라이스 더 쪼개기 (2b-i / 2b-ii)
+
+이 결정의 산출이 방대하므로 구현을 둘로 나눈다 — 그래야 각 슬라이스가 게이트 그린을 독립적으로 지킨다.
+
+- **슬라이스 2b-i (중앙 WS + 프로토콜 + 실패 모드, 전부 결정론):** `transport.py`(프레임 DTO + `WebSocketDispatcher` 합성) + 중앙 `@app.websocket` 핸들러 + 사용자 답 회수 조회 엔드포인트. 검증은 전부 `TestClient` WebSocket(Fake 워커). re-queue·멱등·인증 거부 hook·heartbeat 판정까지 여기서 결정론으로 닫는다. **실 claude·실 프로세스 0.** → tdd-engineer 주도, mcp-runtime-engineer가 WS 핸들러 통합.
+- **슬라이스 2b-ii (owner 워커 프로세스 + 실 claude, 수동 시연):** `demo_worker.py`(실 아웃바운드 WS 연결→`PushWork` 수신→`ClaudeCodeRuntime`로 로컬 claude 호출→`SubmitAnswer` 회신) + 데모 스크립트(중앙 띄우고 워커 붙이고 질문→실 답 회수까지 한 바퀴). 게이트 밖 수동. → mcp-runtime-engineer 주도.
+
+2b-i가 그린이면 "프레임·멱등·재연결·회수"가 검증된 채로 닫히고, 2b-ii는 그 위에 실 전송만 입힌다 — 실패해도 게이트(결정론)는 흔들리지 않는다.
+
 ## Considered Options (연결 방향)
 
 - **owner 워커의 역방향 아웃바운드 + 중앙 큐**(선택): 방화벽/NAT 통과, 상시 켜짐 불요, owner 부재가 큐 대기로 자연 흡수. 단 비동기·전달 보장·연결 수명 관리 비용.
 - **중앙→owner 인바운드(owner=server)**(기각): owner PC 서버 노출·포트포워딩·고정 IP·상시 가동을 요구 — 개인 PC 현실에서 비현실적. ADR 0010의 "owner 환경에서 답" 비전을 운영적으로 깨뜨린다.
-- **owner가 답을 중앙 큐에 push만(연결 유지 없음, 순수 폴링)**: 가장 단순하나 실시간성↓·폴링 비용. → walking skeleton 첫 슬라이스는 이 *논리*(큐 적재+회수)만 in-process로 보이고, 실제 폴링 vs WebSocket 선택은 네트워크 슬라이스로 미룬다(아래).
+- **owner가 답을 중앙 큐에 push만(연결 유지 없음, 순수 폴링)**: 가장 단순하나 실시간성↓·폴링 비용. → walking skeleton 첫 슬라이스는 이 *논리*(큐 적재+회수)만 in-process로 보였고, 실제 폴링 vs WebSocket 선택은 **결정 6에서 WebSocket으로 닫았다**(워커↔작업 전달 지연만 보면 long-poll로도 0이지만, 그 위층 답 토큰 스트리밍·중앙발 양방향을 long-poll이 못 줘서 — 실시간 비전을 기준으로 택일).
 
 ## Consequences
 
@@ -83,5 +154,6 @@ owner 부재·PC 꺼짐이 정상 상태다. 따라서 답은 **즉시 보장되
 - **전이 ≠ 기록 유지.** 작업 enqueue·claim·submit·timeout은 *도메인 전이*(디스패처/큐 상태)이고, audit 기록은 별개로 계속 흐른다(ADR 0008과 동일). 작업 큐는 미해소 작업의 도메인 보관소지 절차 로그가 아니다.
 - **escalation의 audit 기록 공백 → 해소(2b 진입 전 선결 ①, 2026-06-21, 아래 결정 5).** 2a 리뷰 [Major]가 발견한 공백 — 결정 4의 매핑이 `EscalatedToManager`를 `Pending(dispatched)`로 투영하며 `manager_id`·`reason`을 사용자向에서 떨구는데, 당시 `AuditEntry`(`decision`+`answer`만)엔 그 escalation 대상을 실을 자리가 없어 `Unowned.escalated_to`와 **비대칭**이었다. **이 공백을 결정 5에서 메웠다** — `AuditEntry`에 `dispatch_outcome: DispatchOutcome | None`을 1급으로 추가해 `EscalatedToManager`의 `manager_id`·`reason`을 audit에 *전부* 남긴다(노출 불변식은 사용자向 `Pending`에만 적용, audit는 내부값 기록이 목적). 이로써 "큐의 작업은 회신되거나 escalation되거나 반드시 종착하며 영영 사라지지 않는다"가 *기록* 차원에서도 지켜진다.
 - **결정론 테스트는 in-process로.** 실제 네트워크 전송·워커 프로세스·연결 수명은 비결정이라 단위 테스트에 부적합하다. `InMemoryWorkQueueDispatcher` + Fake Worker(동기 회신)로 *큐 적재→회수→회신→escalation 분기*를 결정론으로 검증하고(ADR 0003), 실제 전송 품질은 데모/수동 시연으로 본다.
-- **외부 의존 추가(다음 슬라이스).** 네트워크 슬라이스부터 owner Worker는 별 프로세스·아웃바운드 연결(폴링 또는 WS)·로컬 `claude` CLI에 의존한다. 연결 끊김·재연결·중복 전달은 그 슬라이스에서 다룰 실패 모드다.
+- **외부 의존 추가(다음 슬라이스).** 네트워크 슬라이스부터 owner Worker는 별 프로세스·아웃바운드 WS 연결·로컬 `claude` CLI에 의존한다. 연결 끊김·재연결·중복 전달은 그 슬라이스에서 다룰 실패 모드다(**결정 6에서 채널=WebSocket·실패 모드·회수까지 설계**).
+- **전송 채널 = WebSocket·실패 모드 1급·사용자 답 회수 → 확정(슬라이스2b 본체, 2026-06-21, 아래 결정 6).** 결정 1이 "폴링 또는 WS/SSE"로 열어둔 채널을 **WebSocket**으로 닫았다(실시간 비전 — 답 토큰 스트리밍·양방향·단일 영속 연결을 기준으로, long-poll은 그 위층 스트리밍을 못 줘 기각). WS는 새 큐 도메인이 아니라 슬라이스1의 `InMemoryWorkQueueDispatcher`를 *합성해 재사용*하는 전송층이며(`WebSocketDispatcher`), `RuntimeDispatcher` 포트는 무변경(claim=pull은 "중앙 핸들러가 워커 대신 claim해 push"로 의미 보존) → 기존 in-process 구현·143 passed 그대로 유지. owner PC 간헐 연결이라 **실패 모드가 본체** — 끊김 시 in-flight `claimed` 작업 re-queue(claimed→queued, 단조성 보존), 중복 전달은 `ticket_id` 멱등(answered 재submit 무시 추가), heartbeat 생존 판정, 워커 인증 거부 hook(ADR 0009 연결점, 실 검증 T6.5). 사용자↔중앙 **답 회수는 조회(pull)로 한정**(푸시는 범위 밖) — 기존 `poll`을 web 조회 엔드포인트로 재노출하고, `Pending(dispatched)`에 *불투명 추적 토큰*을 더해 노출 불변식을 *정밀화*(추적 ID 1개는 OK, 조직 내부 구조는 금지). 미아 없음 유지: 끊김으로 작업이 삼켜지지 않고 회신/escalation으로 반드시 종착. 결정론(프레임·멱등·재연결·인증 hook)은 `TestClient` WebSocket in-process, 실 워커 프로세스·실 claude는 수동 데모 — 이 경계로 구현을 2b-i(중앙 WS+프로토콜, 결정론)·2b-ii(워커 프로세스+실 claude, 수동)로 쪼갠다.
 - TRD §5 분산 전송·tasks T6.3, CONTEXT(Owner Worker·Work Queue·RuntimeDispatcher·WorkTicket·DispatchOutcome)를 이 방향으로 갱신한다.

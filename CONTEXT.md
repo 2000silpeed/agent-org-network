@@ -43,7 +43,7 @@ _Avoid_: Response, Result, Reply
 owner PC는 서버를 노출하지 않는다(NAT/방화벽 뒤·고정 IP 없음·상시 가동 X). 그래서 owner PC의 워커가 중앙에 *역방향 아웃바운드*로 연결해 작업을 가져가고, 중앙은 owner별 작업 큐에 적재해 비동기로 답을 수집한다. 논리적 호출 방향(질문 중앙→owner)과 물리적 연결 방향(소켓은 owner→중앙)은 분리된다. (ADR 0011 — Agent Runtime의 도달 방식, 답변 주체=owner Claude Code는 ADR 0010 그대로.)
 
 **Owner Worker (오너 워커)**:
-각 Owner PC에서 도는 작은 실행 주체. 중앙에 *아웃바운드*로 연결(폴링 또는 WS/SSE)해 자기 owner 작업 큐의 작업을 가져가(`claim`), 로컬 Claude Code(`ClaudeCodeRuntime` 재사용)로 답을 만들어 중앙에 회신(`submit`)한다. 중앙이 owner PC로 인바운드 연결을 *걸지 않는다* — 연결을 거는 쪽은 항상 워커다. 진짜 그 owner인지는 인증으로 강제한다(ADR 0009 연결점). 선례: Claude Code Remote Control(owner claude가 claude.ai에 아웃바운드 연결).
+각 Owner PC에서 도는 작은 실행 주체. 중앙에 *아웃바운드 WebSocket*으로 연결(ADR 0011 결정 6 — 폴링이 아니라 WS로 확정)해 자기 owner 작업 큐의 작업을 받아(중앙이 그 소켓으로 `PushWork`), 로컬 Claude Code(`ClaudeCodeRuntime` 재사용)로 답을 만들어 중앙에 회신(`SubmitAnswer`)한다. 중앙이 owner PC로 인바운드 연결을 *걸지 않는다* — 연결을 거는 쪽은 항상 워커다. owner PC는 간헐 연결이 정상이라 끊김·재연결·중복 전달이 핵심 실패 모드다(ADR 0011 결정 6-4). 진짜 그 owner인지는 인증으로 강제한다(ADR 0009 연결점, 실 검증 T6.5). 선례: Claude Code Remote Control(owner claude가 claude.ai에 아웃바운드 연결).
 _Avoid_: Agent(단독), Client(단독 — 논리 호출 방향과 혼동), Node
 
 **Work Queue (작업 큐)**:
@@ -51,12 +51,20 @@ _Avoid_: Agent(단독), Client(단독 — 논리 호출 방향과 혼동), Node
 _Avoid_: Inbox(이건 Owner 처리함 — 합의 다툼, 작업 큐와 구분), Manager 큐(사람 위계 escalation), Mailbox
 
 **RuntimeDispatcher (디스패처)**:
-중앙이 owner별로 작업을 라우팅하고 답을 수집하는 포트 — `AuditLog`·`PrecedentStore`·`ConflictCaseStore`와 같은 패턴(Protocol + 구현체들). 중앙측 `dispatch(question, card) -> WorkTicket`(작업 큐 적재·추적표 즉시 반환) · `poll(ticket) -> DispatchOutcome`(회신·대기·escalation 조회), 워커측 `claim(owner_id) -> WorkTicket | None` · `submit(ticket_id, answer)`. **`ask_org`의 답 획득 경로**다 — `ask_org`는 동기 `AgentRuntime.answer`를 직접 부르지 않고 `dispatch→poll`로 `DispatchOutcome`을 얻어 `OrgReply`로 투영한다(ADR 0011 결정 4). 구현체: `InMemoryWorkQueueDispatcher`(in-process 작업 큐, 결정론 테스트·슬라이스1) · `LocalRuntimeDispatcher`(동기 런타임을 즉시-Delivered로 감싸는 즉답 다리) · (슬라이스2) 네트워크 디스패처. Authority·지식은 owner 환경에 있고 디스패처는 *운반·수집*만 — 답을 만들지 않는다. (ADR 0011)
+중앙이 owner별로 작업을 라우팅하고 답을 수집하는 포트 — `AuditLog`·`PrecedentStore`·`ConflictCaseStore`와 같은 패턴(Protocol + 구현체들). 중앙측 `dispatch(question, card) -> WorkTicket`(작업 큐 적재·추적표 즉시 반환) · `poll(ticket) -> DispatchOutcome`(회신·대기·escalation 조회), 워커측 `claim(owner_id) -> WorkTicket | None` · `submit(ticket_id, answer)`. **`ask_org`의 답 획득 경로**다 — `ask_org`는 동기 `AgentRuntime.answer`를 직접 부르지 않고 `dispatch→poll`로 `DispatchOutcome`을 얻어 `OrgReply`로 투영한다(ADR 0011 결정 4). 구현체: `InMemoryWorkQueueDispatcher`(in-process 작업 큐, 결정론 테스트·슬라이스1) · `LocalRuntimeDispatcher`(동기 런타임을 즉시-Delivered로 감싸는 즉답 다리) · `WebSocketDispatcher`(WS 전송층, 슬라이스2b — 아래). Authority·지식은 owner 환경에 있고 디스패처는 *운반·수집*만 — 답을 만들지 않는다. (ADR 0011)
 _Avoid_: Router(이건 담당 결정 — 디스패처는 작업 운반), Broker, Queue(단독 — Work Queue는 데이터, 디스패처는 그 위 포트)
 
 **LocalRuntimeDispatcher (로컬 즉답 디스패처)**:
-동기 `AgentRuntime`(StubRuntime·ClaudeCodeRuntime)을 `RuntimeDispatcher` 포트로 감싸 *항상 즉시 `Delivered`*를 돌려주는 in-process 어댑터. `dispatch`가 그 자리에서 `runtime.answer`를 호출해 답을 만들고 회신 완료 상태로 두며, `poll`은 곧장 `Delivered`(그 Answer)를 반환한다 — 네트워크·워커·대기 없음(미회신·timeout 구조적 불가). `ask_org`가 디스패처만 보게 된 뒤(ADR 0011 결정 4) in-process 데모/단위 테스트가 *즉답*을 받게 하는 다리다(Routed→Answered가 한 호출에). 분산의 *디제너레이트 케이스*(워커=중앙, 큐 길이 0)이지 별 경로가 아니며, 실제 분산이 필요한 슬라이스2 네트워크 디스패처가 이 자리를 대신한다 — 그때 비로소 `Pending(dispatched)` 분기가 살아난다. (`DispatchingRuntime`과 방향이 반대: 이건 동기 runtime→디스패처, 저건 디스패처→동기 answer.)
+동기 `AgentRuntime`(StubRuntime·ClaudeCodeRuntime)을 `RuntimeDispatcher` 포트로 감싸 *항상 즉시 `Delivered`*를 돌려주는 in-process 어댑터. `dispatch`가 그 자리에서 `runtime.answer`를 호출해 답을 만들고 회신 완료 상태로 두며, `poll`은 곧장 `Delivered`(그 Answer)를 반환한다 — 네트워크·워커·대기 없음(미회신·timeout 구조적 불가). `ask_org`가 디스패처만 보게 된 뒤(ADR 0011 결정 4) in-process 데모/단위 테스트가 *즉답*을 받게 하는 다리다(Routed→Answered가 한 호출에). 분산의 *디제너레이트 케이스*(워커=중앙, 큐 길이 0)이지 별 경로가 아니며, 실제 분산이 필요한 슬라이스2b `WebSocketDispatcher`가 이 자리를 대신한다 — 그때 비로소 `Pending(dispatched)` 분기가 살아난다. (`DispatchingRuntime`과 방향이 반대: 이건 동기 runtime→디스패처, 저건 디스패처→동기 answer.)
 _Avoid_: SyncDispatcher, InlineRuntime
+
+**WebSocketDispatcher (WS 전송 디스패처)**:
+`InMemoryWorkQueueDispatcher`(작업 큐 도메인)를 *합성해 재사용*하고 그 위에 WebSocket 전송만 얹는 `RuntimeDispatcher` 구현(ADR 0011 결정 6, 슬라이스2b). 새 큐 도메인이 아니다 — 큐 상태기계(queued↔claimed↔answered↔expired·단조 종착·timeout escalation·owner별 격리)는 합성한 in-memory 큐가 소유하고(미아 없음·idempotency 1차 보증), WS는 `claim`/`submit`을 *전송*으로 중계할 뿐. 포트 무변경: `claim(owner_id)`의 pull은 "중앙 핸들러가 워커 대신 claim해 `PushWork`로 push"로 의미 보존(워커가 직접 호출 안 함, 트리거 주체만 이동), `submit`은 "워커가 보낸 `SubmitAnswer`를 핸들러가 받아 내부 submit 호출"로. 연결 레지스트리(owner_id→소켓 send 콜백)를 들어 dispatch 시 연결된 워커에 push(미연결이면 큐 대기=기존 `AwaitingWorker`). 실패 모드(결정 6-4): 끊김 시 `release_claims`(미회신 claimed→queued re-queue, 단조성 보존), 중복은 `ticket_id` 멱등(answered 재submit 무시 — 큐가 보장), heartbeat 생존 판정, 워커 인증 거부 hook(ADR 0009 연결점). `transport.py`. **중앙 WS 핸들러**(`server.py`의 `create_worker_app(dispatcher)` + `@app.websocket("/worker")`)가 워커 아웃바운드 연결을 받아 이 디스패처로 프레임을 중계한다 — 채팅·처리함 어댑터(`web.py`)와 책임 분리. (ADR 0011 결정 6, 구현 슬라이스2b-i)
+_Avoid_: Broker, WsServer(단독 — 디스패처는 포트 구현, WS 서버 핸들러는 그 위 어댑터)
+
+**Transport Frame (전송 프레임)**:
+owner 워커↔중앙 WebSocket으로 오가는 와이어 메시지 — `type` 판별 필드를 가진 봉투(envelope), pydantic v2 DTO(`transport.py`). 도메인 값 객체(`WorkTicket`·`Answer`, frozen dataclass)가 *아니라* 전송 DTO라 분리하고 경계에서 변환한다(전이 ≠ 전송). 워커→중앙(업스트림): `RegisterWorker`(owner 신원 선언·인증 연결점) · `SubmitAnswer`(답 회신, `ticket_id` 멱등) · `Heartbeat`/`Ack`(연결 생존·수신 확인). 중앙→워커(다운스트림): `Welcome`/`AuthError`(등록 수락·거부) · `PushWork`(claim한 작업 전달) · `Ping`(생존 확인). (ADR 0011 결정 6-3)
+_Avoid_: Message(단독), Event, Packet
 
 **DispatchingRuntime (동기 호환 어댑터)**:
 `RuntimeDispatcher` 위에 동기 `AgentRuntime.answer`를 얹는 어댑터(ADR 0011 슬라이스1 산물) — dispatch→블로킹 poll로 동기 계약을 보존한다. 단 `ask_org`는 이를 **거치지 않는다**(ask_org는 디스패처를 직접 보고 escalation/미회신을 `Pending`으로 표면화 — ADR 0011 결정 4, "Answer 위장 금지"). 이 어댑터의 `EscalatedToManager`/`AwaitingWorker` → 폴백 `Answer` 변환은 *AgentRuntime 계약(항상 Answer 반환)을 지키기 위한 어댑터 한정 동작*이지 도메인 처분을 답으로 뭉개도 된다는 뜻이 아니다 — "동기 answer를 꼭 요구하는 비-ask_org 호출처"의 호환 경로로만 남는다(현재 그런 호출처는 단위 테스트뿐, 프로덕션 경로 아님).
@@ -123,14 +131,14 @@ _Avoid_: Handoff(모호 — 프레임워크 용어·기록 의미와 혼동), De
 라우팅 기계장치(RoutingDecision·Candidate·Confidence·trace)는 실 사용자에게 감춘다. 사용자는 *처분의 결과*만 사용자 말로 받는다. `ask_org` 핸들러가 `RoutingDecision`을 아래 결과 타입으로 투영한다 — 도메인(RoutingDecision)과 표현(OrgReply)의 경계.
 
 **OrgReply**:
-실 사용자가 `ask_org`에서 돌려받는 결과. `RoutingDecision`과 `DispatchOutcome`의 사용자向 투영이며, 두 형태로 모인다 — **Answered**(담당이 답함 = `Routed`→`Delivered`) · **Pending**(아직 답이 없음 — 사람 손으로 넘어갔거나 담당이 답을 만드는 중). 인스턴스의 *타입*이 곧 사용자가 받은 상태다. 노출 불변식: 담당·승인 상태·출처만 보이고, confidence·trace·후보·manager_id·reason 등 내부는 절대 싣지 않는다.
+실 사용자가 `ask_org`에서 돌려받는 결과. `RoutingDecision`과 `DispatchOutcome`의 사용자向 투영이며, 두 형태로 모인다 — **Answered**(담당이 답함 = `Routed`→`Delivered`) · **Pending**(아직 답이 없음 — 사람 손으로 넘어갔거나 담당이 답을 만드는 중). 인스턴스의 *타입*이 곧 사용자가 받은 상태다. 노출 불변식: 담당·승인 상태·출처만 보이고, confidence·trace·후보·manager_id·reason 등 *조직 내부 구조*는 절대 싣지 않는다 — 단 답 회수를 위한 **불투명 추적 토큰 1개**는 예외(ADR 0011 결정 6-5, 슬라이스2b — 사용자가 그것으로 답을 조회. 토큰은 내부 구조를 비추지 않는 ID라 노출 불변식의 *정밀화*이지 완화가 아니다).
 _Avoid_: Response, Result(단독 — Answer와 혼동)
 
 **Answered**:
 Routed가 투영된 결과. `text`(Answer 본문) · `answered_by`(primary의 owner·agent_id) · `mode`(`full`/`draft_only` — Approval 게이트면 draft) · `sources`를 노출. Approval이 붙은 Routed는 `mode=draft_only`로 "초안·승인 대기"를 표시한다.
 
 **Pending**:
-즉답이 없는 상태의 사용자向 투영 — 담당이 사람 손에 있거나(Contested·Unowned), 담당이 정해졌으나 분산 전송으로 답을 기다리는/사람으로 넘어가는 중(dispatched). `kind`(`contested`/`unowned`/`dispatched`)와 사용자向 안내 문구만 노출하고, 후보 목록·escalation 대상·`manager_id`·`reason`·`ticket_id` 같은 내부는 감춘다. Contested는 *다툼이라는 사실조차* 감추고 "담당을 확인하는 중" 류 중립 안내만(후보가 여럿이라는 내부를 비추지 않는다), Unowned는 "아직 담당이 없어 매니저에게 전달" 류. **dispatched**는 `DispatchOutcome`의 `AwaitingWorker`(미회신)와 `EscalatedToManager`(timeout/owner 부재)를 *함께* 투영한다 — 둘은 도메인에선 다른 처분이지만 사용자 관점에선 "담당에게 보냈는데 아직 답이 없다"로 동일하고, 워커 미연결인지 Manager escalation인지는 감춰야 할 내부값이라 한 kind로 모은다(쪼개면 내부 구분이 샌다). "담당에게 전달했고 답변이 준비되면 알림" 류 중립 안내만.
+즉답이 없는 상태의 사용자向 투영 — 담당이 사람 손에 있거나(Contested·Unowned), 담당이 정해졌으나 분산 전송으로 답을 기다리는/사람으로 넘어가는 중(dispatched). `kind`(`contested`/`unowned`/`dispatched`)와 사용자向 안내 문구만 노출하고, 후보 목록·escalation 대상·`manager_id`·`reason`·`ticket_id` 같은 내부는 감춘다. Contested는 *다툼이라는 사실조차* 감추고 "담당을 확인하는 중" 류 중립 안내만(후보가 여럿이라는 내부를 비추지 않는다), Unowned는 "아직 담당이 없어 매니저에게 전달" 류. **dispatched**는 `DispatchOutcome`의 `AwaitingWorker`(미회신)와 `EscalatedToManager`(timeout/owner 부재)를 *함께* 투영한다 — 둘은 도메인에선 다른 처분이지만 사용자 관점에선 "담당에게 보냈는데 아직 답이 없다"로 동일하고, 워커 미연결인지 Manager escalation인지는 감춰야 할 내부값이라 한 kind로 모은다(쪼개면 내부 구분이 샌다). "담당에게 전달했고 답변이 준비되면 알림" 류 중립 안내만. 답 회수(ADR 0011 결정 6-5, 슬라이스2b-i 구현): `dispatched`는 *불투명 추적 토큰*(`tracking`)을 동반해(internal 구조 노출 없는 ID 1개) 사용자/데모 UI가 그 토큰으로 답을 *조회*(pull)한다 — 워커가 나중에 회신한 실 claude 답이 사용자에게 도달하는 경로. **구현 방침**: 서버(`AskOrg._tracking`)가 `tracking→WorkTicket` 매핑을 보관하고, 토큰은 `ticket_id`와 *분리된* 별도 `uuid4().hex`다(ticket_id조차 노출하지 않음 — 6-5의 "서버가 ticket 보관" 대안 채택). 조회는 `AskOrg.retrieve(tracking)`(`poll` 재노출) → web `GET /ask/{tracking}`. 사용자向 푸시(SSE/WS)는 범위 밖(조회로 한정).
 _Avoid_: Escalation(이건 도메인 처분, Pending은 그 사용자向 표현)
 
 ### Conflict & learning

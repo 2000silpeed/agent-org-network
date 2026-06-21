@@ -16,11 +16,11 @@
 운영·빌더·처리함·큐 화면 = 같은 백엔드 공유 · 모든 절차는 append-only 감사 로그에 기록
 ```
 
-중앙은 지식을 소유하지 않고 *연결·호출·기록*만 한다(ADR 0006). 답은 Agent Runtime이 한다(ADR 0007).
+중앙은 지식을 소유하지 않고 *연결·호출·기록*만 한다(ADR 0006). 답은 Agent Runtime이 한다(ADR 0007). 분산 배치에선 `Agent Runtime(담당 카드 구동)`이 각 Owner PC의 Claude Code이고, 중앙↔owner는 owner 워커가 거는 **아웃바운드 WebSocket**으로 잇는다(중앙=작업 큐 적재→소켓 push, 워커=로컬 claude 답→회신; ADR 0011 결정 6). 논리 호출 방향(질문 중앙→owner)과 물리 연결 방향(소켓 owner→중앙)은 분리.
 
 ## 3. 바운디드 컨텍스트
 
-단일 컨텍스트 **Routing**. 모듈(현재): `registry · classifier · router · decision · conflict · runtime · ask_org · audit · demo · web · dispatch`(분산 전송 포트·타입 shape, T6.3). 예정: `server`(MCP 어댑터).
+단일 컨텍스트 **Routing**. 모듈(현재): `registry · classifier · router · decision · conflict · runtime · ask_org · audit · demo · web · dispatch`(분산 전송 포트·타입, T6.3) · `transport`(WebSocket 전송층 — 프레임 DTO·`WebSocketDispatcher`, T6.3 슬라이스2b·ADR 0011 결정 6) · `server`(중앙 WS 핸들러 — 워커 아웃바운드 연결 수신, T6.3 슬라이스2b-i).
 
 ## 4. 도메인 모델 · 포트
 
@@ -42,6 +42,7 @@
 - **MCP 서버 `ask_org(question, user)`** — 사용자 클라이언트가 붙는 1급 진입점. Router 호출 → `Routed`면 `RuntimeDispatcher.dispatch→poll`로 답 수집 → `DispatchOutcome`을 `OrgReply`로 투영(`Delivered`→`Answered`, `AwaitingWorker`·`EscalatedToManager`→`Pending(kind="dispatched")`). 동기 `AgentRuntime.answer` 직접 호출 아님 — escalation/미회신을 Answer로 위장하지 않고 Pending으로 표면화(ADR 0011 결정 4). in-process 즉답은 `LocalRuntimeDispatcher`가 흡수. (ADR 0006·0011)
 - **웹 백엔드 API** — 같은 코어를 채팅·운영·빌더·처리함·큐 화면에 제공. 채팅 `POST /ask`·`GET /`(`serialize_reply`, 내부값 미노출). 처리함 `GET /inbox`(HTML)·`GET /inbox/{owner_id}`(open 케이스 JSON)·`POST /cases/{case_id}/concur`(`ConcurOnPrimary`→`ConsensusOutcome`, `ValueError`→400; `serialize_case`/`serialize_outcome`) — Owner向 운영 화면이라 내부값(후보·intent) 노출(채팅과 다른 면). 채팅·처리함은 한 `DemoBundle`(공유 store)을 봐 합의 성립이 곧 채팅 자동 라우팅에 반영. (T4.2)
 - **분산 전송** — 중앙이 각 Owner의 Claude Code를 호출하는 방식(ADR 0010). *스켈레톤은 in-process stub, T6.1 임시는 중앙 단일 `claude -p` 1회성.* 최종(T6.3)은 **owner 워커의 역방향 아웃바운드 연결 + 중앙 작업 큐**(ADR 0011) — owner PC는 서버를 노출하지 않고(NAT/방화벽·고정 IP 없음·상시 가동 X), owner PC의 **Owner Worker**가 중앙에 아웃바운드로 연결(폴링 또는 WS/SSE)해 작업을 가져가 로컬 claude(T6.1 `ClaudeCodeRuntime` 재사용)로 답하고 회신한다. 중앙은 질문을 **owner별 작업 큐(Work Queue)**에 적재하고 회신을 비동기 수집 → 답변 주체가 그 owner 환경(owner별 지식 격리 성립). 논리적 호출 방향(질문 중앙→owner)과 물리적 연결 방향(소켓은 owner→중앙)을 분리. 포트 **`RuntimeDispatcher`**(`dispatch(question,card)->WorkTicket` · `poll(ticket)->DispatchOutcome` · 워커측 `claim`/`submit`, `dispatch.py`) + `InMemoryWorkQueueDispatcher`(결정론 stub)·`LocalRuntimeDispatcher`(즉답 다리). **ask_org는 디스패처를 직접 본다**(슬라이스2 진입 전 확정, ADR 0011 결정 4) — `dispatch→poll`로 `DispatchOutcome`을 얻어 `OrgReply`로 투영(`Delivered`→`Answered`(mode 보존), `AwaitingWorker`·`EscalatedToManager`→`Pending(kind="dispatched")`). escalation/미회신을 동기 Answer로 위장하지 않는다. in-process 데모/테스트는 동기 런타임을 `LocalRuntimeDispatcher`로 감싸 즉답(항상 Delivered)을 받는다. 동기 포트 `AgentRuntime.answer`는 보존하되 어댑터 `DispatchingRuntime`(디스패처→블로킹 poll)은 *비-ask_org 호환 경로*로 남는다(ask_org는 거치지 않음). owner 부재·timeout → `DispatchOutcome.EscalatedToManager`(`manager_id` 1급 = T5.2 Manager 큐 기계 소비, `reason` 사람용)로 기존 Manager escalation 재사용(미아·합의 실패와 같은 처분, 실제 Manager 큐는 T5.2). 신원(워커가 진짜 owner인지, ADR 0009)·Approval 게이트(`Answer.mode` 보존)는 *연결점만* — 실 인증은 T6.5. 실제 네트워크 전송·다른 PC 도달·연결 유지는 in-process 슬라이스 다음의 네트워크 슬라이스로 분리.
+- **전송 채널 = WebSocket (슬라이스2b, ADR 0011 결정 6).** 결정 1이 "폴링 또는 WS/SSE"로 열어둔 채널을 **WebSocket**으로 확정 — 실시간 비전(답 토큰 스트리밍·양방향·단일 영속 연결) 기준, long-poll은 그 위층 스트리밍을 못 줘 기각. 연결 방향은 그대로(owner 워커가 중앙에 아웃바운드 WS, 중앙은 `@app.websocket`로 받기만). **WS는 새 큐 도메인이 아니라 `InMemoryWorkQueueDispatcher`를 *합성해 재사용*하는 전송층**(`WebSocketDispatcher`, `transport.py`) — 큐 상태기계·단조 종착·timeout escalation은 합성한 큐가 소유하고(미아 없음·idempotency 1차 보증) WS는 claim/submit을 *전송*으로 중계. `RuntimeDispatcher` 포트 무변경(claim=pull은 "중앙 핸들러가 워커 대신 claim해 `PushWork`로 push"로 의미 보존) → 기존 in-process 구현·143 passed 그대로. **전송 프레임(Transport Frame)**: 워커→중앙 `RegisterWorker`/`SubmitAnswer`/`Heartbeat`/`Ack`, 중앙→워커 `Welcome`/`AuthError`/`PushWork`/`Ping`(pydantic DTO, `type` 판별 봉투). **실패 모드(본체, owner PC 간헐 연결)**: 끊김 시 in-flight `claimed`→`queued` re-queue(`release_claims`, 단조성 보존), 중복 전달은 `ticket_id` 멱등(answered 재submit 무시), heartbeat 생존 판정, 워커 인증 거부 hook(ADR 0009→T6.5). **사용자↔중앙 답 회수 = 조회(pull)로 한정**(푸시 범위 밖): 기존 `poll`을 `AskOrg.retrieve(tracking)` → web `GET /ask/{tracking}`로 재노출, `Pending(dispatched)`에 *불투명 추적 토큰*(`tracking`)을 더해 그것으로 조회(노출 불변식 정밀화 — 추적 ID 1개 OK, 조직 내부 구조 금지). **구현(2b-i)**: 서버(`AskOrg._tracking`)가 `tracking→WorkTicket`을 보관하고 토큰은 `ticket_id`와 분리된 별도 `uuid4().hex`(ticket_id조차 미노출 — 6-5의 "서버가 ticket 보관" 대안). 중앙 WS 핸들러는 `server.py`(`create_worker_app` + `@app.websocket("/worker")`)로 web과 분리. **테스트 경계**: 중앙 WS 핸들러·프로토콜·idempotency·재연결 상태기계·인증 hook는 `TestClient` WebSocket(Fake 워커)로 *결정론*(2b-i 완료, 188 passed), 실 워커 프로세스·실 `claude`·실 네트워크는 *수동 데모*(2b-ii). 구현은 2b-i(중앙 WS+프로토콜, 결정론)·2b-ii(워커 프로세스+실 claude, 수동)로 쪼갠다.
 
 ## 6. 라우팅 알고리즘 v0 (규칙 기반)
 
@@ -69,9 +70,11 @@ src/agent_org_network/
   classifier.py  decision.py  router.py        # 라우팅 코어
   conflict.py                                  # 판례(Resolution·Precedent·PrecedentStore) + 다툼 케이스(ConflictCase·ConflictCaseStore·ConcurOnPrimary·ConsensusOutcome)
   runtime.py  ask_org.py  audit.py             # 런타임·핸들러·감사
-  dispatch.py                                  # 분산 전송 포트·타입 shape(RuntimeDispatcher·WorkTicket·DispatchOutcome, T6.3·ADR 0011)
-  demo.py  web.py                              # 데모 조립 + 웹 어댑터
-  # 예정: server.py(MCP 어댑터)
+  dispatch.py                                  # 분산 전송 포트·타입(RuntimeDispatcher·WorkTicket·DispatchOutcome·InMemoryWorkQueueDispatcher·release_claims, T6.3·ADR 0011)
+  transport.py                                 # WebSocket 전송층(Transport Frame DTO·WebSocketDispatcher=큐 도메인 합성·프레임↔도메인 변환, T6.3 슬라이스2b·ADR 0011 결정 6)
+  server.py                                    # 중앙 WS 핸들러(create_worker_app + @app.websocket("/worker") — 워커 아웃바운드 연결 수신·프레임 중계, T6.3 슬라이스2b-i)
+  demo.py  web.py                              # 데모 조립 + 웹 어댑터(POST /ask·GET /ask/{tracking} 회수 조회)
+  # 예정: demo_worker.py(실 owner 워커 프로세스, 2b-ii 수동 데모)
 web/index.html  web/inbox.html   logs/audit.jsonl   tests/
 # 예정: registry/agents/*.yaml · routing_rules.yaml · samples/questions.jsonl
 ```

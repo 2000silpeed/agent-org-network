@@ -1,3 +1,4 @@
+import uuid
 from dataclasses import dataclass, field
 from typing import Literal, assert_never
 
@@ -11,6 +12,7 @@ from agent_org_network.dispatch import (
     DispatchOutcome,
     EscalatedToManager,
     RuntimeDispatcher,
+    WorkTicket,
 )
 from agent_org_network.router import Router
 from agent_org_network.runtime import AnswerMode
@@ -38,13 +40,21 @@ PendingKind = Literal["contested", "unowned", "dispatched"]
 class Pending:
     """담당이 사람 손에 있어 즉답이 없는 상태의 사용자向 투영.
 
-    노출 불변식: `kind`+`message`만 노출. manager_id·reason·ticket_id·후보 목록 등
-    기계/내부값은 절대 싣지 않는다(test_web `_LEAKY_KEYS`가 강제). `dispatched`는
-    분산 전송의 AwaitingWorker·EscalatedToManager를 함께 투영한 사용자 상태.
+    노출 불변식: `kind`+`message`(+ `dispatched`면 불투명 `tracking`)만 노출.
+    manager_id·reason·ticket_id·owner·후보 목록 등 *조직 내부 구조*는 절대 싣지
+    않는다(test_web `_LEAKY_KEYS`가 강제). `dispatched`는 분산 전송의 AwaitingWorker·
+    EscalatedToManager를 함께 투영한 사용자 상태.
+
+    `tracking`(ADR 0011 결정 6-5, 슬라이스2b): 답 *조회용 불투명 추적 토큰* 1개.
+    워커가 나중에 회신한 답을 사용자가 받을 경로 — uuid4 hex라 owner_id·ticket_id·
+    구조를 비추지 않는다(서버가 tracking→ticket 매핑을 따로 보관, 토큰 자체엔 내부값
+    미인코딩). 노출 불변식의 *정밀화*이지 완화가 아니다(불투명 ID 1개 OK, 조직 구조 금지).
+    `dispatched`에만 채워지고 contested/unowned는 None.
     """
 
     kind: PendingKind
     message: str
+    tracking: str | None = None
 
 
 OrgReply = Answered | Pending
@@ -81,17 +91,27 @@ class AskOrg:
         self._classifier = classifier
         self._clock = clock
         self._case_store = case_store
+        # 답 회수용 불투명 추적 토큰 → WorkTicket 매핑(ADR 0011 결정 6-5). 서버가
+        # ticket을 보관하고 사용자엔 *불투명 토큰만* 준다 — 사용자向 응답에 ticket_id·
+        # owner 등 내부 구조가 새지 않게 한다(노출 불변식). 토큰은 uuid4 hex(미인코딩).
+        # MVP는 정리 없음(프로세스 수명 = 토큰 수명) — TTL/GC·다중 인스턴스 공유는 후속.
+        self._tracking: dict[str, WorkTicket] = {}
 
     def _project_outcome(
-        self, outcome: DispatchOutcome, primary_owner: str, primary_agent_id: str
+        self,
+        outcome: DispatchOutcome,
+        primary_owner: str,
+        primary_agent_id: str,
+        tracking: str | None,
     ) -> OrgReply:
         """DispatchOutcome을 사용자向 OrgReply로 *투영*한다(표현 경계).
 
         Delivered→Answered(mode 보존, owner·agent_id 부착). AwaitingWorker·
-        EscalatedToManager→Pending(kind="dispatched") — 사용자엔 둘을 구분 않고 중립
-        안내만. manager_id/reason 등 기계값은 Pending에 싣지 않는다(노출 불변식).
-        audit 기록은 별개다 — handle이 outcome *원형*을 AuditEntry로 넘긴다(여기선
-        떨궈도 audit엔 manager_id·reason이 남는다). match+assert_never로 망라.
+        EscalatedToManager→Pending(kind="dispatched", 불투명 `tracking` 동반) — 사용자엔
+        둘을 구분 않고 중립 안내만. manager_id/reason 등 기계값은 Pending에 싣지 않는다
+        (노출 불변식). `tracking`은 답 회수용 불투명 토큰 1개로, 호출자가 만들어 넘긴다
+        (handle은 새 토큰·매핑 저장, retrieve는 기존 토큰 유지). audit 기록은 별개다 —
+        handle이 outcome *원형*을 AuditEntry로 넘긴다. match+assert_never로 망라.
         """
         match outcome:
             case Delivered():
@@ -102,9 +122,31 @@ class AskOrg:
                     sources=outcome.answer.sources,
                 )
             case AwaitingWorker() | EscalatedToManager():
-                return Pending(kind="dispatched", message=_DISPATCHED_MESSAGE)
+                return Pending(
+                    kind="dispatched",
+                    message=_DISPATCHED_MESSAGE,
+                    tracking=tracking,
+                )
             case _ as never:
                 assert_never(never)
+
+    def retrieve(self, tracking: str) -> OrgReply | None:
+        """불투명 추적 토큰으로 답을 *조회*한다(ADR 0011 결정 6-5, pull 한정).
+
+        워커가 나중에 회신하면 사용자가 이 토큰으로 답을 가져온다 — 디스패처 `poll`을
+        재노출한 것(새 도메인 아님). 보관한 ticket을 복원해 poll하고, Delivered면
+        Answered로, 아직이면 Pending(dispatched, 같은 토큰 유지)로 투영한다. 모르는
+        토큰이면 None(존재하지 않는 추적은 조회 실패). 푸시(SSE/WS)는 범위 밖.
+
+        EscalatedToManager 종착도 사용자엔 `dispatched` 유지가 *의도*다 — 워커 미연결과
+        Manager escalation의 구분은 감출 내부값(노출 불변식, ADR 0011 결정 4). escalation의
+        사용자 통지(무한 조회 대신)는 별도 후속(Manager 큐 T5.2 연계).
+        """
+        ticket = self._tracking.get(tracking)
+        if ticket is None:
+            return None
+        outcome = self._dispatcher.poll(ticket)
+        return self._project_outcome(outcome, ticket.owner_id, ticket.agent_id, tracking)
 
     def handle(self, question: str, user: User) -> OrgReply:
         intent = self._classifier.classify(question)
@@ -118,10 +160,19 @@ class AskOrg:
             case Routed():
                 ticket = self._dispatcher.dispatch(question, decision.primary)
                 outcome = self._dispatcher.poll(ticket)
+                # 미회신(AwaitingWorker/EscalatedToManager)이면 답 회수용 불투명 토큰을
+                # 발급해 ticket을 서버에 보관한다 — 사용자가 나중에 retrieve로 답을 가져올
+                # 길(6-5). Delivered(즉답)면 토큰 불요(None). 토큰은 ticket_id와 *분리된*
+                # 별도 uuid4 hex라 사용자向에 ticket_id조차 노출되지 않는다(노출 불변식).
+                tracking: str | None = None
+                if not isinstance(outcome, Delivered):
+                    tracking = uuid.uuid4().hex
+                    self._tracking[tracking] = ticket
                 reply = self._project_outcome(
                     outcome,
                     decision.primary.owner,
                     decision.primary.agent_id,
+                    tracking,
                 )
             case Contested():
                 reply = Pending(

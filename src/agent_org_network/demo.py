@@ -19,7 +19,7 @@ from agent_org_network.conflict import (
     InMemoryPrecedentStore,
     PrecedentStore,
 )
-from agent_org_network.dispatch import LocalRuntimeDispatcher
+from agent_org_network.dispatch import LocalRuntimeDispatcher, RuntimeDispatcher
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router
 from agent_org_network.runtime import AgentRuntime, ClaudeCodeRuntime
@@ -90,7 +90,10 @@ class DemoBundle:
     consensus: ConsensusService
 
 
-def build_demo(runtime: AgentRuntime | None = None) -> DemoBundle:
+def build_demo(
+    runtime: AgentRuntime | None = None,
+    dispatcher: RuntimeDispatcher | None = None,
+) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
     카드 3종(contract_ops·cs_ops·finance_ops) + 루트 매니저 포함 유저 4명.
@@ -98,6 +101,10 @@ def build_demo(runtime: AgentRuntime | None = None) -> DemoBundle:
     런타임은 기본 `ClaudeCodeRuntime`(웹에서 진짜 Claude 답) — 단 결정론이 필요한
     테스트는 `StubRuntime`(또는 FakeRunner 주입한 ClaudeCodeRuntime)을 넘긴다.
     cs_ops·finance_ops가 "보상" domain을 공유 → "보상" 질문은 Contested(다툼) 시연.
+
+    `dispatcher`를 주입하면 그 디스패처를 쓴다(분산 회수 경로 테스트용 `WebSocketDispatcher`
+    등). 미주입이면 기본 `LocalRuntimeDispatcher`(동기 즉답 — 데모/in-process 기본).
+    주입 시 `runtime`은 무시된다(디스패처가 답 획득을 전담).
 
     `precedents`·`case_store`를 하나씩 만들어 Router·AskOrg·ConsensusService에
     같은 인스턴스로 주입한다 — 처리함 합의(Agreed→Precedent 기록)가 곧바로
@@ -116,12 +123,15 @@ def build_demo(runtime: AgentRuntime | None = None) -> DemoBundle:
     router = Router(registry, classifier, root_user=ROOT_USER, precedents=precedents)
     # ask_org는 RuntimeDispatcher 경유로 답을 모은다(T6.3 슬라이스2). 데모/in-process는
     # 분산이 아니라 즉답이 필요하므로 동기 런타임을 LocalRuntimeDispatcher로 감싼다 —
-    # dispatch가 곧 답(항상 Delivered). 실제 분산 워커·큐는 슬라이스2 네트워크 디스패처가
-    # 이 자리를 대신한다.
+    # dispatch가 곧 답(항상 Delivered). 분산 회수 경로(2b-i)를 검증할 땐 WebSocketDispatcher
+    # 를 주입해 dispatched→retrieve 흐름을 결정론으로 본다.
     runtime_impl: AgentRuntime = runtime if runtime is not None else ClaudeCodeRuntime()
+    dispatcher_impl: RuntimeDispatcher = (
+        dispatcher if dispatcher is not None else LocalRuntimeDispatcher(runtime_impl)
+    )
     ask = AskOrg(
         router=router,
-        dispatcher=LocalRuntimeDispatcher(runtime_impl),
+        dispatcher=dispatcher_impl,
         audit_log=JsonlAuditLog(Path("logs/audit.jsonl")),
         classifier=classifier,
         case_store=case_store,
@@ -141,5 +151,6 @@ def build_demo_ask_org(runtime: AgentRuntime | None = None) -> AskOrg:
     기존 호출처(채팅 단독 테스트 등)는 공유 store가 필요 없으므로 AskOrg만
     받는다. 처리함과 한 상태를 공유해야 하는 웹은 `build_demo()`를 쓴다.
     `runtime`은 `build_demo`로 그대로 전달한다(테스트는 StubRuntime 주입).
+    분산 디스패처(WebSocketDispatcher 등)가 필요하면 `build_demo(dispatcher=...)`를 직접 쓴다.
     """
     return build_demo(runtime=runtime).ask

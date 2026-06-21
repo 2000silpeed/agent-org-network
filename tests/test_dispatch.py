@@ -646,3 +646,96 @@ def test_LocalRuntimeDispatcher_dispatch_후_history에_쌓인다():
     assert t1 in dispatcher.history
     assert t2 in dispatcher.history
     assert len(dispatcher.history) == 2
+
+
+# ── ⑭ [슬라이스2b-i] release_claims — claimed→queued, 단조성 보존 ────────────
+
+
+def test_release_claims가_claimed_작업을_queued로_되돌린다():
+    """claim된 작업을 release_claims로 되돌리면 다시 claim 가능(WS 끊김 회수)."""
+    dispatcher = InMemoryWorkQueueDispatcher(clock=_fixed_clock(BASE_TS))
+    card = _fixed_card(owner="alice")
+    ticket = dispatcher.dispatch("Q", card)
+
+    claimed = dispatcher.claim("alice")
+    assert claimed == ticket
+    # 답 전에 끊김 → release_claims로 되돌림
+    released = dispatcher.release_claims("alice")
+    assert released == [ticket]
+
+    # 다시 claim 가능(미아 없음)
+    again = dispatcher.claim("alice")
+    assert again == ticket
+
+
+def test_release_claims가_queued_작업은_그대로_둔다():
+    """아직 claim 안 된 queued 작업은 release 대상 아님(빈 목록)."""
+    dispatcher = InMemoryWorkQueueDispatcher(clock=_fixed_clock(BASE_TS))
+    card = _fixed_card(owner="alice")
+    dispatcher.dispatch("Q", card)  # queued만, claim 안 함
+
+    released = dispatcher.release_claims("alice")
+    assert released == []
+
+
+def test_release_claims가_answered_작업은_되살리지_않는다():
+    """단조성: 이미 회신된 작업은 release_claims가 손대지 않는다(부활 금지)."""
+    dispatcher = InMemoryWorkQueueDispatcher(clock=_fixed_clock(BASE_TS))
+    card = _fixed_card(owner="alice")
+    ticket = dispatcher.dispatch("Q", card)
+    dispatcher.claim("alice")
+    dispatcher.submit(ticket.ticket_id, Answer(text="회신", sources=(), mode="full"))
+
+    released = dispatcher.release_claims("alice")
+    assert released == []
+
+    # 여전히 Delivered(재claim 불가)
+    outcome = dispatcher.poll(ticket)
+    assert isinstance(outcome, Delivered)
+    assert dispatcher.claim("alice") is None
+
+
+def test_release_claims가_expired_작업은_되살리지_않는다():
+    """단조성: timeout으로 expired된 작업은 release_claims가 손대지 않는다."""
+    timeout = timedelta(seconds=60)
+    elapsed = timedelta(seconds=61)
+
+    call_count = 0
+    def timeout_clock() -> datetime:
+        nonlocal call_count
+        call_count += 1
+        return BASE_TS if call_count == 1 else BASE_TS + elapsed
+
+    dispatcher = InMemoryWorkQueueDispatcher(clock=timeout_clock, timeout=timeout)
+    card = _fixed_card(owner="alice")
+    ticket = dispatcher.dispatch("Q", card)
+    dispatcher.claim("alice")  # claimed
+    dispatcher.poll(ticket)  # timeout 경과 → expired로 고정
+
+    released = dispatcher.release_claims("alice")
+    assert released == []
+
+    # 여전히 EscalatedToManager(부활 없음)
+    outcome = dispatcher.poll(ticket)
+    assert isinstance(outcome, EscalatedToManager)
+
+
+def test_release_claims가_해당_owner만_되돌린다():
+    """owner 격리: release_claims(alice)는 bob의 claimed 작업을 건드리지 않는다."""
+    dispatcher = InMemoryWorkQueueDispatcher(clock=_fixed_clock(BASE_TS))
+    alice_card = _fixed_card(owner="alice")
+    bob_card = _fixed_card(owner="bob", agent_id="finance_ops")
+    dispatcher.dispatch("A", alice_card)
+    bob_ticket = dispatcher.dispatch("B", bob_card)
+    dispatcher.claim("alice")
+    dispatcher.claim("bob")
+
+    dispatcher.release_claims("alice")
+
+    # bob 작업은 여전히 claimed — 재claim 안 됨
+    assert dispatcher.claim("bob") is None
+    # alice 작업만 되돌아와 재claim 가능
+    assert dispatcher.claim("alice") is not None
+    # bob_ticket은 손대지 않았으므로 여전히 진행 중(submit하면 Delivered)
+    dispatcher.submit(bob_ticket.ticket_id, Answer(text="bob 답", sources=(), mode="full"))
+    assert isinstance(dispatcher.poll(bob_ticket), Delivered)

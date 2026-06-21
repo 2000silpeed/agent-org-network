@@ -253,11 +253,36 @@ class InMemoryWorkQueueDispatcher:
 
     def submit(self, ticket_id: str, answer: "Answer") -> None:
         status = self._status.get(ticket_id, "queued")
-        # expired(escalated) 작업에 늦은 submit은 무시 — 단조성 보장
-        if status == "expired":
+        # 단조 종착 + at-least-once 멱등(ADR 0011 결정 6-4): 이미 종착한 작업의
+        # 늦은/중복 submit은 무시한다. expired(escalated)는 timeout 부활 방지(슬라이스1),
+        # answered는 WS 재연결의 중복 submit이 첫 답을 덮어쓰지 못하게(슬라이스2b). 둘 다
+        # ticket_id 기준 멱등 — 같은 작업이 두 번 회신돼도 첫 결말이 고정된다(미아 없음).
+        if status in ("expired", "answered"):
             return
         self._answers[ticket_id] = answer
         self._status[ticket_id] = "answered"
+
+    def release_claims(self, owner_id: str) -> list[WorkTicket]:
+        """그 owner의 미회신 `claimed` 작업을 `queued`로 되돌린다(WS 끊김 회수).
+
+        ADR 0011 결정 6-4 — 워커가 작업을 push 받고(claimed) 답 전에 끊기면, 그 작업이
+        영구 미아가 되지 않게 다시 큐에 올린다(claimed→queued). 단조성 보존: 이미
+        answered/expired 작업은 손대지 않는다(종착은 부활 불가). 재연결 시 그 작업이
+        다시 claim돼 push된다. timeout은 그대로 작동(영영 안 돌아오면 EscalatedToManager).
+
+        반환: 되돌린 ticket 목록(없으면 빈 리스트). FIFO 순서 보존 — 큐에 남은 순서
+        그대로 돌리므로 재연결 후 재claim도 같은 순서다.
+        """
+        released: list[WorkTicket] = []
+        for ticket in self._queues.get(owner_id, []):
+            tid = ticket.ticket_id
+            # claimed(미회신·진행 중)만 되돌린다. queued는 이미 대기라 무변경,
+            # answered/expired는 종착이라 단조성상 손대지 않는다(부활 금지).
+            if self._status.get(tid) == "claimed":
+                self._claimed.discard(tid)
+                self._status[tid] = "queued"
+                released.append(ticket)
+        return released
 
 
 # ── 로컬 즉답 디스패처: LocalRuntimeDispatcher ───────────────────────────

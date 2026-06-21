@@ -23,7 +23,8 @@ from agent_org_network.conflict import (
     StillOpen,
 )
 from agent_org_network.demo import build_demo_ask_org
-from agent_org_network.runtime import StubRuntime
+from agent_org_network.runtime import Answer, StubRuntime
+from agent_org_network.transport import WebSocketDispatcher
 from agent_org_network.user import User
 from agent_org_network.web import (
     create_app,
@@ -307,3 +308,117 @@ def test_concur_비후보_Owner는_400():
 
     res = _post(client, f"/cases/{case_id}/concur", {"by_owner": "legal_lead", "on_agent": "cs_ops"})
     assert res.status == 400
+
+
+# ── T6.3 슬라이스2b-i — 답 회수 조회(GET /ask/{tracking}) + 노출 불변식 ──────
+
+
+def test_serialize_dispatched는_tracking을_싣되_내부값은_안샌다():
+    """dispatched 직렬화에 불투명 tracking은 실리되 _LEAKY_KEYS는 안 샌다."""
+    body = serialize_reply(
+        Pending(kind="dispatched", message="전달했어요", tracking="opaque-abc123")
+    )
+
+    assert body["type"] == "pending"
+    assert body["kind"] == "dispatched"
+    assert body["tracking"] == "opaque-abc123"
+    # 라우팅 내부값은 여전히 안 샌다(tracking은 불투명 ID 1개라 leaky가 아님).
+    assert _LEAKY_KEYS.isdisjoint(set(body.keys()))
+
+
+def test_serialize_contested는_tracking을_싣지_않는다():
+    """contested/unowned는 tracking이 None이라 키 자체가 없다."""
+    body = serialize_reply(Pending(kind="contested", message="확인 중"))
+
+    assert "tracking" not in body
+    assert _LEAKY_KEYS.isdisjoint(set(body.keys()))
+
+
+def test_ask_get_라우트가_등록된다():
+    app = create_app(runtime=StubRuntime())
+    routes = {getattr(r, "path", None) for r in app.routes}
+    assert "/ask/{tracking}" in routes
+
+
+def test_모르는_tracking_토큰은_404():
+    client = _client()
+    res = _get(client, "/ask/없는토큰xyz")
+    assert res.status == 404
+
+
+def _ws_demo_app() -> tuple[TestClient, WebSocketDispatcher]:
+    """WebSocketDispatcher를 주입한 데모 앱 — 분산 회수(dispatched→retrieve) 검증용.
+
+    워커 연결 없이 dispatch하면 AwaitingWorker(dispatched) → tracking 발급. 디스패처에서
+    직접 claim/submit해 워커 회신을 시뮬한 뒤 GET /ask/{tracking}으로 answered를 받는다.
+    """
+    ws = WebSocketDispatcher(clock=_fixed_clock)
+    app: FastAPI = create_app(runtime=StubRuntime(), dispatcher=ws)
+    return TestClient(app), ws
+
+
+def test_회수_dispatched_후_워커_회신하면_answered로_조회된다():
+    client, ws = _ws_demo_app()
+
+    # "환불" → cs_ops(owner cs_lead)로 Routed, 워커 미연결이라 dispatched(tracking).
+    asked = _post(client, "/ask", {"question": "환불 되나요?"})
+    assert asked.status == 200
+    assert asked.body["type"] == "pending"
+    assert asked.body["kind"] == "dispatched"
+    tracking: str = asked.body["tracking"]
+    assert tracking
+
+    # 회신 전: 조회하면 아직 dispatched(같은 토큰).
+    before = _get(client, f"/ask/{tracking}")
+    assert before.status == 200
+    assert before.body["type"] == "pending"
+    assert before.body["kind"] == "dispatched"
+
+    # 워커가 (claim 후) 회신 — 디스패처에서 직접 시뮬(2b-i: 실 워커 프로세스는 2b-ii).
+    ticket = ws.claim("cs_lead")
+    assert ticket is not None
+    ws.submit(ticket.ticket_id, Answer(text="환불 가능합니다", sources=("위키/환불정책",), mode="full"))
+
+    # 회신 후: 같은 토큰으로 조회하면 answered(담당·출처).
+    after = _get(client, f"/ask/{tracking}")
+    assert after.status == 200
+    assert after.body["type"] == "answered"
+    assert after.body["text"] == "환불 가능합니다"
+    assert after.body["answered_by"]["agent_id"] == "cs_ops"
+    assert "위키/환불정책" in after.body["sources"]
+
+
+def test_회수_응답에_라우팅_내부값이_새지_않는다():
+    client, ws = _ws_demo_app()
+
+    asked = _post(client, "/ask", {"question": "환불 되나요?"})
+    tracking: str = asked.body["tracking"]
+
+    # dispatched 조회 응답: _LEAKY_KEYS 미노출.
+    before: dict[str, Any] = _get(client, f"/ask/{tracking}").body
+    assert _LEAKY_KEYS.isdisjoint(set(before.keys()))
+
+    # 회신 후 answered 조회 응답: _LEAKY_KEYS 미노출(중첩 dict 포함).
+    ticket = ws.claim("cs_lead")
+    assert ticket is not None
+    ws.submit(ticket.ticket_id, Answer(text="답", sources=(), mode="full"))
+    after: dict[str, Any] = _get(client, f"/ask/{tracking}").body
+    assert _LEAKY_KEYS.isdisjoint(set(after.keys()))
+    for value in after.values():
+        if isinstance(value, dict):
+            nested: set[str] = set(value.keys())  # pyright: ignore[reportUnknownArgumentType]
+            assert _LEAKY_KEYS.isdisjoint(nested)
+
+
+def test_회수_tracking_토큰은_ticket_id를_노출하지_않는다():
+    """불투명성: 사용자向 tracking 토큰에 내부 ticket_id가 인코딩돼 있지 않다."""
+    client, ws = _ws_demo_app()
+
+    asked = _post(client, "/ask", {"question": "환불 되나요?"})
+    tracking: str = asked.body["tracking"]
+
+    # 디스패처가 보관한 실제 ticket_id가 사용자 토큰에 들어 있지 않아야 한다.
+    ticket = ws.claim("cs_lead")
+    assert ticket is not None
+    assert ticket.ticket_id not in tracking
+    assert ticket.owner_id not in tracking

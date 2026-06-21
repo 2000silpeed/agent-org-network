@@ -1,6 +1,6 @@
 # Agent Org Network — TRD v0
 
-작성일: 2026-06-20 · rev4(가용성 — owner 위임 백업 §5) · 근거: [CONTEXT.md](../CONTEXT.md), ADR 0001~0012, [prd-v0.md](prd-v0.md)
+작성일: 2026-06-20 · rev5(owner 지식 = OKF 번들 §4) · 근거: [CONTEXT.md](../CONTEXT.md), ADR 0001~0013, [prd-v0.md](prd-v0.md)
 
 ## 1. 스택
 
@@ -25,11 +25,11 @@
 ## 4. 도메인 모델 · 포트
 
 - **User** — 사람 노드. `id` · `manager: UserId | None`. Agent를 owns, 다른 User를 manages. (ADR 0005)
-- **AgentCard** — `frozen` 값 객체, 자기보고 필드만(ADR 0004): `agent_id` · `owner: UserId` · `maintainer: UserId | None` · `team` · `summary` · `domains` · `can_answer` · `cannot_answer` · `approval_when` · `collaborate_when` · `knowledge_sources` · `trust_labels` · `last_reviewed_at`
+- **AgentCard** — `frozen` 값 객체, 자기보고 필드만(ADR 0004): `agent_id` · `owner: UserId` · `maintainer: UserId | None` · `team` · `summary` · `domains` · `can_answer` · `cannot_answer` · `approval_when` · `collaborate_when` · `knowledge_sources` · `trust_labels` · `last_reviewed_at`. **`knowledge_sources`는 owner 환경의 OKF 번들(Open Knowledge Format — 마크다운+프론트매터 번들)을 가리키는 참조**(ADR 0013 — "출처 레이블뿐"에서 의미 재정의, 필드·스키마 무변경). 카드=라우팅 메타(중앙), OKF 번들=답변 지식(owner 환경)으로 분리 — 카드를 OKF에 흡수하지 않는다(admission·Authority 중앙 보존). 새 필드(`okf_bundle`) 안 더함 — under-claim 자기보고 보수성·하위호환(의미만 재정의).
 - **Registry** — User·Agent 등록 + admission 불변식. `register / register_user / get / load(dir) / validate`.
 - **Classifier 포트** — `classify(question) -> intent`. `RuleBased`(v0) · `Llm`(후순위) · `Fake`(테스트).
 - **RoutingDecision** — sealed sum `Routed | Contested | Unowned`. 타입이 곧 상태.
-- **Agent Runtime 포트** — `answer(question, card) -> Answer`. `Answer(text, sources[], mode)`. `mode: Literal["full", "draft_only", "backup"]`(신뢰 상태 — `full` owner 실시간 / `draft_only` Approval 게이트 / `backup` owner 위임 백업의 스냅샷 답·신뢰 하향, ADR 0012). **`backup`은 마지막 값·넷째 없음** — staleness로 fresh/stale을 쪼개지 않는다(stale 백업은 답 안 하고 거부→escalation, 결정 9). owner 검토(`BackupReview`) 후 backup→`full` 신뢰 복원(결정 7). 답변 주체는 *owner가 위임·관리하는 환경*의 Claude Code(평상시 owner PC, 부재 시 owner 위임 백업 인스턴스 — 중앙 API 키 LLM 아님, ADR 0010+0012). 구현: `StubRuntime`(canned, 스켈레톤·테스트) → `ClaudeCodeRuntime`(`claude -p` 헤드리스, T6.1 임시·중앙 1회성·모든 카드가 로컬 claude로 답) → owner별 분산(T6.3, 아래 `RuntimeDispatcher` 경유) → owner 위임 백업 폴백(T6.6 설계, `WorkerLogic` 재사용). *분류기와 같은 포트 패턴.*
+- **Agent Runtime 포트** — `answer(question, card) -> Answer`. `Answer(text, sources[], mode)`. `mode: Literal["full", "draft_only", "backup"]`(신뢰 상태 — `full` owner 실시간 / `draft_only` Approval 게이트 / `backup` owner 위임 백업의 스냅샷 답·신뢰 하향, ADR 0012). **`backup`은 마지막 값·넷째 없음** — staleness로 fresh/stale을 쪼개지 않는다(stale 백업은 답 안 하고 거부→escalation, 결정 9). owner 검토(`BackupReview`) 후 backup→`full` 신뢰 복원(결정 7). 답변 주체는 *owner가 위임·관리하는 환경*의 Claude Code(평상시 owner PC, 부재 시 owner 위임 백업 인스턴스 — 중앙 API 키 LLM 아님, ADR 0010+0012). 구현: `StubRuntime`(canned, 스켈레톤·테스트) → `ClaudeCodeRuntime`(`claude -p` 헤드리스, T6.1 임시·중앙 1회성·모든 카드가 로컬 claude로 답) → owner별 분산(T6.3, 아래 `RuntimeDispatcher` 경유) → owner 위임 백업 폴백(T6.6 설계, `WorkerLogic` 재사용). *분류기와 같은 포트 패턴.* **OKF 지식 소비(T6.7 설계, ADR 0013)**: `ClaudeCodeRuntime`이 owner의 **OKF 번들 디렉터리를 cwd로** 두고 `claude -p`를 `--allowedTools "Read,Glob,Grep"`와 함께 돌려 claude가 번들을 *읽어* 답한다(현재 `_run_claude_headless`의 `tempfile.TemporaryDirectory()` cwd → owner 번들 cwd, 프롬프트에 "cwd OKF 읽고 근거로 답" 지시). 벡터DB·RAG 인프라 0(Claude Code가 파일 읽는 에이전트라 cwd 주입+읽기 도구면 성립, PoC 입증). T6.3 분산에서 "owner별 지식 격리"가 *번들 cwd 격리*로 실체화. `runner` 주입 결정론 경계 보존(실 OKF 소비는 eval/수동). 실 소비 구현은 후속 mcp-runtime-engineer 슬라이스(이번은 shape·체크리스트만).
 - **RuntimeDispatcher 포트 / WorkTicket / DispatchOutcome** — 분산 전송(T6.3, `dispatch.py`, ADR 0011). owner별 작업 큐에 적재·비동기 회신 수집. `dispatch(question, card) -> WorkTicket`(즉시 추적표) · `poll(ticket) -> DispatchOutcome` · 워커측 `claim(owner_id)`/`submit(ticket_id, answer)`. **`ask_org`의 답 획득 경로** — `ask_org`는 동기 `AgentRuntime.answer`를 직접 부르지 않고 `dispatch→poll`로 `DispatchOutcome`을 얻어 `OrgReply`로 투영(ADR 0011 결정 4). `DispatchOutcome` sealed sum: `Delivered(answer)` / `AwaitingWorker(waited)` / `EscalatedToManager(manager_id, reason)`(timeout·owner 부재 → 기존 Manager escalation 재사용. `manager_id: str|None`은 T5.2 Manager 큐가 기계 소비할 1급 식별자, `reason`은 사람용 자연어 — 둘 분리). `WorkTicket(owner_id·agent_id·question·enqueued_at·ticket_id)` — owner_id 귀속이 신원(ADR 0009)·`Answer.mode`가 Approval 연결점. 구현체: `InMemoryWorkQueueDispatcher`(in-process 큐, 결정론 테스트·슬라이스1) · `LocalRuntimeDispatcher`(동기 런타임을 즉시-Delivered로 감싸는 즉답 다리 — ask_org가 디스패처만 보게 된 뒤 in-process 데모/테스트의 즉답 보장) · 슬라이스2 네트워크 디스패처. 동기 포트 `AgentRuntime.answer`는 어댑터 `DispatchingRuntime`이 디스패처 위에 얹어 보존(레거시/비-ask_org 호환 — ask_org는 거치지 않음). 포트 패턴은 `ConflictCaseStore`·`PrecedentStore`와 동일(Protocol + 구현체). **전이 ≠ 기록** — 작업 큐는 미해소 작업의 도메인 보관소지 절차 로그 아님. (ADR 0011)
 - **Manager** — 다른 User를 `manages` 하는 User. Escalation은 사람 그래프를 타고 오른다.
 - **Resolution / Precedent** — 합의 결론과 append-only 기록. 라우터가 참조.
@@ -81,6 +81,7 @@ src/agent_org_network/
   demo.py  web.py                              # 데모 조립(cards_for_owner·demo_delegations 포함) + 웹 어댑터(POST /ask·GET /ask/{tracking} 회수·검토 탭 라우트)
 web/index.html  web/inbox.html(담당 합의·백업 검토 탭)   logs/audit.jsonl   tests/
 # 예정: registry/agents/*.yaml · routing_rules.yaml · samples/questions.jsonl
+# 예정(T6.7 OKF, ADR 0013): knowledge/<owner>/*.md (owner OKF 번들 — 마크다운+프론트매터·type 자유·index.md 권장, 워커가 cwd로 소비). 실 소비 구현 시 demo.py/server.py가 owner별 번들 디렉터리를 cwd로 와이어링
 ```
 
 ## 10. 핵심 불변식

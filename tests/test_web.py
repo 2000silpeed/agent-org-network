@@ -112,6 +112,32 @@ def test_직렬화에_라우팅_내부값이_새지_않는다():
                 assert _LEAKY_KEYS.isdisjoint(nested_keys)
 
 
+def test_backup_mode가_사용자에게_노출되고_내부값은_새지_않는다():
+    """ADR 0012 결정 4 — mode=backup은 사용자가 알아야 할 신뢰값이라 노출 OK(불변식 무관).
+
+    백업 답은 "owner 본인 실시간 답이 아니다"라는 신뢰 정보라 mode 축에 그대로 실린다.
+    _LEAKY_KEYS(조직 내부 구조)와는 무관 — mode는 본디 노출하는 신뢰 상태값이다.
+    """
+    reply = Answered(
+        text="담당 부재 중 백업 답변입니다",
+        answered_by=("alice", "cs_ops"),
+        mode="backup",
+        sources=("위키/환불정책",),
+    )
+    body = serialize_reply(reply)
+
+    assert body["type"] == "answered"
+    assert body["mode"] == "backup"  # 신뢰 하향이 사용자에게 노출된다.
+    # 담당·책임 귀속은 owner 불변(결정 5) — 백업이 답해도 answered_by는 그 owner.
+    assert body["answered_by"] == {"owner": "alice", "agent_id": "cs_ops"}
+    # 조직 내부값은 여전히 안 샌다.
+    assert _LEAKY_KEYS.isdisjoint(set(body.keys()))
+    for value in body.values():
+        if isinstance(value, dict):
+            nested: set[str] = set(value.keys())  # pyright: ignore[reportUnknownArgumentType]
+            assert _LEAKY_KEYS.isdisjoint(nested)
+
+
 def test_create_app_은_조립된다():
     app = create_app(runtime=StubRuntime())
 

@@ -5,7 +5,11 @@ from typing import Callable, Literal, Protocol
 
 from agent_org_network.agent_card import AgentCard
 
-AnswerMode = Literal["draft_only", "full"]
+# 신뢰 상태(CONTEXT Answer 절, ADR 0012 결정 4):
+#   full:        owner 실시간 답, 그대로 사용자에게
+#   draft_only:  Approval 게이트 — 사람 승인 전까지 초안
+#   backup:      owner 위임 백업 워커의 스냅샷 기반 답(owner 미검토) — 신뢰 하향
+AnswerMode = Literal["draft_only", "full", "backup"]
 
 
 @dataclass(frozen=True)

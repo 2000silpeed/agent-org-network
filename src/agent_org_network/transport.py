@@ -74,27 +74,40 @@ class AnswerFrame(_Frame):
     """`SubmitAnswer`에 실리는 답의 와이어 표현(`Answer`의 전송 투영).
 
     `mode` 보존 — owner 답이 `draft_only`(Approval 게이트)면 그 신뢰 상태가 회신에
-    실려 내려온다(결정 6-3, ADR 0011 Approval 연결점).
+    실려 내려온다(결정 6-3, ADR 0011 Approval 연결점). `backup`은 owner 위임 백업
+    워커가 회신할 때 실리는 값이나, *백업 사실의 진실은 연결 등급*이라 디스패처가
+    submit 시 강제 하향한다(ADR 0012 결정 4 — 워커 자기보고에만 맡기지 않는다).
     """
 
     text: str
     sources: tuple[str, ...] = ()
-    mode: Literal["draft_only", "full"] = "full"
+    mode: Literal["draft_only", "full", "backup"] = "full"
 
 
 # ── 워커→중앙(업스트림) 프레임 ───────────────────────────────────────────────
 
 
+WorkerRole = Literal["primary", "backup"]
+#   owner 안에서의 워커 등급(ADR 0012 결정 2). primary=owner PC 워커(실시간), backup=
+#   owner가 명시적으로 위임한 격리 백업 인스턴스(스냅샷 기반·신뢰 하향). 신원(어느 owner)
+#   은 `owner_id`, 등급은 그 owner 안에서의 push 우선순위. 디스패처가 primary 우선 push하고
+#   backup으로 처리된 답은 mode=backup으로 강제 하향한다(결정 4).
+
+
 class RegisterWorker(_Frame):
-    """연결 직후 1회 — 워커가 자기 owner 신원을 선언한다(인증 연결점, 6-5).
+    """연결 직후 1회 — 워커가 자기 owner 신원·등급을 선언한다(인증 연결점, 6-5).
 
     `token`은 owner 신원 인증용(ADR 0009 → T6.5). 이번 슬라이스는 거부 *hook*만 두고
-    실 토큰 검증은 T6.5. 중앙은 이 owner를 "연결됨"으로 레지스트리에 올린다.
+    실 토큰 검증은 T6.5. `role`은 그 owner 안에서의 워커 등급(ADR 0012 결정 2) —
+    PC 워커는 기본 `primary`, owner 위임 백업 인스턴스는 `backup`. 하위호환: 미지정이면
+    `primary`(기존 워커는 그대로 1차 워커로 등록). 중앙은 이 owner를 등급별로 레지스트리에
+    올린다.
     """
 
     type: Literal["register_worker"] = "register_worker"
     owner_id: str
     token: str | None = None
+    role: WorkerRole = "primary"
 
 
 class SubmitAnswer(_Frame):
@@ -210,10 +223,11 @@ def from_answer_frame(frame: AnswerFrame) -> "Answer":
 # 합성한 in-memory 큐가 소유하고(단조 종착·미아 없음 보증), WS는 push/submit을 *전송*으로
 # 중계한다. 따라서 기존 in-process 구현·테스트(143 passed)는 포트가 안 바뀌어 그대로 산다.
 #
-# 연결 레지스트리(`_connections`): owner_id → 그 워커의 send 콜백(WS로 프레임을 내보내는
-# 함수). 중앙 WS 핸들러가 RegisterWorker를 받으면 이 레지스트리에 등록하고, dispatch로
-# 새 작업이 들어오면 연결된 워커에게 push한다(미연결이면 큐에 대기 = 기존 AwaitingWorker,
-# timeout이면 EscalatedToManager — 기존 결정 3 그대로 작동).
+# 연결 레지스트리(`_connections`, ADR 0012 결정 2): owner_id → {등급(role) → send 콜백}.
+# owner당 단일 연결에서 *등급별* 연결로 확장한다 — primary(owner PC 워커)와 backup(owner
+# 위임 백업 인스턴스)이 같은 owner 아래 따로 등록된다. push 대상 선택은 우선순위 —
+# primary가 연결돼 있으면 primary로, 없고 backup이 있으면 backup으로, 둘 다 없으면 큐에
+# 대기(기존 AwaitingWorker, timeout이면 EscalatedToManager — 미아 없음 종착 그대로).
 
 
 SendFrame = Callable[[CentralFrame], None]  # owner 워커 소켓으로 프레임을 내보내는 콜백
@@ -231,6 +245,11 @@ class WebSocketDispatcher:
     re-queue), 중복은 `ticket_id` 멱등(answered 재submit 무시, 큐가 보장). 인증(6-5)은
     RegisterWorker 시 owner 검증 hook(실 토큰 T6.5).
 
+    등급 라우팅(ADR 0012 결정 2·4, T6.6 슬라이스 i): 연결 레지스트리를 owner당 *등급별*
+    (primary/backup)로 확장한다. push는 우선순위(primary 우선, 없으면 backup)로 선택하고,
+    backup 연결로 push된 작업은 submit 시 `mode=backup`으로 강제 하향한다(백업 사실의 진실은
+    *연결 등급*이지 워커 자기보고가 아님 — 결정 4). 큐 도메인(claim/submit/단조 종착)은 무변경.
+
     동작은 2b-i에서 구현 완료 — 합성한 `_queue`(실 객체)가 `dispatch`/`poll`/`claim`/`submit`
     의 도메인을 소유하고, WS층은 그 위에 연결 레지스트리·push·release만 얹는다(큐 도메인을
     재작성하지 않는다는 결정 6-2의 보증).
@@ -245,9 +264,14 @@ class WebSocketDispatcher:
         # 이 객체가 소유한다(WS는 그 위 전송층). 주입 가능하게 둬 결정론 테스트가 고정
         # clock·timeout·manager_of를 박은 큐를 넣을 수 있게 한다(2b-i).
         self._queue = queue if queue is not None else InMemoryWorkQueueDispatcher(clock=clock)
-        # owner_id → 그 워커 소켓으로 프레임을 내보내는 send 콜백(연결 레지스트리).
-        # RegisterWorker 시 등록, 끊김/AuthError 시 제거. 미연결이면 작업은 큐에 대기.
-        self._connections: dict[str, SendFrame] = {}
+        # owner_id → {등급(role) → send 콜백}(등급별 연결 레지스트리, ADR 0012 결정 2).
+        # RegisterWorker 시 그 role로 등록, 끊김/AuthError 시 그 role만 제거. push 대상은
+        # 우선순위(primary 우선, 없으면 backup). 둘 다 없으면 작업은 큐에 대기.
+        self._connections: dict[str, dict[WorkerRole, SendFrame]] = {}
+        # backup 연결로 push된 ticket_id 집합(ADR 0012 결정 4). submit 시 이 집합에 든
+        # ticket의 답은 `mode=backup`으로 강제 하향한다 — 백업 사실은 *연결 등급*이 진실이라
+        # 디스패처가 책임지고 덮는다(워커가 full로 보내도). primary push는 기록 안 함(mode 보존).
+        self._backup_tickets: set[str] = set()
 
     # ── 중앙측(질문 측): 내부 큐에 위임 ──────────────────────────────────────
 
@@ -284,37 +308,76 @@ class WebSocketDispatcher:
 
         멱등(6-4): 큐가 ticket_id 기준으로 보장(answered/expired 재submit 무시). 핸들러가
         SubmitAnswer 프레임을 받아 `from_answer_frame`으로 복원한 뒤 이걸 호출한다.
+
+        등급 강제(ADR 0012 결정 4): 그 ticket이 *backup 연결로 push됐으면* `mode=backup`으로
+        덮어 회신한다 — 워커가 full/draft_only로 보내도. 백업 답이라는 사실은 연결 등급이
+        진실이라(워커 자기보고 아님) 디스패처가 책임진다. primary push 답은 mode 보존.
+        멱등은 그대로 큐가 보장하므로 이 강제는 *큐에 넣기 전 값 보정*일 뿐 큐 도메인 무변경.
         """
+        if ticket_id in self._backup_tickets:
+            answer = self._force_backup_mode(answer)
         self._queue.submit(ticket_id, answer)
+        # 종착 후 backup 표식 정리 — 무한 누적 방지(경계 B).
+        # submit은 멱등(answered 재submit 무시)이라 이 discard도 멱등.
+        self._backup_tickets.discard(ticket_id)
+
+    @staticmethod
+    def _force_backup_mode(answer: "Answer") -> "Answer":
+        """답의 `mode`를 `backup`으로 덮은 새 Answer를 만든다(text·sources 보존).
+
+        `Answer`는 frozen이라 새 인스턴스로 교체한다(파괴적 변경 X). 이미 backup이면 그대로.
+        """
+        from agent_org_network.runtime import Answer as _Answer  # 순환 import 회피
+
+        if answer.mode == "backup":
+            return answer
+        return _Answer(text=answer.text, sources=answer.sources, mode="backup")
 
     # ── WS 연결 생명주기(중앙 핸들러가 호출) ─────────────────────────────────
 
     def register(self, frame: RegisterWorker, send: SendFrame) -> CentralFrame:
-        """워커 등록 — owner 신원 인증 hook 후 연결 레지스트리에 올린다.
+        """워커 등록 — owner 신원 인증 hook 후 등급별 연결 레지스트리에 올린다.
 
-        인증 통과면 `_connections[owner_id] = send`로 등록하고 `Welcome`을, 실패면
-        `AuthError`를 돌려준다(6-5, 실 토큰 검증은 T6.5 — 지금은 거부 지점만). 등록 직후
-        그 owner의 대기 작업이 있으면 push한다(연결 복구 시 재동기).
+        인증 통과면 `_connections[owner_id][role] = send`로 *등급별* 등록하고 `Welcome`을,
+        실패면 `AuthError`를 돌려준다(6-5, 실 토큰 검증은 T6.5 — 지금은 거부 지점만).
+        등급(`frame.role`)은 그 owner 안에서의 push 우선순위(ADR 0012 결정 2) — 같은 owner의
+        primary와 backup이 따로 등록된다. 등록 직후 그 owner의 대기 작업이 있으면 우선순위에
+        따라 push한다(연결 복구 시 재동기 — backup만 떠 있으면 backup으로, primary가 오면
+        그때부터 primary로).
         """
         if not self._authenticate(frame):
             # 인증 거부 — 레지스트리에 올리지 않으므로 이후 작업이 push되지 않는다(6-5).
             return AuthError(reason="미인증 워커 — owner 신원 검증 실패")
-        self._connections[frame.owner_id] = send
+        self._connections.setdefault(frame.owner_id, {})[frame.role] = send
         # 재연결 재동기: 등록 직후 그 owner의 대기 작업(미연결 동안 쌓인 것·끊김으로
-        # re-queue된 것)을 새 소켓으로 push한다.
+        # re-queue된 것)을 우선순위 연결로 push한다.
         self._push_pending(frame.owner_id)
         return Welcome()
 
-    def disconnect(self, owner_id: str) -> list[WorkTicket]:
-        """워커 끊김 처리 — 레지스트리에서 제거하고 in-flight 작업을 re-queue한다.
+    def disconnect(self, owner_id: str, role: WorkerRole = "primary") -> list[WorkTicket]:
+        """워커 끊김 처리 — 그 등급 연결을 제거하고 in-flight 작업을 re-queue한다.
 
-        결정 6-4: 끊김 시 그 owner의 미회신 `claimed` 작업을 `_queue.release_claims`로
-        큐에 되돌린다(claimed→queued, 단조성 보존 — answered/expired는 손대지 않음). 재연결
-        시 다시 claim돼 push된다. 영영 안 돌아오면 timeout으로 EscalatedToManager 종착(미아
-        없음). 반환: 되돌린 ticket 목록.
+        등급별 제거(ADR 0012 결정 2): `frame.role` 연결만 레지스트리에서 뺀다 — 같은 owner의
+        다른 등급(예: primary 끊겨도 backup) 연결은 남는다. 하위호환: role 미지정이면 primary
+        제거(기존 시그니처 `disconnect(owner_id)` 보존).
+
+        결정 6-4(re-queue): 끊김 시 그 owner의 미회신 `claimed` 작업을 `_queue.release_claims`로
+        큐에 되돌린다(claimed→queued, 단조성 보존). re-queue는 *owner 단위* 작업 회수라 등급과
+        무관 — owner의 어느 워커가 끊겨도 그 owner의 claimed 작업을 되돌린다. 되돌린 뒤 그
+        owner에 남은 연결이 있으면(우선순위로) 재push한다(예: primary 끊김→backup으로 재push).
+        남은 연결이 없으면 큐 대기 → timeout이면 EscalatedToManager 종착(미아 없음). 반환:
+        되돌린 ticket 목록.
         """
-        self._connections.pop(owner_id, None)
-        return self._queue.release_claims(owner_id)
+        conns = self._connections.get(owner_id)
+        if conns is not None:
+            conns.pop(role, None)
+            if not conns:
+                self._connections.pop(owner_id, None)
+        released = self._queue.release_claims(owner_id)
+        # 끊긴 워커의 작업을 그 owner에 남은 연결(우선순위)로 즉시 재push — 다른 등급이
+        # 살아 있으면 미아 없이 바로 회복(예: primary 끊김 시 backup으로 전환).
+        self._push_pending(owner_id)
+        return released
 
     # ── 내부 전송 헬퍼 ───────────────────────────────────────────────────────
 
@@ -327,15 +390,43 @@ class WebSocketDispatcher:
         return bool(frame.owner_id)
 
     def _push_pending(self, owner_id: str) -> None:
-        """그 owner가 연결돼 있으면 큐의 대기 작업을 모두 claim해 PushWork로 내보낸다.
+        """그 owner의 우선순위 연결로 큐의 대기 작업을 모두 claim해 PushWork로 내보낸다.
+
+        우선순위 선택(ADR 0012 결정 2): 그 owner의 `primary`가 연결돼 있으면 primary로, 없고
+        `backup`이 있으면 backup으로 push. 둘 다 없으면 no-op(작업은 큐에 대기 = AwaitingWorker,
+        timeout이면 EscalatedToManager — 큐 도메인이 처리, 미아 없음).
 
         포트 의미 보존(6-2): 워커가 claim을 직접 부르지 않고 중앙이 워커 대신 claim해 push.
-        claim은 큐 도메인 전이(queued→claimed), push는 전송. 미연결이면 no-op(작업은 큐에
-        대기 = AwaitingWorker, timeout이면 EscalatedToManager — 큐 도메인이 처리).
+        claim은 큐 도메인 전이(queued→claimed), push는 전송. backup으로 push한 작업은
+        `_backup_tickets`에 기록해 submit 시 mode=backup 강제의 근거로 삼는다(결정 4).
         """
-        send = self._connections.get(owner_id)
-        if send is None:
+        selected = self._select_connection(owner_id)
+        if selected is None:
             return
+        role, send = selected
         # claim이 None일 때까지(대기 작업 소진) — 여러 작업이 쌓여 있으면 전부 push.
         while (ticket := self._queue.claim(owner_id)) is not None:
+            if role == "backup":
+                # 백업 연결로 처리된 작업 — submit 회신 시 mode=backup 강제(결정 4).
+                self._backup_tickets.add(ticket.ticket_id)
+            else:
+                # primary로 push: 마지막 push 등급이 진실이므로 backup 표식 해제(결정 4 정밀화).
+                self._backup_tickets.discard(ticket.ticket_id)
             send(PushWork(ticket=to_ticket_frame(ticket)))
+
+    def _select_connection(self, owner_id: str) -> tuple[WorkerRole, SendFrame] | None:
+        """그 owner의 push 대상 연결을 우선순위로 고른다(primary 우선, 없으면 backup).
+
+        둘 다 없으면 None(미연결 = 큐 대기). 등급 라우팅의 단일 결정 지점 — push든 재동기든
+        이 우선순위 하나만 본다(ADR 0012 결정 2).
+        """
+        conns = self._connections.get(owner_id)
+        if not conns:
+            return None
+        primary = conns.get("primary")
+        if primary is not None:
+            return ("primary", primary)
+        backup = conns.get("backup")
+        if backup is not None:
+            return ("backup", backup)
+        return None

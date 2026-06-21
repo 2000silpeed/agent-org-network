@@ -100,6 +100,8 @@ AnswerMode = Literal["full", "draft_only", "backup"]
 
 **전송 보존:** `AnswerFrame.mode`(transport.py)도 같이 `backup`을 받게 확장한다 — 백업 워커가 `SubmitAnswer`로 회신할 때 mode를 실어 내려, `Delivered.answer.mode`→`Answered.mode`로 보존된다(ADR 0011 Approval 연결점과 같은 자리). 백업 워커가 `mode="backup"`을 *스스로 세팅*하는가, 디스패처가 *백업 연결로 push했으니* 회신 mode를 강제 하향하는가 — **디스패처가 강제 하향**을 택한다(아래 결정 5의 책임 정합 — 백업이라는 사실은 *연결 등급*이 진실이고, 워커 자기보고에 맡기면 누락·위조 여지). shape: `WebSocketDispatcher.submit`이 그 ticket이 backup 연결로 처리됐으면 `Answer.mode`를 `backup`으로 덮어(또는 합류) 큐에 회신.
 
+**결정 4 정밀화(마지막으로 push된 등급이 진실):** "backup 연결로 push됐나" 판정은 *마지막 push 등급*을 기준으로 한다. 구체적으로: backup으로 push되면 `_backup_tickets`에 ticket_id를 추가하고, 이후 같은 ticket이 **primary로 재push되면 `_backup_tickets.discard(ticket_id)`**한다(경계 A — backup→disconnect→primary 재push 시 backup 표식 해제). 또한 **submit으로 종착된 후 `_backup_tickets.discard(ticket_id)`**해 무한 누적을 막는다(경계 B — 메모리 누수 제거). "한 번이라도 backup으로 push됐나"가 아니라 "가장 최근 push가 backup이었나"가 진실의 기준이다.
+
 ### 5. 격리·보안·책임 = owner별 격리 + 책임은 owner(opt-in 위임), 암호화·키는 연결점만
 
 - **격리:** 백업 인스턴스는 owner별로 격리된다 — 데이터(위임 스냅샷)도 인스턴스도. 한 백업이 여러 owner 데이터를 섞어 보지 않는다(중앙 무지식의 인스턴스 레벨 강제). shape은 `DelegationSnapshot.owner_id` 귀속과 `RegisterWorker.owner_id`+`role=backup`로 *연결점만* 둔다.

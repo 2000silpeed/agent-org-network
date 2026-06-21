@@ -106,6 +106,9 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
     await websocket.send_json(reply.model_dump(mode="json"))  # Welcome
 
     owner_id = first.owner_id
+    # 등급(ADR 0012 결정 2)을 잡아 끊김 시 *그 등급* 연결만 제거한다(같은 owner의 다른
+    # 등급은 남김). register는 frame 전체를 넘겨 role이 이미 전달됐다.
+    role = first.role
 
     # 2) push/submit 펌프 — 송신·수신 루프 동시 실행.
     async def send_loop() -> None:
@@ -134,8 +137,9 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
     finally:
         send_task.cancel()
         recv_task.cancel()
-        # 3) 끊김 정리 — in-flight claimed 작업 re-queue(미아 없음, 6-4).
-        dispatcher.disconnect(owner_id)
+        # 3) 끊김 정리 — 그 등급 연결 제거 + in-flight claimed 작업 re-queue(미아 없음,
+        # 6-4). 같은 owner의 다른 등급(예: backup)이 남아 있으면 disconnect 안에서 재push된다.
+        dispatcher.disconnect(owner_id, role)
 
 
 def create_worker_app(dispatcher: WebSocketDispatcher) -> FastAPI:

@@ -127,7 +127,7 @@ class WorkerLogic:
         self,
         owner_id: str,
         cards: dict[str, AgentCard],
-        runtime: ClaudeCodeRuntime | None = None,
+        runtime: ClaudeCodeRuntime,
         role: WorkerRole = "primary",
     ) -> None:
         self._owner_id = owner_id
@@ -137,8 +137,10 @@ class WorkerLogic:
         # 신뢰 하향은 디스패처가 연결 등급을 진실로 강제한다(결정 4).
         self._role: WorkerRole = role
         # 로컬 claude 호출은 runtime.py의 ClaudeCodeRuntime을 그대로 재사용한다(재구현 금지).
-        # 미주입이면 기본 생성자(실 `claude -p`) — 단위 테스트는 FakeRunner 박은 인스턴스 주입.
-        self._runtime = runtime if runtime is not None else ClaudeCodeRuntime()
+        # runtime은 필수 주입 — 진입점(main)만 실 기본값(`ClaudeCodeRuntime()`)을 넣고 단위
+        # 테스트는 FakeRunner 박은 인스턴스를 준다. 기본값을 두면 `WorkerLogic(owner, cards)`만
+        # 으로도 실 claude가 게이트에 누출되므로 의도적으로 두지 않는다(ADR 0003 결정론).
+        self._runtime = runtime
 
     @property
     def owner_id(self) -> str:

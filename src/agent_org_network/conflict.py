@@ -24,8 +24,22 @@ class Resolution:
 
 @dataclass(frozen=True)
 class Precedent:
+    """합의 결론(Resolution)의 append-only 기록 — 라우터가 자동 적용한다.
+
+    신선도 신호(ADR 0019 결정 4): `needs_review`·`last_flagged_at`은 변경 전파기
+    (`StalenessPropagator`)가 OKF 커밋 변경 이벤트로 *과거 판례*에 stale을 표식하는
+    필드다(frozen·하위호환 기본값). **`status: Literal['valid', ...]`는 안 쓴다** —
+    'valid'가 admission 어휘("유효하지 않은 카드는 등록되지 않는다")와 충돌·자기모순
+    이고, stale은 *재검토 대상*이지 *무효*가 아니므로 boolean이 정확하다. `recorded_at`
+    은 불변. **stale ≠ 무효화**: Router lookup은 `needs_review`를 *보지 않으므로*
+    (router.py) stale 판례도 계속 라우팅된다(미아 없음 보존). 무효화는 owner 1인칭
+    처분(`InvalidatePrecedent`) 후만(ADR 0019 결정 6).
+    """
+
     resolution: Resolution
     recorded_at: datetime
+    needs_review: bool = False
+    last_flagged_at: datetime | None = None
 
 
 class PrecedentStore(Protocol):
@@ -33,21 +47,69 @@ class PrecedentStore(Protocol):
 
     def lookup(self, intent: str) -> Precedent | None: ...
 
+    def find_by_primary(self, agent_id: str) -> list["Precedent"]:
+        """그 agent_id를 `Resolution.primary`로 둔 판례 전부(ADR 0019 결정 2①).
+
+        변경 전파기가 OKF 커밋 영향 식별에 쓴다 — `event.agent_id`를 primary로 둔
+        판례가 영향 대상이다(`Resolution.primary`는 agent_id 문자열). 역색인 O(1) 조회.
+        """
+        ...
+
+    def list_all(self) -> list["Precedent"]:
+        """기록된 모든 판례(영향 식별 fallback·운영 면 열람의 원천, ADR 0019 결정 2①)."""
+        ...
+
+    def flag_stale(self, intent: str, trigger_sha: str, at: datetime) -> Precedent | None:
+        """그 intent의 판례에 stale을 표식한다 — `needs_review=True`·`last_flagged_at=at`.
+
+        ADR 0019 결정 4·6: 무효화가 아니라 *플래그*다(라우팅 불변·미아 없음). 이미
+        needs_review면 멱등(다시 안 단다). 판례 없으면 None. append-only 정신 —
+        새 인스턴스로 갈아끼우고 history에 남긴다(파괴적 변경 X).
+        """
+        ...
+
 
 class InMemoryPrecedentStore:
     def __init__(self, clock: Clock = default_clock) -> None:
         self._clock = clock
         self._precedents: dict[str, Precedent] = {}
         self.history: list[Precedent] = []
+        # agent_id → 그 agent를 primary로 둔 판례들(역색인, record 시점에 채움 — ADR 0019 결정 2①).
+        self._by_primary: dict[str, list[Precedent]] = {}
 
     def record(self, resolution: Resolution) -> Precedent:
         precedent = Precedent(resolution=resolution, recorded_at=self._clock())
         self.history.append(precedent)
         self._precedents[resolution.intent] = precedent
+        self._by_primary.setdefault(resolution.primary, []).append(precedent)
         return precedent
 
     def lookup(self, intent: str) -> Precedent | None:
         return self._precedents.get(intent)
+
+    def find_by_primary(self, agent_id: str) -> list[Precedent]:
+        return list(self._by_primary.get(agent_id, []))
+
+    def list_all(self) -> list[Precedent]:
+        return list(self._precedents.values())
+
+    def flag_stale(self, intent: str, trigger_sha: str, at: datetime) -> Precedent | None:
+        existing = self._precedents.get(intent)
+        if existing is None:
+            return None
+        if existing.needs_review:
+            return existing
+        import dataclasses
+        flagged = dataclasses.replace(existing, needs_review=True, last_flagged_at=at)
+        self._precedents[intent] = flagged
+        self.history.append(flagged)
+        primary = existing.resolution.primary
+        by_p = self._by_primary.get(primary, [])
+        for i, p in enumerate(by_p):
+            if p is existing:
+                by_p[i] = flagged
+                break
+        return flagged
 
 
 # ── 미해소 다툼의 저장 단위: ConflictCase ─────────────────────────────

@@ -18,9 +18,30 @@ ADR 0018:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    pass
+
+Clock = Callable[[], datetime]
+
+
+class ChangeEventListener(Protocol):
+    """OKF 커밋 변경 이벤트를 받는 최소 포트(ADR 0019 결정 1).
+
+    `StalenessPropagator`를 구체 타입으로 참조하면 순환 임포트 + 타입 주입 제약이 생기므로
+    `commit_okf_bundle`은 이 Protocol에 의존한다 — duck typing으로 Fake 주입이 가능하다.
+    """
+
+    def on_okf_committed(self, event: Any) -> None: ...
+
+
+def _default_clock() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -58,6 +79,35 @@ class CommitResult:
 
     sha: str
     agent_id: str
+
+
+@dataclass(frozen=True)
+class OkfChangeEvent:
+    """OKF 번들이 방금 커밋으로 바뀌었다는 변경 사건(ADR 0019 결정 1).
+
+    "OKF 커밋 = 변경 이벤트 소스"(ADR 0018 결정 6)의 본체. `commit_okf_bundle`이 커밋
+    성공 직후 1회 발화해 `StalenessPropagator`로만 흐른다 — `CommitResult`·web 응답
+    (`{sha, agent_id}`)엔 끼어들지 않는다(노출 불변식·직렬화 계약 보존).
+
+    필드:
+      - `agent_id` — 어느 번들이 바뀌었나(영향 식별의 거친 매칭 키, 결정 2).
+      - `new_sha` — 방금 만든 커밋 SHA(`CommitResult.sha`).
+      - `parent_sha` — 커밋 *직전* HEAD(최초 커밋이면 None). 반드시 커밋 *전에*
+        `head_sha`를 읽어 얻는다(커밋 후엔 새 SHA가 나오므로).
+      - `committed_at` — 주입 clock(결정론).
+
+    **죽은 필드(MVP)**: `changed_paths`(req.files의 path)·`parent_sha`는 이벤트에 *싣되*
+    MVP 영향 식별엔 **쓰지 않는다**(결정 2 — agent_id 단위 거친 매칭). 미래 정밀화
+    (파일 단위 교차·ordering)의 *자리*다. `sources`(자유 레이블) ↔ `changed_paths`
+    (파일 경로) 교차는 타입 불일치 과소검출이라 MVP 매칭에서 기각(ADR 0019 결정 2 기각).
+    """
+
+    agent_id: str
+    new_sha: str
+    parent_sha: str | None
+    changed_paths: tuple[str, ...]
+    author: str
+    committed_at: datetime
 
 
 class GitGateway(Protocol):
@@ -205,6 +255,8 @@ class BuilderCommitRequest:
 def commit_okf_bundle(
     req: BuilderCommitRequest,
     gateway: GitGateway,
+    propagator: ChangeEventListener | None = None,
+    clock: Clock = _default_clock,
 ) -> CommitResult:
     """빌더 OKF 편집을 owner author로 커밋하는 오케스트레이션(ADR 0018 결정 1·3·5).
 
@@ -213,6 +265,12 @@ def commit_okf_bundle(
 
     **카드는 건드리지 않는다**(ADR 0018 결정 1 — OKF 번들만 자동 커밋, 카드는 PR 유지).
     스코프 403은 *web 경계*에서(빌더 카드 검증과 같은 규칙) — 이 함수는 통과 후의 커밋만.
+
+    변경 전파 발화(ADR 0019 결정 1): `propagator`가 주입되면(비None) 커밋 성공 직후
+    `OkfChangeEvent`를 구성해 `propagator.on_okf_committed(event)`를 1회 호출한다 — 그
+    정책에 기댄 과거 Precedent·답이 stale 플래그·재평가 큐로 간다. `propagator=None`이면
+    *기존 동작 그대로*(하위호환 — 기존 호출 무영향·노출 불변식). `parent_sha`는 반드시
+    커밋 *전에* `head_sha`를 읽어 얻는다(커밋 후엔 새 SHA가 나오므로).
     """
     if not req.files:
         raise ValueError("커밋할 파일이 없습니다 — files가 비어 있습니다.")
@@ -222,4 +280,20 @@ def commit_okf_bundle(
         author=req.owner,
         message=req.message,
     )
+    if propagator is not None:
+        try:
+            parent_sha: str | None = gateway.head_sha(req.agent_id)
+        except (ValueError, KeyError):
+            parent_sha = None
+        result = gateway.commit_bundle(commit_req)
+        event = OkfChangeEvent(
+            agent_id=req.agent_id,
+            new_sha=result.sha,
+            parent_sha=parent_sha,
+            changed_paths=tuple(f.path for f in req.files),
+            author=req.owner,
+            committed_at=clock(),
+        )
+        propagator.on_okf_committed(event)
+        return result
     return gateway.commit_bundle(commit_req)

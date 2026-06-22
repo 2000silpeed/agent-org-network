@@ -22,3 +22,6 @@ node_modules/
 
 # Claude Code local (personal) settings
 .claude/settings.local.json
+
+# 시연영상 (HyperFrames 산출물 — 별도 프로젝트, 메인 코드 repo와 분리)
+demo-video/

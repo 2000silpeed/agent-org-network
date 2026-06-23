@@ -25,6 +25,7 @@ from typing import Any, cast
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
+from agent_org_network.oidc import OidcProvider
 from agent_org_network.transport import (
     Ack,
     AuthError,
@@ -167,7 +168,10 @@ def _mount_worker_endpoint(app: FastAPI, dispatcher: WebSocketDispatcher) -> Non
         await _handle_worker(websocket, dispatcher)
 
 
-def create_central_app(session_secret: str | None = None) -> FastAPI:
+def create_central_app(
+    session_secret: str | None = None,
+    oidc_provider: OidcProvider | None = None,
+) -> FastAPI:
     """end-to-end 한 프로세스 중앙 앱 — 사용자 web 라우트 + owner 워커 WS를 *한 dispatcher*로.
 
     end-to-end(중앙↔워커↔실 claude↔답 회수)를 닫으려면 사용자 질문(`POST /ask`)이 만드는
@@ -197,6 +201,10 @@ def create_central_app(session_secret: str | None = None) -> FastAPI:
     `session_secret`(T6.5·ADR 0016 결정 1): 운영 면 세션 서명 키. 주입 시 SessionMiddleware를
     부착해 운영 엔드포인트가 세션 신원을 요구한다 — 미주입 시 인증 OFF(데모·하위호환).
     프로덕션은 OPERATOR_SESSION_SECRET env 변수로 주입한다. 커밋 금지.
+
+    `oidc_provider`(T7.1·ADR 0021): SSO 신원 검증 포트. 주입 시 SSO 모드(`POST /login/sso`
+    활성·무비밀번호 `POST /login` 403 거부). 미주입이면 기존 동작(OFF/무비밀번호). 실 IdP
+    연동(`HttpOidcProvider`)은 게이트 밖 수동 — 모듈 기본 앱은 미주입(env 분기는 후속).
 
     이 앱은 실 owner 워커 프로세스가 붙는 *수동 시연용* 진입점이다(`uvicorn`으로 띄움). 결정론
     테스트는 여전히 `create_worker_app`(주입 디스패처)·`web.create_app`을 따로 쓴다 — 이
@@ -232,6 +240,7 @@ def create_central_app(session_secret: str | None = None) -> FastAPI:
         review_store=review_store,
         review_service=review_service,
         session_secret=session_secret,
+        oidc_provider=oidc_provider,
     )
     _mount_worker_endpoint(app, dispatcher)
     return app

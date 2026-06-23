@@ -60,6 +60,11 @@ from agent_org_network.manager_queue import (
     ManagerResolution,
     Reroute as MgrReroute,
 )
+from agent_org_network.oidc import (
+    OidcProvider,
+    OidcVerificationError,
+    resolve_identity,
+)
 from agent_org_network.review import (
     ApproveBackup,
     BackupReview,
@@ -99,6 +104,17 @@ class LoginRequest(BaseModel):
     """
 
     user_id: str
+
+
+class SsoLoginRequest(BaseModel):
+    """POST /login/sso 요청 바디 — SSO 신원 *증명*(T7.1·ADR 0021 결정 4).
+
+    `id_token`은 IdP가 발급한 OIDC id_token(불투명 — 우리가 `oidc_provider.verify`로 서명·
+    만료·aud를 검증한다). 무비밀번호 `/login`의 "user_id *선택*"과 달리, 여기선 IdP가 *증명*한
+    신원만 `resolve_identity`로 registry user_id에 매핑돼 세션에 박힌다(선택 우회 차단).
+    """
+
+    id_token: str
 
 
 # ── 운영 면 인증 헬퍼 ──────────────────────────────────────────────────────
@@ -561,6 +577,7 @@ def create_app(
     audit_log: JsonlAuditLog | InMemoryAuditLog | None = None,
     session_secret: str | None = None,
     git_gateway: GitGateway | None = None,
+    oidc_provider: OidcProvider | None = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -570,6 +587,9 @@ def create_app(
     운영은 env. 커밋 금지. **미주입이면 세션 미부착**(하위호환 — 기존 동작·기존 테스트 보존).
     `git_gateway`(T7.2·ADR 0018): OKF 번들 커밋 포트. 미주입이면 `FakeGitGateway`(안전한
     기본 — 실 git subprocess는 `SubprocessGitGateway`를 명시 주입).
+    `oidc_provider`(T7.1·ADR 0021): SSO 신원 검증 포트. 주입 시 **SSO 모드**(`POST /login/sso`
+    활성·무비밀번호 `POST /login`은 403 거부 — 신원 *선택* 우회 차단). 미주입이면 기존 동작
+    (인증 모드 3단 중 OFF/무비밀번호 — ADR 0021 결정 4). 결정론 테스트는 `FakeOidcProvider` 주입.
     """
     from starlette.middleware.sessions import SessionMiddleware
 
@@ -592,6 +612,10 @@ def create_app(
     _review_service = review_service
     _manager_queue_store = manager_queue_store
     _git_gateway: GitGateway = git_gateway if git_gateway is not None else FakeGitGateway()
+    # SSO 모드(T7.1·ADR 0021 결정 4) — oidc_provider 주입 시 SSO 모드(POST /login/sso 활성·
+    # 무비밀번호 POST /login은 403 거부). 미주입이면 기존 동작(OFF/무비밀번호).
+    _oidc_provider = oidc_provider
+    _sso_enabled = oidc_provider is not None
 
     # NotAuthenticatedError → 401 매핑
     from fastapi import Request as FastApiRequest
@@ -623,11 +647,43 @@ def create_app(
 
         `req.user_id`가 Registry에 실재하는 User여야 한다(없으면 401). 검사 출처는
         bundle이 보는 Registry(데모 6명). 유효하면 `request.session[_SESSION_USER_KEY]`에 저장.
+
+        **SSO 모드(T7.1·ADR 0021 결정 4)**: `oidc_provider` 주입 시 이 무비밀번호 채널은
+        403으로 거부한다 — SSO를 켰는데 신원 *선택*이 살아 있으면 SSO 증명이 무의미해지므로
+        (선택 우회 차단). SSO 모드에선 `POST /login/sso`(신원 증명)만 쓴다.
         """
+        if _sso_enabled:
+            raise HTTPException(
+                status_code=403, detail="SSO 모드 — POST /login/sso(신원 증명)를 사용하세요"
+            )
         if req.user_id not in bundle.registry.user_ids():
             raise HTTPException(status_code=401, detail=f"미존재 사용자: {req.user_id!r}")
         request.session[_SESSION_USER_KEY] = req.user_id
         return {"ok": True, "user_id": req.user_id}
+
+    @app.post("/login/sso")
+    def login_sso(req: SsoLoginRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """SSO 로그인 — IdP가 *증명*한 신원만 세션에 박는다(T7.1·ADR 0021 결정 4·5).
+
+        흐름(shape — tdd-engineer가 red→green으로 채운다):
+          ① SSO 모드 가드 — `oidc_provider` 미주입이면 404(SSO 비활성·이 엔드포인트 없음).
+          ② `oidc_provider.verify(req.id_token)` → `OidcClaims`. 검증 실패
+             (`OidcVerificationError`)는 401(증명 실패).
+          ③ `resolve_identity(claims, registry)` → registry user_id(verified email 매핑·
+             email_verified 가드·0매칭 거부). 매핑 실패도 401(증명은 됐으나 우리 신원 아님).
+          ④ 그 user_id를 *기존 세션 키*(`_SESSION_USER_KEY`)에 박는다 → 이후 `_session_identity`·
+             운영 스코프·concur·빌더 OKF 커밋 author 전부 무변경 재사용(ADR 0021 결정 5 —
+             신원 출처가 세션으로 격리돼 있어 박기 전 검증만 바뀐다).
+        """
+        if _oidc_provider is None:
+            raise HTTPException(status_code=404, detail="SSO 비활성 — oidc_provider 미주입")
+        try:
+            claims = _oidc_provider.verify(req.id_token)
+            user_id = resolve_identity(claims, bundle.registry)
+        except OidcVerificationError as exc:
+            raise HTTPException(status_code=401, detail=f"SSO 신원 증명 실패: {exc}")
+        request.session[_SESSION_USER_KEY] = user_id
+        return {"ok": True, "user_id": user_id}
 
     @app.post("/logout")
     def logout(request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]

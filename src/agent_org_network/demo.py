@@ -55,13 +55,16 @@ DEMO_OKF_ROOT = Path(__file__).resolve().parent.parent.parent / "okf"
 # 호출 시점에 치환이 반영된다.
 _DEFAULT_AUDIT_LOG_PATH = Path("logs/audit.jsonl")
 
+# 데모 User 6명. email은 SSO 매핑 baseline의 키(T7.1·ADR 0021 결정 3 — verified email →
+# 이 User). single tenant 사내 가정이라 한 회사 도메인(example.com)을 쓴다. 매핑은 User.email이
+# SSOT이고 resolve_identity가 verified email == user.email로 잇는다.
 _USERS: tuple[User, ...] = (
-    User(id=ROOT_USER),
-    User(id="legal_lead", manager=ROOT_USER),
-    User(id="cs_lead", manager=ROOT_USER),
-    User(id="finance_lead", manager=ROOT_USER),
-    User(id="hr_lead", manager=ROOT_USER),
-    User(id="it_lead", manager=ROOT_USER),
+    User(id=ROOT_USER, email="root.manager@example.com"),
+    User(id="legal_lead", manager=ROOT_USER, email="legal.lead@example.com"),
+    User(id="cs_lead", manager=ROOT_USER, email="cs.lead@example.com"),
+    User(id="finance_lead", manager=ROOT_USER, email="finance.lead@example.com"),
+    User(id="hr_lead", manager=ROOT_USER, email="hr.lead@example.com"),
+    User(id="it_lead", manager=ROOT_USER, email="it.lead@example.com"),
 )
 
 _CARDS: tuple[AgentCard, ...] = (

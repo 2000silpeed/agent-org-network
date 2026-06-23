@@ -337,8 +337,9 @@ class StalenessPropagator:
                 )
             )
             # 실시간 push 발화(T7.4·ADR 0022 결정 4) — 적재 직후 1회. notifier 미주입이면
-            # 실행 경로 밖(게이트 보존). 본동작은 tdd-engineer red→green(슬라이스 3).
-            self._push_reeval_notification(owner_id, intent, now)
+            # 실행 경로 밖(게이트 보존). subject_ref에 "precedent:" prefix(m1 — Answer 축과
+            # 충돌 방지: 같은 kind="reeval_flagged"라 intent가 순수 숫자면 멱등 키 충돌 가능).
+            self._push_reeval_notification(owner_id, f"precedent:{intent}", now)
 
         # ② Answer 축: audit 순회 — dict 접근 (ADR 0019 결정 2② 주의)
         records = self._audit_reader.records()
@@ -373,8 +374,9 @@ class StalenessPropagator:
                 )
             )
             # 실시간 push 발화(T7.4·ADR 0022 결정 4) — 적재 직후 1회. notifier 미주입이면
-            # 실행 경로 밖(게이트 보존). 본동작은 tdd-engineer red→green(슬라이스 3).
-            self._push_reeval_notification(owner_id_raw, subject_ref, now)
+            # 실행 경로 밖(게이트 보존). subject_ref에 "answer:" prefix(m1 — Precedent 축과
+            # 충돌 방지: subject_ref가 순수 숫자면 precedent intent와 멱등 키 우연 충돌 가능).
+            self._push_reeval_notification(owner_id_raw, f"answer:{subject_ref}", now)
 
     def _push_reeval_notification(
         self, owner_id: str, subject_ref: str, now: datetime

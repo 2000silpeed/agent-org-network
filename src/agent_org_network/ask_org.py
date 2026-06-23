@@ -19,6 +19,7 @@ from agent_org_network.runtime import AnswerMode
 from agent_org_network.user import User
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.notify import Notifier
     from agent_org_network.review import BackupReview, BackupReviewItem, BackupReviewStore
@@ -286,6 +287,28 @@ class AskOrg:
         svc = BackupReviewService(self._review_store)
         svc.review(item_id, review)
 
+    def _push_manager_notification(self, manager_id: str, subject_ref: str, now: "datetime") -> None:
+        """Manager 큐 적재 직후 manager에게 push 통지를 1회 쏜다(T7.4·ADR 0022 결정 4).
+
+        `notifier` 미주입이면 *아무것도 안 한다*(하위호환·게이트 보존). 비None이면
+        `Notification(kind="manager_escalated")` 1회 push — `_push_conflict_notification`과
+        동형. `manager_id`가 빈 문자열이면 push 안 함(미귀속 가드 — 처리함 pull이 떠받침).
+        """
+        if self._notifier is None:
+            return
+        if not manager_id:
+            return
+        from agent_org_network.notify import Notification
+
+        self._notifier.notify(
+            Notification(
+                recipient_id=manager_id,
+                kind="manager_escalated",
+                subject_ref=subject_ref,
+                created_at=now,
+            )
+        )
+
     def _enqueue_unowned(self, decision: Unowned, question: str) -> None:
         """Unowned → Manager 큐 적재(T5.2). 미주입이면 no-op(하위호환)."""
         if self._manager_queue_store is None:
@@ -304,6 +327,7 @@ class AskOrg:
             created_at=self._clock(),
         )
         self._manager_queue_store.enqueue(item)
+        self._push_manager_notification(mid, item.item_id, item.created_at)
 
     def _enqueue_dispatch(self, outcome: EscalatedToManager) -> None:
         """EscalatedToManager → Manager 큐 적재(T5.2). 미주입이면 no-op."""
@@ -323,6 +347,7 @@ class AskOrg:
             created_at=self._clock(),
         )
         self._manager_queue_store.enqueue(item)
+        self._push_manager_notification(mid, item.item_id, item.created_at)
 
     def enqueue_deadlock(self, case: ConflictCase, reason: str = "") -> None:
         """Deadlocked → Manager 큐 적재(T5.2). web/concur 엔드포인트가 호출한다.
@@ -355,6 +380,7 @@ class AskOrg:
             created_at=self._clock(),
         )
         self._manager_queue_store.enqueue(item)
+        self._push_manager_notification(mid, item.item_id, item.created_at)
 
     def handle(self, question: str, user: User) -> OrgReply:
         decision = self._router.route(question)

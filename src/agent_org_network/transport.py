@@ -41,6 +41,7 @@ from agent_org_network.dispatch import (
 if TYPE_CHECKING:
     # 어댑터 시그니처 예고용 — 런타임 import 순환을 피해 타입 체크 시에만 끌어온다.
     from agent_org_network.agent_card import AgentCard
+    from agent_org_network.notify import Notifier
     from agent_org_network.review import BackupReviewStore
     from agent_org_network.runtime import Answer
 
@@ -264,6 +265,7 @@ class WebSocketDispatcher:
         queue: InMemoryWorkQueueDispatcher | None = None,
         staleness_threshold: timedelta | None = None,
         review_store: "BackupReviewStore | None" = None,
+        notifier: "Notifier | None" = None,
     ) -> None:
         # 작업 큐 도메인은 합성으로 재사용 — 큐 상태기계·단조 종착·timeout escalation은
         # 이 객체가 소유한다(WS는 그 위 전송층). 주입 가능하게 둬 결정론 테스트가 고정
@@ -295,6 +297,9 @@ class WebSocketDispatcher:
         # 종착될 때 여기에 BackupReviewItem을 add한다 — "mode=backup 강제 하향"과 한 사건의
         # 두 면. 미주입이면 None(하위호환 — 검토 루프 없이 동작).
         self._review_store = review_store
+        # 실시간 push 통지(T7.4·ADR 0022 결정 4) — backup 답 종착 직후 owner에게 push.
+        # 미주입이면 기존 동작(하위호환·게이트 보존). 비None이면 review_store.add 직후 발화.
+        self._notifier = notifier
 
     # ── 중앙측(질문 측): 내부 큐에 위임 ──────────────────────────────────────
 
@@ -424,6 +429,30 @@ class WebSocketDispatcher:
         # 멱등: 이미 동일 item_id로 추가된 항목이 있으면 건너뛴다.
         if self._review_store.get(ticket_id) is None:
             self._review_store.add(item)
+            self._push_backup_review_notification(item.owner_id, item.item_id, item.answered_at)
+
+    def _push_backup_review_notification(
+        self, owner_id: str, item_id: str, answered_at: datetime
+    ) -> None:
+        """BackupReviewItem add 직후 owner에게 push 통지를 1회 쏜다(T7.4·ADR 0022 결정 4).
+
+        `notifier` 미주입이면 *아무것도 안 한다*(하위호환·게이트 보존). `owner_id`가 빈
+        문자열이면 push 안 함(미귀속 가드 — 처리함 pull이 떠받침).
+        """
+        if self._notifier is None:
+            return
+        if not owner_id:
+            return
+        from agent_org_network.notify import Notification
+
+        self._notifier.notify(
+            Notification(
+                recipient_id=owner_id,
+                kind="backup_review_added",
+                subject_ref=item_id,
+                created_at=answered_at,
+            )
+        )
 
     # ── WS 연결 생명주기(중앙 핸들러가 호출) ─────────────────────────────────
 

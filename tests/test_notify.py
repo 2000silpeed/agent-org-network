@@ -472,3 +472,448 @@ class TestSlice3ConflictNotification:
 
         cs_notifs = ch.for_recipient("cs_lead")
         assert len(cs_notifs) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 슬라이스 A — Manager enqueue 발화 (ask_org.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSliceAManagerNotification:
+    def _make_ask_org_with_manager(
+        self, notifier: "Notifier | None" = None
+    ) -> "tuple[Any, Any]":
+        from datetime import date
+
+        from agent_org_network.agent_card import AgentCard
+        from agent_org_network.ask_org import AskOrg
+        from agent_org_network.audit import InMemoryAuditLog
+        from agent_org_network.classifier import FakeClassifier
+        from agent_org_network.conflict import InMemoryConflictCaseStore
+        from agent_org_network.dispatch import LocalRuntimeDispatcher
+        from agent_org_network.manager_queue import InMemoryManagerQueueStore
+        from agent_org_network.registry import Registry
+        from agent_org_network.router import Router
+        from agent_org_network.runtime import StubRuntime
+        from agent_org_network.user import User
+
+        registry = Registry()
+        registry.register(
+            AgentCard(
+                agent_id="cs_ops",
+                owner="cs_lead",
+                team="ops",
+                summary="CS",
+                domains=["환불"],
+                last_reviewed_at=date(2026, 6, 20),
+            )
+        )
+        registry.register_user(User(id="cs_lead", email="cs@example.com"))
+
+        classifier = FakeClassifier("없는도메인")
+        router = Router(registry, classifier, root_user="root_manager")
+        manager_queue_store = InMemoryManagerQueueStore()
+        return (
+            AskOrg(
+                router=router,
+                dispatcher=LocalRuntimeDispatcher(StubRuntime()),
+                audit_log=InMemoryAuditLog(),
+                clock=_CLOCK,
+                case_store=InMemoryConflictCaseStore(),
+                manager_queue_store=manager_queue_store,
+                manager_root="root_manager",
+                notifier=notifier,
+            ),
+            manager_queue_store,
+        )
+
+    def test_Unowned_enqueue_후_manager에게_escalated_통지된다(self) -> None:
+        from agent_org_network.user import User
+
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"root_manager": ch})
+        ask_org, manager_queue_store = self._make_ask_org_with_manager(notifier=notifier)
+
+        user = User(id="user_1", email="user@example.com")
+        ask_org.handle("아무도_없는_도메인 문의", user)
+
+        items = manager_queue_store.pending_for_manager("root_manager")
+        assert len(items) == 1
+        notifs = ch.for_recipient("root_manager")
+        assert len(notifs) == 1
+        assert notifs[0].kind == "manager_escalated"
+        assert notifs[0].subject_ref == items[0].item_id
+        assert notifs[0].created_at == _TS
+
+    def test_Unowned_enqueue_notifier_미주입이면_통지_0(self) -> None:
+        from agent_org_network.user import User
+
+        ch = FakeChannel()
+        ask_org, manager_queue_store = self._make_ask_org_with_manager(notifier=None)
+
+        user = User(id="user_1", email="user@example.com")
+        ask_org.handle("아무도_없는_도메인 문의", user)
+
+        items = manager_queue_store.pending_for_manager("root_manager")
+        assert len(items) == 1
+        assert ch.delivered == []
+
+    def test_채널_실패해도_Manager_큐_적재_미아_없음(self) -> None:
+        from agent_org_network.user import User
+
+        class BrokenChannel:
+            def send(self, notification: Notification) -> None:
+                raise RuntimeError("채널 다운")
+
+        notifier = Notifier(subscriptions={"root_manager": BrokenChannel()})
+        ask_org, manager_queue_store = self._make_ask_org_with_manager(notifier=notifier)
+
+        user = User(id="user_1", email="user@example.com")
+        ask_org.handle("아무도_없는_도메인 문의", user)
+
+        items = manager_queue_store.pending_for_manager("root_manager")
+        assert len(items) == 1
+
+    def _make_ask_org_for_deadlock(
+        self, notifier: "Notifier | None" = None
+    ) -> "tuple[Any, Any, Any]":
+        from datetime import date
+
+        from agent_org_network.agent_card import AgentCard
+        from agent_org_network.ask_org import AskOrg
+        from agent_org_network.audit import InMemoryAuditLog
+        from agent_org_network.classifier import FakeClassifier
+        from agent_org_network.conflict import InMemoryConflictCaseStore
+        from agent_org_network.dispatch import LocalRuntimeDispatcher
+        from agent_org_network.manager_queue import InMemoryManagerQueueStore
+        from agent_org_network.registry import Registry
+        from agent_org_network.router import Router
+        from agent_org_network.runtime import StubRuntime
+        from agent_org_network.user import User
+
+        registry = Registry()
+        registry.register(
+            AgentCard(
+                agent_id="cs_ops",
+                owner="cs_lead",
+                team="ops",
+                summary="CS",
+                domains=["환불"],
+                last_reviewed_at=date(2026, 6, 20),
+            )
+        )
+        registry.register(
+            AgentCard(
+                agent_id="legal_ops",
+                owner="legal_lead",
+                team="legal",
+                summary="법무",
+                domains=["환불"],
+                last_reviewed_at=date(2026, 6, 20),
+            )
+        )
+        registry.register_user(User(id="cs_lead", email="cs@example.com"))
+        registry.register_user(User(id="legal_lead", email="legal@example.com"))
+
+        classifier = FakeClassifier("환불")
+        router = Router(registry, classifier, root_user="root_manager")
+        case_store = InMemoryConflictCaseStore()
+        manager_queue_store = InMemoryManagerQueueStore()
+        ask_org = AskOrg(
+            router=router,
+            dispatcher=LocalRuntimeDispatcher(StubRuntime()),
+            audit_log=InMemoryAuditLog(),
+            clock=_CLOCK,
+            case_store=case_store,
+            manager_queue_store=manager_queue_store,
+            manager_root="root_manager",
+            manager_of=lambda uid: None,
+            notifier=notifier,
+        )
+        return ask_org, case_store, manager_queue_store
+
+    def test_Deadlock_enqueue_후_manager에게_escalated_통지된다(self) -> None:
+        from agent_org_network.user import User
+
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"root_manager": ch})
+        ask_org, case_store, manager_queue_store = self._make_ask_org_for_deadlock(
+            notifier=notifier
+        )
+
+        user = User(id="user_1", email="user@example.com")
+        ask_org.handle("환불 문의", user)
+        cases = case_store.open_for_owner("cs_lead")
+        assert len(cases) == 1
+        case = cases[0]
+        ask_org.enqueue_deadlock(case, reason="교착")
+
+        items = manager_queue_store.pending_for_manager("root_manager")
+        assert len(items) == 1
+        notifs = ch.for_recipient("root_manager")
+        manager_notifs = [n for n in notifs if n.kind == "manager_escalated"]
+        assert len(manager_notifs) == 1
+        assert manager_notifs[0].subject_ref == items[0].item_id
+
+    def test_같은_case_deadlock_두_번_enqueue_통지는_1회(self) -> None:
+        from agent_org_network.user import User
+
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"root_manager": ch})
+        ask_org, case_store, manager_queue_store = self._make_ask_org_for_deadlock(
+            notifier=notifier
+        )
+
+        user = User(id="user_1", email="user@example.com")
+        ask_org.handle("환불 문의", user)
+        cases = case_store.open_for_owner("cs_lead")
+        case = cases[0]
+
+        ask_org.enqueue_deadlock(case, reason="교착1")
+        ask_org.enqueue_deadlock(case, reason="교착2")
+
+        items = manager_queue_store.pending_for_manager("root_manager")
+        assert len(items) == 1
+        manager_notifs = [n for n in ch.delivered if n.kind == "manager_escalated"]
+        assert len(manager_notifs) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 슬라이스 B — BackupReview add 발화 (transport.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSliceBBackupReviewNotification:
+    def _make_dispatcher(self, notifier: "Notifier | None" = None) -> "tuple[Any, Any]":
+        from agent_org_network.dispatch import InMemoryWorkQueueDispatcher
+        from agent_org_network.review import InMemoryBackupReviewStore
+        from agent_org_network.transport import WebSocketDispatcher
+
+        review_store = InMemoryBackupReviewStore()
+        dispatcher = WebSocketDispatcher(
+            clock=_CLOCK,
+            queue=InMemoryWorkQueueDispatcher(clock=_CLOCK),
+            review_store=review_store,
+            notifier=notifier,
+        )
+        return dispatcher, review_store
+
+    def _submit_backup_answer(self, dispatcher: "Any") -> "Any":
+        from datetime import date
+        from agent_org_network.agent_card import AgentCard
+        from agent_org_network.runtime import Answer
+        from agent_org_network.transport import RegisterWorker
+
+        card = AgentCard(
+            agent_id="cs_ops",
+            owner="cs_lead",
+            team="ops",
+            summary="CS",
+            domains=["환불"],
+            last_reviewed_at=date(2026, 6, 20),
+        )
+        ticket = dispatcher.dispatch("환불 문의", card)
+
+        send_frames: list[Any] = []
+
+        def send_backup(frame: Any) -> None:
+            send_frames.append(frame)
+
+        dispatcher.register(
+            RegisterWorker(owner_id="cs_lead", role="backup", token="tok"),
+            send_backup,
+        )
+
+        answer = Answer(text="백업 답", mode="full")
+        dispatcher.submit(ticket.ticket_id, answer)
+        return ticket
+
+    def test_backup_답_종착_후_owner에게_backup_review_added_통지된다(self) -> None:
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"cs_lead": ch})
+        dispatcher, review_store = self._make_dispatcher(notifier=notifier)
+
+        self._submit_backup_answer(dispatcher)
+
+        items = review_store.pending_for_owner("cs_lead")
+        assert len(items) == 1
+        notifs = ch.for_recipient("cs_lead")
+        assert len(notifs) == 1
+        assert notifs[0].kind == "backup_review_added"
+        assert notifs[0].subject_ref == items[0].item_id
+        assert notifs[0].created_at == _TS
+
+    def test_backup_답_종착_notifier_미주입이면_통지_0(self) -> None:
+        ch = FakeChannel()
+        dispatcher, review_store = self._make_dispatcher(notifier=None)
+
+        self._submit_backup_answer(dispatcher)
+
+        items = review_store.pending_for_owner("cs_lead")
+        assert len(items) == 1
+        assert ch.delivered == []
+
+    def test_채널_실패해도_BackupReview_적재_미아_없음(self) -> None:
+        class BrokenChannel:
+            def send(self, notification: Notification) -> None:
+                raise RuntimeError("채널 다운")
+
+        notifier = Notifier(subscriptions={"cs_lead": BrokenChannel()})
+        dispatcher, review_store = self._make_dispatcher(notifier=notifier)
+
+        self._submit_backup_answer(dispatcher)
+
+        items = review_store.pending_for_owner("cs_lead")
+        assert len(items) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 슬라이스 C — m1: reeval 발화 subject_ref 축 네임스페이스 (reeval.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _make_fixed_audit(entries: "list[dict[str, Any]]") -> Any:
+    class _FixedAudit:
+        def records(self) -> "list[dict[str, Any]]":
+            return entries
+
+        def record_at(self, index: int) -> "dict[str, Any] | None":
+            if 0 <= index < len(entries):
+                return entries[index]
+            return None
+
+    return _FixedAudit()
+
+
+def _routed_audit_record(
+    agent_id: str = "cs_ops",
+    owner: str = "cs_lead",
+    snapshot_sha: str | None = "sha_old",
+) -> "dict[str, Any]":
+    answer: "dict[str, Any]" = {"text": "기존 답", "mode": "full", "sources": []}
+    if snapshot_sha is not None:
+        answer["snapshot_sha"] = snapshot_sha
+    return {
+        "timestamp": "2026-06-24T09:00:00+00:00",
+        "user_id": "user_1",
+        "question": "환불 문의",
+        "intent": "refund_policy",
+        "decision": {
+            "disposition": "routed",
+            "primary": agent_id,
+            "owner": owner,
+            "confidence": 0.9,
+            "reason": "판례",
+            "requires_approval": False,
+            "collaborators": [],
+        },
+        "answer": answer,
+        "dispatch": {"disposition": "delivered"},
+    }
+
+
+class TestSliceCReevalSubjectRefNamespace:
+    def _make_propagator_with_audit(
+        self, intent: str = "refund_policy", notifier: "Notifier | None" = None
+    ) -> "tuple[Any, Any]":
+        from agent_org_network.conflict import InMemoryPrecedentStore, Resolution
+        from agent_org_network.reeval import InMemoryReevalStore, StalenessPropagator
+
+        audit = _make_fixed_audit([_routed_audit_record()])
+        precedents = InMemoryPrecedentStore()
+        precedents.record(Resolution(intent=intent, primary="cs_ops"))
+        reeval_store = InMemoryReevalStore()
+        propagator = StalenessPropagator(
+            precedents=precedents,
+            audit_reader=audit,
+            reeval_store=reeval_store,
+            owner_of=lambda agent_id: "cs_lead",
+            clock=_CLOCK,
+            notifier=notifier,
+        )
+        return propagator, reeval_store
+
+    def test_Precedent_축_통지_subject_ref에_precedent_prefix가_붙는다(self) -> None:
+        from agent_org_network.git_gateway import OkfChangeEvent
+
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"cs_lead": ch})
+        propagator, _ = self._make_propagator_with_audit(notifier=notifier)
+
+        event = OkfChangeEvent(
+            agent_id="cs_ops",
+            new_sha="sha_new",
+            parent_sha=None,
+            changed_paths=("policy.md",),
+            author="builder",
+            committed_at=_TS,
+        )
+        propagator.on_okf_committed(event)
+
+        notifs = ch.for_recipient("cs_lead")
+        precedent_notifs = [n for n in notifs if n.subject_ref.startswith("precedent:")]
+        assert len(precedent_notifs) >= 1
+        assert precedent_notifs[0].subject_ref == "precedent:refund_policy"
+
+    def test_Answer_축_통지_subject_ref에_answer_prefix가_붙는다(self) -> None:
+        from agent_org_network.git_gateway import OkfChangeEvent
+
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"cs_lead": ch})
+        propagator, _ = self._make_propagator_with_audit(notifier=notifier)
+
+        event = OkfChangeEvent(
+            agent_id="cs_ops",
+            new_sha="sha_new",
+            parent_sha=None,
+            changed_paths=("policy.md",),
+            author="builder",
+            committed_at=_TS,
+        )
+        propagator.on_okf_committed(event)
+
+        notifs = ch.for_recipient("cs_lead")
+        answer_notifs = [n for n in notifs if n.subject_ref.startswith("answer:")]
+        assert len(answer_notifs) >= 1
+        assert answer_notifs[0].subject_ref == "answer:0"
+
+    def test_intent가_숫자_문자열이어도_Precedent_Answer_축_멱등_충돌_없이_둘_다_발화된다(
+        self,
+    ) -> None:
+        """m1 핵심: intent="0", Answer subject_ref="0"이 같아도 prefix로 충돌 방지 — 통지 2통."""
+        from agent_org_network.conflict import InMemoryPrecedentStore, Resolution
+        from agent_org_network.git_gateway import OkfChangeEvent
+        from agent_org_network.reeval import InMemoryReevalStore, StalenessPropagator
+
+        audit = _make_fixed_audit(
+            [_routed_audit_record(agent_id="cs_ops", owner="cs_lead", snapshot_sha="sha_old")]
+        )
+        precedents = InMemoryPrecedentStore()
+        precedents.record(Resolution(intent="0", primary="cs_ops"))
+        reeval_store = InMemoryReevalStore()
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"cs_lead": ch})
+        propagator = StalenessPropagator(
+            precedents=precedents,
+            audit_reader=audit,
+            reeval_store=reeval_store,
+            owner_of=lambda agent_id: "cs_lead",
+            clock=_CLOCK,
+            notifier=notifier,
+        )
+
+        event = OkfChangeEvent(
+            agent_id="cs_ops",
+            new_sha="sha_new",
+            parent_sha=None,
+            changed_paths=("policy.md",),
+            author="builder",
+            committed_at=_TS,
+        )
+        propagator.on_okf_committed(event)
+
+        notifs = ch.for_recipient("cs_lead")
+        assert len(notifs) == 2
+        subject_refs = {n.subject_ref for n in notifs}
+        assert "precedent:0" in subject_refs
+        assert "answer:0" in subject_refs

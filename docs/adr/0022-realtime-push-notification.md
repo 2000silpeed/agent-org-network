@@ -1,6 +1,6 @@
 # 실시간 충돌 푸시 통지 — 처리함·큐에 항목이 *적재되는 사건*에서 채널 중립 push를 한 번 쏜다, pull은 그대로 남아 미아 없음을 이중 보장한다
 
-상태: accepted (2026-06-23) · **구현 완료(tdd-engineer red→green 슬라이스 1~3 + code-reviewer 수정[M1 빈 owner_id 가드] — 757 passed/pyright 0/ruff 0; 나머지 발화 지점[BackupReview·Manager]·실 어댑터·실 비동기 전달은 게이트 밖 후속)** · **ADR 0017 결정 6④의 본체**("충돌·검토·escalation을 Slack/메일/MCP 알림으로 *push*[지금은 조회(pull)뿐]" — ADR 0017:62·76이 "실시간 충돌 푸시 통지"를 Phase 7 ④로 미룬 것을 이 ADR이 닫는다) · **ADR 0019 결정 5의 연장**("owner nudge = 처리함 pull 재사용·실시간 push는 T7.4" — ADR 0019:99·147이 자리만 연 push를 본체로 채움; `StalenessPropagator`의 `propagator=None` 옵셔널 주입이 이 ADR 발화의 본보기) · **ADR 0011·0012 인프라의 *패턴* 재활용**(멱등 `ticket_id`·at-least-once 정신만 — 코드 재사용 아님, 아래 결정 5) · ADR 0008(ConflictCase 처리함)·ADR 0014(Manager 큐 수렴)와 정합 · Phase 7 T7.4의 설계·shape를 닫는다.
+상태: accepted (2026-06-23) · **구현 완료(tdd-engineer red→green — 발화 지점 4개 전부[ConflictCase·Reeval·Manager·BackupReview] + m1 subject_ref 네임스페이스 + code-reviewer 수정[M1 빈 귀속 가드·Minor1 clock 단일 시점] — 768 passed/pyright 0/ruff 0; 실 채널 어댑터·실 비동기 전달·동적 구독은 게이트 밖 후속)** · **ADR 0017 결정 6④의 본체**("충돌·검토·escalation을 Slack/메일/MCP 알림으로 *push*[지금은 조회(pull)뿐]" — ADR 0017:62·76이 "실시간 충돌 푸시 통지"를 Phase 7 ④로 미룬 것을 이 ADR이 닫는다) · **ADR 0019 결정 5의 연장**("owner nudge = 처리함 pull 재사용·실시간 push는 T7.4" — ADR 0019:99·147이 자리만 연 push를 본체로 채움; `StalenessPropagator`의 `propagator=None` 옵셔널 주입이 이 ADR 발화의 본보기) · **ADR 0011·0012 인프라의 *패턴* 재활용**(멱등 `ticket_id`·at-least-once 정신만 — 코드 재사용 아님, 아래 결정 5) · ADR 0008(ConflictCase 처리함)·ADR 0014(Manager 큐 수렴)와 정합 · Phase 7 T7.4의 설계·shape를 닫는다.
 
 ## 맥락 — 끊어진 고리 하나
 
@@ -149,5 +149,5 @@ ADR 0017 결정 6은 "충돌이 실시간으로 owner에게 가고, 정리되면
 - **동적 구독** — `SubscriptionStore` 포트 승격·구독 관리 UI·다중 채널 fan-out.
 - **rate limit·배치·읽음 표시** — 통지 빈도 제한·다발 묶기·읽음 상태.
 - **실시간 WS/SSE push** — 운영 면 브라우저 실시간 푸시(사용자向 푸시와 같은 영역·ADR 0011 결정 6-5 범위 밖의 연장).
-- **나머지 발화 지점** — BackupReview add·Manager enqueue 발화는 ConflictCase·Reeval 슬라이스 후 같은 패턴 확장.
-- **reeval 두 축 subject_ref 멱등 충돌(code-reviewer m1)** — Precedent 축(`subject_ref=intent`)과 Answer 축(`subject_ref=audit 인덱스 str(idx)`)이 같은 `kind="reeval_flagged"`를 써, intent가 순수 숫자 문자열이면 멱등 키 `(recipient, kind, subject_ref)`가 우연 충돌해 한쪽 통지가 silent skip될 수 있다(오탐 가능성 높음 — intent는 보통 자연어 라우팅 키라 실무 위험 0에 가까움). MVP 수용, 후속에 subject_ref 축 네임스페이스(`precedent:`/`answer:` 접두) 또는 kind 분리로 정밀화.
+- **나머지 발화 지점 — 닫힘(2026-06-23)**: BackupReview add(`transport.py` backup 답 종착→owner에게 `backup_review_added`)·Manager enqueue(`ask_org.py` unowned·dispatch·deadlock 세 경로→manager에게 `manager_escalated`) 발화 구현 완료. 발화 지점 4개 전부(ConflictCase·Reeval·Manager·BackupReview)가 같은 `Notifier.notify` 인터페이스를 탄다.
+- **reeval 두 축 subject_ref 멱등 충돌(code-reviewer m1) — 닫힘(2026-06-23)**: 통지 subject_ref에 축 네임스페이스(`precedent:{intent}`/`answer:{idx}`)를 붙여 멱등 키 충돌을 차단했다(intent="0"·idx=0이어도 `precedent:0`≠`answer:0`). `ReevalItem.subject_ref` 도메인 값은 무변경(통지 인자에만 prefix). kind 분리(대안)는 NotificationKind 4종을 유지하려 채택 안 함.

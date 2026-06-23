@@ -20,6 +20,7 @@ from agent_org_network.user import User
 
 if TYPE_CHECKING:
     from agent_org_network.manager_queue import ManagerQueueStore
+    from agent_org_network.notify import Notifier
     from agent_org_network.review import BackupReview, BackupReviewItem, BackupReviewStore
 
 
@@ -91,6 +92,7 @@ class AskOrg:
         manager_queue_store: "ManagerQueueStore | None" = None,
         manager_of: "Callable[[str], str | None] | None" = None,
         manager_root: str = "root",
+        notifier: "Notifier | None" = None,
     ) -> None:
         # [Minor 2] manager_root 기본값 "root" 주의: 데모의 실제 root는 "root_manager".
         # manager_queue_store 를 주입할 때 manager_root 도 함께 주입하지 않으면
@@ -112,6 +114,10 @@ class AskOrg:
         # 기본값 "root"는 하위호환용이며 실제 root id 와 다를 수 있다.
         # manager_queue_store 주입 시 manager_root 도 반드시 주입할 것.
         self._manager_root = manager_root
+        # 실시간 push 통지(T7.4·ADR 0022 결정 4) — 처리함/큐 적재 직후 push 발화. 미주입이면
+        # 기존 동작(하위호환·게이트 보존 — push는 pull을 *추가*하지 대체하지 않는다). MVP 슬라이스
+        # 발화 지점은 ConflictCase open(Contested arm)·Manager escalation 적재(나머지 확장은 후속).
+        self._notifier = notifier
         # 답 회수용 불투명 추적 토큰 → WorkTicket 매핑(ADR 0011 결정 6-5). 서버가
         # ticket을 보관하고 사용자엔 *불투명 토큰만* 준다 — 사용자向 응답에 ticket_id·
         # owner 등 내부 구조가 새지 않게 한다(노출 불변식). 토큰은 uuid4 hex(미인코딩).
@@ -402,6 +408,10 @@ class AskOrg:
                         opened_at=self._clock(),
                     )
                     self._case_store.open_case(case)
+                    # 실시간 push 발화(T7.4·ADR 0022 결정 4) — 다툼 적재 직후 후보 owner들에게
+                    # push 통지를 쏜다(처리함 pull 전에도 알리게). notifier 미주입이면 실행 경로
+                    # 밖(게이트 보존). 본동작은 tdd-engineer red→green(슬라이스 3).
+                    self._push_conflict_notification(case)
             case Unowned():
                 reply = Pending(
                     kind="unowned",
@@ -420,3 +430,33 @@ class AskOrg:
             )
         )
         return reply
+
+    def _push_conflict_notification(self, case: ConflictCase) -> None:
+        """ConflictCase open 직후 후보 owner들에게 push 통지를 쏜다(T7.4·ADR 0022 결정 4).
+
+        `notifier` 미주입이면 *아무것도 안 한다*(하위호환·게이트 보존 — 기존 호출은 notifier를
+        주입하지 않아 이 본문이 실행되지 않는다). 비None이면 각 후보 owner에게
+        `Notification(kind="conflict_opened", subject_ref=case.case_id)`를 `notifier.notify`로
+        push한다 — 후보 owner가 처리함 pull로 알기 전에 push로도 알린다(push는 pull을 *추가*하지
+        대체하지 않는다·미아 없음은 pull이 떠받친다·결정 6). 멱등은 Notifier가 담당
+        (`(recipient, kind, subject_ref)` 중복 발송 차단 — 같은 case에 두 번째 질문이 와도 한 번).
+
+        **현재는 발화 자리만(미구현 통과 stub)** — 실 Notification 구성·notify 호출 본문은
+        tdd-engineer가 red→green으로 채운다(슬라이스 3). `commit_okf_bundle(..., propagator=None)`
+        의 옵셔널 발화와 동형.
+        """
+        if self._notifier is None:
+            return
+        from agent_org_network.notify import Notification
+
+        now = self._clock()
+        candidate_owners = dict.fromkeys(c.owner for c in case.candidates)
+        for owner_id in candidate_owners:
+            self._notifier.notify(
+                Notification(
+                    recipient_id=owner_id,
+                    kind="conflict_opened",
+                    subject_ref=case.case_id,
+                    created_at=now,
+                )
+            )

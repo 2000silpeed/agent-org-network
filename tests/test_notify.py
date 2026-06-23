@@ -1,0 +1,474 @@
+"""T7.4 슬라이스 1~3 — 실시간 충돌 푸시 통지 결정론 테스트 (ADR 0022).
+
+전부 결정론: FakeChannel(in-memory inbox)·주입 clock·주입 구독 맵.
+실 네트워크·실 채널·실 LLM 0.
+
+커버 범위:
+  슬라이스 1 (FakeChannel.send / for_recipient):
+    - send → inbox 적재·delivered 누적
+    - 여러 recipient 격리
+    - 같은 recipient 복수 통지 순서
+  슬라이스 2 (Notifier.notify):
+    - 구독 recipient → send 도달
+    - 미구독 recipient → skip(send 0회)
+    - 멱등: 같은 (recipient,kind,subject_ref) 두 번 → send 1회
+    - 다른 subject_ref는 각각 send
+    - 채널 send 예외 → Notifier가 삼킴(다른 통지 계속)
+    - 실패 후 재시도(멱등 키 미기록 확인)
+  슬라이스 3 (발화 지점):
+    - reeval: OKF 커밋→StalenessPropagator(notifier 주입)→ReevalItem 적재 + owner 통지
+    - reeval: notifier 미주입 → 적재만(통지 0)
+    - reeval: 멱등(같은 발화 두 번 → 통지 1회)
+    - conflict: Contested→ask_org(notifier 주입)→ConflictCase open + 후보 owner 통지
+    - conflict: notifier 미주입 → 통지 0
+    - conflict: 채널 실패해도 처리함 적재(미아 없음 회귀)
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from agent_org_network.notify import (
+    FakeChannel,
+    Notification,
+    Notifier,
+)
+
+_TS = datetime(2026, 6, 23, 9, 0, 0, tzinfo=timezone.utc)
+_CLOCK = lambda: _TS  # noqa: E731
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 슬라이스 1 — FakeChannel
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _notif(
+    recipient_id: str = "owner_a",
+    kind: str = "reeval_flagged",
+    subject_ref: str = "intent_a",
+) -> Notification:
+    return Notification(
+        recipient_id=recipient_id,
+        kind=kind,  # type: ignore[arg-type]
+        subject_ref=subject_ref,
+        created_at=_TS,
+    )
+
+
+class TestSlice1FakeChannel:
+    def test_send_후_for_recipient로_조회된다(self) -> None:
+        ch = FakeChannel()
+        n = _notif("alice")
+        ch.send(n)
+        assert ch.for_recipient("alice") == [n]
+
+    def test_send_후_delivered에_누적된다(self) -> None:
+        ch = FakeChannel()
+        n = _notif("alice")
+        ch.send(n)
+        assert ch.delivered == [n]
+
+    def test_여러_recipient_격리된다(self) -> None:
+        ch = FakeChannel()
+        na = _notif("alice")
+        nb = _notif("bob")
+        ch.send(na)
+        ch.send(nb)
+        assert ch.for_recipient("alice") == [na]
+        assert ch.for_recipient("bob") == [nb]
+
+    def test_같은_recipient_복수_통지_순서_보존(self) -> None:
+        ch = FakeChannel()
+        n1 = _notif("alice", subject_ref="ref_1")
+        n2 = _notif("alice", subject_ref="ref_2")
+        ch.send(n1)
+        ch.send(n2)
+        assert ch.for_recipient("alice") == [n1, n2]
+
+    def test_미전달_recipient_빈_리스트(self) -> None:
+        ch = FakeChannel()
+        assert ch.for_recipient("nobody") == []
+
+    def test_delivered는_전체_누적(self) -> None:
+        ch = FakeChannel()
+        n1 = _notif("alice")
+        n2 = _notif("bob")
+        ch.send(n1)
+        ch.send(n2)
+        assert ch.delivered == [n1, n2]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 슬라이스 2 — Notifier.notify
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSlice2Notifier:
+    def test_구독된_recipient는_send_도달한다(self) -> None:
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"alice": ch})
+        n = _notif("alice")
+        notifier.notify(n)
+        assert ch.for_recipient("alice") == [n]
+
+    def test_미구독_recipient는_send_호출_0회(self) -> None:
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"alice": ch})
+        n = _notif("bob")
+        notifier.notify(n)
+        assert ch.delivered == []
+
+    def test_같은_키_두_번_notify는_send_1회(self) -> None:
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"alice": ch})
+        n = _notif("alice", kind="reeval_flagged", subject_ref="ref_x")
+        notifier.notify(n)
+        notifier.notify(n)
+        assert len(ch.for_recipient("alice")) == 1
+
+    def test_다른_subject_ref는_각각_send된다(self) -> None:
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"alice": ch})
+        n1 = _notif("alice", subject_ref="ref_1")
+        n2 = _notif("alice", subject_ref="ref_2")
+        notifier.notify(n1)
+        notifier.notify(n2)
+        assert len(ch.for_recipient("alice")) == 2
+
+    def test_채널_send_예외를_Notifier가_삼킨다(self) -> None:
+        class BrokenChannel:
+            def send(self, notification: Notification) -> None:
+                raise RuntimeError("채널 다운")
+
+        notifier = Notifier(subscriptions={"alice": BrokenChannel()})
+        n = _notif("alice")
+        notifier.notify(n)  # 예외가 전파되지 않아야 한다
+
+    def test_채널_예외_후_다른_통지는_계속된다(self) -> None:
+        class BrokenChannel:
+            def send(self, notification: Notification) -> None:
+                raise RuntimeError("채널 다운")
+
+        ch_good = FakeChannel()
+        notifier = Notifier(
+            subscriptions={"alice": BrokenChannel(), "bob": ch_good}
+        )
+        notifier.notify(_notif("alice"))
+        notifier.notify(_notif("bob"))
+        assert len(ch_good.for_recipient("bob")) == 1
+
+    def test_send_실패_후_재시도_시_멱등_키_미기록이라_재전송된다(self) -> None:
+        """send 실패 시 멱등 키를 기록하지 않아야 다음 발화에 재시도된다."""
+        call_count = 0
+
+        class UnreliableChannel:
+            def send(self, notification: Notification) -> None:
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise RuntimeError("첫 번째 실패")
+
+        notifier = Notifier(subscriptions={"alice": UnreliableChannel()})
+        n = _notif("alice")
+        notifier.notify(n)  # 첫 실패 — 삼킴
+        notifier.notify(n)  # 두 번째: 멱등 키 없으면 재시도
+        assert call_count == 2
+
+    def test_구독_없이_Notifier_생성_가능(self) -> None:
+        notifier = Notifier()
+        n = _notif("alice")
+        notifier.notify(n)  # 오류 없이 skip
+
+    def test_같은_recipient_다른_kind는_각각_send된다(self) -> None:
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"alice": ch})
+        n1 = _notif("alice", kind="reeval_flagged", subject_ref="ref_x")
+        n2 = _notif("alice", kind="conflict_opened", subject_ref="ref_x")
+        notifier.notify(n1)
+        notifier.notify(n2)
+        assert len(ch.for_recipient("alice")) == 2
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 슬라이스 3 — 발화 지점: reeval.py StalenessPropagator
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSlice3ReevalNotification:
+    def _make_propagator(self, notifier: Notifier | None = None) -> Any:
+        from agent_org_network.conflict import (
+            InMemoryPrecedentStore,
+            Resolution,
+        )
+        from agent_org_network.audit import InMemoryAuditLog
+        from agent_org_network.reeval import InMemoryReevalStore, StalenessPropagator
+
+        precedents = InMemoryPrecedentStore()
+        precedents.record(Resolution(intent="refund_policy", primary="cs_ops"))
+        reeval_store = InMemoryReevalStore()
+        audit = InMemoryAuditLog()
+        return (
+            StalenessPropagator(
+                precedents=precedents,
+                audit_reader=audit,
+                reeval_store=reeval_store,
+                owner_of=lambda agent_id: "cs_lead",
+                clock=_CLOCK,
+                notifier=notifier,
+            ),
+            reeval_store,
+        )
+
+    def test_notifier_주입_시_ReevalItem_적재_및_owner_통지된다(self) -> None:
+        from agent_org_network.git_gateway import OkfChangeEvent
+
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"cs_lead": ch})
+        propagator, reeval_store = self._make_propagator(notifier=notifier)
+
+        event = OkfChangeEvent(
+            agent_id="cs_ops",
+            new_sha="sha_new",
+            parent_sha=None,
+            changed_paths=("policy.md",),
+            author="builder",
+            committed_at=_TS,
+        )
+        propagator.on_okf_committed(event)
+
+        pending = reeval_store.pending_for_owner("cs_lead")
+        assert len(pending) == 1
+        notifications = ch.for_recipient("cs_lead")
+        assert len(notifications) == 1
+        assert notifications[0].kind == "reeval_flagged"
+        assert notifications[0].recipient_id == "cs_lead"
+        assert notifications[0].created_at == _TS
+
+    def test_notifier_미주입이면_적재만_통지_0(self) -> None:
+        from agent_org_network.git_gateway import OkfChangeEvent
+
+        ch = FakeChannel()
+        propagator, reeval_store = self._make_propagator(notifier=None)
+
+        event = OkfChangeEvent(
+            agent_id="cs_ops",
+            new_sha="sha_new",
+            parent_sha=None,
+            changed_paths=("policy.md",),
+            author="builder",
+            committed_at=_TS,
+        )
+        propagator.on_okf_committed(event)
+
+        pending = reeval_store.pending_for_owner("cs_lead")
+        assert len(pending) == 1
+        assert ch.delivered == []
+
+    def test_같은_발화_두_번_통지는_1회(self) -> None:
+        from agent_org_network.git_gateway import OkfChangeEvent
+        from agent_org_network.conflict import (
+            InMemoryPrecedentStore,
+            Resolution,
+        )
+        from agent_org_network.audit import InMemoryAuditLog
+        from agent_org_network.reeval import InMemoryReevalStore, StalenessPropagator
+
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"cs_lead": ch})
+
+        precedents = InMemoryPrecedentStore()
+        precedents.record(Resolution(intent="refund_policy", primary="cs_ops"))
+        reeval_store = InMemoryReevalStore()
+        audit = InMemoryAuditLog()
+        propagator = StalenessPropagator(
+            precedents=precedents,
+            audit_reader=audit,
+            reeval_store=reeval_store,
+            owner_of=lambda agent_id: "cs_lead",
+            clock=_CLOCK,
+            notifier=notifier,
+        )
+
+        event = OkfChangeEvent(
+            agent_id="cs_ops",
+            new_sha="sha_new",
+            parent_sha=None,
+            changed_paths=("policy.md",),
+            author="builder",
+            committed_at=_TS,
+        )
+        propagator.on_okf_committed(event)
+        # 두 번째 — 판례는 이미 needs_review라 ReevalItem 적재 skip → 통지 발화도 skip
+        propagator.on_okf_committed(event)
+
+        assert len(ch.for_recipient("cs_lead")) == 1
+
+    def test_owner_of_None이면_미귀속이라_통지_0(self) -> None:
+        """owner_of가 None을 반환(미귀속)하면 recipient_id가 빈 문자열이라 push 0 —
+        처리함 적재는 그대로다(M1 가드·미아 없음은 pull이 떠받침·ADR 0022 결정 2·6)."""
+        from agent_org_network.git_gateway import OkfChangeEvent
+        from agent_org_network.conflict import (
+            InMemoryPrecedentStore,
+            Resolution,
+        )
+        from agent_org_network.audit import InMemoryAuditLog
+        from agent_org_network.reeval import InMemoryReevalStore, StalenessPropagator
+
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"cs_lead": ch})
+
+        precedents = InMemoryPrecedentStore()
+        precedents.record(Resolution(intent="refund_policy", primary="cs_ops"))
+        reeval_store = InMemoryReevalStore()
+        audit = InMemoryAuditLog()
+        propagator = StalenessPropagator(
+            precedents=precedents,
+            audit_reader=audit,
+            reeval_store=reeval_store,
+            owner_of=lambda agent_id: None,
+            clock=_CLOCK,
+            notifier=notifier,
+        )
+
+        event = OkfChangeEvent(
+            agent_id="cs_ops",
+            new_sha="sha_new",
+            parent_sha=None,
+            changed_paths=("policy.md",),
+            author="builder",
+            committed_at=_TS,
+        )
+        propagator.on_okf_committed(event)
+
+        # 적재는 그대로(미귀속 owner_id="" — pull이 떠받침)
+        assert len(reeval_store.pending_for_owner("")) == 1
+        # 통지는 0(M1 가드 — recipient_id 빈 문자열엔 push 안 함)
+        assert ch.delivered == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 슬라이스 3 — 발화 지점: ask_org.py AskOrg (Contested arm)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSlice3ConflictNotification:
+    def _make_ask_org(self, notifier: Notifier | None = None) -> Any:
+        from datetime import date
+        from agent_org_network.agent_card import AgentCard
+        from agent_org_network.ask_org import AskOrg
+        from agent_org_network.audit import InMemoryAuditLog
+        from agent_org_network.classifier import FakeClassifier
+        from agent_org_network.conflict import InMemoryConflictCaseStore
+        from agent_org_network.dispatch import LocalRuntimeDispatcher
+        from agent_org_network.registry import Registry
+        from agent_org_network.router import Router
+        from agent_org_network.runtime import StubRuntime
+        from agent_org_network.user import User
+
+        registry = Registry()
+        registry.register(
+            AgentCard(
+                agent_id="cs_ops",
+                owner="cs_lead",
+                team="ops",
+                summary="CS",
+                domains=["환불"],
+                last_reviewed_at=date(2026, 6, 20),
+            )
+        )
+        registry.register(
+            AgentCard(
+                agent_id="legal_ops",
+                owner="legal_lead",
+                team="legal",
+                summary="법무",
+                domains=["환불"],
+                last_reviewed_at=date(2026, 6, 20),
+            )
+        )
+        registry.register_user(User(id="cs_lead", email="cs@example.com"))
+        registry.register_user(User(id="legal_lead", email="legal@example.com"))
+
+        classifier = FakeClassifier("환불")
+        router = Router(registry, classifier, root_user="root")
+        case_store = InMemoryConflictCaseStore()
+        return AskOrg(
+            router=router,
+            dispatcher=LocalRuntimeDispatcher(StubRuntime()),
+            audit_log=InMemoryAuditLog(),
+            clock=_CLOCK,
+            case_store=case_store,
+            notifier=notifier,
+        ), case_store
+
+    def test_notifier_주입_시_ConflictCase_open_및_후보_owner_통지된다(self) -> None:
+        from agent_org_network.user import User
+
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"cs_lead": ch, "legal_lead": ch})
+        ask_org, case_store = self._make_ask_org(notifier=notifier)
+
+        user = User(id="user_1", email="user@example.com")
+        ask_org.handle("환불 문의", user)
+
+        cases = case_store.open_for_owner("cs_lead")
+        assert len(cases) == 1
+        # 두 후보 owner 각각에게 통지
+        cs_notifs = ch.for_recipient("cs_lead")
+        legal_notifs = ch.for_recipient("legal_lead")
+        assert len(cs_notifs) == 1
+        assert cs_notifs[0].kind == "conflict_opened"
+        assert len(legal_notifs) == 1
+        assert legal_notifs[0].kind == "conflict_opened"
+        # subject_ref은 case_id
+        assert cs_notifs[0].subject_ref == cases[0].case_id
+        assert legal_notifs[0].subject_ref == cases[0].case_id
+
+    def test_notifier_미주입이면_ConflictCase_open_통지_0(self) -> None:
+        from agent_org_network.user import User
+
+        ch = FakeChannel()
+        ask_org, case_store = self._make_ask_org(notifier=None)
+
+        user = User(id="user_1", email="user@example.com")
+        ask_org.handle("환불 문의", user)
+
+        cases = case_store.open_for_owner("cs_lead")
+        assert len(cases) == 1
+        assert ch.delivered == []
+
+    def test_채널_실패해도_ConflictCase_처리함_적재_미아_없음(self) -> None:
+        """통지 채널이 실패해도 ConflictCase는 처리함에 남아있다(미아 없음 회귀)."""
+        from agent_org_network.user import User
+
+        class BrokenChannel:
+            def send(self, notification: Notification) -> None:
+                raise RuntimeError("채널 다운")
+
+        notifier = Notifier(
+            subscriptions={"cs_lead": BrokenChannel(), "legal_lead": BrokenChannel()}
+        )
+        ask_org, case_store = self._make_ask_org(notifier=notifier)
+
+        user = User(id="user_1", email="user@example.com")
+        ask_org.handle("환불 문의", user)
+
+        cases = case_store.open_for_owner("cs_lead")
+        assert len(cases) == 1
+
+    def test_같은_다툼_두_번_발화_통지는_1회(self) -> None:
+        """같은 case에 두 번째 질문이 Contested를 내도 이미 open이면 case_store skip → 통지 1회."""
+        from agent_org_network.user import User
+
+        ch = FakeChannel()
+        notifier = Notifier(subscriptions={"cs_lead": ch, "legal_lead": ch})
+        ask_org, _ = self._make_ask_org(notifier=notifier)
+
+        user = User(id="user_1", email="user@example.com")
+        ask_org.handle("환불 문의", user)
+        ask_org.handle("환불 문의 재질문", user)
+
+        cs_notifs = ch.for_recipient("cs_lead")
+        assert len(cs_notifs) == 1

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from agent_org_network.audit import AuditReader
     from agent_org_network.conflict import PrecedentStore
     from agent_org_network.git_gateway import OkfChangeEvent
+    from agent_org_network.notify import Notifier
 
 Clock = Callable[[], datetime]
 
@@ -283,6 +284,12 @@ class StalenessPropagator:
 
     `owner_of`는 agent_id → owner 콜백(Precedent 축 owner 귀속용 — primary 카드 owner를
     Registry에서 얻는 자리, `manager_of` 정신). 미주입이면 None 안전 처리.
+
+    실시간 push 통지(T7.4·ADR 0022 결정 4): `notifier`가 주입되면(비None) ReevalItem 적재
+    *직후* `notifier.notify(Notification(kind="reeval_flagged", ...))`를 1회 쏜다 — owner가
+    처리함 pull로 알기 전에 push로도 알린다. `notifier=None`이면 *기존 동작 그대로*(하위호환·
+    게이트 보존 — push는 pull을 *추가*하지 대체하지 않는다·미아 없음은 pull이 떠받친다).
+    `commit_okf_bundle(..., propagator=None)`의 옵셔널 주입과 동형(자리만 — 본동작은 후속).
     """
 
     def __init__(
@@ -292,12 +299,16 @@ class StalenessPropagator:
         reeval_store: ReevalStore,
         owner_of: Callable[[str], str | None] | None = None,
         clock: Clock = default_clock,
+        notifier: "Notifier | None" = None,
     ) -> None:
         self._precedents = precedents
         self._audit_reader = audit_reader
         self._reeval_store = reeval_store
         self._owner_of = owner_of
         self._clock = clock
+        # 실시간 push 통지(T7.4·ADR 0022) — 미주입이면 기존 동작(하위호환·게이트 보존).
+        # 발화 자리만: 비None이면 적재 직후 notify(자리만 — tdd-engineer red→green).
+        self._notifier = notifier
 
     def on_okf_committed(self, event: "OkfChangeEvent") -> None:
         """변경 이벤트로 영향 Precedent·답을 식별·표식·적재한다(ADR 0019 결정 2·3)."""
@@ -325,6 +336,9 @@ class StalenessPropagator:
                     flagged_at=now,
                 )
             )
+            # 실시간 push 발화(T7.4·ADR 0022 결정 4) — 적재 직후 1회. notifier 미주입이면
+            # 실행 경로 밖(게이트 보존). 본동작은 tdd-engineer red→green(슬라이스 3).
+            self._push_reeval_notification(owner_id, intent, now)
 
         # ② Answer 축: audit 순회 — dict 접근 (ADR 0019 결정 2② 주의)
         records = self._audit_reader.records()
@@ -358,3 +372,36 @@ class StalenessPropagator:
                     flagged_at=now,
                 )
             )
+            # 실시간 push 발화(T7.4·ADR 0022 결정 4) — 적재 직후 1회. notifier 미주입이면
+            # 실행 경로 밖(게이트 보존). 본동작은 tdd-engineer red→green(슬라이스 3).
+            self._push_reeval_notification(owner_id_raw, subject_ref, now)
+
+    def _push_reeval_notification(
+        self, owner_id: str, subject_ref: str, now: datetime
+    ) -> None:
+        """ReevalItem 적재 직후 owner에게 push 통지를 1회 쏜다(T7.4·ADR 0022 결정 4).
+
+        `notifier` 미주입이면 *아무것도 안 한다*(하위호환·게이트 보존 — 기존 호출은 notifier를
+        주입하지 않아 이 본문이 실행되지 않는다). 비None이면 `Notification(kind="reeval_flagged")`
+        를 구성해 `notifier.notify`로 push한다 — owner가 처리함 pull로 알기 전에 push로도 알린다
+        (push는 pull을 *추가*하지 대체하지 않는다·미아 없음은 pull이 떠받친다·결정 6).
+
+        `owner_id`가 빈 문자열(미귀속 — `owner_of` 미주입/None 반환)이면 push하지 않는다:
+        `recipient_id`는 owner/manager User.id 귀속 키여야 한다(ADR 0022 결정 2). 미귀속이어도
+        처리함 pull은 적재로 남아 미아 없음(결정 6). `commit_okf_bundle(..., propagator=None)`의
+        옵셔널 발화와 동형.
+        """
+        if self._notifier is None:
+            return
+        if not owner_id:
+            return
+        from agent_org_network.notify import Notification
+
+        self._notifier.notify(
+            Notification(
+                recipient_id=owner_id,
+                kind="reeval_flagged",
+                subject_ref=subject_ref,
+                created_at=now,
+            )
+        )

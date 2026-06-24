@@ -15,7 +15,7 @@
 ### Core
 
 **Agent Card**:
-한 책임(역할/직무)의 담당 영역·답변 가능 범위·이관 규칙을 선언한 YAML 문서. 정체성(`agent_id`)은 역할에 묶여 담당자가 바뀌어도 불변. 레지스트리에 등록되는 단위이자 라우터가 평가하는 후보 단위 — 등록과 라우팅 양쪽에서 동일한 객체다.
+한 책임(역할/직무)의 담당 영역·답변 가능 범위·이관 규칙을 선언한 YAML 문서. 정체성(`agent_id`)은 역할에 묶여 담당자가 바뀌어도 불변. 레지스트리에 등록되는 단위이자 라우터가 평가하는 후보 단위 — 등록과 라우팅 양쪽에서 동일한 객체다. `agent_id`는 **wire-format admission 규칙**(`^[A-Za-z0-9][A-Za-z0-9_-]*\Z`·≤64자 — 영숫자로 시작 + 영숫자/`_`/`-`)을 카드 구성 시점(`AgentCard` field validator)에 *근본 강제*한다(ADR 0023): 경로 탈출(`/`·`\`·`..`·절대·빈·공백·후행 개행)을 *구조적으로* 차단해 "유효하지 않은 카드는 등록되지 않는다"의 일부를 이룬다(형식 위반은 빌더 `{ok:False}`·로더 `RegistryError`로 매핑). 형식 강제는 *식별자 위생*이지 권한 선언이 아니다(Authority 중앙 무관, ADR 0004). 대문자 수용(소문자 강제는 명명 스타일이라 기각·`agent_X`/`agent_Y` 픽스처 보존). admission=형식 권위, 어댑터(`validate_agent_id`)=경로 안전 백스톱으로 역할 분리(심층 방어).
 _Avoid_: Agent(단독), Persona, Profile
 
 **Owner**:
@@ -336,7 +336,7 @@ _Avoid_: Card editor(단독 — 라이브 편집 연상, 여긴 구성·검증·
 _Avoid_: Knowledge editor(라이브 편집 연상 — 커밋 채널임), Wiki, CMS, Direct write
 
 **GitGateway**:
-OKF 번들 git 저장·빌더 커밋·커밋 스냅샷 추출의 *최소 포트*(ADR 0018 결정 3) — `commit_bundle`(owner author로 파일 쓰기+커밋 1개→SHA)·`head_sha`(repo 최신 커밋)·`extract_snapshot`(`git archive <sha>`로 그 커밋 트리를 읽기전용 임시 디렉터리로 추출→cwd). 실 git은 *비결정·부작용*이라 `ClaudeRunner`·`AgentRuntime`과 **같은 포트 패턴**으로 격리: 실 구현 `SubprocessGitGateway`(`git` CLI subprocess — T8.1 (a)(b)로 구현, *tmp repo 통합 테스트*로 게이트에 들임; 실 SHA 값은 시각/환경 의존이라 행위 단언만·git 없으면 skip; 새 의존성 0·subprocess·tarfile만·GitPython 안 씀; committer는 author=owner와 분리해 `agent-org-builder` 고정)와 결정론 `FakeGitGateway`(in-memory 커밋 로그·결정 SHA — 단위 테스트 주입). 경로 탈출 거부는 모듈 함수 `validate_okf_paths`로 두 구현이 *같은 규칙*을 공유(안전 경계 단일화). 커밋 스냅샷 실행은 *working tree 직독이 아니라* archive 추출본을 읽어(ADR 0018 결정 4) "이 답은 이 커밋 기준"을 재현(읽은 내용 = 그 SHA 트리·동시 읽기 충돌 0·`Answer.snapshot_sha`로 감사). `okf_root`의 의미가 ADR 0018에서 "OKF 번들들을 담은 *git repo 작업 트리 루트*"로 정밀화된다(T6.7 working tree 직독과 커밋 스냅샷 실행을 양립). (ADR 0018)
+OKF 번들 git 저장·빌더 커밋·커밋 스냅샷 추출의 *최소 포트*(ADR 0018 결정 3) — `commit_bundle`(owner author로 파일 쓰기+커밋 1개→SHA)·`head_sha`(repo 최신 커밋)·`extract_snapshot`(`git archive <sha>`로 그 커밋 트리를 읽기전용 임시 디렉터리로 추출→cwd). 실 git은 *비결정·부작용*이라 `ClaudeRunner`·`AgentRuntime`과 **같은 포트 패턴**으로 격리: 실 구현 `SubprocessGitGateway`(`git` CLI subprocess — T8.1 (a)(b)로 구현, *tmp repo 통합 테스트*로 게이트에 들임; 실 SHA 값은 시각/환경 의존이라 행위 단언만·git 없으면 skip; 새 의존성 0·subprocess·tarfile만·GitPython 안 씀; committer는 author=owner와 분리해 `agent-org-builder` 고정)와 결정론 `FakeGitGateway`(in-memory 커밋 로그·결정 SHA — 단위 테스트 주입). 경로 탈출 거부는 모듈 함수 `validate_okf_paths`(`OkfFile.path`)·`validate_agent_id`(`agent_id`)로 두 구현이 *같은 규칙*을 공유(안전 경계 단일화). `validate_agent_id`는 admission(ADR 0023 — `AgentCard`가 형식 권위)의 *경로 안전 백스톱*이다 — admission이 상류에서 형식을 강제해도 어댑터는 카드를 안 거치는 경로(`extract_snapshot`의 인자 `agent_id` 등)를 막는 심층 방어로 *유지*한다(역할 분리: admission=positive format·어댑터=traversal block). 커밋 스냅샷 실행은 *working tree 직독이 아니라* archive 추출본을 읽어(ADR 0018 결정 4) "이 답은 이 커밋 기준"을 재현(읽은 내용 = 그 SHA 트리·동시 읽기 충돌 0·`Answer.snapshot_sha`로 감사). `okf_root`의 의미가 ADR 0018에서 "OKF 번들들을 담은 *git repo 작업 트리 루트*"로 정밀화된다(T6.7 working tree 직독과 커밋 스냅샷 실행을 양립). (ADR 0018)
 _Avoid_: Git client, Repo manager, VCS(추상 과함 — 우리는 최소 4연산 포트), GitPython
 
 ## Flagged ambiguities

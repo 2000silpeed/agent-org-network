@@ -33,11 +33,12 @@
 
 ## 하네스: 개발 에이전트 팀
 
-**목표:** Routing 도메인 구현을 전문 서브에이전트로 분담 — 설계·테스트우선구현·리뷰·MCP/런타임.
+**목표:** Routing 도메인 구현을 전문 서브에이전트로 분담 — 계획·설계·테스트우선구현·리뷰·MCP/런타임.
 
-**트리거:** 구현 작업은 `.claude/agents/`의 적절한 서브에이전트에 위임한다 — 도메인 모델·타입 설계 → `domain-architect`, 테스트 우선 구현 → `tdd-engineer`, 변경 리뷰 → `code-reviewer`, MCP 서버·런타임·분류기·전송 → `mcp-runtime-engineer`. 단순 질문·자명한 편집은 직접 처리.
+**트리거:** 구현 작업은 `.claude/agents/`의 적절한 서브에이전트에 위임한다 — 상세 계획·슬라이스 분해·새 단계 착수 → `planner`, 도메인 모델·타입 설계·ADR → `domain-architect`, 테스트 우선 구현 → `tdd-engineer`, 변경 리뷰 → `code-reviewer`, MCP 서버·런타임·분류기·전송·실 어댑터 → `mcp-runtime-engineer`. 파이프라인은 `planner`(계획) → `domain-architect`(설계·shape) → `tdd-engineer`/`mcp-runtime-engineer`(구현) → `code-reviewer`(검증) → 게이트 → SSOT 갱신. 단순 질문·자명한 편집은 직접 처리.
 
 **변경 이력:**
 | 날짜 | 변경 | 대상 | 사유 |
 |------|------|------|------|
 | 2026-06-20 | 초기 구성(서브에이전트 4종) | `.claude/agents/` | 빌드 착수 전 팀 셋업 |
+| 2026-06-23 | `planner` 추가(계획 단계) — 기존 4종 유지·파이프라인 맨 앞에 상세 계획 단계 도입 | `.claude/agents/planner.md` | v0 완료 후 운영화(실 서비스화) 단계 착수 — 슬라이스/경계/외부 결정을 계획으로 선분해 |

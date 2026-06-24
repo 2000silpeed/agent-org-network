@@ -152,6 +152,63 @@ class TestFakeGitGateway경로탈출거부:
         assert result.sha != ""
 
 
+class TestFakeGitGatewayAgentId탈출거부:
+    """B1: agent_id 경로 탈출 차단 — commit_bundle·extract_snapshot 양쪽(계약 일치).
+
+    in-memory라 실 파일 피해는 없지만, SubprocessGitGateway와 *같은 ValueError*를 내야
+    Protocol 계약이 일관된다(안전 경계 단일화 — validate_agent_id 공유).
+    """
+
+    def _commit(self, agent_id: str) -> None:
+        gw = FakeGitGateway()
+        req = CommitRequest(
+            agent_id=agent_id,
+            files=(OkfFile(path="policy.md", content="내용"),),
+            author="cs_lead",
+            message="테스트",
+        )
+        gw.commit_bundle(req)
+
+    def test_commit_상위_탈출_agent_id_거부(self) -> None:
+        with pytest.raises(ValueError):
+            self._commit("../evil")
+
+    def test_commit_단일_점점_agent_id_거부(self) -> None:
+        with pytest.raises(ValueError):
+            self._commit("..")
+
+    def test_commit_절대경로_agent_id_거부(self) -> None:
+        with pytest.raises(ValueError):
+            self._commit("/etc")
+
+    def test_commit_경로구분자_agent_id_거부(self) -> None:
+        with pytest.raises(ValueError):
+            self._commit("a/b")
+
+    def test_commit_빈_agent_id_거부(self) -> None:
+        with pytest.raises(ValueError):
+            self._commit("")
+
+    def test_commit_공백만_agent_id_거부(self) -> None:
+        with pytest.raises(ValueError):
+            self._commit("   ")
+
+    def test_extract_상위_탈출_agent_id_거부(self, tmp_path: Path) -> None:
+        gw = FakeGitGateway()
+        with pytest.raises(ValueError):
+            gw.extract_snapshot("deadbeef" * 5, "../evil", tmp_path)
+
+    def test_extract_절대경로_agent_id_거부(self, tmp_path: Path) -> None:
+        gw = FakeGitGateway()
+        with pytest.raises(ValueError):
+            gw.extract_snapshot("deadbeef" * 5, "/etc", tmp_path)
+
+    def test_extract_경로구분자_agent_id_거부(self, tmp_path: Path) -> None:
+        gw = FakeGitGateway()
+        with pytest.raises(ValueError):
+            gw.extract_snapshot("deadbeef" * 5, "a/b", tmp_path)
+
+
 class TestFakeGitGatewayHEAD:
     def test_HEAD_sha_마지막_커밋(self) -> None:
         gw = FakeGitGateway()

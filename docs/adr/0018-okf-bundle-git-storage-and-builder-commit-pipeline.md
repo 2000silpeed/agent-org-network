@@ -1,6 +1,6 @@
 # OKF 번들을 git에 저장하고 빌더 UI가 owner 대신 커밋한다 — 답 실행은 커밋 스냅샷을 cwd로 읽는다
 
-상태: accepted (2026-06-21) · **구현 완료(T7.2 슬라이스 1~4 — 결정론 게이트 632 passed/pyright 0/ruff 0; 슬라이스 5 실 git subprocess·OKF 에디터 UI·중앙 최신 읽기 pull/webhook은 후속)** · **ADR 0017 결정 3의 구체화**(살아있는 지식 = git 저장 + 빌더 UI 편집 + 커밋 스냅샷 실행) · ADR 0013(OKF·카드/번들 분리·cwd 소비)·ADR 0012(`DelegationSnapshot.snapshot_at` 신선도)와 정합 · T6.7(`ClaudeCodeRuntime` OKF cwd 소비)의 *저장·편집·스냅샷 축*을 닫는다.
+상태: accepted (2026-06-21) · **구현 완료(T7.2 슬라이스 1~4 — 결정론 게이트; T8.1 (a)(b) — `SubprocessGitGateway` 실 git CLI 어댑터 3메서드 + tmp repo 통합 테스트 27개, 게이트 795 passed/pyright 0/ruff 0; 슬라이스 5의 (c) 실 claude end-to-end·(d) OKF 에디터 UI·(e) 중앙 최신 읽기 pull/webhook은 후속)** · **ADR 0017 결정 3의 구체화**(살아있는 지식 = git 저장 + 빌더 UI 편집 + 커밋 스냅샷 실행) · ADR 0013(OKF·카드/번들 분리·cwd 소비)·ADR 0012(`DelegationSnapshot.snapshot_at` 신선도)와 정합 · T6.7(`ClaudeCodeRuntime` OKF cwd 소비)의 *저장·편집·스냅샷 축*을 닫는다.
 
 ## 맥락 — 끊어진 고리 둘
 
@@ -92,7 +92,7 @@ T6.7(ADR 0013)은 OKF 번들을 *워커가 cwd로 읽어 답한다*까지 닫았
 
 - **빌더 UI에 OKF 편집 면이 더해진다(후속 구현)** — 카드 면(검증→YAML 미리보기)과 *분리*된 OKF 번들 편집 면(마크다운 작성 → 빌더가 owner 신원으로 커밋). owner는 git을 몰라도 된다.
 - **`Answer`에 `snapshot_sha: str | None` 추가** — 답이 어느 커밋 OKF로 만들어졌나(감사 메타). 기본 `None`(스냅샷 모드 아닐 때·기존 경로 하위호환). `mode`·`sources`와 같은 답 메타.
-- **`GitGateway` 포트·`FakeGitGateway`·빌더 커밋 서비스 신설** — 결정론 단위 테스트, 실 git subprocess는 게이트 밖 수동 시연(`SubprocessGitGateway`).
+- **`GitGateway` 포트·`FakeGitGateway`·빌더 커밋 서비스 신설** — 결정론 단위 테스트. 실 git subprocess(`SubprocessGitGateway`)는 T8.1 (a)(b)로 구현 완료 — 이 환경에 git이 있어 tmp repo *통합 테스트*(행위 단언·SHA 값 비의존)로 게이트에 들였다. 경로 탈출 검증은 모듈 함수 `validate_okf_paths`(`OkfFile.path`)·`validate_agent_id`(번들 디렉터리명)로 빼 두 구현이 *같은 규칙*을 공유한다(안전 경계 단일화). `agent_id`는 `okf/{agent_id}/` 경로 쓰기와 `{sha}:{agent_id}` archive tree-ish에 박히므로 빈/공백·절대경로·`..`·경로구분자(`/`·`\`)를 거부해 okf_root 밖 쓰기·엉뚱한 트리 지목을 차단한다. `extract_snapshot`은 sha가 비었거나 `-`로 시작하면 거부(tree-ish 옵션 주입 방어)하고, 임시 tar는 시스템 temp에 두고 try/finally로 정리(답 cwd 오염·잔존 방지). T8.1 (a)(b) admission 정규식 강제는 후속 — 이번은 어댑터 안전 경계만.
 - **`okf_root`의 의미 정밀화** — "owner 환경 루트" → "OKF 번들들을 담은 git repo 작업 트리 루트". working tree 직독(T6.7, 하위호환)과 커밋 스냅샷 실행(이 ADR)을 양립.
 - **불변식 영향 없음** — 미아 없음·Authority 중앙(카드 자기보고 금지 — OKF는 답변 지식이지 권한 선언 아님)·전이≠기록(커밋은 git이 기록, 도메인 전이 아님)·등록 무결성(카드는 PR 유지)·노출 불변식(`snapshot_sha`는 운영 면 메타)은 그대로. 편집 채널은 git/PR 하나(빌더가 *그 채널로 커밋*할 뿐 — 라이브 mutation 이중화 아님, CONTEXT Maintainer·ADR 0013 안 B 정신).
 - **갱신 대상**: CONTEXT(OKF·Knowledge Bundle·Answer·Agent Runtime·**GitGateway·OKF Builder 신규**), PRD §5(T7.2 진행), TRD §4(`Answer.snapshot_sha`·`GitGateway` 포트), tasks T7.2(설계·shape 완료 주석).

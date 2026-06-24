@@ -18,16 +18,57 @@ ADR 0018:
 
 from __future__ import annotations
 
+import subprocess
+import tarfile
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     pass
 
 Clock = Callable[[], datetime]
+
+
+def validate_okf_paths(files: tuple[OkfFile, ...]) -> None:
+    """번들 밖 경로 탈출을 거부하는 *공유* 검증(안전 경계 — 등록 무결성).
+
+    `OkfFile.path`가 빈 문자열, 공백뿐, 절대경로, 또는 `..` 구성요소를 포함하면 ValueError.
+    `FakeGitGateway`와 `SubprocessGitGateway`가 *같은 규칙*을 쓰도록 모듈 레벨로 뺐다 —
+    안전 경계라 두 구현의 행동이 동일해야 한다(번들 밖 쓰기 차단의 단일 진실 원천).
+    """
+    for f in files:
+        p = f.path
+        if not p or not p.strip():
+            raise ValueError(f"OkfFile.path가 비어 있습니다: {p!r}")
+        parts = PurePosixPath(p).parts
+        if parts and parts[0] == "/":
+            raise ValueError(f"절대 경로는 허용되지 않습니다: {p!r}")
+        if ".." in parts:
+            raise ValueError(f"번들 밖 경로 탈출은 허용되지 않습니다: {p!r}")
+
+
+def validate_agent_id(agent_id: str) -> None:
+    """agent_id 경로 탈출을 거부하는 *공유* 검증(안전 경계 — 등록 무결성).
+
+    `agent_id`는 `okf/{agent_id}/` 규약의 단일 디렉터리명이어야 한다. 비어 있거나 공백뿐,
+    절대경로, `..` 구성요소, 또는 경로구분자(`/`·`\\`)를 포함하면 ValueError. 어댑터에서
+    `okf_root / agent_id`(파일 쓰기)와 `{sha}:{agent_id}`(archive tree-ish)에 쓰이므로
+    okf_root 밖 쓰기·엉뚱한 트리 지목을 원천 차단한다. `FakeGitGateway`와
+    `SubprocessGitGateway`가 *같은 규칙*을 쓰도록 모듈 레벨로 둔다(계약 일치).
+    """
+    if not agent_id or not agent_id.strip():
+        raise ValueError(f"agent_id가 비어 있습니다: {agent_id!r}")
+    if "/" in agent_id or "\\" in agent_id:
+        raise ValueError(f"agent_id에 경로구분자는 허용되지 않습니다: {agent_id!r}")
+    parts = PurePosixPath(agent_id).parts
+    if parts and parts[0] == "/":
+        raise ValueError(f"절대 경로 agent_id는 허용되지 않습니다: {agent_id!r}")
+    if ".." in parts:
+        raise ValueError(f"번들 밖 경로 탈출 agent_id는 허용되지 않습니다: {agent_id!r}")
 
 
 class ChangeEventListener(Protocol):
@@ -163,21 +204,11 @@ class FakeGitGateway:
 
     @staticmethod
     def _validate_paths(files: tuple[OkfFile, ...]) -> None:
-        """번들 밖 경로 탈출을 거부한다(결정론 테스트 대상).
+        """공유 검증 `validate_okf_paths`로 위임한다(중복 제거·계약 일치).
 
-        `OkfFile.path`가 빈 문자열, 절대경로, 또는 `..` 구성요소를 포함하면 ValueError.
+        `SubprocessGitGateway`와 *같은 규칙*을 쓰도록 모듈 함수를 부른다(안전 경계 단일화).
         """
-        for f in files:
-            p = f.path
-            if not p or not p.strip():
-                raise ValueError(f"OkfFile.path가 비어 있습니다: {p!r}")
-            from pathlib import PurePosixPath
-
-            parts = PurePosixPath(p).parts
-            if parts and parts[0] == "/":
-                raise ValueError(f"절대 경로는 허용되지 않습니다: {p!r}")
-            if ".." in parts:
-                raise ValueError(f"번들 밖 경로 탈출은 허용되지 않습니다: {p!r}")
+        validate_okf_paths(files)
 
     def _make_sha(self, agent_id: str) -> str:
         """agent_id + 전역 카운터로 결정 SHA를 만든다(비결정 금지 — 시각·랜덤 0)."""
@@ -188,6 +219,7 @@ class FakeGitGateway:
         return hashlib.sha1(raw.encode()).hexdigest()
 
     def commit_bundle(self, req: CommitRequest) -> CommitResult:
+        validate_agent_id(req.agent_id)
         self._validate_paths(req.files)
         sha = self._make_sha(req.agent_id)
         result = CommitResult(sha=sha, agent_id=req.agent_id)
@@ -203,6 +235,7 @@ class FakeGitGateway:
         return commits[-1].sha
 
     def extract_snapshot(self, sha: str, agent_id: str, dest: Path) -> Path:
+        validate_agent_id(agent_id)
         files = self._trees.get(sha)
         if files is None:
             raise ValueError(f"알 수 없는 SHA: {sha!r}")
@@ -213,28 +246,136 @@ class FakeGitGateway:
         return dest
 
 
+# 커밋 author 이메일 도메인(환경 의존 회피 — 실 메일주소 아님, owner 신원 식별만).
+_OWNER_EMAIL_DOMAIN = "agent-org.local"
+# committer 신원(ADR 0018 결정 5 — author=owner, committer는 빌더 봇 고정).
+# git이 committer identity를 요구하므로 환경(전역 user.name/email)에 의존하지 않게 -c로 박는다.
+_COMMITTER_NAME = "agent-org-builder"
+_COMMITTER_EMAIL = f"agent-org-builder@{_OWNER_EMAIL_DOMAIN}"
+
+
 @dataclass(frozen=True)
 class SubprocessGitGateway:
-    """실 `git` CLI subprocess `GitGateway` — **게이트 밖 수동 시연**(ADR 0018 결정 3).
+    """실 `git` CLI subprocess `GitGateway` — T8.1 (a)(b) 실 어댑터(ADR 0018 결정 3).
 
     `okf_root`(= OKF 번들들을 담은 git repo 작업 트리 루트, ADR 0018 결정 2)를 대상으로
-    `git add`·`git commit --author`·`git rev-parse HEAD`·`git archive <sha> | tar -x`를
-    subprocess로 부른다(부작용·비결정 — `ClaudeCodeRuntime`의 `claude` subprocess와 같은 결).
-    실 커밋·실 추출이라 단위 게이트에서 돌리지 않는다(수동 시연·eval).
+    `git add`·`git commit --author`·`git rev-parse HEAD`·`git archive <sha>`를 subprocess로
+    부른다(부작용·비결정 — `ClaudeCodeRuntime`의 `claude` subprocess와 같은 결). 새 의존성 0
+    (표준 라이브러리 subprocess·tarfile만 — GitPython 안 씀, ADR 0018 결정 3).
 
-    **현재는 shape stub(미구현)** — 실 subprocess 본문은 후속(mcp-runtime-engineer/수동).
+    검증 경계: 실 git 부작용이라 결정론 단위 게이트엔 못 들어가지만, 이 환경에 git이 있어
+    tmp repo *통합 테스트*(행위 단언·SHA 값 비의존)로 게이트에 들인다(T8.1 (a)(b)).
     """
 
     okf_root: Path
 
+    def _run_git(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """`git -C {okf_root} {args}`를 부른다 — capture·text·check=False(returncode 직접 검사).
+
+        명령 인젝션 회피: shell=False(인자 리스트)·`--` 구분자로 옵션/경로 경계를 못 박는다.
+        """
+        return subprocess.run(
+            ["git", "-C", str(self.okf_root), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     def commit_bundle(self, req: CommitRequest) -> CommitResult:
-        raise NotImplementedError("실 git subprocess — 게이트 밖 수동 시연(T7.2 후속)")
+        # ① 경로 탈출 거부 — FakeGitGateway와 *같은 규칙*(공유 함수·안전 경계).
+        #    파일을 쓰기 *전에* 검증해 번들 밖 쓰기를 원천 차단(등록 무결성).
+        #    agent_id가 okf_root/{agent_id} 경로에 박히므로 agent_id 탈출도 쓰기 전 거부.
+        validate_agent_id(req.agent_id)
+        validate_okf_paths(req.files)
+
+        # ② okf_root/{agent_id}/{file.path}에 각 파일 쓰기(부모 디렉터리 mkdir).
+        bundle_dir = self.okf_root / req.agent_id
+        written: list[str] = []
+        for f in req.files:
+            target = bundle_dir / f.path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f.content, encoding="utf-8")
+            written.append(str(target))
+
+        # ③ git add — 방금 쓴 파일들만(번들 밖 변경 끌어들이지 않게 -- 구분자·명시 경로).
+        add = self._run_git("add", "--", *written)
+        if add.returncode != 0:
+            raise RuntimeError(f"git add 실패: {add.stderr.strip()}")
+
+        # ④ git commit — author=owner 신원(ADR 0018 결정 5). committer identity는 환경에
+        #    의존하지 않게 -c user.name/email로 빌더 봇 고정(환경 의존 회피).
+        author_email = f"{req.author}@{_OWNER_EMAIL_DOMAIN}"
+        commit = self._run_git(
+            "-c",
+            f"user.name={_COMMITTER_NAME}",
+            "-c",
+            f"user.email={_COMMITTER_EMAIL}",
+            "commit",
+            "-m",
+            req.message,
+            "--author",
+            f"{req.author} <{author_email}>",
+        )
+        if commit.returncode != 0:
+            raise RuntimeError(f"git commit 실패: {commit.stderr.strip()}")
+
+        # ⑤ rev-parse HEAD → 방금 만든 커밋 SHA.
+        sha = self._rev_parse_head()
+        return CommitResult(sha=sha, agent_id=req.agent_id)
 
     def head_sha(self, agent_id: str) -> str:
-        raise NotImplementedError("실 git subprocess — 게이트 밖 수동 시연(T7.2 후속)")
+        # 모노repo 판단(ADR 0018 결정 2): okf_root는 단일 git repo라 HEAD는 *전역*이다 —
+        # agent_id별로 다르지 않다. MVP는 repo HEAD를 반환한다(빌더가 방금 커밋한 그 HEAD,
+        # ADR 0018 결정 4). agent_id는 미래 owner별 repo(결정 2 후속 옵션)를 위해 시그니처에
+        # 두되 지금은 미사용 — 모노repo에선 의미가 같다. 커밋 0개면 ValueError(Fake와 같은 계약).
+        return self._rev_parse_head()
 
     def extract_snapshot(self, sha: str, agent_id: str, dest: Path) -> Path:
-        raise NotImplementedError("실 git subprocess — 게이트 밖 수동 시연(T7.2 후속)")
+        # ADR 0018 결정 4: 그 커밋의 *번들 서브트리만* dest로 추출(working tree 직독 아님 —
+        # "이 답은 이 커밋 기준" 재현). `git archive {sha}:{agent_id}`는 그 SHA 트리의
+        # agent_id 서브트리를 tar로 낸다 → dest *직하*에 번들 파일들이 풀린다(다른 agent_id
+        # 안 섞임). 파이프 대신 임시 tar 파일 후 tarfile로 풀기(결정적·에러 처리 쉬움).
+        #
+        # 안전 경계(B1·M1): tree-ish `{sha}:{agent_id}` 주입 차단. sha가 `-`로 시작하면
+        # 옵션으로, agent_id가 탈출 구성이면 엉뚱한 트리로 해석될 수 있으므로 archive *전에*
+        # 거부한다(인자 순서에 안 기댄다).
+        if not sha or sha.startswith("-"):
+            raise ValueError(f"유효하지 않은 sha입니다(빈 값·옵션 형식 거부): {sha!r}")
+        validate_agent_id(agent_id)
+
+        dest.mkdir(parents=True, exist_ok=True)
+        # m2: 임시 tar는 dest(답 cwd) 바깥 시스템 temp에 둔다(결과 디렉터리 오염 방지).
+        tmp_dir = tempfile.mkdtemp(prefix="okf-archive-")
+        tar_path = Path(tmp_dir) / "archive.tar"
+        try:
+            archive = self._run_git(
+                "archive",
+                "--format=tar",
+                f"--output={tar_path}",
+                f"{sha}:{agent_id}",
+            )
+            if archive.returncode != 0:
+                raise ValueError(
+                    f"스냅샷 추출 실패 — 알 수 없는 sha/agent_id일 수 있습니다 "
+                    f"(sha={sha!r}, agent_id={agent_id!r}): {archive.stderr.strip()}"
+                )
+            with tarfile.open(tar_path, "r") as tf:
+                # filter="data": 절대경로·.. 엔트리 거부(안전 추출, Python 3.12+ 권장 기본).
+                tf.extractall(dest, filter="data")
+        finally:
+            # m1: 추출 성공·실패 무관 임시 tar·temp 디렉터리 정리(잔존 방지).
+            tar_path.unlink(missing_ok=True)
+            Path(tmp_dir).rmdir()
+        return dest
+
+    def _rev_parse_head(self) -> str:
+        """`git rev-parse HEAD` → SHA. 커밋 0개(빈 repo)면 ValueError(Fake와 같은 "커밋 없음")."""
+        result = self._run_git("rev-parse", "HEAD")
+        if result.returncode != 0:
+            raise ValueError(
+                f"커밋 없음 — HEAD를 읽을 수 없습니다(빈 repo): {result.stderr.strip()}"
+            )
+        return result.stdout.strip()
 
 
 @dataclass(frozen=True)

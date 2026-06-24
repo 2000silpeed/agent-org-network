@@ -15,8 +15,9 @@ ADR 0022:
   `EmailChannel`·`McpChannel` — 게이트 밖·`NotImplementedError`·새 의존성은 후속 판단).
   채널 중립 — 어떤 채널도 1급 아님(첫 후보 MCP 알림이나 게이트 밖이라 지금 안 정함).
 - 결정 2: `Notification`(frozen 값 객체) — recipient_id·kind·subject_ref·created_at. `kind`는
-  `Literal`(필드 구조 동일·분기 없는 라벨이라 sealed sum 아님 — `ReevalItem.subject_kind`와
-  같은 판단). 운영 면 신호 — 실 사용자 채팅엔 통지 0(OrgReply는 통지를 모름).
+  `Literal`(필드 구조 동일·분기 없는 라벨이라 sealed sum 아님 — 분기·페이로드가 종류마다
+  갈리는 `ReevalSubject`[대상 축 sealed sum]와 달리 통지 종류는 단순 라벨이다).
+  운영 면 신호 — 실 사용자 채팅엔 통지 0(OrgReply는 통지를 모름).
 - 결정 3: 구독 = recipient → channel 매핑. MVP는 `Notifier`가 주입 맵을 든다(별 store 불요 —
   정적 매핑이라 전이 없음). 미구독 recipient는 skip(처리함 pull 그대로 — 미아 없음).
 - 결정 5: 전달 보장 = 멱등(`(recipient_id, kind, subject_ref)` 중복 발송 안 함) + at-least-once.

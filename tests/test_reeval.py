@@ -25,9 +25,11 @@ from agent_org_network.git_gateway import (
 )
 from agent_org_network.reeval import (
     AcknowledgeAnswer,
+    AnswerSubject,
     InMemoryReevalStore,
     InvalidatePrecedent,
     KeepPrecedent,
+    PrecedentSubject,
     ReevalItem,
     ReevalService,
     ReAnswer,
@@ -317,16 +319,14 @@ class TestSlice3RouterInvariant:
 
 
 def _reeval_item(
-    subject_kind: str = "precedent",
-    subject_ref: str = "환불",
+    subject: PrecedentSubject | AnswerSubject = PrecedentSubject(intent="환불"),
     owner_id: str = "cs_lead",
     agent_id: str = "cs_ops",
     trigger_sha: str = "sha-001",
     item_id: str = "item-001",
 ) -> ReevalItem:
     return ReevalItem(
-        subject_kind=subject_kind,  # type: ignore[arg-type]
-        subject_ref=subject_ref,
+        subject=subject,
         owner_id=owner_id,
         agent_id=agent_id,
         trigger_sha=trigger_sha,
@@ -376,13 +376,13 @@ class TestSlice4ReevalItem:
         assert reviewed.review.new_primary == "new_cs_ops"
 
     def test_review_with_AcknowledgeAnswer_보존(self) -> None:
-        item = _reeval_item(subject_kind="answer", subject_ref="0")
+        item = _reeval_item(subject=AnswerSubject(audit_index=0))
         review = AcknowledgeAnswer(by_owner="cs_lead")
         reviewed = item.review_with(review)
         assert isinstance(reviewed.review, AcknowledgeAnswer)
 
     def test_review_with_ReAnswer_보존(self) -> None:
-        item = _reeval_item(subject_kind="answer", subject_ref="0")
+        item = _reeval_item(subject=AnswerSubject(audit_index=0))
         review = ReAnswer(by_owner="cs_lead")
         reviewed = item.review_with(review)
         assert isinstance(reviewed.review, ReAnswer)
@@ -480,7 +480,7 @@ class TestSlice4ReevalService:
         store = InMemoryReevalStore()
         service = ReevalService(store)
         item = _reeval_item(
-            subject_kind="answer", subject_ref="0", owner_id="cs_lead", item_id="item-001"
+            subject=AnswerSubject(audit_index=0), owner_id="cs_lead", item_id="item-001"
         )
         store.add(item)
         reviewed = service.review("item-001", AcknowledgeAnswer(by_owner="cs_lead"))
@@ -490,7 +490,7 @@ class TestSlice4ReevalService:
         store = InMemoryReevalStore()
         service = ReevalService(store)
         item = _reeval_item(
-            subject_kind="answer", subject_ref="0", owner_id="cs_lead", item_id="item-001"
+            subject=AnswerSubject(audit_index=0), owner_id="cs_lead", item_id="item-001"
         )
         store.add(item)
         reviewed = service.review("item-001", ReAnswer(by_owner="cs_lead"))
@@ -608,8 +608,9 @@ class TestSlice5PrecedentAxis:
 
         items = reeval_store.pending_for_owner("cs_lead")
         assert len(items) == 1
-        assert items[0].subject_kind == "precedent"
-        assert items[0].subject_ref == "환불"
+        subject = items[0].subject
+        assert isinstance(subject, PrecedentSubject)
+        assert subject.intent == "환불"
 
     def test_ReevalItem_trigger_sha가_event_new_sha다(self) -> None:
         precedents = InMemoryPrecedentStore(clock=_CLOCK)
@@ -790,7 +791,7 @@ class TestSlice6AnswerAxis:
         propagator.on_okf_committed(_event(agent_id="cs_ops", new_sha="sha-new"))
         items = reeval_store.pending_for_owner("cs_lead")
         assert len(items) == 1
-        assert items[0].subject_kind == "answer"
+        assert isinstance(items[0].subject, AnswerSubject)
 
     def test_routed_답_snapshot_sha_None이면_보수적_포함(self) -> None:
         """snapshot_sha 키 부재 답도 영향 대상 포함."""
@@ -868,7 +869,7 @@ class TestSlice6AnswerAxis:
         assert reeval_store.pending_for_owner("cs_lead") == []
         assert reeval_store.pending_for_owner("legal_lead") == []
 
-    def test_ReevalItem_subject_ref가_audit_인덱스_문자열이다(self) -> None:
+    def test_AnswerSubject_audit_index가_audit_기록순_정수다(self) -> None:
         audit = _make_audit_with_entries(
             [
                 _routed_record(agent_id="cs_ops", owner="cs_lead", snapshot_sha="sha-old"),
@@ -884,9 +885,10 @@ class TestSlice6AnswerAxis:
             clock=_CLOCK,
         )
         propagator.on_okf_committed(_event(agent_id="cs_ops", new_sha="sha-new"))
-        items = sorted(reeval_store.pending_for_owner("cs_lead"), key=lambda i: i.subject_ref)
-        assert items[0].subject_ref == "0"
-        assert items[1].subject_ref == "1"
+        subjects = [item.subject for item in reeval_store.pending_for_owner("cs_lead")]
+        assert all(isinstance(s, AnswerSubject) for s in subjects)
+        indices = sorted(s.audit_index for s in subjects if isinstance(s, AnswerSubject))
+        assert indices == [0, 1]
 
     def test_owner_id가_rec_decision_owner에서_온다(self) -> None:
         audit = _make_audit_with_entries(
@@ -952,8 +954,7 @@ class TestSlice7OwnerInbox:
         store = InMemoryReevalStore()
         service = ReevalService(store)
         item = _reeval_item(
-            subject_kind="precedent",
-            subject_ref="환불",
+            subject=PrecedentSubject(intent="환불"),
             owner_id="cs_lead",
             item_id="item-super",
         )

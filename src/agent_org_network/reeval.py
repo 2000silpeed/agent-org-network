@@ -116,37 +116,90 @@ ReevalOutcome = (
 #   owner 재평가 처분의 sealed sum(다섯 결말의 망라).
 
 
+# ── 재평가 대상: ReevalSubject sealed sum ─────────────────────────────────
+#
+# *무엇*이 재평가 대상인가 — 두 대상의 망라(RoutingDecision·EscalationSource 정신,
+# "타입이 곧 판별자"). 이건 *대상* 축이지 *결과* 축(ReevalOutcome)이 아니다 — 둘은 독립
+# (대상 = 무엇을 재평가하나 / 결과 = owner가 어떻게 처분했나).
+#
+# 두 대상은 *담는 식별자 자체가 다르다*(Precedent=intent 문자열 / Answer=audit 기록순
+# 정수 인덱스) — 종류는 분기 있는 *대상*이라 sealed sum이 정확하다(`Notification.kind`가
+# 필드 구조 동일한 *라벨*이라 Literal인 것과 반대 판단). 이전 MVP는 `subject_kind`(str
+# 판별자) + untyped `subject_ref: str` 두 필드였고 ADR 0019가 "sealed sum 관용구에서 약하게
+# 이탈"이라 open question으로 남겼다 — T8.4(a)가 이 정밀화를 닫는다(ADR 0019 갱신).
+#
+# 멱등 키 도출(`notification_ref`): m1(ADR 0022) — Precedent·Answer 두 축이 같은
+# kind="reeval_flagged"라 intent가 순수 숫자면("0") Answer 인덱스(0)와 통지 멱등 키가 우연
+# 충돌할 수 있었다. 이전엔 발화 지점이 `f"precedent:{intent}"`·`f"answer:{idx}"` prefix를
+# 손으로 붙이는 *우회*였다. sealed sum이면 네임스페이스된 식별자를 *타입에서 도출*해 우회가
+# 구조적으로 해소된다 — 각 arm이 자기 prefix를 안다.
+
+
+@dataclass(frozen=True)
+class PrecedentSubject:
+    """재평가 대상 = 과거 Precedent. `intent`(판례 키)가 곧 식별자(`PrecedentStore` 키).
+
+    OKF 변경이 그 agent를 primary로 둔 판례를 stale 표식한 대상(StalenessPropagator ① 축).
+    """
+
+    intent: str
+
+    def notification_ref(self) -> str:
+        """이 대상의 네임스페이스된 통지 멱등 키(m1 — ADR 0022 결정 5)."""
+        return f"precedent:{self.intent}"
+
+
+@dataclass(frozen=True)
+class AnswerSubject:
+    """재평가 대상 = 과거 답. `audit_index`(audit 기록순 0-based 인덱스)가 곧 식별자.
+
+    OKF 변경이 옛 SHA로 답한 routed 답을 stale 표식한 대상(StalenessPropagator ② 축).
+    audit은 append-only라 인덱스가 안정 식별자다(ADR 0019 결정 2②). 인덱스는 *정수*가
+    자연이라 int로 든다(이전 MVP는 `str(idx)`였다 — 직렬화 표현은 `notification_ref`가
+    `answer:{int}`로 도출해 m1 우회 prefix와 동일 문자열 유지·통지 계약 무변경).
+    """
+
+    audit_index: int
+
+    def notification_ref(self) -> str:
+        """이 대상의 네임스페이스된 통지 멱등 키(m1 — ADR 0022 결정 5)."""
+        return f"answer:{self.audit_index}"
+
+
+ReevalSubject = PrecedentSubject | AnswerSubject
+#   재평가 *대상*의 sealed sum(두 대상의 망라). 새 대상이 생기면 여기 더하고 처리/적재의
+#   match가 컴파일 타임에 누락을 잡는다(assert_never). 결과 축은 ReevalOutcome(독립).
+
+
 # ── 재평가 대상 보관 단위: ReevalItem ─────────────────────────────────────
 #
 # OKF 변경이 stale로 표식한 한 건의 재평가 대기 항목. ConflictCase가 미해소 다툼을,
 # BackupReviewItem이 미검토 백업 답을 담듯 이건 *stale 표식 대상*(과거 판례·답)을 담는다
 # — Owner 처리함(Inbox)의 세 번째 면. pending_review → reviewed 전이는 `review_with()`가
 # item_id 보존한 새 인스턴스를 돌려준다(불변 + 새 인스턴스, BackupReviewItem 동형).
-#
-# DDD 주의(ADR 0019 결정 3 open question): subject_kind 문자열 판별자 + untyped subject_ref는
-# 'sealed sum' 관용구(RoutingDecision — 타입 자체가 판별자)에서 약하게 이탈한다. MVP 허용
-# (두 종류·단순 ref), ReevalSubject sealed sum 분리는 후속.
 
-SubjectKind = Literal["precedent", "answer"]
 ReevalStatus = Literal["pending_review", "reviewed"]
 
 
 @dataclass(frozen=True)
 class ReevalItem:
-    """OKF 변경이 stale로 표식한 한 건의 재평가 대기 항목(ADR 0019 결정 3).
+    """OKF 변경이 stale로 표식한 한 건의 재평가 대기 항목(ADR 0019 결정 3·T8.4(a)).
 
-    `subject_kind`(precedent/answer) · `subject_ref`(precedent=intent 키 / answer=audit
-    기록순 인덱스 문자열) · `owner_id`(처리함 귀속 키 — Precedent=primary 카드 owner /
-    Answer=`rec["decision"]["owner"]`) · `agent_id`(어느 번들 변경) · `trigger_sha`(이 변경을
-    부른 커밋 = `event.new_sha`) · `flagged_at`(주입 clock 결정론) · `status` · `review`
-    (reviewed일 때만 — ReevalOutcome) · `item_id`(uuid).
+    `subject`(ReevalSubject sealed sum — `PrecedentSubject(intent)` | `AnswerSubject(
+    audit_index)`, 타입이 곧 대상 판별자) · `owner_id`(처리함 귀속 키 — Precedent=primary
+    카드 owner / Answer=`rec["decision"]["owner"]`) · `agent_id`(어느 번들 변경) ·
+    `trigger_sha`(이 변경을 부른 커밋 = `event.new_sha`) · `flagged_at`(주입 clock 결정론) ·
+    `status` · `review`(reviewed일 때만 — ReevalOutcome) · `item_id`(uuid).
+
+    이전 MVP는 `subject_kind`(str 판별자) + `subject_ref`(str) 두 필드였다 — T8.4(a)가
+    단일 `subject: ReevalSubject`로 교체해 'sealed sum' 관용구로 정밀화했다(ADR 0019 open
+    question 해소). 대상 식별은 `match item.subject`로 분기한다.
 
     pending_review → reviewed 전이는 `review_with()`가 item_id 보존한 새 인스턴스를
     돌려준다(파괴적 변경 X — BackupReviewItem.review_with()·ConflictCase.resolve() 정신).
     """
 
-    subject_kind: SubjectKind
-    subject_ref: str
+    subject: ReevalSubject
     owner_id: str
     agent_id: str
     trigger_sha: str
@@ -269,8 +322,8 @@ class StalenessPropagator:
 
     영향 식별(ADR 0019 결정 2 — agent_id 거친 매칭, 과검출 허용·놓침 0):
       ① Precedent 축: `precedents.find_by_primary(event.agent_id)`로 그 agent를 primary로
-         둔 판례 전부. `flag_stale`로 needs_review 표식 + ReevalItem(subject_kind="precedent",
-         subject_ref=intent, owner_id=primary 카드 owner) 적재.
+         둔 판례 전부. `flag_stale`로 needs_review 표식 + ReevalItem(subject=PrecedentSubject(
+         intent), owner_id=primary 카드 owner) 적재.
       ② Answer 축: `audit_reader.records()` 순회 — records()는 **직렬화 dict**다(AuditEntry
          객체 아님·audit.py). dict 접근으로 가린다:
            - `rec["decision"]["disposition"] == "routed"` and `rec["decision"]["primary"] ==
@@ -279,7 +332,7 @@ class StalenessPropagator:
              snapshot_sha가 None이면 키 자체를 안 넣는다**(audit.py)라 .get으로 안전 접근.
            - 그 SHA가 *현 HEAD와 다르거나 None(키 부재 포함)* 이면 영향(보수 — None 답도 포함,
              과검출이지만 누락 없음). ordering 판정은 MVP 포기(불투명 SHA older-than 비교 불가).
-         영향 답마다 ReevalItem(subject_kind="answer", subject_ref=audit 인덱스,
+         영향 답마다 ReevalItem(subject=AnswerSubject(audit_index=idx),
          owner_id=`rec["decision"]["owner"]`) 적재.
 
     `owner_of`는 agent_id → owner 콜백(Precedent 축 owner 귀속용 — primary 카드 owner를
@@ -326,10 +379,10 @@ class StalenessPropagator:
                 if self._owner_of is not None
                 else None
             ) or ""
+            subject = PrecedentSubject(intent=intent)
             self._reeval_store.add(
                 ReevalItem(
-                    subject_kind="precedent",
-                    subject_ref=intent,
+                    subject=subject,
                     owner_id=owner_id,
                     agent_id=event.agent_id,
                     trigger_sha=event.new_sha,
@@ -337,9 +390,10 @@ class StalenessPropagator:
                 )
             )
             # 실시간 push 발화(T7.4·ADR 0022 결정 4) — 적재 직후 1회. notifier 미주입이면
-            # 실행 경로 밖(게이트 보존). subject_ref에 "precedent:" prefix(m1 — Answer 축과
+            # 실행 경로 밖(게이트 보존). 멱등 키는 `subject.notification_ref()`가 타입에서
+            # 네임스페이스("precedent:{intent}")로 도출한다(m1 우회 구조적 해소 — Answer 축과
             # 충돌 방지: 같은 kind="reeval_flagged"라 intent가 순수 숫자면 멱등 키 충돌 가능).
-            self._push_reeval_notification(owner_id, f"precedent:{intent}", now)
+            self._push_reeval_notification(owner_id, subject.notification_ref(), now)
 
         # ② Answer 축: audit 순회 — dict 접근 (ADR 0019 결정 2② 주의)
         records = self._audit_reader.records()
@@ -354,19 +408,20 @@ class StalenessPropagator:
             if snapshot_sha == event.new_sha:
                 continue
             owner_id_raw: str = cast(str, decision.get("owner") or "")
-            subject_ref = str(idx)
-            # dedup 가드: 같은 (subject_kind="answer", subject_ref)가 이미 pending이면 skip
+            subject = AnswerSubject(audit_index=idx)
+            # dedup 가드: 같은 AnswerSubject(audit_index)가 이미 pending이면 skip.
+            # sealed sum이라 문자열 비교가 아니라 isinstance + int 비교로 깔끔해진다
+            # (이전 MVP: `p.subject_kind == "answer" and p.subject_ref == str(idx)`).
             pending = self._reeval_store.pending_for_owner(owner_id_raw)
             already_queued = any(
-                p.subject_kind == "answer" and p.subject_ref == subject_ref
+                isinstance(p.subject, AnswerSubject) and p.subject.audit_index == idx
                 for p in pending
             )
             if already_queued:
                 continue
             self._reeval_store.add(
                 ReevalItem(
-                    subject_kind="answer",
-                    subject_ref=subject_ref,
+                    subject=subject,
                     owner_id=owner_id_raw,
                     agent_id=event.agent_id,
                     trigger_sha=event.new_sha,
@@ -374,9 +429,10 @@ class StalenessPropagator:
                 )
             )
             # 실시간 push 발화(T7.4·ADR 0022 결정 4) — 적재 직후 1회. notifier 미주입이면
-            # 실행 경로 밖(게이트 보존). subject_ref에 "answer:" prefix(m1 — Precedent 축과
-            # 충돌 방지: subject_ref가 순수 숫자면 precedent intent와 멱등 키 우연 충돌 가능).
-            self._push_reeval_notification(owner_id_raw, f"answer:{subject_ref}", now)
+            # 실행 경로 밖(게이트 보존). 멱등 키는 `subject.notification_ref()`가 타입에서
+            # 네임스페이스("answer:{audit_index}")로 도출한다(m1 우회 구조적 해소 — Precedent
+            # 축과 충돌 방지: 인덱스가 순수 숫자라 precedent intent와 우연 충돌 가능).
+            self._push_reeval_notification(owner_id_raw, subject.notification_ref(), now)
 
     def _push_reeval_notification(
         self, owner_id: str, subject_ref: str, now: datetime

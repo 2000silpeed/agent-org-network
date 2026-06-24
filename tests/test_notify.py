@@ -1,4 +1,4 @@
-"""T7.4 슬라이스 1~3 — 실시간 충돌 푸시 통지 결정론 테스트 (ADR 0022).
+"""T7.4 슬라이스 1~3 + T8.2 슬라이스 D~F — 실시간 충돌 푸시 통지 결정론 테스트 (ADR 0022).
 
 전부 결정론: FakeChannel(in-memory inbox)·주입 clock·주입 구독 맵.
 실 네트워크·실 채널·실 LLM 0.
@@ -22,6 +22,15 @@
     - conflict: Contested→ask_org(notifier 주입)→ConflictCase open + 후보 owner 통지
     - conflict: notifier 미주입 → 통지 0
     - conflict: 채널 실패해도 처리함 적재(미아 없음 회귀)
+  슬라이스 D (render_mcp_notification·T8.2):
+    - kind별 4종 안내 문자열 + (대상: subject_ref) 손잡이
+    - 노출 불변식: subject_ref 보존 + 내부값 9종(confidence·candidate·reason·
+      manager_id·ticket_id·intent·primary·question·escalated_to) 비노출
+  슬라이스 E (McpChannel transport 주입·T8.2):
+    - Fake send_fn 주입 → (recipient_id, render 결과)로 정확히 1회 호출
+    - send_fn 미주입 → NotImplementedError(no-op 아님)
+  슬라이스 F (fire-and-forget·T8.2):
+    - send_fn 예외 → Notifier가 삼킴(호출자로 안 샘) + 멱등 키 미기록 → 재시도 가능
 """
 
 from __future__ import annotations
@@ -29,10 +38,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+import pytest
+
 from agent_org_network.notify import (
     FakeChannel,
+    McpChannel,
     Notification,
     Notifier,
+    render_mcp_notification,
 )
 
 _TS = datetime(2026, 6, 23, 9, 0, 0, tzinfo=timezone.utc)
@@ -917,3 +930,237 @@ class TestSliceCReevalSubjectRefNamespace:
         subject_refs = {n.subject_ref for n in notifs}
         assert "precedent:0" in subject_refs
         assert "answer:0" in subject_refs
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# T8.2 슬라이스 D — render_mcp_notification: kind별 렌더 + 노출 불변식
+# ══════════════════════════════════════════════════════════════════════════════
+
+# 통지 렌더 출력에 절대 새면 안 되는 내부값 토큰 목록.
+# Notification 모델이 이 필드 자체를 안 담지만, 렌더 로직이 실수로 노출할 가능성을
+# 회귀 방어한다. test_mcp_server.py _LEAKY_TOKENS의 통지 대칭 버전.
+_NOTIF_LEAKY_TOKENS = (
+    "confidence",
+    "candidate",
+    "reason",
+    "manager_id",
+    "ticket_id",
+    "intent",      # subject_ref 손잡이는 OK이되 "intent" 리터럴 키 노출 금지
+    "primary",
+    "question",    # 사용자 질문 원문
+    "escalated_to",
+)
+
+
+class TestSliceDRenderMcpNotification:
+    """render_mcp_notification 순수 함수 — kind별 4종 렌더 + 노출 불변식."""
+
+    def _make_notif(self, kind: str, subject_ref: str = "ref_abc") -> Notification:
+        return Notification(
+            recipient_id="owner_x",
+            kind=kind,  # type: ignore[arg-type]
+            subject_ref=subject_ref,
+            created_at=_TS,
+        )
+
+    # ── 체크리스트 #1: kind별 4종 렌더 ───────────────────────────────────
+
+    def test_conflict_opened_렌더_사람이_읽는_문자열을_낸다(self) -> None:
+        n = self._make_notif("conflict_opened", "case_001")
+        result = render_mcp_notification(n)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_conflict_opened_렌더에_subject_ref_손잡이가_들어간다(self) -> None:
+        n = self._make_notif("conflict_opened", "case_001")
+        result = render_mcp_notification(n)
+        assert "(대상: case_001)" in result
+
+    def test_backup_review_added_렌더_사람이_읽는_문자열을_낸다(self) -> None:
+        n = self._make_notif("backup_review_added", "item_bkp_02")
+        result = render_mcp_notification(n)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_backup_review_added_렌더에_subject_ref_손잡이가_들어간다(self) -> None:
+        n = self._make_notif("backup_review_added", "item_bkp_02")
+        result = render_mcp_notification(n)
+        assert "(대상: item_bkp_02)" in result
+
+    def test_reeval_flagged_렌더_사람이_읽는_문자열을_낸다(self) -> None:
+        n = self._make_notif("reeval_flagged", "precedent:refund_policy")
+        result = render_mcp_notification(n)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_reeval_flagged_렌더에_subject_ref_손잡이가_들어간다(self) -> None:
+        n = self._make_notif("reeval_flagged", "precedent:refund_policy")
+        result = render_mcp_notification(n)
+        assert "(대상: precedent:refund_policy)" in result
+
+    def test_manager_escalated_렌더_사람이_읽는_문자열을_낸다(self) -> None:
+        n = self._make_notif("manager_escalated", "item_mgr_03")
+        result = render_mcp_notification(n)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_manager_escalated_렌더에_subject_ref_손잡이가_들어간다(self) -> None:
+        n = self._make_notif("manager_escalated", "item_mgr_03")
+        result = render_mcp_notification(n)
+        assert "(대상: item_mgr_03)" in result
+
+    # ── 체크리스트 #2(a): subject_ref 보존 손잡이 ──────────────────────────
+
+    def test_subject_ref_가_렌더_출력에_보존된다(self) -> None:
+        """노출 불변식(a) — subject_ref 손잡이가 출력에 들어간다."""
+        ref = "unique_case_xyz_999"
+        n = self._make_notif("conflict_opened", ref)
+        result = render_mcp_notification(n)
+        assert ref in result
+
+    # ── 체크리스트 #2(b): 조직 내부값·비밀 토큰 비노출 ─────────────────────
+
+    def test_conflict_opened_렌더에_내부값_토큰이_없다(self) -> None:
+        """노출 불변식(b) — 조직 내부값이 출력에 새지 않는다."""
+        n = self._make_notif("conflict_opened", "case_001")
+        result = render_mcp_notification(n)
+        for token in _NOTIF_LEAKY_TOKENS:
+            assert token not in result, f"토큰 '{token}'이 렌더 출력에 노출됨: {result!r}"
+
+    def test_backup_review_added_렌더에_내부값_토큰이_없다(self) -> None:
+        n = self._make_notif("backup_review_added", "item_bkp_02")
+        result = render_mcp_notification(n)
+        for token in _NOTIF_LEAKY_TOKENS:
+            assert token not in result, f"토큰 '{token}'이 렌더 출력에 노출됨: {result!r}"
+
+    def test_reeval_flagged_렌더에_내부값_토큰이_없다(self) -> None:
+        n = self._make_notif("reeval_flagged", "precedent:refund_policy")
+        result = render_mcp_notification(n)
+        for token in _NOTIF_LEAKY_TOKENS:
+            assert token not in result, f"토큰 '{token}'이 렌더 출력에 노출됨: {result!r}"
+
+    def test_manager_escalated_렌더에_내부값_토큰이_없다(self) -> None:
+        n = self._make_notif("manager_escalated", "item_mgr_03")
+        result = render_mcp_notification(n)
+        for token in _NOTIF_LEAKY_TOKENS:
+            assert token not in result, f"토큰 '{token}'이 렌더 출력에 노출됨: {result!r}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# T8.2 슬라이스 E — McpChannel: Fake transport 주입 + NotImplementedError
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSliceEMcpChannel:
+    """McpChannel — Fake send_fn 주입 호출 인자 검증 + send_fn 미주입 에러."""
+
+    def _make_notif(self, kind: str = "conflict_opened", subject_ref: str = "case_001") -> Notification:
+        return Notification(
+            recipient_id="owner_x",
+            kind=kind,  # type: ignore[arg-type]
+            subject_ref=subject_ref,
+            created_at=_TS,
+        )
+
+    # ── 체크리스트 #3: Fake transport 호출 인자 ────────────────────────────
+
+    def test_send_fn_주입_후_send_호출_시_정확히_1회_호출된다(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def fake(rid: str, payload: str) -> None:
+            calls.append((rid, payload))
+
+        n = self._make_notif("reeval_flagged", "precedent:refund_policy")
+        McpChannel(fake).send(n)
+        assert len(calls) == 1
+
+    def test_send_fn에_recipient_id가_정확히_전달된다(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def fake(rid: str, payload: str) -> None:
+            calls.append((rid, payload))
+
+        n = self._make_notif("manager_escalated", "item_mgr_03")
+        McpChannel(fake).send(n)
+        assert calls[0][0] == n.recipient_id
+
+    def test_send_fn에_render_결과가_payload로_전달된다(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def fake(rid: str, payload: str) -> None:
+            calls.append((rid, payload))
+
+        n = self._make_notif("backup_review_added", "item_bkp_02")
+        McpChannel(fake).send(n)
+        assert calls[0][1] == render_mcp_notification(n)
+
+    def test_send_fn_호출_인자가_recipient_id와_render_결과_쌍이다(self) -> None:
+        """체크리스트 #3 핵심: (recipient_id, render_mcp_notification(n)) 쌍."""
+        calls: list[tuple[str, str]] = []
+
+        def fake(rid: str, payload: str) -> None:
+            calls.append((rid, payload))
+
+        n = self._make_notif("conflict_opened", "case_007")
+        McpChannel(fake).send(n)
+        expected = (n.recipient_id, render_mcp_notification(n))
+        assert calls[0] == expected
+
+    # ── 체크리스트 #4: send_fn 미주입 = NotImplementedError ────────────────
+
+    def test_send_fn_미주입_시_NotImplementedError를_던진다(self) -> None:
+        n = self._make_notif()
+        with pytest.raises(NotImplementedError):
+            McpChannel().send(n)
+
+    def test_send_fn_None_명시_주입도_NotImplementedError를_던진다(self) -> None:
+        n = self._make_notif()
+        with pytest.raises(NotImplementedError):
+            McpChannel(None).send(n)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# T8.2 슬라이스 F — fire-and-forget 전파 + 멱등 재시도 회귀
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSliceFFireAndForget:
+    """체크리스트 #5: McpChannel boom_fn → Notifier가 삼킴 + 멱등 키 미기록 재시도."""
+
+    def _make_notif(self, subject_ref: str = "case_ff") -> Notification:
+        return Notification(
+            recipient_id="owner_ff",
+            kind="conflict_opened",
+            subject_ref=subject_ref,
+            created_at=_TS,
+        )
+
+    def test_McpChannel_boom_fn_예외가_Notifier_호출자로_새지_않는다(self) -> None:
+        """체크리스트 #5(a): send_fn이 던져도 Notifier.notify가 삼킨다(fire-and-forget)."""
+        call_count = 0
+
+        def boom(rid: str, payload: str) -> None:
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("MCP transport 다운")
+
+        notifier = Notifier(subscriptions={"owner_ff": McpChannel(boom)})
+        n = self._make_notif()
+        notifier.notify(n)  # 예외가 새지 않아야 한다
+        assert call_count == 1
+
+    def test_McpChannel_boom_fn_실패_후_멱등_키_미기록으로_재시도_시_다시_send_시도된다(self) -> None:
+        """체크리스트 #5(b): 전송 실패(예외) → 멱등 키 미기록 → 재시도 시 다시 send_fn 호출."""
+        call_count = 0
+
+        def boom_first(rid: str, payload: str) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("첫 번째 MCP 실패")
+
+        notifier = Notifier(subscriptions={"owner_ff": McpChannel(boom_first)})
+        n = self._make_notif()
+        notifier.notify(n)  # 첫 번째 실패 — 삼킴
+        notifier.notify(n)  # 두 번째: 멱등 키 미기록이라 재시도
+        assert call_count == 2

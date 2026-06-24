@@ -1,6 +1,6 @@
 # 실시간 충돌 푸시 통지 — 처리함·큐에 항목이 *적재되는 사건*에서 채널 중립 push를 한 번 쏜다, pull은 그대로 남아 미아 없음을 이중 보장한다
 
-상태: accepted (2026-06-23) · **구현 완료(tdd-engineer red→green — 발화 지점 4개 전부[ConflictCase·Reeval·Manager·BackupReview] + m1 subject_ref 네임스페이스 + code-reviewer 수정[M1 빈 귀속 가드·Minor1 clock 단일 시점] — 768 passed/pyright 0/ruff 0; 실 채널 어댑터·실 비동기 전달·동적 구독은 게이트 밖 후속)** · **ADR 0017 결정 6④의 본체**("충돌·검토·escalation을 Slack/메일/MCP 알림으로 *push*[지금은 조회(pull)뿐]" — ADR 0017:62·76이 "실시간 충돌 푸시 통지"를 Phase 7 ④로 미룬 것을 이 ADR이 닫는다) · **ADR 0019 결정 5의 연장**("owner nudge = 처리함 pull 재사용·실시간 push는 T7.4" — ADR 0019:99·147이 자리만 연 push를 본체로 채움; `StalenessPropagator`의 `propagator=None` 옵셔널 주입이 이 ADR 발화의 본보기) · **ADR 0011·0012 인프라의 *패턴* 재활용**(멱등 `ticket_id`·at-least-once 정신만 — 코드 재사용 아님, 아래 결정 5) · ADR 0008(ConflictCase 처리함)·ADR 0014(Manager 큐 수렴)와 정합 · Phase 7 T7.4의 설계·shape를 닫는다.
+상태: accepted (2026-06-23) · **구현 완료(tdd-engineer red→green — 발화 지점 4개 전부[ConflictCase·Reeval·Manager·BackupReview] + m1 subject_ref 네임스페이스 + code-reviewer 수정[M1 빈 귀속 가드·Minor1 clock 단일 시점] — 768 passed/pyright 0/ruff 0; 실 채널 어댑터·실 비동기 전달·동적 구독은 게이트 밖 후속)** · **T8.2 갱신(2026-06-24·결정 9·10): 첫 실 채널 = MCP 확정·`render_mcp_notification` 렌더 순수 함수(노출 불변식 게이트 내 본체)·`McpChannel` transport 주입 실 어댑터(stub 탈출)·fire-and-forget MVP 확정·Slack/Email 후속 stub. 렌더는 게이트 내·실 MCP wire-send는 게이트 밖(mcp-runtime-engineer/수동).** · **ADR 0017 결정 6④의 본체**("충돌·검토·escalation을 Slack/메일/MCP 알림으로 *push*[지금은 조회(pull)뿐]" — ADR 0017:62·76이 "실시간 충돌 푸시 통지"를 Phase 7 ④로 미룬 것을 이 ADR이 닫는다) · **ADR 0019 결정 5의 연장**("owner nudge = 처리함 pull 재사용·실시간 push는 T7.4" — ADR 0019:99·147이 자리만 연 push를 본체로 채움; `StalenessPropagator`의 `propagator=None` 옵셔널 주입이 이 ADR 발화의 본보기) · **ADR 0011·0012 인프라의 *패턴* 재활용**(멱등 `ticket_id`·at-least-once 정신만 — 코드 재사용 아님, 아래 결정 5) · ADR 0008(ConflictCase 처리함)·ADR 0014(Manager 큐 수렴)와 정합 · Phase 7 T7.4의 설계·shape를 닫는다.
 
 ## 맥락 — 끊어진 고리 하나
 
@@ -115,6 +115,37 @@ ADR 0017 결정 6은 "충돌이 실시간으로 owner에게 가고, 정리되면
 
 결정론은 `FakeChannel`+`Notifier` 도메인(멱등·구독 skip·발화 지점 옵셔널 주입)까지.
 
+### 9. 페이로드 렌더 순수 함수 `render_mcp_notification` — 노출 불변식의 게이트 내 본체 (T8.2)
+
+결정 1·2가 "본문 렌더는 어댑터 책임"으로 미룬 조각을 T8.2가 닫는다. **`Notification` → MCP 알림 페이로드(텍스트) 렌더를 순수 함수로 분리**한다:
+
+- **`render_mcp_notification(notification: Notification) -> str`**(`notify.py`·`McpChannel` 바로 위) — `mcp_server.reply_to_mcp_text(reply: OrgReply) -> str`의 **직접 본보기**다. 같은 경계: 도메인 값(`reply_to_mcp_text`는 `OrgReply`, 이건 `Notification`)에서만 투영하므로 조직 내부값·사용자向 비밀이 *구조적으로* 새지 않는다(투영 원천에 그 필드 자체가 없다). 다른 점은 면(`reply_to_mcp_text`는 사용자向 답, 이건 운영 면 알림)과 종류 축(OrgReply sealed sum 대신 NotificationKind Literal).
+- **위치 = `notify.py`**(`mcp_server.py` 아님). 렌더는 `Notification`·`NotificationKind` 도메인 값의 투영이라 같은 모듈이 응집도가 높고, `McpChannel.send`가 바로 호출한다. `reply_to_mcp_text`가 OrgReply 옆(`mcp_server.py`)에 사는 정신을 *축에 맞게* 적용 — 통지 렌더는 통지 도메인(notify.py) 옆.
+- **노출 불변식(두 겹)**: ① **구조적** — `Notification`은 식별자만 든다(recipient_id·kind·subject_ref·created_at). 사용자向 질문 원문·카드 본문·조직 내부값(confidence·candidates·reason)은 *필드 자체가 없어* 실릴 수 없다(`reply_to_mcp_text`가 Answered/Pending에 그 필드가 없어 안전한 것과 동형). ② **렌더 규율** — kind별 *중립 안내 한 줄* + `subject_ref` *손잡이*만 낸다. `subject_ref`는 운영 면 식별자(case_id·item_id·intent — owner/manager가 처리함에서 "무엇 때문에"를 잇는 손잡이)라 운영 통지에 싣는 게 맞다(Inbox·Manager 큐가 내부 식별자를 노출하는 것과 같은 면). 사용자向 비밀은 애초에 `Notification`에 없어 실릴 수 없다(`reply_to_mcp_text` Pending 중립 안내 정신).
+- **Literal 망라 = match+assert_never**(`reply_to_mcp_text`의 sealed sum 망라 정신을 Literal에 적용). `kind`가 Literal 4종이라 `match`로 전부 분기하고 `case _ as never: assert_never(never)`로 *빠짐을 타입 검사 시점에 막는다*. `NotificationKind`에 5번째 종류를 더하면 pyright가 이 match의 `assert_never`를 도달 가능으로 보아 에러를 낸다(검증함 — 새 종류가 렌더 누락 없이 강제). sealed sum match 망라와 같은 안전망을 Literal에서도 얻는다.
+- **게이트 경계**: 렌더는 **게이트 내**(순수·SDK/IO 0·결정론 단위 테스트). 실 전송은 **게이트 밖**(결정 10 transport).
+
+### 10. 첫 실 채널 = MCP · `McpChannel` transport 주입 실 어댑터 · Slack/Email 후속 stub (T8.2, 2026-06-24 외부 결정)
+
+Open Questions가 "첫 후보 MCP(외부 의존 0)이나 게이트 밖이라 지금 안 정함"으로 남긴 것을 **2026-06-24 외부 결정 3건**으로 확정한다:
+
+- **① 첫 실 채널 = MCP.** 제품이 MCP 서버라 외부 의존 0이 강점 — 먼저 닫는다. 채널 중립은 유지(MCP는 1급이 아니라 어댑터 중 *첫 번째*일 뿐 — 포트는 그대로 채널 어휘를 안 가정).
+- **② fire-and-forget MVP 확정(가볍게).** `Notifier`의 현재 동작(동기 `send`·실패 삼킴, 결정 5)이 곧 fire-and-forget이라 **추가 인프라 0**. dead-letter·재시도·재연결은 결정 8이 "후속"으로 남긴 그대로 — 이번에 만들지 않는다(과도 엔지니어링·결정과 배치).
+- **③ Slack/Email = 후속 stub.** "결정됨(2026-06-24): MCP 먼저·이 채널은 *후속 자리*"로 명문화(지금 "후속 판단"이 미정처럼 읽히던 걸 "결정 후 보류된 자리"로). 실 구현 0 — `NotImplementedError` 유지(채널 중립이라 같은 포트에 언제든 붙음).
+
+**`McpChannel` = transport 주입 실 어댑터(stub 탈출).** 렌더(결정 9·게이트 내)와 전송(게이트 밖)을 transport 주입으로 가른다 — `GitGateway`↔`FakeGitGateway`·`ClaudeRunner` 주입과 **동형**(transport를 별 포트로 격리하지 않고 `send_fn` 함수 주입으로 가볍게 — recipient_id·payload 둘만 받는 좁은 시그니처라 포트 무게가 불요):
+
+- **`McpChannel(send_fn: Callable[[str, str], None] | None = None)`** — `send`는 ① `payload = render_mcp_notification(notification)`(렌더·게이트 내) ② `self._send_fn(notification.recipient_id, payload)`(전송).
+- **Fake send_fn 주입 → 게이트 내** — 렌더 결과·호출 인자(recipient_id·payload)를 결정론으로 검증(`FakeChannel`이 메모리 inbox로 검증되는 것과 같은 결).
+- **실 MCP transport 주입 → 게이트 밖 수동**(mcp-runtime-engineer). recipient_id(User.id) → MCP 세션/엔드포인트 변환은 *transport 안에서*(채널 중립 — `McpChannel`도 MCP 세션 어휘를 안 가정).
+- **send_fn 미주입(None) → `NotImplementedError`**("실 MCP transport 필요" 명시). 자리만인 Slack/Email stub과 달리, McpChannel은 *결정된 실 채널*이라 transport만 주면 실제로 돈다(no-op 아닌 명시 실패 — 미주입을 조용히 삼켜 통지가 사라지면 운영이 모른다).
+- **fire-and-forget 계층**: `send_fn`이 던지면 `McpChannel.send`는 안 삼킨다 — `Notifier`가 fire-and-forget로 삼킨다(결정 5·계층 책임 분리). `Notifier`는 무변경(추가 인프라 0).
+
+**기각**:
+- transport를 별 포트(Protocol)로 격리 — recipient_id·payload 둘만 받는 좁은 시그니처라 포트 무게가 불요(`send_fn` 함수 주입으로 충분 — `commit_okf_bundle(..., propagator=...)`이 별 포트 없이 함수 주입인 정신).
+- send_fn 미주입 시 no-op — 통지가 조용히 사라져 운영이 모른다. NotImplementedError로 "실 transport 필요"를 명시.
+- Slack/Email까지 이번에 구현(다중 채널 fan-out) — MVP는 MCP 한 채널부터(결정 8 fan-out open question·과도 엔지니어링 회피).
+
 ## Considered Options
 
 ### 발화 지점 단일 추상 (결정 4)
@@ -144,8 +175,8 @@ ADR 0017 결정 6은 "충돌이 실시간으로 owner에게 가고, 정리되면
 
 ## Open Questions (게이트 밖·후속)
 
-- **실 채널 어댑터** — Slack/메일/MCP 실 전송(새 의존성 판단). 첫 후보 MCP 알림(외부 의존 0).
-- **실 비동기 전달** — 워커·재연결·dead-letter·at-least-once(채널 재시도).
+- **실 채널 어댑터 — MCP 부분 진행(2026-06-24·T8.2 결정 9·10)**: 첫 실 채널 = MCP 확정. `McpChannel`이 transport 주입 실 어댑터로 stub 탈출(렌더 순수 함수 `render_mcp_notification`은 게이트 내·결정론, 실 MCP wire-send는 `send_fn` 주입으로 게이트 밖). **남은 게이트 밖**: 실 MCP server-initiated notification transport 구현(recipient_id → MCP 세션/엔드포인트 변환·실 클라 연결·end-to-end 시연 — mcp-runtime-engineer/수동). **Slack/메일**은 "결정 후 보류된 자리"(후속 stub·외부 결정·새 의존성 판단 — 결정 10③).
+- **실 비동기 전달** — 워커·재연결·dead-letter·at-least-once(채널 재시도). fire-and-forget MVP 확정(결정 10②) — 이번 범위 밖 그대로.
 - **동적 구독** — `SubscriptionStore` 포트 승격·구독 관리 UI·다중 채널 fan-out.
 - **rate limit·배치·읽음 표시** — 통지 빈도 제한·다발 묶기·읽음 상태.
 - **실시간 WS/SSE push** — 운영 면 브라우저 실시간 푸시(사용자向 푸시와 같은 영역·ADR 0011 결정 6-5 범위 밖의 연장).

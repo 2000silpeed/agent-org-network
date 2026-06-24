@@ -23,6 +23,15 @@ ADR 0022:
 - 결정 5: 전달 보장 = 멱등(`(recipient_id, kind, subject_ref)` 중복 발송 안 함) + at-least-once.
   분산 인프라(ADR 0011·0012)는 **코드 재사용 아니라 *패턴*(멱등 `ticket_id` 정신)만** 따른다 —
   통지는 fire-and-forget push라 작업 디스패치(round-trip·claim/submit·큐 상태기계)와 다른 도메인.
+- 결정 9(T8.2): 페이로드 렌더 순수 함수 `render_mcp_notification(notification) -> str` — 노출
+  불변식의 게이트 내 본체(`mcp_server.reply_to_mcp_text` 정신). `Notification`(식별자만)에서만
+  투영해 사용자向 비밀·조직 내부값이 구조적으로 안 샌다. kind(Literal 4종)를 match+assert_never로
+  망라(새 종류 누락을 pyright가 잡음). 렌더는 게이트 내·순수, 실 전송은 게이트 밖.
+- 결정 10(T8.2): 첫 실 채널 = MCP·fire-and-forget MVP 확정·Slack/Email은 후속 stub. `McpChannel`은
+  transport 주입(`send_fn: Callable[[recipient_id, payload], None]`) 실 어댑터 — Fake send_fn 주입
+  으로 게이트 내(렌더+호출 인자 검증)·실 MCP transport 주입으로 게이트 밖. send_fn 미주입이면
+  NotImplementedError(transport 필요 명시). fire-and-forget은 `Notifier`가 이미 삼킴(결정 5) —
+  추가 인프라(재시도·dead-letter·동적 구독) 0(후속). Slack/Email은 "결정 후 보류된 자리".
 
 결정론 경계(ADR 0003·0022 결정 1): `FakeChannel`은 메모리 inbox·전달 로그라 게이트에서 돈다
 (`FakeGitGateway`의 결정 SHA·`FakeOidcProvider`의 in-memory 토큰 맵과 같은 결). 실 어댑터는
@@ -42,8 +51,9 @@ propagator=None)`(ADR 0019)과 동형. 단일 발화 추상 = `Notifier.notify` 
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Literal, Protocol, assert_never
 
 from pydantic import BaseModel
 
@@ -140,45 +150,136 @@ class FakeChannel:
         return self.inbox.get(recipient_id, [])
 
 
+# ── 페이로드 렌더 순수 함수: render_mcp_notification ────────────────────────
+#
+# `Notification`(식별자만) → MCP 알림 페이로드(사람이 읽는 한 줄). 노출 불변식의 게이트 내
+# 본체다(ADR 0022 결정 9·T8.2 (a)). `mcp_server.reply_to_mcp_text`의 정신을 그대로 본떴다 —
+# 도메인 값에서만 투영하고 내부값/사용자向 비밀을 안 싣는 *순수 함수*라 결정론 단위 테스트가
+# 가능하고, 실 전송(McpChannel)은 게이트 밖이다. `reply_to_mcp_text`가 OrgReply에서만 투영하듯
+# 이 함수는 Notification에서만 투영한다.
+#
+# 노출 불변식(두 겹):
+#   ① 구조적 — `Notification`은 식별자만 든다(recipient_id·kind·subject_ref·created_at). 사용자向
+#      질문 원문·카드 본문·조직 내부값(confidence·candidates·reason 등)은 *필드 자체가 없다*
+#      (reply_to_mcp_text가 Answered/Pending에 그 필드가 없어 구조적으로 안전한 것과 동형).
+#   ② 렌더 규율 — kind별 *중립 안내 한 줄* + subject_ref *손잡이*만 낸다. subject_ref는 운영 면
+#      식별자(case_id·item_id·intent — owner/manager가 "무엇 때문에"를 처리함에서 잇는 손잡이)라
+#      운영 통지에 싣는 게 맞다(Inbox·Manager 큐가 내부 식별자를 노출하는 것과 같은 면). 사용자向
+#      비밀은 애초에 Notification에 없어 실릴 수 없다(reply_to_mcp_text Pending 중립 안내 정신).
+#
+# Literal 망라(reply_to_mcp_text의 match+assert_never 정신을 Literal에 적용): `kind`가 Literal
+# 4종이라 match로 전부 분기하고 `case _ as never: assert_never(never)`로 *빠짐을 타입 검사 시점에
+# 막는다*. NotificationKind에 5번째 종류를 더하면 pyright가 이 match의 assert_never를 도달 가능으로
+# 보아 에러를 낸다 — 새 종류가 렌더 누락 없이 강제된다(sealed sum match 망라와 같은 안전망).
+
+
+def render_mcp_notification(notification: Notification) -> str:
+    """`Notification`을 MCP 알림 페이로드(사람이 읽는 한 줄)로 투영한다(노출 불변식·순수 함수).
+
+    `mcp_server.reply_to_mcp_text`와 같은 경계: `Notification`에서만 투영하므로 조직 내부값·
+    사용자向 비밀은 *구조적으로* 새지 않는다(Notification에 그 필드 자체가 없다). 다른 점은
+    면(reply_to_mcp_text는 사용자向 답, 이건 운영 면 알림)과 종류 축(OrgReply sealed sum 대신
+    NotificationKind Literal). SDK·IO 0이라 결정론 단위 테스트한다.
+
+    kind별 *중립 안내* + `subject_ref` *손잡이*만 낸다 — owner/manager가 처리함에서 그 항목을
+    찾도록. 실 전송(McpChannel.send)은 이 텍스트를 그대로 실어 보낸다(렌더와 전송 분리).
+
+    match+assert_never로 NotificationKind(Literal 4종)를 망라한다 — 5번째 종류를 더하면 pyright가
+    누락을 잡는다(sealed sum match 망라와 같은 안전망·`reply_to_mcp_text` 정신을 Literal에 적용).
+    """
+    ref = notification.subject_ref
+    match notification.kind:
+        case "conflict_opened":
+            head = "담당 영역에 다툼이 열렸습니다 — 처리함에서 확인하세요"
+        case "backup_review_added":
+            head = "백업 답이 검토 대기로 적재됐습니다 — 처리함에서 확인하세요"
+        case "reeval_flagged":
+            head = "판례 재평가가 필요한 항목이 적재됐습니다 — 처리함에서 확인하세요"
+        case "manager_escalated":
+            head = "에스컬레이션이 매니저 큐로 올라왔습니다 — 큐에서 확인하세요"
+        case _ as never:
+            assert_never(never)
+    return f"{head} (대상: {ref})"
+
+
 class SlackChannel:
-    """실 Slack 알림 `NotificationChannel` — **게이트 밖 수동 시연**(ADR 0022 결정 1·8).
+    """실 Slack 알림 `NotificationChannel` — **후속 자리(stub)**, 게이트 밖(ADR 0022 결정 1·8·10).
 
-    Slack API로 recipient(owner/manager)에게 알림을 보낸다(실 네트워크·비결정 — `SubprocessGitGateway`·
-    `HttpOidcProvider`와 같은 결). recipient_id → Slack 채널/DM 변환은 이 어댑터 안에서.
-    새 무거운 의존성(Slack SDK)을 더할지는 **tdd-engineer/후속이 판단**한다 — 이 shape는
-    자리만(`NotImplementedError`). 채널 중립 — Slack은 1급이 아니라 어댑터 중 하나다.
+    **결정됨(2026-06-24, T8.2): 첫 실 채널은 MCP. 이 채널은 *후속 자리*다(미정 아님).** MVP는 MCP
+    한 채널부터 닫는다(과도 엔지니어링·다중 채널 fan-out 회피 — ADR 0022 결정 10·결정 8 다중
+    채널 fan-out open question). Slack 실 전송 본체(Slack SDK·새 무거운 의존성·외부 계정)는
+    **착수하지 않은 후속**이다 — 채널 중립이라 같은 `NotificationChannel` 포트에 언제든 붙는다.
+    recipient_id → Slack 채널/DM 변환은 이 어댑터 안에서(채널 중립 — 포트는 채널 어휘 안 가정).
 
-    **현재는 shape stub(미구현)** — 실 본문은 후속(게이트 밖·수동).
+    **stub 유지(미구현 — 결정 후 보류된 자리)** — 실 본문은 후속(게이트 밖·수동·외부 결정 후).
     """
 
     def send(self, notification: Notification) -> None:
-        raise NotImplementedError("실 Slack 알림 — 게이트 밖 수동 시연(T7.4 후속)")
+        raise NotImplementedError(
+            "Slack 알림은 후속 자리 — 결정됨(2026-06-24): 첫 실 채널은 MCP, Slack은 후속(T8.2 (d))"
+        )
 
 
 class EmailChannel:
-    """실 이메일(SMTP) 알림 `NotificationChannel` — **게이트 밖 수동 시연**(ADR 0022 결정 1·8).
+    """실 이메일(SMTP) 알림 `NotificationChannel` — **후속 자리(stub)**, 게이트 밖(ADR 0022 결정 1·8·10).
 
-    SMTP로 recipient에게 메일을 보낸다(실 네트워크·비결정). recipient_id → 이메일 주소 변환은
-    이 어댑터 안에서(User.email 재사용 가능 — ADR 0021). 새 의존성(SMTP 라이브러리)은 후속 판단.
+    **결정됨(2026-06-24, T8.2): 첫 실 채널은 MCP. 이 채널은 *후속 자리*다(미정 아님).** SMTP 실
+    전송 본체(SMTP 라이브러리·외부 메일 서버)는 **착수하지 않은 후속**이다. recipient_id →
+    이메일 주소 변환은 이 어댑터 안에서(User.email 재사용 가능 — ADR 0021). 채널 중립이라 같은
+    포트에 언제든 붙는다.
 
-    **현재는 shape stub(미구현)** — 실 본문은 후속(게이트 밖·수동).
+    **stub 유지(미구현 — 결정 후 보류된 자리)** — 실 본문은 후속(게이트 밖·수동·외부 결정 후).
     """
 
     def send(self, notification: Notification) -> None:
-        raise NotImplementedError("실 이메일(SMTP) 알림 — 게이트 밖 수동 시연(T7.4 후속)")
+        raise NotImplementedError(
+            "이메일(SMTP) 알림은 후속 자리 — 결정됨(2026-06-24): 첫 실 채널은 MCP, 메일은 후속(T8.2 (d))"
+        )
 
 
 class McpChannel:
-    """실 MCP 알림 `NotificationChannel` — **게이트 밖 수동 시연**(ADR 0022 결정 1·8).
+    """실 MCP 알림 `NotificationChannel` — 첫 실 어댑터(transport 주입·ADR 0022 결정 1·9·10).
 
-    MCP 알림으로 recipient에게 보낸다. 제품이 MCP 서버라 외부 의존 0이 강점(첫 실 어댑터 후보)
-    이나 게이트 밖이라 지금 안 정한다(ADR 0022 결정 1·8). 새 의존성은 후속 판단.
+    **결정됨(2026-06-24, T8.2): 첫 실 채널 = MCP.** 제품이 MCP 서버라 외부 의존 0이 강점이라
+    먼저 닫는다. `send`는 두 일을 한다: ① `render_mcp_notification`으로 페이로드(텍스트)를 렌더
+    (게이트 내·순수·노출 불변식) ② 주입된 transport(`send_fn`)로 실 전송(게이트 밖·비결정).
+    **렌더는 게이트 내·전송은 게이트 밖**으로 깔끔히 갈린다 — `GitGateway`↔`FakeGitGateway`·
+    `ClaudeRunner` 주입과 동형(transport를 포트화하지 않고 `send_fn` 함수 주입으로 가볍게).
 
-    **현재는 shape stub(미구현)** — 실 본문은 후속(게이트 밖·수동).
+    transport 주입(`send_fn: Callable[[recipient_id, payload], None]`):
+      - **Fake send_fn 주입 → 게이트 내 테스트** — 렌더 결과·호출 인자(recipient_id·payload)를
+        결정론으로 검증(실 MCP 0). `FakeChannel`이 메모리 inbox로 검증되듯, McpChannel은 Fake
+        transport로 "무엇을 어디로 보냈나"를 검증한다.
+      - **실 MCP transport 주입 → 게이트 밖 수동** — server-initiated notification 클라 push.
+        recipient_id(User.id) → MCP 세션/엔드포인트 변환은 *transport 안에서*(채널 중립 — 포트도
+        McpChannel도 MCP 세션 어휘를 안 가정·mcp-runtime-engineer가 채움).
+      - **send_fn 미주입(None) → NotImplementedError** — "실 MCP transport 필요"를 명시(자리만인
+        Slack/Email stub과 달리, McpChannel은 *결정된 실 채널*이라 transport만 주면 실제로 돈다).
+
+    fire-and-forget(ADR 0022 결정 5): `send_fn`이 던지면 `Notifier`가 이미 삼킨다(결정 5) — 이
+    어댑터는 재시도/dead-letter를 안 둔다(MVP·게이트 밖 인프라). 채널 중립 — MCP는 1급이 아니라
+    어댑터 중 하나(첫 채널일 뿐).
     """
 
+    def __init__(self, send_fn: Callable[[str, str], None] | None = None) -> None:
+        # recipient_id·payload(텍스트)를 받아 실 MCP 알림을 쏘는 transport. None이면 실 transport
+        # 미주입 — send 시 NotImplementedError(결정된 실 채널이라 transport만 채우면 돈다).
+        # Fake 주입 → 게이트 내, 실 MCP 클라 주입 → 게이트 밖(mcp-runtime-engineer).
+        self._send_fn = send_fn
+
     def send(self, notification: Notification) -> None:
-        raise NotImplementedError("실 MCP 알림 — 게이트 밖 수동 시연(T7.4 후속)")
+        """한 통지를 MCP 알림으로 전달한다 — 렌더(게이트 내)+transport(게이트 밖).
+
+        ① `render_mcp_notification`으로 노출 불변식 페이로드 렌더(순수) ② 주입 transport로 전송.
+        send_fn 미주입이면 NotImplementedError(실 MCP transport 필요 명시). 전송 실패(send_fn이
+        던짐)는 여기서 안 삼킨다 — `Notifier`가 fire-and-forget로 삼킨다(결정 5·계층 책임 분리).
+        """
+        if self._send_fn is None:
+            raise NotImplementedError(
+                "실 MCP 알림 — send_fn(실 MCP transport) 주입 필요(게이트 밖 수동·T8.2 (a) 본체)"
+            )
+        payload = render_mcp_notification(notification)
+        self._send_fn(notification.recipient_id, payload)
 
 
 # ── 통지 서비스: Notifier ──────────────────────────────────────────────────

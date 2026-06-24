@@ -263,6 +263,85 @@
       border-top: 1px solid var(--line);
     }
     .nav a { color: var(--me); text-decoration: none; }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .tab {
+      padding: 9px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+    }
+    .tab.active { color: var(--me); border-bottom-color: var(--me); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .okf-notice {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 13px;
+      color: #1e40af;
+      margin-bottom: 18px;
+    }
+    .okf-file {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      background: #fafbfc;
+    }
+    .okf-file .file-head {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .okf-file .file-head input {
+      flex: 1;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: ui-monospace, "Cascadia Code", monospace;
+    }
+    .okf-file .remove-file {
+      padding: 4px 10px;
+      font-size: 12px;
+      background: none;
+      border: 1px solid #fca5a5;
+      border-radius: 6px;
+      color: #b91c1c;
+      cursor: pointer;
+    }
+    .okf-file textarea {
+      width: 100%;
+      min-height: 120px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      resize: vertical;
+    }
+    .add-file-btn {
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      color: #1e40af;
+      cursor: pointer;
+      margin-bottom: 14px;
+    }
   </style>
 </head>
 <body>
@@ -288,6 +367,12 @@
     </div>
 
     <div class="main">
+      <div class="tabs">
+        <button class="tab active" id="tab-card" data-panel="panel-card">카드 구성</button>
+        <button class="tab" id="tab-okf" data-panel="panel-okf">OKF 번들 편집</button>
+      </div>
+
+      <div class="panel active" id="panel-card">
       <div class="notice">
         이 빌더는 카드를 <strong>검증·미리보기</strong>만 합니다. YAML을 복사해
         <code style="font-family:ui-monospace,monospace; background:#dcfce7; padding:1px 5px; border-radius:3px;">registry/agents/{agent_id}.yaml</code>에 커밋(PR)해야 실제 등록됩니다.
@@ -356,6 +441,31 @@
       </div>
 
       <div class="result-area" id="result-area"></div>
+      </div><!-- /panel-card -->
+
+      <div class="panel" id="panel-okf">
+        <div class="okf-notice">
+          OKF 번들은 <strong>답변 지식</strong>(마크다운)입니다. 카드(권한·등록)와 달리 이
+          편집은 빌더가 <strong>git에 직접 커밋</strong>합니다 — 편집 채널은 git 하나이고
+          라이브 레지스트리 mutation이 아닙니다(ADR 0018). author는 로그인 신원으로 박힙니다.
+        </div>
+        <div class="form-card">
+          <h2>OKF 번들 커밋</h2>
+          <div class="field">
+            <label>agent_id <span class="req">*</span></label>
+            <input id="okf-agent-id" type="text" placeholder="자기 카드의 agent_id (예: cs_ops)" />
+            <div class="hint">자기 번들만 커밋할 수 있습니다(Owner 스코프 — 세션 ≠ owner면 403).</div>
+          </div>
+          <div id="okf-files"></div>
+          <button class="add-file-btn" id="okf-add-file">+ 파일 추가</button>
+          <div class="field">
+            <label>commit message <small style="font-weight:400;">(선택)</small></label>
+            <input id="okf-message" type="text" placeholder="예: 환불 정책 갱신 v2" />
+          </div>
+          <button class="submit-btn" id="okf-commit-btn">git에 커밋</button>
+        </div>
+        <div class="result-area" id="okf-result-area"></div>
+      </div><!-- /panel-okf -->
     </div>
 
     <div class="nav">
@@ -544,12 +654,154 @@
       }
     }
 
+    // ── OKF 번들 편집 탭 ──────────────────────────────────────────────────
+    function switchTab(panelId) {
+      for (const t of document.querySelectorAll(".tab")) {
+        t.classList.toggle("active", t.dataset.panel === panelId);
+      }
+      for (const p of document.querySelectorAll(".panel")) {
+        p.classList.toggle("active", p.id === panelId);
+      }
+    }
+
+    function addOkfFileRow(path, content) {
+      const container = document.getElementById("okf-files");
+      const row = document.createElement("div");
+      row.className = "okf-file";
+
+      const head = document.createElement("div");
+      head.className = "file-head";
+      const pathInput = document.createElement("input");
+      pathInput.type = "text";
+      pathInput.className = "okf-path";
+      pathInput.placeholder = "번들 내 상대 경로 (예: refund-policy.md)";
+      if (path) pathInput.value = path;
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "remove-file";
+      removeBtn.textContent = "삭제";
+      removeBtn.addEventListener("click", () => {
+        if (document.querySelectorAll("#okf-files .okf-file").length > 1) row.remove();
+      });
+      head.appendChild(pathInput);
+      head.appendChild(removeBtn);
+
+      const ta = document.createElement("textarea");
+      ta.className = "okf-content";
+      ta.placeholder = "마크다운 본문 (YAML 프론트매터 포함 가능 — OKF 형식, ADR 0013)";
+      if (content) ta.value = content;
+
+      row.appendChild(head);
+      row.appendChild(ta);
+      container.appendChild(row);
+    }
+
+    function collectOkfFiles() {
+      const files = [];
+      for (const row of document.querySelectorAll("#okf-files .okf-file")) {
+        const path = row.querySelector(".okf-path").value.trim();
+        const content = row.querySelector(".okf-content").value;
+        if (path) files.push({path: path, content: content});
+      }
+      return files;
+    }
+
+    function renderOkfOk(sha, agentId) {
+      const area = document.getElementById("okf-result-area");
+      area.innerHTML = "";
+      const box = document.createElement("div");
+      box.className = "result-ok";
+      const h3 = document.createElement("h3");
+      h3.textContent = "커밋 완료";
+      box.appendChild(h3);
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = agentId + " 번들이 git에 커밋되었습니다.";
+      box.appendChild(sub);
+      const pre = document.createElement("pre");
+      pre.className = "yaml-box";
+      pre.textContent = "commit SHA: " + sha + "\nagent_id: " + agentId;
+      box.appendChild(pre);
+      const guide = document.createElement("div");
+      guide.className = "commit-guide";
+      guide.textContent = "OKF 번들은 답변 지식 저장소(git)입니다. 이 커밋은 owner(로그인 신원)를 "
+        + "author로 박았습니다. 이후 답변은 이 스냅샷 SHA 기준으로 번들을 읽습니다.";
+      box.appendChild(guide);
+      area.appendChild(box);
+    }
+
+    function renderOkfError(msgs) {
+      const area = document.getElementById("okf-result-area");
+      area.innerHTML = "";
+      const box = document.createElement("div");
+      box.className = "result-error";
+      const h3 = document.createElement("h3");
+      h3.textContent = "커밋 실패";
+      box.appendChild(h3);
+      const ul = document.createElement("ul");
+      ul.className = "error-list";
+      for (const m of msgs) {
+        const li = document.createElement("li");
+        li.textContent = m;
+        ul.appendChild(li);
+      }
+      box.appendChild(ul);
+      area.appendChild(box);
+    }
+
+    async function doOkfCommit() {
+      const btn = document.getElementById("okf-commit-btn");
+      const agentId = document.getElementById("okf-agent-id").value.trim();
+      const files = collectOkfFiles();
+      document.getElementById("okf-result-area").innerHTML = "";
+      if (!agentId) { renderOkfError(["agent_id를 입력하세요."]); return; }
+      if (files.length === 0) { renderOkfError(["커밋할 파일(경로+내용)이 없습니다."]); return; }
+
+      btn.disabled = true;
+      btn.textContent = "커밋 중…";
+      try {
+        const res = await fetch("/builder/okf/commit", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            agent_id: agentId,
+            files: files,
+            message: document.getElementById("okf-message").value.trim(),
+          }),
+        });
+        if (res.status === 401) {
+          document.getElementById("login-banner").style.display = "block";
+          renderOkfError(["로그인이 필요합니다(Owner 스코프)."]);
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 200) {
+          renderOkfOk(data.sha, data.agent_id);
+        } else if (res.status === 403) {
+          renderOkfError(["자기 번들만 커밋할 수 있습니다(세션 ≠ 카드 owner)."]);
+        } else if (res.status === 404) {
+          renderOkfError(["카드가 존재하지 않습니다: " + agentId]);
+        } else {
+          renderOkfError([(data && data.detail) || ("커밋 실패: " + res.status)]);
+        }
+      } catch (err) {
+        renderOkfError(["요청 실패: " + err.message]);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "git에 커밋";
+      }
+    }
+
     document.getElementById("validate-btn").addEventListener("click", doValidate);
     document.getElementById("login-btn").addEventListener("click", tryLogin);
     document.getElementById("login-input").addEventListener("keydown", e => {
       if (e.key === "Enter") tryLogin();
     });
     document.getElementById("logout-btn").addEventListener("click", doLogout);
+    document.getElementById("tab-card").addEventListener("click", () => switchTab("panel-card"));
+    document.getElementById("tab-okf").addEventListener("click", () => switchTab("panel-okf"));
+    document.getElementById("okf-add-file").addEventListener("click", () => addOkfFileRow());
+    document.getElementById("okf-commit-btn").addEventListener("click", doOkfCommit);
+    addOkfFileRow();  // 기본 1행
 
     // 오늘 날짜 기본값
     const today = new Date().toISOString().slice(0, 10);

@@ -37,7 +37,7 @@ uv sync                     # 의존성 설치(.venv)
 ## 게이트(테스트·타입·린트)
 
 ```bash
-uv run pytest        # 단위 테스트(결정론) — 584 passed
+uv run pytest        # 단위 테스트(결정론) — 900 passed
 uv run pyright       # 타입 검사(strict) — 0 errors
 uv run ruff check    # 린트 — 0
 ```
@@ -78,11 +78,32 @@ curl -s -X POST http://127.0.0.1:8099/ask -H 'Content-Type: application/json' \
 
 ### 2) 분산 — 중앙 + owner 워커 (WebSocket)
 
+한 기기(localhost):
+
 ```bash
-scripts/run_central.sh 8000                       # 중앙(web /ask + 워커 ws /worker, 한 dispatcher)
-scripts/run_worker.sh cs_lead ws://127.0.0.1:8000/worker primary   # owner 워커(로컬 claude로 답)
+scripts/run_central.sh 8000                # 중앙(web /ask + 워커 ws /worker, 한 dispatcher)
+scripts/run_worker.sh cs_lead primary 8000 # owner 워커(로컬 claude로 답) — 인자: <OWNER> [ROLE] [PORT] [CENTRAL_HOST]
 # POST /ask → dispatched+tracking 회수, GET /ask/{tracking} → 워커가 회신한 실 claude 답
 ```
+
+여러 기기(같은 LAN — 윈도우/맥/리눅스에 각 담당자 워커): 중앙은 LAN에 노출하고, 각 워커는
+중앙의 LAN IP로 붙는다. 전체 절차·실패 모드는 [`scripts/demo_e2e.md`](scripts/demo_e2e.md) 참고.
+
+```bash
+# 중앙 기기(IP 예: 192.168.0.10) — 0.0.0.0으로 바인딩해 LAN에 연다
+scripts/run_central.sh 8000 0.0.0.0
+
+# 각 OS 기기에서 자기 담당자 워커를 띄운다(저장소 체크아웃 + uv sync + 로컬 claude 로그인 전제)
+scripts/run_worker.sh cs_lead    primary 8000 192.168.0.10   # 예: 윈도우 = cs_lead
+scripts/run_worker.sh legal_lead primary 8000 192.168.0.10   # 예: 맥    = legal_lead
+scripts/run_worker.sh finance_lead primary 8000 192.168.0.10 # 예: 리눅스 = finance_lead
+```
+
+> 전제: ① 각 워커 기기에 로컬 `claude` CLI 설치·로그인(답은 그 기기의 claude가 만든다) ②
+> 그 owner의 OKF 번들이 `okf/<agent_id>/`에 있어야 지식 기반 답이 나온다(없으면 "문서 없어
+> 모른다"로 정직하게 답함 — 현재 샘플은 `cs_ops`·`contract_ops`만 있고 `finance_ops`는 없다) ③
+> 워커 등록 인증은 아직 stub(T6.5/SSO 전)이라 **신뢰된 LAN에서만** — 0.0.0.0 바인딩은 포트를
+> 네트워크에 연다 ④ 방화벽에서 중앙 포트(예 8000)를 허용.
 
 가용성: owner PC 워커가 부재면 owner 위임 **백업 워커**(`--role backup`)가 신뢰 하향(`mode=backup`)으로
 답하고, owner 복귀 시 처리함에서 검토(승인/정정/무시)한다. 둘 다 부재면 Manager escalation(미아 없음).
@@ -127,7 +148,7 @@ uv run python -m agent_org_network.registry registry        # 5장 카드·6명 
 - 기술 설계: [`docs/trd-v0.md`](docs/trd-v0.md)
 - 작업 목록: [`docs/tasks-v0.md`](docs/tasks-v0.md)
 - 도메인 용어집: [`CONTEXT.md`](CONTEXT.md)
-- 아키텍처 결정: [`docs/adr/`](docs/adr/) (ADR 0001~0016)
+- 아키텍처 결정: [`docs/adr/`](docs/adr/) (ADR 0001~0023)
 
 ## 스택
 

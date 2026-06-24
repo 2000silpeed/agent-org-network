@@ -96,6 +96,63 @@ curl -s http://127.0.0.1:8000/ask/$TRACKING
 
 ---
 
+## 다른 기기에서 (같은 LAN — 윈도우/맥/리눅스에 각 담당자)
+
+위 흐름을 한 기기가 아니라 LAN의 여러 기기로 펼친다 — 한 OS = 한 담당자(owner) 워커. 중앙을
+한 기기에 두고 LAN에 열면, 각 OS의 워커가 *그 기기의 로컬 claude*로 자기 담당 영역을 답한다
+(분산 정신: Authority·지식·실행이 owner 환경에 있다 — ADR 0011·0017).
+
+### 기기별 전제
+
+각 워커 기기(윈도우/맥/리눅스)마다:
+- 이 저장소 체크아웃 + `uv sync`(`.venv`) — `okf/` 번들이 함께 따라온다.
+- 로컬 `claude` CLI 설치·로그인(답은 *그 기기의* claude가 만든다 — API 키 불요).
+- 중앙 기기와 같은 네트워크, 중앙 포트(예 8000) 방화벽 허용.
+
+### 중앙 기기 (IP 예: `192.168.0.10`)
+
+```bash
+scripts/run_central.sh 8000 0.0.0.0      # 0.0.0.0 = LAN에 노출(기본 127.0.0.1은 로컬 전용)
+```
+
+> 보안: 0.0.0.0 바인딩은 포트를 네트워크에 연다. 워커 등록 인증은 아직 stub(T6.5/SSO 전)이라
+> 누구나 워커를 붙이거나 `/ask`를 칠 수 있다 — **신뢰된 LAN(집·테스트망)에서만** 쓰고 방화벽으로
+> 통제한다. 공개망 노출 금지.
+
+### 각 OS 기기 — 자기 담당자 워커
+
+```bash
+# 윈도우 (Git Bash/WSL 또는 PowerShell에서 동등 명령) — 예: cs_lead(환불·보상)
+scripts/run_worker.sh cs_lead primary 8000 192.168.0.10
+
+# 맥 — 예: legal_lead(계약 검토)
+scripts/run_worker.sh legal_lead primary 8000 192.168.0.10
+
+# 리눅스 — 예: finance_lead(가격)
+scripts/run_worker.sh finance_lead primary 8000 192.168.0.10
+```
+
+각 워커 로그에 `중앙에 등록됨(ws://192.168.0.10:8000/worker). 작업 대기.`가 보이면 붙은 것이다.
+
+### 질문 → 어느 기기가 답하나
+
+중앙(또는 아무 기기)에서 질문하면 분류 키워드가 담당 워커로 라우팅된다:
+
+```bash
+curl -s -X POST http://192.168.0.10:8000/ask -H 'content-type: application/json' \
+  -d '{"question":"계약서 표준 조항 알려줘"}'      # 계약 → legal_lead(맥)가 답
+curl -s -X POST http://192.168.0.10:8000/ask -H 'content-type: application/json' \
+  -d '{"question":"환불 규정 알려줘"}'             # 환불 → cs_lead(윈도우)가 답
+curl -s -X POST http://192.168.0.10:8000/ask -H 'content-type: application/json' \
+  -d '{"question":"Pro 요금제 가격 알려줘"}'        # 가격 → finance_lead(리눅스)가 답
+```
+
+각 답의 `answered_by`로 *어느 담당자(=어느 기기)*가 답했는지, 답 본문으로 *그 기기의 claude가
+자기 OKF 번들을 읽어* 만든 내용임을 확인한다(`okf/cs_ops`·`okf/contract_ops`·`okf/finance_ops`
+세 번들 모두 샘플 제공). owner를 안 띄운 도메인 질문은 `pending`이다가 timeout→escalation(미아 없음).
+
+---
+
 ## 실패 모드 눈으로 보기(선택)
 
 - **워커 끊김 → 재연결:** 터미널 B를 Ctrl-C로 끄고(작업 중이었다면 중앙이 `release_claims`로

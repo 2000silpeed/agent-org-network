@@ -644,6 +644,30 @@ class TestSlice5PrecedentAxis:
         items = reeval_store.pending_for_owner("cs_lead")
         assert len(items) == 0
 
+    def test_이미_invalidated_판례는_재적재_안_함(self) -> None:
+        """T8.4(d): owner가 무효화(InvalidatePrecedent)한 판례는 OKF 커밋이 와도
+        재평가 큐에 다시 안 올린다 — 무효화로 라우팅에서 뺀 걸 또 묻는 처리함 노이즈 방지.
+        """
+        precedents = InMemoryPrecedentStore(clock=_CLOCK)
+        precedents.record(Resolution(intent="환불", primary="cs_ops"))
+        precedents.invalidate("환불", by_owner="cs_lead", at=_TS)
+
+        reeval_store = InMemoryReevalStore()
+        propagator = StalenessPropagator(
+            precedents=precedents,
+            audit_reader=self._make_fake_audit(),
+            reeval_store=reeval_store,
+            owner_of=lambda _: "cs_lead",
+            clock=_CLOCK,
+        )
+        propagator.on_okf_committed(_event(agent_id="cs_ops", new_sha="sha-new"))
+        assert len(reeval_store.pending_for_owner("cs_lead")) == 0
+        # 무효화는 그대로 보존(append-only·재표식 없음)
+        invalidated = precedents.lookup("환불")
+        assert invalidated is not None
+        assert invalidated.invalidated is True
+        assert invalidated.needs_review is False
+
     def test_다른_agent_판례는_영향_없음(self) -> None:
         precedents = InMemoryPrecedentStore(clock=_CLOCK)
         precedents.record(Resolution(intent="법무", primary="legal_ops"))

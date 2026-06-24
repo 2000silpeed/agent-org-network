@@ -282,17 +282,42 @@ class ReevalService:
 
     1인칭 강제: 재평가는 그 owner만 — item.owner_id != review.by_owner면 ValueError
     (BackupReviewService가 by_owner를 강제하듯). 전이는 store에 반영, audit 기록은 호출자.
+
+    `InvalidatePrecedent` 실 제외(ADR 0019 결정 6·T8.4(d)): `precedents`가 주입되면
+    (비None) outcome이 `InvalidatePrecedent`*이고* subject가 `PrecedentSubject`인 짝일 때
+    `precedents.invalidate(subject.intent, ...)`를 호출해 그 판례를 라우팅에서 *실제로 뺀다*
+    (Router가 `p.invalidated`를 보고 판례 경로를 건너뜀·안 B). `ConsensusService`가
+    `Agreed`→`precedents.record`를 하는 *대칭*이다. `precedents=None`이면 *기존 동작 그대로*
+    (하위호환·게이트 보존 — `commit_okf_bundle(propagator=None)` 정신). 무효화는 ReevalStore
+    전이(이미)와 PrecedentStore 표식(신규)이지 *기록*(audit)이 아니다 — 재검토 행위의 audit
+    기록은 호출자 책임(전이 ≠ 기록).
     """
 
-    def __init__(self, store: ReevalStore) -> None:
+    def __init__(
+        self,
+        store: ReevalStore,
+        precedents: PrecedentStore | None = None,
+        clock: Clock = default_clock,
+    ) -> None:
         self._store = store
+        # InvalidatePrecedent 실 제외(T8.4(d)) — 미주입이면 기존 동작(하위호환·게이트 보존).
+        self._precedents = precedents
+        self._clock = clock
 
     def review(self, item_id: str, review: ReevalOutcome) -> ReevalItem:
         """재평가 처분을 적용해 reviewed 항목을 돌려준다.
 
         1인칭 검증: review.by_owner가 item.owner_id여야 한다(타인 처리 금지).
         item_id 미존재 → ValueError. 이미 reviewed면 그대로(멱등).
-        순서: item None 검사 → 1인칭 검증 → 멱등(reviewed면 return) → 전이.
+        순서: item None 검사 → 1인칭 검증 → 멱등(reviewed면 return) → 전이 → 무효화 부작용.
+
+        `InvalidatePrecedent` × `PrecedentSubject` 짝(ADR 0019 결정 7 — 대상·결과 독립 축)
+        이고 `precedents`가 주입돼 있으면, 전이 *뒤* `precedents.invalidate`로 그 판례를
+        라우팅에서 뺀다(멱등·append-only). 축이 어긋난 짝(예: AnswerSubject에 InvalidatePrecedent)
+        은 *무시*한다(에러 X) — 전이는 그대로 일어나야 미아가 안 생기고(reviewed 종착 보장),
+        축 정합은 발화 지점(StalenessPropagator)이 구조적으로 보장한다(여긴 방어적으로 맞는
+        짝만 처분). `KeepPrecedent`·`SupersedePrecedent`·Answer 축 outcome은 이번 범위 밖이라
+        부작용 없이 전이만(d는 InvalidatePrecedent 실 제외만).
         """
         item = self._store.get(item_id)
         if item is None:
@@ -305,7 +330,25 @@ class ReevalService:
             return item
         reviewed = item.review_with(review)
         self._store.mark_reviewed(reviewed)
+        self._apply_invalidation(item, review)
         return reviewed
+
+    def _apply_invalidation(self, item: ReevalItem, review: ReevalOutcome) -> None:
+        """`InvalidatePrecedent` × `PrecedentSubject` 짝이면 그 판례를 라우팅에서 뺀다.
+
+        `precedents` 미주입이면 *아무것도 안 한다*(하위호환·게이트 보존). subject·outcome
+        축 정합을 match로 강제한다 — `(PrecedentSubject, InvalidatePrecedent)` 짝만 처분하고
+        어긋난 짝은 무시한다(전이는 이미 일어났으므로 미아 없음). 무효화는 멱등·append-only
+        (`PrecedentStore.invalidate`가 store 삭제 X — 무효 표식만).
+        """
+        if self._precedents is None:
+            return
+        if isinstance(review, InvalidatePrecedent) and isinstance(
+            item.subject, PrecedentSubject
+        ):
+            self._precedents.invalidate(
+                item.subject.intent, by_owner=review.by_owner, at=self._clock()
+            )
 
 
 # ── 변경 전파기: StalenessPropagator ─────────────────────────────────────
@@ -370,7 +413,11 @@ class StalenessPropagator:
         # ① Precedent 축: agent_id 역색인으로 영향 판례 찾기
         affected_precedents = self._precedents.find_by_primary(event.agent_id)
         for precedent in affected_precedents:
-            if precedent.needs_review:
+            # 이미 stale 표식됐거나(멱등) owner가 명시 무효화한(InvalidatePrecedent·T8.4(d))
+            # 판례는 재평가에서 뺀다 — 무효화된 판례는 라우팅에서 빠졌으므로(Router가
+            # p.invalidated skip) 재평가 큐에 다시 올리면 처리함 노이즈다(owner가 일부러
+            # 닫은 걸 또 묻는 꼴). needs_review와 invalidated 둘 다 "이미 처리됨" 가드.
+            if precedent.needs_review or precedent.invalidated:
                 continue
             intent = precedent.resolution.intent
             self._precedents.flag_stale(intent, trigger_sha=event.new_sha, at=now)

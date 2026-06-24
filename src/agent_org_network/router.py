@@ -22,7 +22,13 @@ class Router:
         intent = self._classifier.classify(question)
         if self._precedents is not None and intent:
             p = self._precedents.lookup(intent)
-            if p is not None:
+            # 무효화 판례는 라우팅 단축경로에서 건너뛴다(ADR 0019 결정 6·T8.4(d)).
+            # owner가 InvalidatePrecedent로 명시 처분한 판례는 `p.invalidated`로 표식되며
+            # (append-only — lookup은 순수 읽기라 그대로 반환·안 B), Router가 이 플래그를
+            # 보고 판례 경로를 *건너뛰어* 아래 분류기 경로로 폴백한다. needs_review(stale)는
+            # 여전히 안 본다(stale 판례는 계속 라우팅 — stale ≠ 무효). 폴백 경로(0→Unowned·
+            # 1→Routed·≥2→Contested)는 항상 종착하므로 무효화로 단축경로를 끊어도 미아 없음.
+            if p is not None and not p.invalidated:
                 try:
                     card = self._registry.get(p.resolution.primary)
                 except KeyError:

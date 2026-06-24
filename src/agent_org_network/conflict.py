@@ -34,12 +34,24 @@ class Precedent:
     은 불변. **stale ≠ 무효화**: Router lookup은 `needs_review`를 *보지 않으므로*
     (router.py) stale 판례도 계속 라우팅된다(미아 없음 보존). 무효화는 owner 1인칭
     처분(`InvalidatePrecedent`) 후만(ADR 0019 결정 6).
+
+    무효 신호(ADR 0019 결정 6·T8.4(d)): `invalidated`·`invalidated_at`·`invalidated_by`
+    는 owner가 `InvalidatePrecedent`로 명시 처분한 *뒤* `PrecedentStore.invalidate`가
+    다는 무효 표식이다(frozen·하위호환 기본값·append-only — store 삭제 X). **`needs_review`
+    (stale·재검토 대상·라우팅 유지)와 `invalidated`(무효·라우팅 제외)는 독립 축**이다
+    (stale ≠ 무효 — 결정 6). Router는 `needs_review`는 안 보지만 `invalidated`면 판례
+    경로를 *건너뛰고* 분류기 경로로 폴백한다(판례 단축경로만 끊음·아래 분류기 경로가
+    항상 종착이라 미아 없음 보존). 무효화도 append-only라 `list_all`·`find_by_primary`엔
+    *그대로 남는다*(운영 면 열람 보존).
     """
 
     resolution: Resolution
     recorded_at: datetime
     needs_review: bool = False
     last_flagged_at: datetime | None = None
+    invalidated: bool = False
+    invalidated_at: datetime | None = None
+    invalidated_by: str | None = None
 
 
 class PrecedentStore(Protocol):
@@ -65,6 +77,24 @@ class PrecedentStore(Protocol):
         ADR 0019 결정 4·6: 무효화가 아니라 *플래그*다(라우팅 불변·미아 없음). 이미
         needs_review면 멱등(다시 안 단다). 판례 없으면 None. append-only 정신 —
         새 인스턴스로 갈아끼우고 history에 남긴다(파괴적 변경 X).
+        """
+        ...
+
+    def invalidate(self, intent: str, by_owner: str, at: datetime) -> Precedent | None:
+        """그 intent의 판례를 무효로 표식한다 — `invalidated=True`·`invalidated_at=at`·
+        `invalidated_by=by_owner`(ADR 0019 결정 6·T8.4(d)).
+
+        owner가 `InvalidatePrecedent`로 명시 처분한 *뒤* `ReevalService`가 호출한다
+        (Authority 중앙: 무효화 판단만 owner 1인칭). `flag_stale`과 같은 형태:
+          - 판례 없으면 None.
+          - 이미 invalidated면 멱등(그대로 반환·다시 안 단다).
+          - append-only — `_precedents`/`_by_primary`에서 *제거하지 않고* 새 인스턴스로
+            갈아끼우고 history에 남긴다(파괴적 변경 X·운영 면 열람[list_all] 보존).
+
+        **stale ≠ 무효** — `needs_review`(라우팅 유지)와 `invalidated`(라우팅 제외)는
+        독립 축이라 서로 덮어쓰지 않는다(이미 stale이어도 invalidated만 켠다). 라우팅
+        제외는 Router가 `p.invalidated`를 보고 판례 경로를 건너뛰는 것으로 일어난다
+        (lookup은 순수 읽기로 그대로 반환 — 안 B).
         """
         ...
 
@@ -101,15 +131,35 @@ class InMemoryPrecedentStore:
             return existing
         import dataclasses
         flagged = dataclasses.replace(existing, needs_review=True, last_flagged_at=at)
-        self._precedents[intent] = flagged
-        self.history.append(flagged)
-        primary = existing.resolution.primary
-        by_p = self._by_primary.get(primary, [])
+        self._swap(intent, existing, flagged)
+        return flagged
+
+    def invalidate(self, intent: str, by_owner: str, at: datetime) -> Precedent | None:
+        existing = self._precedents.get(intent)
+        if existing is None:
+            return None
+        if existing.invalidated:
+            return existing
+        import dataclasses
+        invalid = dataclasses.replace(
+            existing, invalidated=True, invalidated_at=at, invalidated_by=by_owner
+        )
+        self._swap(intent, existing, invalid)
+        return invalid
+
+    def _swap(self, intent: str, existing: Precedent, updated: Precedent) -> None:
+        """append-only 표식 교체 — `_precedents`·`_by_primary` 동기화 + history append.
+
+        flag_stale·invalidate 공통: 기존 인스턴스를 *삭제하지 않고* 새 인스턴스로
+        갈아끼우고(`_precedents[intent]`·`_by_primary` 역색인) history에 남긴다.
+        """
+        self._precedents[intent] = updated
+        self.history.append(updated)
+        by_p = self._by_primary.get(existing.resolution.primary, [])
         for i, p in enumerate(by_p):
             if p is existing:
-                by_p[i] = flagged
+                by_p[i] = updated
                 break
-        return flagged
 
 
 # ── 미해소 다툼의 저장 단위: ConflictCase ─────────────────────────────

@@ -76,6 +76,16 @@ curl -s -X POST http://127.0.0.1:8099/ask -H 'Content-Type: application/json' \
 # → cs_ops가 okf/cs_ops/refund-policy.md 를 읽고 "45,000원" 계산 + 담당·출처
 ```
 
+**분류기 선택** — 기본은 키워드 규칙(`RuleBasedClassifier`, 빠름·결정론, `환불`·`가격`·`계약` 등
+키워드가 있어야 라우팅). 자연어 질문까지 라우팅하려면 `AON_CLASSIFIER=llm`으로 띄운다 — 실
+claude(Haiku)가 질문을 담당 도메인으로 분류한다(중앙 API 키 0·로컬 claude 인증, ADR 0015 단일 출처).
+
+```bash
+AON_CLASSIFIER=llm uv run uvicorn agent_org_network.web:app --port 8099          # 웹
+AON_CLASSIFIER=llm scripts/run_central.sh 8000 0.0.0.0                            # 분산 중앙
+# → "산 지 20일 됐는데 마음 바뀌어 돌려받고 싶어요"처럼 '환불' 단어가 없어도 cs_ops로 라우팅
+```
+
 ### 2) 분산 — 중앙 + owner 워커 (WebSocket)
 
 한 기기(localhost):

@@ -4,6 +4,7 @@
 둘을 동기화해 데모와 골든셋이 같은 카드 셋을 본다. 눈으로 보는 end-to-end 한 바퀴(웹챗)용 조립이다.
 """
 
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -17,7 +18,7 @@ from agent_org_network.audit import (
     InMemoryAuditLog,
     JsonlAuditLog,
 )
-from agent_org_network.classifier import RuleBasedClassifier
+from agent_org_network.classifier import Classifier, LlmClassifier, RuleBasedClassifier
 from agent_org_network.conflict import (
     ConflictCaseStore,
     ConsensusService,
@@ -170,6 +171,7 @@ def build_demo(
     review_store: "BackupReviewStore | None" = None,
     manager_queue_store: "ManagerQueueStore | None" = None,
     audit_log: "JsonlAuditLog | InMemoryAuditLog | None" = None,
+    classifier: Classifier | None = None,
 ) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
@@ -194,7 +196,18 @@ def build_demo(
         registry.register(card)
     registry.validate()
 
-    classifier = RuleBasedClassifier(_KEYWORD_INTENTS)
+    # 분류기 선택(주입 > env > 기본 키워드). 기본은 결정론 `RuleBasedClassifier`(게이트·
+    # 테스트 안전 — env 미설정이면 기존 동작 그대로). `AON_CLASSIFIER=llm`이면 정교한
+    # `LlmClassifier`(실 claude Haiku로 자연어 질문→intent, T6.2·ADR 0010 정신 중앙 키 0).
+    # intent 어휘 = 레지스트리 도메인 합집합(라우터가 매칭하는 바로 그 라벨) — 미분류("")는
+    # 0매칭→Unowned(미아 없음). 분류는 `router.route`에서 질문당 1회뿐(ADR 0015 단일 출처·
+    # ask_org는 `decision.intent` 재사용·재분류 없음)이라 비결정 분류기 도입이 안전하다.
+    if classifier is None:
+        if os.environ.get("AON_CLASSIFIER", "").strip().lower() == "llm":
+            intents = sorted({d for c in registry.all_cards() for d in c.domains})
+            classifier = LlmClassifier(intents=intents)
+        else:
+            classifier = RuleBasedClassifier(_KEYWORD_INTENTS)
     precedents = InMemoryPrecedentStore()
     case_store = InMemoryConflictCaseStore()
     router = Router(registry, classifier, root_user=ROOT_USER, precedents=precedents)

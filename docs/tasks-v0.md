@@ -208,3 +208,106 @@
     - **(f) 동적 구독 `SubscriptionStore` + rate limit [게이트 내]** — ADR 0022 Open Question: 현재 구독은 `Notifier` 주입 정적 맵(전이 없는 데이터라 store 불요). owner가 런타임에 채널을 켜고 끄는 *동적 구독*이 되면 `SubscriptionStore` 포트(패턴 N번째)로 승격 + rate limit(통지 빈도 제한·다발 묶기). 검증: 동적 구독 추가/삭제·rate limit 결정론 테스트. **동적 구독이 실제 요구가 될 때만** 당긴다(ADR 0022 결정 3 — 정적 매핑에 store는 과도). **설계 판단 필요 → domain-architect**(SubscriptionStore 승격·ADR 0022 갱신).
   - **권장 진입**: (a) sealed sum 분리 완료. (d) InvalidatePrecedent 실 제외 설계·shape 완료(tdd-engineer red→green 대기 — 미아 없음 회귀가 1순위). (b)(c)(f)는 *관측된 노이즈/요구가 있을 때* 당긴다.
   - **넘김**: 설계 변경 동반((a)(d)(f)) → **domain-architect**(shape·ADR 갱신) 먼저 → **tdd-engineer**(red→green). 순수 정밀화((b)(c)(e)) → **tdd-engineer**. 실 어댑터·전송 무관(mcp-runtime 넘김 없음 — 전부 게이트 내 도메인).
+
+## Phase 9 — Hermes 콘솔 + 상태 세션 + 멀티-LLM(OAuth)
+
+> **운영화(Phase 8: 포트→실 어댑터)에서 한 걸음 더 — *세션화*.** Phase 1~8은 *무상태 1회성 질의응답*(질문 1개 → 라우팅 → `claude -p` 1회성 답 → 끝)을 닫았다. Phase 9는 그 위에 **(1) 중앙이 세션·맥락·수명을 관리하고 (2) owner의 OAuth 멀티-LLM이 답을 만들며 (3) 운영자가 실시간 콘솔로 인입·결정·전송을 본다**는 세 층을 얹는다. **핵심: 기존 라우팅 도메인(Router·RoutingDecision·Precedent·Contested·Unowned·미아 없음·게이트·노출 불변식)은 그대로 재사용**하고 세션·콘솔 층만 더한다 — 라우팅을 다시 짜지 않는다. 각 사용자 메시지는 *여전히 기존 Router*로 라우팅되고(Routed→에이전트·Contested→ConflictCase·Unowned→Manager escalation·Precedent 자동적용·Approval=HITL), 세션 층은 *맥락·트랜스크립트·수명*만 보탠다. **게이트 내/밖 본질**: 세션/토큰 포트+InMemory·수명(주입 clock)·HITL→mode 매핑·토큰 발급/검증 결정 로직·맥락 조립 순수 함수·SSE 이벤트 직렬화 순수 함수·SQLite 어댑터 tmp-file 통합 테스트·각 공급자 런타임(주입 transport/runner Stub)은 **게이트 내(결정론)**. 실 OAuth 흐름·실 공급자 API 스트리밍·owner 로컬 웹 UI 조작·실 SSE 브라우저 푸시·멀티-머신은 **게이트 밖(수동 시연)**. **과도 엔지니어링 경고**: fan-out(한 메시지→여러 에이전트)·Postgres·다중 공급자 동시 지원은 *후속으로 명시 연기*하고, **증분**(한 공급자[권장 Claude]·SQLite·메시지당 담당 1명·A안 라우팅)부터 닫는다. 핵심 불변식(미아 없음·Authority 중앙·전이≠기록≠통지·노출 불변식·owner 격리·등록 무결성)은 세션·콘솔 층이 *닿지 않게* 유지한다.
+
+> **규칙 1 충돌 검토(완료 — 진행 전 선행 갱신 필요).** Phase 9는 기존 SSOT와 **한 군데서 정면 충돌**하고 나머지는 확장이다.
+> - **[정면 충돌] ADR 0010·0017 "답 실행 위치".** 현재 SSOT(ADR 0017·CONTEXT Agent Runtime·PRD §3·§5)는 *답 실행 = 중앙 `claude -p`가 owner OKF 최신을 cwd로 읽기*로 못박았다(ADR 0010 "1회성 `claude -p`" → ADR 0017 "중앙 실행 기본·분산은 옵션 B로 강등"). Phase 9의 "owner OAuth 멀티-LLM이 답한다·`ClaudeCodeRuntime`을 대화 경로에서 교체·인프로세스 OAuth+공급자 API 스트리밍(프로세스 스폰 회피)"은 **이 결정을 다시 뒤집는다**(실행 주체가 다시 owner측 자격증명으로, 다만 *분산 워커*가 아니라 *owner OAuth 구독 토큰을 owner 환경/클라이언트가 쥐고* API를 직접 부르는 모양). 이는 ADR 0010의 명시적 supersede, ADR 0017의 부분 재정의(결정 2 "답 실행=중앙 claude -p")가 필요하다 — **domain-architect가 새 ADR("멀티-LLM OAuth 공급자 API 런타임")에서 0010 supersede·0017 결정 2 재정의를 명문화하기 전엔 구현 착수 금지.** *보존되는 근거*: "중앙 API 키 0·중앙 토큰 0"(ADR 0010의 유효 핵심)은 **보존·강화**된다 — 자격증명이 owner측 OAuth라 중앙은 여전히 모델 키/토큰을 안 든다. *바뀌는 것*: "실행은 중앙 claude -p" → "실행은 owner OAuth 멀티-LLM(공급자 API 직접 스트리밍)". *분류기·배치 경로의 `claude -p`는 잔존 가능*(대화 답변 경로만 교체).
+> - **[확장] ADR 0016·0021 인증.** 운영 면 세션 인증(무비밀번호→SSO)은 *운영자/owner 웹 면* 신원이고, Phase 9의 "워커 등록 토큰·사용자 세션 신원"은 다른 축이다. ADR 0016이 신원을 세션으로 격리한 패턴·`_session_identity` 헬퍼는 재사용 가능. *결정 대기*: 사용자(채팅) 신원을 익명 세션 쿠키로 둘지 기존 SSO 연결로 둘지(T9.1).
+> - **[확장] ADR 0011·0012 워커 인증.** `WebSocketDispatcher._authenticate`(transport.py:522)는 현재 "token 있으면 통과"하는 stub이고 ADR 0011 결정 6-5·0012 결정 5가 "실 토큰 검증은 T6.5/후속"으로 명시했다. Phase 9 T9.5(워커 등록/인증)가 *바로 그 stub을 실 인증으로 교체*한다 — **충돌이 아니라 예고된 자리 채움.** WS 전송(ADR 0011 결정 6)은 그대로 워커↔중앙 채널로 재사용.
+> - **[확장] ADR 0022 통지·SSE.** ADR 0022가 Open Question으로 남긴 "실시간 WS/SSE push(운영 면 브라우저)"를 Phase 9 콘솔 SSE 피드가 닫는다(통지 도메인과 별 축 — 콘솔 SSE는 *운영자 관전*, 통지는 *처리함 적재 알림*). `Notifier`·`NotificationChannel` 패턴은 참조 본보기.
+> - **[확장] ADR 0006 중앙 MCP.** `ask_org` MCP 도구·`OrgReply` 투영·노출 불변식은 그대로. 세션 층은 그 위에 트랜스크립트·맥락을 더한다(채팅 노출 불변식 보존 — 다른 에이전트 답 미공유).
+> **선행 갱신 순서**: ① domain-architect가 새 ADR 4종(아래 식별)에서 0010 supersede·0017 결정 2 재정의 명문화 → ② PRD §3·§5·§6·TRD §2·§4·§5·CONTEXT(Agent Runtime·Authn & planes·신규 세션/토큰/콘솔 용어) 갱신 → ③ 그 후 게이트 내 슬라이스부터 구현. (규칙 2 — 단계 완료마다 SSOT 재갱신.)
+
+> **새 ADR 4종 식별(번호·본문은 domain-architect — 여기선 *어디에 ADR이 필요한지*만 표시).**
+> - **ADR-A 세션 모델** — 사용자 단위 세션·중앙 상태 관리·메시지당 담당 1명·맥락=사용자 발화 스레드만(owner 격리·노출 불변식)·암묵 시작/운영자 종료/유휴 타임아웃 수명·종료 시 맥락 비움. `SessionStore` 포트. (T9.1)
+> - **ADR-B HITL 런타임 토글** — 답=LLM 초안→사람(owner) 검토·수정·전송이 *기존 draft_only/Approval 재사용*임(새 기계 아님)·토글은 에이전트별+콘솔 런타임 토글(on=draft_only·off=full·기본값은 카드 approval 정책 시드)·HITL→`Answer.mode` 매핑. (T9.3)
+> - **ADR-C 워커 인증/admission(토큰)** — 콘솔에서 등록 토큰 발급·연결/대기 워커 목록·승인/취소(revoke)·`--token` 연결 검증(`_authenticate` stub 실 교체)·`TokenStore` 포트·토큰 형식/만료/refresh. (T9.5)
+> - **ADR-D 멀티-LLM OAuth(공급자 API 런타임)** — **0010 supersede·0017 결정 2 재정의의 본체.** owner OAuth 구독(API 키 아님)·인프로세스 OAuth+공급자 API 스트리밍(속도 근거 — 프로세스 스폰·하네스 오버헤드 회피)·자격증명 owner측(중앙 토큰 0)·`AgentRuntime` 포트의 공급자별 어댑터·한 공급자부터 증분(권장 Claude)·`ClaudeCodeRuntime` 대화 경로 교체(분류기/배치 잔존 가능). (T9.4·T9.6)
+
+> **새 포트(domain-architect가 shape 확정).** `SessionStore`(세션 보관·조회·수명 — Protocol+InMemory+SQLite 어댑터, 기존 store 패턴 N번째) · `TokenStore`(등록 토큰 발급·검증·만료·revoke — Protocol+InMemory+SQLite) · 공급자별 `AgentRuntime` 어댑터(`ClaudeApiRuntime` 등 — 기존 `AgentRuntime` 포트 구현·주입 transport로 Stub 결정론).
+
+> **권장 진입 순서(게이트 내·의존성 적은 것부터 — 리스크 낮은 순).** ① T9.1 `SessionStore` 포트+InMemory+세션 수명(주입 clock) → ② T9.3 HITL→mode 매핑(순수·`_apply_approval_gate` 재사용) → ③ T9.5 토큰 발급/검증/만료 결정 로직(`TokenStore`+InMemory) · T9.2 SSE 이벤트 직렬화 순수 함수 → ④ T9.4 공급자 런타임 Stub(주입 transport) → 그 위에 실 OAuth·실 API 스트리밍(T9.6)·실 콘솔 SSE 브라우저(T9.2 게이트 밖)·owner 로컬 UI(T9.7) 수동/외부 결정. SQLite durable 어댑터(T9.8)는 InMemory 그린 후 tmp-file 통합 테스트로.
+
+- [ ] **T9.1** 상태 세션 — `SessionStore` 포트 + 사용자 단위 세션 + 맥락 조립 + 수명 (ADR-A 신규)
+  - **배경·근거**: 세션화의 토대이자 *가장 게이트 내·의존성 적은 첫 타자*. 무상태 1회성을 상태 세션으로 바꾸는 핵심 — 중앙이 사용자 단위 세션을 들고 트랜스크립트·맥락·수명을 관리한다. 라우팅 도메인은 무변경(각 메시지는 기존 `AskOrg.handle`로 라우팅), 세션 층이 그 위를 감싼다. 새 포트는 기존 store 패턴(`PrecedentStore`·`ConflictCaseStore`·`BackupReviewStore`)의 N번째 인스턴스 — 새 메커니즘 0.
+  - **슬라이스 분해**:
+    - **(a) `SessionStore` 포트 + `InMemorySessionStore` + `Session` 값 객체 [게이트 내·결정론]** — `Session`(frozen — `session_id`·`user_id`(사용자 단위)·트랜스크립트(사용자 발화+답 스레드)·`status`(active/ended)·`started_at`·`last_active_at` 주입 clock). 포트 메서드: `open_or_get(user_id)`(암묵 시작 — 첫 메시지) · `get(session_id)` · `append_turn(...)` · `end(session_id)`(운영자 종료·맥락 비움) · `active_for_user`. 검증: in-memory 세션 라이프사이클(암묵 시작→턴 적재→종료→맥락 비움) 결정론. **불변식**: 전이≠기록(세션 전이는 도메인·트랜스크립트 적재는 별개)·owner 격리(세션은 *사용자* 귀속이지 조직 내부 미노출). **shape 확정 → domain-architect.**
+    - **(b) 맥락 조립 순수 함수 [게이트 내·결정론]** — 라우팅된 에이전트에 주는 맥락 = *그 사용자 발화 스레드만*(다른 에이전트/owner 답 미공유 — owner 격리·노출 불변식). `assemble_context(session, ...) -> str|messages` 순수 함수(`serialize_reply`·`reply_to_mcp_text`와 같은 투영 경계). 검증: 사용자 스레드 replay가 다른 owner 답을 안 섞나·종료 세션은 빈 맥락. **불변식**: 노출 불변식(다른 에이전트 답 누설 0 — 적대 추적 테스트).
+    - **(c) 세션 수명 = 암묵 시작 + 운영자 종료 + 유휴 타임아웃 [게이트 내·주입 clock]** — 첫 메시지에 암묵 시작·콘솔 운영자 명시 종료(T9.2)·유휴 타임아웃(설정값·주입 clock으로 결정론). 종료 시 그 세션 맥락 비움(프로덕션 위생). 검증: clock을 유휴 임계 너머로 진전→자동 종료·종료 후 새 메시지는 새 세션. **결정 대기**: 유휴 타임아웃 기본값.
+    - **(d) `AskOrg`/세션 층 와이어링 [게이트 내·결정론]** — 각 사용자 메시지가 세션을 통과해 기존 `AskOrg.handle`(Router·dispatcher)로 라우팅되고, 결과 턴을 트랜스크립트에 적재. *기존 라우팅·노출 불변식·미아 없음 회귀 0*이 1순위(세션 층은 *감싸기*지 라우팅 변경 아님). **불변식**: 미아 없음(0매칭→Unowned→escalation 그대로)·Authority 중앙(세션이 권한 안 만듦).
+  - **의존성·우선순위**: 없음(첫 타자). (b)(c)는 (a) 위. (d)는 (a)~(c) 위.
+  - **외부 결정·결정 대기**: 사용자(채팅) 신원 = **익명 세션 쿠키 vs 기존 SSO 연결**(결정 대기 — T9.1 (a) user_id 출처를 가른다) · 유휴 타임아웃 기본값(결정 대기).
+  - **넘김**: ADR-A·세션 shape → **domain-architect**. (a)~(d) 결정론 구현 → **tdd-engineer**. 영속(SQLite)은 T9.8.
+
+- [ ] **T9.2** 운영자 콘솔 — SSE 피드 + POST 명령 (ADR-A·ADR-C 연계)
+  - **배경·근거**: 운영자가 질문 인입·라우팅 결정·답 전송·워커 연결/해제를 *실시간*으로 보고(SSE 피드), 세션 종료·HITL 토글·토큰 발급·워커 승인/취소를 *명령*(POST)한다. 별도 앱(채팅·owner UI와 다른 면). ADR 0022가 Open Question으로 남긴 "운영 면 브라우저 실시간 push(SSE/WS)"를 이 콘솔이 닫는다(통지 도메인과 별 축 — 콘솔은 운영자 관전·통지는 처리함 적재 알림).
+  - **슬라이스 분해**:
+    - **(a) SSE 이벤트 직렬화 순수 함수 [게이트 내·결정론]** — 도메인 사건(질문 인입·`RoutingDecision`·답 전송·워커 연결/해제)을 SSE 이벤트 페이로드로 투영하는 순수 함수(`serialize_reply` 정신). 검증: 각 사건→이벤트 직렬화·노출 불변식(콘솔은 운영 면이라 내부값 OK이되 *사용자向 비밀은 렌더 규율* — `render_mcp_notification` 정신). **불변식**: 노출 불변식(운영 면 내부값 노출 OK·사용자 채팅과 다른 면).
+    - **(b) POST 명령 핸들러 = 세션 종료·HITL 토글·토큰 발급·워커 승인/취소 [게이트 내·결정론 도메인 호출]** — 각 명령이 도메인 서비스(`SessionStore.end`·HITL 토글[T9.3]·`TokenStore`[T9.5]·워커 승인[T9.5])를 부르는 얇은 어댑터. 운영자 인증은 ADR 0016 세션 재사용. 검증: TestClient로 각 명령 라우트 회귀(인증·스코프). **불변식**: Authority 중앙·전이≠기록.
+    - **(c) 실 SSE 브라우저 푸시 + 콘솔 화면 [게이트 밖 수동]** — 실 SSE 스트림이 브라우저에 실시간으로 닿는지·콘솔 화면 조작. 외부 의존: 실 브라우저·실 SSE 연결. 게이트 밖(비결정).
+  - **의존성·우선순위**: (a)는 self-contained(첫 진입). (b)는 T9.3·T9.5 도메인 위. (c)는 (a)(b) 위 수동.
+  - **외부 결정·결정 대기**: 콘솔 앱 배포 맥락(같은 프로세스 라우트 vs 별 앱) · SSE vs WS(합의=SSE+POST 확정).
+  - **넘김**: (a) SSE 직렬화 순수 함수 → **tdd-engineer**. (b) POST 명령 라우트 → **tdd-engineer**(회귀)+**mcp-runtime-engineer**(전송). (c) 실 SSE·화면 → **mcp-runtime-engineer**/**수동 시연**.
+
+- [ ] **T9.3** HITL 런타임 토글 — LLM 초안→사람 검토·전송 (ADR-B 신규)
+  - **배경·근거**: *가장 게이트 내·기존 자산 재사용*. 답=하이브리드 HITL(LLM 초안→owner 검토·수정·전송)인데 이는 **새 기계가 아니라 기존 `draft_only`/Approval 재사용**이다(`Routed.requires_approval`→`AskOrg._apply_approval_gate`가 `mode="draft_only"`로 내림, T2.5·CONTEXT Approval/Answer). 토글이 그 게이트를 *런타임에* 켜고 끈다 — 에이전트별 + 콘솔 런타임 토글(on=draft_only·off=full·기본값은 카드 approval 정책에서 시드).
+  - **슬라이스 분해**:
+    - **(a) HITL 토글 상태 + →mode 매핑 순수 로직 [게이트 내·결정론]** — 에이전트별 토글(on/off)·콘솔 런타임 토글·기본값 시드(카드 `approval_when`/approval 정책). `hitl_on → mode="draft_only"`·`off → "full"` 매핑 순수 함수(기존 `_apply_approval_gate` 재사용·확장). 검증: 토글 on/off·기본 시드·매핑 결정론. **불변식**: 노출 불변식(`mode`는 원래 노출하는 신뢰 상태값 — Answer 절)·전이≠기록.
+    - **(b) 콘솔 토글 명령 와이어링 [게이트 내·결정론]** — T9.2 (b) POST 명령이 토글 상태를 바꾸고, 이후 답이 그 mode로 나가는지. 검증: 토글 변경→다음 답 mode 반영 결정론. **불변식**: Authority 중앙(토글은 신뢰 게이트지 권한 선언 아님).
+  - **의존성·우선순위**: (a) self-contained(권장 2번째 진입). (b)는 T9.2 (b) 위.
+  - **외부 결정·결정 대기**: 없음(기존 draft_only/Approval 재사용이라 외부 결정 0 — 권장 조기 진입).
+  - **넘김**: ADR-B·토글 shape → **domain-architect**. (a)(b) 결정론 → **tdd-engineer**. owner UI 검토·전송 조작은 T9.7 게이트 밖.
+
+- [ ] **T9.4** 공급자 런타임 추상 — `AgentRuntime` 공급자별 어댑터 (ADR-D 신규·게이트 내 조각)
+  - **배경·근거**: ADR-D(0010 supersede·0017 결정 2 재정의)의 *게이트 내 조각*. owner OAuth 멀티-LLM(claude·codex·gemini)을 *기존 `AgentRuntime` 포트의 공급자별 어댑터*로 추상한다(`StubRuntime`·`ClaudeCodeRuntime`과 같은 포트). **인프로세스 OAuth+공급자 API 스트리밍**이 핵심(claude -p 프로세스 스폰·하네스 오버헤드 회피 = *속도 근거*). **한 공급자부터 증분**(권장 Claude = Anthropic API+OAuth 구독 토큰+스트리밍 먼저 → 속도·스트리밍 입증 → codex·gemini 추가). 자격증명 owner측(중앙 토큰 0 — 0010 "중앙 키 0" 보존·강화).
+  - **슬라이스 분해**:
+    - **(a) 공급자 런타임 어댑터 shape + 주입 transport Stub [게이트 내·결정론]** — `ClaudeApiRuntime`(등) = `AgentRuntime` 구현·답 생성에 주입 transport(`ClaudeRunner`가 `_run_claude_headless` 주입받는 정신)를 쓴다. 주입 Stub transport로 결정론 — 요청/응답 매핑·스트리밍 토큰 조립 *결정 로직*만 게이트 내. 검증: Stub transport 주입→답 매핑·mode 보존·sources 결정론. **불변식**: Authority 중앙(런타임은 답 생성이지 권한 선언 아님)·노출 불변식(`Answer` 계약 보존).
+    - **(b) 요청/응답 매핑 + 스트리밍 조립 순수 함수 [게이트 내·결정론]** — 공급자 API 요청 빌드·응답→`Answer` 매핑·스트리밍 토막 조립을 순수 함수로 격리(SDK/IO 0). 검증: 고정 응답 fixture→`Answer` 매핑 결정론. **불변식**: 노출 불변식(매핑이 내부값 안 실음).
+    - **(c) `ClaudeCodeRuntime` 대화 경로 교체 판단 [게이트 내·와이어링]** — 대화 답변 경로의 런타임을 공급자 어댑터로 교체(분류기·배치 경로의 `claude -p`는 잔존 가능 — 명시 구분). dispatcher/ask_org 주입 지점만 바꾸고 *라우팅·노출 불변식·미아 없음 회귀 0*. **불변식**: 미아 없음(런타임 교체가 종착 안 바꿈).
+  - **의존성·우선순위**: ADR-D 선행(0010 supersede 명문화). (a)(b) self-contained 결정론. (c)는 T9.1 세션 와이어링과 합류.
+  - **외부 결정·결정 대기**: **첫 공급자(권장 Claude API+OAuth)** · 중앙 분류기 LLM 유지 여부(현재 claude/Haiku — 대화 경로만 교체면 분류기 잔존) · OAuth 흐름을 owner CLI/직접 중 무엇으로(opencode 패턴 참조 — 실 흐름은 T9.6).
+  - **넘김**: ADR-D(0010 supersede·0017 재정의)·공급자 어댑터 shape → **domain-architect**(ADR 본체) 먼저. (a)(b) 결정론 매핑·Stub → **tdd-engineer**. (c) 교체 와이어링 → **tdd-engineer**. 실 OAuth·실 API 스트리밍은 T9.6.
+
+- [ ] **T9.5** 워커 등록/인증 — 콘솔 토큰 발급·승인·취소 + `_authenticate` 실 교체 (ADR-C 신규)
+  - **배경·근거**: ADR 0011 결정 6-5·0012 결정 5가 "실 토큰 검증은 후속"으로 *예고한 자리 채움*(충돌 아님). 콘솔에서 운영자가 (owner/role)용 등록 토큰 발급 + 연결/대기 워커 목록 + 승인/취소(revoke). 워커가 `--token`으로 연결→중앙이 검증(`WebSocketDispatcher._authenticate` stub[transport.py:522] 실 교체). UI는 *신원·자격·admission* 관리(원격 프로세스 기동 아님 — 워커는 워커 기기에서 실행).
+  - **슬라이스 분해**:
+    - **(a) `TokenStore` 포트 + 발급/검증/만료/revoke 결정 로직 [게이트 내·결정론]** — `TokenStore`(Protocol+InMemory — 기존 store 패턴 N번째)·등록 토큰 발급(owner/role 귀속)·검증·만료(주입 clock)·revoke. 토큰 *결정 로직*만 게이트 내(실 토큰 형식·서명은 결정 대기). 검증: 발급→검증 통과·만료/revoke 토큰 거부·clock 진전 만료 결정론. **불변식**: 등록 무결성(유효하지 않은 토큰 admission 거부)·Authority 중앙(토큰은 owner 귀속 선언이지 카드 자기보고 아님).
+    - **(b) `_authenticate` 실 교체 [게이트 내·결정론]** — `WebSocketDispatcher._authenticate`(stub) → `TokenStore` 검증으로 교체·`RegisterWorker.token` 실 검증·미인증/취소 토큰 `SubmitAnswer` 거부(ADR 0011 결정 6-5 hook 실체화). 검증: 유효 토큰 register 통과·무효/revoke 거부·그 ticket owner≠연결 owner 거부 결정론(`TestClient` WS·Fake 워커). **불변식**: 등록 무결성·owner 격리(회신이 진짜 그 owner에게서).
+    - **(c) 콘솔 워커 명령 = 발급·목록·승인/취소 [게이트 내·결정론 도메인 호출]** — T9.2 (b) POST 명령이 토큰 발급·연결/대기 워커 목록 조회·승인/취소를 부른다. 검증: 명령 라우트 회귀. **불변식**: Authority 중앙.
+    - **(d) 실 `--token` 연결 시연 [게이트 밖 수동]** — 실 워커 프로세스가 발급 토큰으로 실 아웃바운드 WS 연결·승인/취소가 실 연결에 반영. 외부 의존: 실 워커·실 WS·실 네트워크. 게이트 밖.
+  - **의존성·우선순위**: (a) self-contained(권장 진입). (b)는 (a) + 기존 WS 디스패처 위. (c)는 T9.2 (b) 위. (d)는 전부 위 수동.
+  - **외부 결정·결정 대기**: **토큰 형식/만료/refresh 정책**(결정 대기 — (a) 결정 로직은 게이트 내지만 실 형식은 외부 결정) · 워커 신원과 owner SSO 신원 연계 여부.
+  - **넘김**: ADR-C·토큰 shape → **domain-architect**. (a)(b)(c) 결정론 → **tdd-engineer**. `_authenticate` 실 교체 전송 측 → **mcp-runtime-engineer**. (d) 실 연결 → **mcp-runtime-engineer**/**수동 시연**.
+
+- [ ] **T9.6** 실 멀티-LLM OAuth + 공급자 API 스트리밍 [게이트 밖·외부 결정 선행] (ADR-D 본체)
+  - **배경·근거**: T9.4 게이트 내 조각(공급자 어댑터·매핑·Stub) 위에 *실 OAuth 흐름·실 공급자 API 스트리밍*을 입힌다. **전부 게이트 밖**(실 네트워크·실 OAuth·비결정 스트리밍)이고 외부 결정이 무거워 *결정 선행 없이 진행 불가*. 한 공급자(권장 Claude)부터 — 속도·스트리밍 입증 후 codex·gemini.
+  - **슬라이스 분해**:
+    - **(a) 실 OAuth 흐름(owner 구독 토큰 획득) [게이트 밖]** — owner가 OAuth로 공급자 구독에 인증·토큰 획득·갱신. 자격증명 owner측(중앙 토큰 0). OAuth 흐름을 **owner CLI vs 직접** 중 무엇으로(opencode 패턴 참조 — 결정 대기). 외부 의존: 실 IdP/공급자 OAuth·실 브라우저/CLI.
+    - **(b) 실 공급자 API 스트리밍 [게이트 밖]** — 인프로세스에서 공급자 API를 직접 호출·토큰 스트리밍(프로세스 스폰 회피·속도). 외부 의존: 실 공급자 API·실 네트워크·실 토큰. 새 의존성(공급자 SDK/HTTP) 판단 — ADR 갱신(되돌리기 어려운 결정).
+    - **(c) end-to-end 시연 [게이트 밖 수동]** — owner OAuth→실 API 스트리밍 답→세션 트랜스크립트·HITL 토글까지 한 바퀴. 외부 의존: 전부 실.
+  - **의존성·우선순위**: T9.4 게이트 내 조각 그린 후. 외부 결정(첫 공급자·OAuth 흐름·SDK) 선행. **결정 전엔 전체 "결정 대기".**
+  - **외부 결정·결정 대기**: 첫 공급자(권장 Claude) · OAuth 흐름(owner CLI vs 직접·opencode 참조) · 공급자 API SDK/라이브러리(새 의존성) · 스트리밍 프로토콜.
+  - **넘김**: (a)(b)(c) 실 OAuth·실 API·전송 → **mcp-runtime-engineer**(외부 결정 후). 새 의존성·OAuth 흐름 설계 → **domain-architect**(ADR-D 갱신).
+
+- [ ] **T9.7** owner 분산 에이전트 클라이언트 — 로컬 프로세스 + 로컬 웹 UI [게이트 밖·수동] (ADR-A·ADR-B·ADR-D 연계)
+  - **배경·근거**: UI 2개 중 하나(다른 하나는 T9.2 운영자 콘솔). owner 분산 에이전트 클라이언트 = 로컬 프로세스 + 로컬 웹 UI. 중앙에만 WS 연결(토큰 인증·T9.5). 라우팅 질문 + 사용자-스레드 맥락 수신→LLM 초안→HITL on이면 owner가 로컬 UI에서 검토·수정·전송, off면 자동. **거의 게이트 밖**(실 로컬 프로세스·실 웹 UI·실 WS) — 결정론 조각은 기존 `worker.py`의 `WorkerLogic`·`parse_central_frame` 정신(프레임 핸들링 코어)뿐.
+  - **슬라이스 분해**:
+    - **(a) 로컬 클라이언트 프레임 핸들링 코어 [게이트 내 일부]** — 중앙→클라 프레임 파싱·맥락 수신·초안 요청 트리거 *결정론 코어*(`WorkerLogic`/`parse_central_frame` 재사용·확장). 검증: 프레임→초안 요청 매핑 결정론. **불변식**: owner 격리(맥락=사용자 스레드만).
+    - **(b) 로컬 웹 UI + 실 WS 연결 + HITL 검토·전송 [게이트 밖 수동]** — owner 로컬 웹 UI에서 초안 검토·수정·전송·실 WS 연결(토큰 인증). 외부 의존: 실 로컬 프로세스·실 브라우저·실 WS. 게이트 밖.
+  - **의존성·우선순위**: T9.4(공급자 런타임)·T9.5(토큰)·T9.3(HITL) 위. 거의 마지막(수동).
+  - **외부 결정·결정 대기**: 로컬 UI 스택·OAuth 흐름(T9.6과 공유).
+  - **넘김**: (a) 코어 → **tdd-engineer**. (b) 로컬 UI·실 WS → **mcp-runtime-engineer**/**수동 시연**.
+
+- [ ] **T9.8** 영속성 — `SessionStore`·`TokenStore` SQLite durable 어댑터 [게이트 내 일부·tmp-file 통합] (ADR-A·ADR-C 연계)
+  - **배경·근거**: 포트+InMemory(게이트·T9.1·T9.5)가 그린이면 *SQLite durable 어댑터*를 더한다 — 프로세스 재시작에도 세션/토큰 보존. `SubprocessGitGateway`가 tmp repo 통합 테스트로 게이트에 들어간 정신과 동형(DB 없으면 skip). **멀티 인스턴스 확장 시 Postgres 어댑터는 후속**(과도 엔지니어링 회피 — SQLite 한 바퀴부터).
+  - **슬라이스 분해**:
+    - **(a) `SqliteSessionStore`·`SqliteTokenStore` [게이트 내 일부 — tmp-file 통합 테스트]** — 포트 구현·tmp-file SQLite로 통합 테스트(`tmp_path` DB·`SubprocessGitGateway` tmp repo 정신). 검증: 적재→재오픈→조회·만료·revoke가 durable·DB 없으면 skip 가드. **불변식**: 전이≠기록(durable 보관도 도메인 보관소지 절차 로그 아님).
+    - **(b) SQLite 스키마 확정 [결정 대기]** — 세션/토큰 테이블 스키마. **결정 대기**(외부 결정).
+  - **의존성·우선순위**: T9.1·T9.5 InMemory 그린 후. self-contained tmp-file 통합.
+  - **외부 결정·결정 대기**: **SQLite 스키마**(결정 대기) · 멀티 인스턴스 시 Postgres(후속 — 지금 명시 연기).
+  - **넘김**: SQLite 어댑터·tmp-file 통합 → **mcp-runtime-engineer**(실 어댑터)+**tdd-engineer**(통합 테스트). 스키마 결정 → **domain-architect**.
+
+> **fan-out — 후속 Phase로 명시 연기(과도 엔지니어링 회피).** 한 메시지→여러 에이전트(fan-out)는 Phase 9 범위 밖이다. 분해 방식(다중라벨 브로드캐스트=빠름/거침 vs LLM 플래너=깔끔/느림)·취합·owner 간 노출은 그때 설계한다. 기존 `Routed.collaborators` 필드가 씨앗. Phase 9는 **메시지당 담당 1명**으로 증분한다 — fan-out·Postgres·다중 공급자 동시는 전부 후속.

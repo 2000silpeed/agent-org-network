@@ -29,7 +29,7 @@ Phase 9에서 owner 워커는 *기본 대화 경로*로 다시 1급이 된다(AD
 
 ```python
 class TokenStore(Protocol):
-    def issue(self, owner_id: str, role: WorkerRole, *, now: datetime) -> AdmissionToken: ...
+    def issue(self, owner_id: str, role: WorkerRole, *, now: datetime, expires_in: timedelta | None = None) -> tuple[str, AdmissionToken]: ...  # 평문 raw_token 1회 반환 + 토큰
     def verify(self, raw_token: str, *, now: datetime) -> AdmissionToken | None: ...  # 유효(미만료·미revoke)면 토큰, 아니면 None
     def revoke(self, token_id: str) -> AdmissionToken | None: ...
     def list_active(self) -> list[AdmissionToken]: ...   # 콘솔 연결/대기 워커 토큰 목록

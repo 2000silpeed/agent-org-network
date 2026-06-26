@@ -247,7 +247,7 @@
 - [ ] **T9.2** 운영자 콘솔 — SSE 피드 + POST 명령 (ADR-A·ADR-C 연계)
   - **배경·근거**: 운영자가 질문 인입·라우팅 결정·답 전송·워커 연결/해제를 *실시간*으로 보고(SSE 피드), 세션 종료·HITL 토글·토큰 발급·워커 승인/취소를 *명령*(POST)한다. 별도 앱(채팅·owner UI와 다른 면). ADR 0022가 Open Question으로 남긴 "운영 면 브라우저 실시간 push(SSE/WS)"를 이 콘솔이 닫는다(통지 도메인과 별 축 — 콘솔은 운영자 관전·통지는 처리함 적재 알림).
   - **슬라이스 분해**:
-    - **(a) SSE 이벤트 직렬화 순수 함수 [게이트 내·결정론]** — 도메인 사건(질문 인입·`RoutingDecision`·답 전송·워커 연결/해제)을 SSE 이벤트 페이로드로 투영하는 순수 함수(`serialize_reply` 정신). 검증: 각 사건→이벤트 직렬화·노출 불변식(콘솔은 운영 면이라 내부값 OK이되 *사용자向 비밀은 렌더 규율* — `render_mcp_notification` 정신). **불변식**: 노출 불변식(운영 면 내부값 노출 OK·사용자 채팅과 다른 면).
+    - **(a) ✅ SSE 이벤트 직렬화 순수 함수 [게이트 내·결정론]** — 도메인 사건(질문 인입·`RoutingDecision`·답 전송·워커 연결/해제)을 SSE 이벤트 페이로드로 투영하는 순수 함수(`serialize_reply` 정신). 검증: 각 사건→이벤트 직렬화·노출 불변식(콘솔은 운영 면이라 내부값 OK이되 *사용자向 비밀은 렌더 규율* — `render_mcp_notification` 정신). **불변식**: 노출 불변식(운영 면 내부값 노출 OK·사용자 채팅과 다른 면). **구현 완료(2026-06-27)** — `console.py`·`tests/test_console_sse.py` 33개 테스트.
     - **(b) POST 명령 핸들러 = 세션 종료·HITL 토글·토큰 발급·워커 승인/취소 [게이트 내·결정론 도메인 호출]** — 각 명령이 도메인 서비스(`SessionStore.end`·HITL 토글[T9.3]·`TokenStore`[T9.5]·워커 승인[T9.5])를 부르는 얇은 어댑터. 운영자 인증은 ADR 0016 세션 재사용. 검증: TestClient로 각 명령 라우트 회귀(인증·스코프). **불변식**: Authority 중앙·전이≠기록.
     - **(c) 실 SSE 브라우저 푸시 + 콘솔 화면 [게이트 밖 수동]** — 실 SSE 스트림이 브라우저에 실시간으로 닿는지·콘솔 화면 조작. 외부 의존: 실 브라우저·실 SSE 연결. 게이트 밖(비결정).
   - **의존성·우선순위**: (a)는 self-contained(첫 진입). (b)는 T9.3·T9.5 도메인 위. (c)는 (a)(b) 위 수동.
@@ -276,8 +276,8 @@
 - [ ] **T9.5** 워커 등록/인증 — 콘솔 토큰 발급·승인·취소 + `_authenticate` 실 교체 (ADR-C 신규)
   - **배경·근거**: ADR 0011 결정 6-5·0012 결정 5가 "실 토큰 검증은 후속"으로 *예고한 자리 채움*(충돌 아님). 콘솔에서 운영자가 (owner/role)용 등록 토큰 발급 + 연결/대기 워커 목록 + 승인/취소(revoke). 워커가 `--token`으로 연결→중앙이 검증(`WebSocketDispatcher._authenticate` stub[transport.py:522] 실 교체). UI는 *신원·자격·admission* 관리(원격 프로세스 기동 아님 — 워커는 워커 기기에서 실행).
   - **슬라이스 분해**:
-    - **(a) `TokenStore` 포트 + 발급/검증/만료/revoke 결정 로직 [게이트 내·결정론]** — `TokenStore`(Protocol+InMemory — 기존 store 패턴 N번째)·등록 토큰 발급(owner/role 귀속)·검증·만료(주입 clock)·revoke. 토큰 *결정 로직*만 게이트 내(실 토큰 형식·서명은 결정 대기). 검증: 발급→검증 통과·만료/revoke 토큰 거부·clock 진전 만료 결정론. **불변식**: 등록 무결성(유효하지 않은 토큰 admission 거부)·Authority 중앙(토큰은 owner 귀속 선언이지 카드 자기보고 아님).
-    - **(b) `_authenticate` 실 교체 [게이트 내·결정론]** — `WebSocketDispatcher._authenticate`(stub) → `TokenStore` 검증으로 교체·`RegisterWorker.token` 실 검증·미인증/취소 토큰 `SubmitAnswer` 거부(ADR 0011 결정 6-5 hook 실체화). 검증: 유효 토큰 register 통과·무효/revoke 거부·그 ticket owner≠연결 owner 거부 결정론(`TestClient` WS·Fake 워커). **불변식**: 등록 무결성·owner 격리(회신이 진짜 그 owner에게서).
+    - **(a) ✅ `TokenStore` 포트 + 발급/검증/만료/revoke 결정 로직 [게이트 내·결정론]** — `TokenStore`(Protocol+InMemory — 기존 store 패턴 N번째)·등록 토큰 발급(owner/role 귀속)·검증·만료(주입 clock)·revoke. 토큰 *결정 로직*만 게이트 내(실 토큰 형식·서명은 결정 대기). 검증: 발급→검증 통과·만료/revoke 토큰 거부·clock 진전 만료 결정론. **불변식**: 등록 무결성(유효하지 않은 토큰 admission 거부)·Authority 중앙(토큰은 owner 귀속 선언이지 카드 자기보고 아님). **구현 완료(2026-06-27)** — `token.py`·`tests/test_token.py` 31개 테스트.
+    - **(b) `_authenticate` 실 교체 [게이트 내·결정론]** — `WebSocketDispatcher._authenticate`(stub) → `TokenStore` 검증으로 교체·`RegisterWorker.token` 실 검증·미인증/취소 토큰 `SubmitAnswer` 거부(ADR 0011 결정 6-5 hook 실체화). 검증: 유효 토큰 register 통과·무효/revoke 거부·그 ticket owner≠연결 owner 거부 결정론(`TestClient` WS·Fake 워커). **불변식**: 등록 무결성·owner 격리(회신이 진짜 그 owner에게서). **인계(code-reviewer T9.5a Minor 1)**: `frame.token`은 `str|None`이라 `TokenStore.verify` 호출 전 `if frame.token is None: return False` **None 가드 필수**(verify 자체는 None 방어 안 함 — 타입이 막을 뿐). ADR 0026 결정 2 의사코드대로.
     - **(c) 콘솔 워커 명령 = 발급·목록·승인/취소 [게이트 내·결정론 도메인 호출]** — T9.2 (b) POST 명령이 토큰 발급·연결/대기 워커 목록 조회·승인/취소를 부른다. 검증: 명령 라우트 회귀. **불변식**: Authority 중앙.
     - **(d) 실 `--token` 연결 시연 [게이트 밖 수동]** — 실 워커 프로세스가 발급 토큰으로 실 아웃바운드 WS 연결·승인/취소가 실 연결에 반영. 외부 의존: 실 워커·실 WS·실 네트워크. 게이트 밖.
   - **의존성·우선순위**: (a) self-contained(권장 진입). (b)는 (a) + 기존 WS 디스패처 위. (c)는 T9.2 (b) 위. (d)는 전부 위 수동.
@@ -306,7 +306,7 @@
 - [ ] **T9.8** 영속성 — `SessionStore`·`TokenStore` SQLite durable 어댑터 [게이트 내 일부·tmp-file 통합] (ADR-A·ADR-C 연계)
   - **배경·근거**: 포트+InMemory(게이트·T9.1·T9.5)가 그린이면 *SQLite durable 어댑터*를 더한다 — 프로세스 재시작에도 세션/토큰 보존. `SubprocessGitGateway`가 tmp repo 통합 테스트로 게이트에 들어간 정신과 동형(DB 없으면 skip). **멀티 인스턴스 확장 시 Postgres 어댑터는 후속**(과도 엔지니어링 회피 — SQLite 한 바퀴부터).
   - **슬라이스 분해**:
-    - **(a) `SqliteSessionStore`·`SqliteTokenStore` [게이트 내 일부 — tmp-file 통합 테스트]** — 포트 구현·tmp-file SQLite로 통합 테스트(`tmp_path` DB·`SubprocessGitGateway` tmp repo 정신). 검증: 적재→재오픈→조회·만료·revoke가 durable·DB 없으면 skip 가드. **불변식**: 전이≠기록(durable 보관도 도메인 보관소지 절차 로그 아님).
+    - **(a) `SqliteSessionStore`·`SqliteTokenStore` [게이트 내 일부 — tmp-file 통합 테스트]** — 포트 구현·tmp-file SQLite로 통합 테스트(`tmp_path` DB·`SubprocessGitGateway` tmp repo 정신). 검증: 적재→재오픈→조회·만료·revoke가 durable·DB 없으면 skip 가드. **불변식**: 전이≠기록(durable 보관도 도메인 보관소지 절차 로그 아님). **인계(code-reviewer T9.5a Minor 2)**: `InMemoryTokenStore.revoke`는 `revoked_at`을 생성자 `self._clock()`로 찍어 issue/verify의 `now` 파라미터 seam과 비대칭. durable 재현성이 필요하면 `revoke(token_id, *, now)`로 통일 검토(ADR 0026 결정 1 시그니처엔 `now` 없어 위반은 아님 — domain-architect 판단).
     - **(b) SQLite 스키마 확정 [결정 대기]** — 세션/토큰 테이블 스키마. **결정 대기**(외부 결정).
   - **의존성·우선순위**: T9.1·T9.5 InMemory 그린 후. self-contained tmp-file 통합.
   - **외부 결정·결정 대기**: **SQLite 스키마**(결정 대기) · 멀티 인스턴스 시 Postgres(후속 — 지금 명시 연기).

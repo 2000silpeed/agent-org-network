@@ -151,19 +151,12 @@
       log.scrollTop = log.scrollHeight;
     }
 
-    function addOrg(reply) {
-      const isPending = reply.type === "pending";
-      const row = el("div", "row org" + (isPending ? " pending" : ""));
-      const bubble = el("div", "bubble");
-
-      if (isPending) {
+    function fillBubble(bubble, reply) {
+      bubble.textContent = "";
+      if (reply.type === "pending") {
         bubble.appendChild(el("div", null, reply.message));
-        row.appendChild(bubble);
-        log.appendChild(row);
-        log.scrollTop = log.scrollHeight;
         return;
       }
-
       bubble.appendChild(el("div", null, reply.text));
 
       const footer = el("div", "footer");
@@ -178,10 +171,42 @@
         footer.appendChild(src);
       }
       bubble.appendChild(footer);
+    }
 
+    function addOrg(reply) {
+      const isPending = reply.type === "pending";
+      const row = el("div", "row org" + (isPending ? " pending" : ""));
+      const bubble = el("div", "bubble");
+      fillBubble(bubble, reply);
       row.appendChild(bubble);
       log.appendChild(row);
       log.scrollTop = log.scrollHeight;
+      return { row, bubble };
+    }
+
+    // dispatched(워커) 답은 즉답이 아니라 워커가 나중에 회신한다 — tracking으로 폴링해
+    // 준비되면 pending 말풍선을 실제 답으로 교체한다(미아 없음: 안 와도 처리함은 그대로).
+    async function pollForAnswer(tracking, row, bubble) {
+      const wait = el("div", "sources", "답변 기다리는 중…");
+      bubble.appendChild(wait);
+      for (let i = 0; i < 90; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        let data;
+        try {
+          const res = await fetch("/ask/" + encodeURIComponent(tracking));
+          if (!res.ok) continue;
+          data = await res.json();
+        } catch (_) {
+          continue;
+        }
+        if (data.type === "answered") {
+          row.classList.remove("pending");
+          fillBubble(bubble, data);
+          log.scrollTop = log.scrollHeight;
+          return;
+        }
+      }
+      wait.textContent = "(아직 답을 받지 못했어요 — 담당 워커가 처리 중이거나 미연결)";
     }
 
     async function ask(question) {
@@ -203,7 +228,10 @@
       sendBtn.disabled = true;
       try {
         const reply = await ask(question);
-        addOrg(reply);
+        const { row, bubble } = addOrg(reply);
+        if (reply.type === "pending" && reply.tracking) {
+          pollForAnswer(reply.tracking, row, bubble);
+        }
       } catch (err) {
         addOrg({ type: "pending", kind: "error", message: "지금은 답할 수 없어요. 잠시 후 다시 시도해 주세요." });
       } finally {

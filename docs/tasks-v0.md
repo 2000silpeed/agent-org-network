@@ -220,6 +220,8 @@
 > - **[확장] ADR 0022 통지·SSE.** ADR 0022가 Open Question으로 남긴 "실시간 WS/SSE push(운영 면 브라우저)"를 Phase 9 콘솔 SSE 피드가 닫는다(통지 도메인과 별 축 — 콘솔 SSE는 *운영자 관전*, 통지는 *처리함 적재 알림*). `Notifier`·`NotificationChannel` 패턴은 참조 본보기.
 > - **[확장] ADR 0006 중앙 MCP.** `ask_org` MCP 도구·`OrgReply` 투영·노출 불변식은 그대로. 세션 층은 그 위에 트랜스크립트·맥락을 더한다(채팅 노출 불변식 보존 — 다른 에이전트 답 미공유).
 > **선행 갱신 순서**: ① domain-architect가 새 ADR 4종(아래 식별)에서 0010 supersede·0017 결정 2 재정의 명문화 → ② PRD §3·§5·§6·TRD §2·§4·§5·CONTEXT(Agent Runtime·Authn & planes·신규 세션/토큰/콘솔 용어) 갱신 → ③ 그 후 게이트 내 슬라이스부터 구현. (규칙 2 — 단계 완료마다 SSOT 재갱신.)
+>
+> **✅ ADR 패스 완료(domain-architect, 2026-06-26·확정 2026-06-27).** 새 ADR 4종 작성 — **0024**(세션 모델)·**0025**(HITL 런타임 토글)·**0026**(워커 admission 토큰)·**0027**(멀티-LLM OAuth 공급자 런타임 = 0010 supersede·0017 결정 2 재정의 본체). 0010 헤더·0017 결정 2에 *본문 보존* 포인터 주석 추가(원문 불릿 전부 유지). CONTEXT·PRD·TRD 갱신 완료. **포트(`AgentRuntime`) 무변경** — 0010·0017·0027이 같은 포트의 다른 구현이라 라우팅·dispatcher·노출 경계 무회귀. **사용자 확정 3건(2026-06-27)**: 채팅 신원 = *익명 세션 쿠키*(T9.1) · 첫 공급자 = *Claude*(T9.4·T9.6·중앙 분류기 잔존 정합) · 유휴 타임아웃 = *30분*(T9.1). 잔여 결정 대기는 게이트 밖 후속(T9.6 OAuth 흐름·실 토큰 형식/SDK·T9.8 SQLite 스키마). → 다음: tdd-engineer 게이트 내 구현(T9.1(a)·T9.3(a)).
 
 > **새 ADR 4종 식별(번호·본문은 domain-architect — 여기선 *어디에 ADR이 필요한지*만 표시).**
 > - **ADR-A 세션 모델** — 사용자 단위 세션·중앙 상태 관리·메시지당 담당 1명·맥락=사용자 발화 스레드만(owner 격리·노출 불변식)·암묵 시작/운영자 종료/유휴 타임아웃 수명·종료 시 맥락 비움. `SessionStore` 포트. (T9.1)
@@ -234,12 +236,12 @@
 - [ ] **T9.1** 상태 세션 — `SessionStore` 포트 + 사용자 단위 세션 + 맥락 조립 + 수명 (ADR-A 신규)
   - **배경·근거**: 세션화의 토대이자 *가장 게이트 내·의존성 적은 첫 타자*. 무상태 1회성을 상태 세션으로 바꾸는 핵심 — 중앙이 사용자 단위 세션을 들고 트랜스크립트·맥락·수명을 관리한다. 라우팅 도메인은 무변경(각 메시지는 기존 `AskOrg.handle`로 라우팅), 세션 층이 그 위를 감싼다. 새 포트는 기존 store 패턴(`PrecedentStore`·`ConflictCaseStore`·`BackupReviewStore`)의 N번째 인스턴스 — 새 메커니즘 0.
   - **슬라이스 분해**:
-    - **(a) `SessionStore` 포트 + `InMemorySessionStore` + `Session` 값 객체 [게이트 내·결정론]** — `Session`(frozen — `session_id`·`user_id`(사용자 단위)·트랜스크립트(사용자 발화+답 스레드)·`status`(active/ended)·`started_at`·`last_active_at` 주입 clock). 포트 메서드: `open_or_get(user_id)`(암묵 시작 — 첫 메시지) · `get(session_id)` · `append_turn(...)` · `end(session_id)`(운영자 종료·맥락 비움) · `active_for_user`. 검증: in-memory 세션 라이프사이클(암묵 시작→턴 적재→종료→맥락 비움) 결정론. **불변식**: 전이≠기록(세션 전이는 도메인·트랜스크립트 적재는 별개)·owner 격리(세션은 *사용자* 귀속이지 조직 내부 미노출). **shape 확정 → domain-architect.**
+    - **(a) ✅ `SessionStore` 포트 + `InMemorySessionStore` + `Session` 값 객체 [게이트 내·결정론]** — `Session`(frozen — `session_id`·`user_id`(사용자 단위)·트랜스크립트(사용자 발화+답 스레드)·`status`(active/ended)·`started_at`·`last_active_at` 주입 clock). 포트 메서드: `open_or_get(user_id)`(암묵 시작 — 첫 메시지) · `get(session_id)` · `append_turn(...)` · `end(session_id)`(운영자 종료·맥락 비움) · `active_for_user`. 검증: in-memory 세션 라이프사이클(암묵 시작→턴 적재→종료→맥락 비움) 결정론. **불변식**: 전이≠기록(세션 전이는 도메인·트랜스크립트 적재는 별개)·owner 격리(세션은 *사용자* 귀속이지 조직 내부 미노출). **구현 완료(2026-06-27)** — `session.py`·`tests/test_session.py` 22개 테스트.
     - **(b) 맥락 조립 순수 함수 [게이트 내·결정론]** — 라우팅된 에이전트에 주는 맥락 = *그 사용자 발화 스레드만*(다른 에이전트/owner 답 미공유 — owner 격리·노출 불변식). `assemble_context(session, ...) -> str|messages` 순수 함수(`serialize_reply`·`reply_to_mcp_text`와 같은 투영 경계). 검증: 사용자 스레드 replay가 다른 owner 답을 안 섞나·종료 세션은 빈 맥락. **불변식**: 노출 불변식(다른 에이전트 답 누설 0 — 적대 추적 테스트).
     - **(c) 세션 수명 = 암묵 시작 + 운영자 종료 + 유휴 타임아웃 [게이트 내·주입 clock]** — 첫 메시지에 암묵 시작·콘솔 운영자 명시 종료(T9.2)·유휴 타임아웃(설정값·주입 clock으로 결정론). 종료 시 그 세션 맥락 비움(프로덕션 위생). 검증: clock을 유휴 임계 너머로 진전→자동 종료·종료 후 새 메시지는 새 세션. **결정 대기**: 유휴 타임아웃 기본값.
     - **(d) `AskOrg`/세션 층 와이어링 [게이트 내·결정론]** — 각 사용자 메시지가 세션을 통과해 기존 `AskOrg.handle`(Router·dispatcher)로 라우팅되고, 결과 턴을 트랜스크립트에 적재. *기존 라우팅·노출 불변식·미아 없음 회귀 0*이 1순위(세션 층은 *감싸기*지 라우팅 변경 아님). **불변식**: 미아 없음(0매칭→Unowned→escalation 그대로)·Authority 중앙(세션이 권한 안 만듦).
   - **의존성·우선순위**: 없음(첫 타자). (b)(c)는 (a) 위. (d)는 (a)~(c) 위.
-  - **외부 결정·결정 대기**: 사용자(채팅) 신원 = **익명 세션 쿠키 vs 기존 SSO 연결**(결정 대기 — T9.1 (a) user_id 출처를 가른다) · 유휴 타임아웃 기본값(결정 대기).
+  - **외부 결정·결정 대기**: 사용자(채팅) 신원 = **✅ 익명 세션 쿠키 확정(2026-06-27)** — `Session.user_id` 출처는 익명 쿠키(브라우저당 1·SSO 연계는 후속, ADR 0024 결정 A) · 유휴 타임아웃 기본값 = **✅ 30분 확정**(마지막 활동 후 슬라이딩·설정값, ADR 0024 결정 B).
   - **넘김**: ADR-A·세션 shape → **domain-architect**. (a)~(d) 결정론 구현 → **tdd-engineer**. 영속(SQLite)은 T9.8.
 
 - [ ] **T9.2** 운영자 콘솔 — SSE 피드 + POST 명령 (ADR-A·ADR-C 연계)
@@ -255,7 +257,7 @@
 - [ ] **T9.3** HITL 런타임 토글 — LLM 초안→사람 검토·전송 (ADR-B 신규)
   - **배경·근거**: *가장 게이트 내·기존 자산 재사용*. 답=하이브리드 HITL(LLM 초안→owner 검토·수정·전송)인데 이는 **새 기계가 아니라 기존 `draft_only`/Approval 재사용**이다(`Routed.requires_approval`→`AskOrg._apply_approval_gate`가 `mode="draft_only"`로 내림, T2.5·CONTEXT Approval/Answer). 토글이 그 게이트를 *런타임에* 켜고 끈다 — 에이전트별 + 콘솔 런타임 토글(on=draft_only·off=full·기본값은 카드 approval 정책에서 시드).
   - **슬라이스 분해**:
-    - **(a) HITL 토글 상태 + →mode 매핑 순수 로직 [게이트 내·결정론]** — 에이전트별 토글(on/off)·콘솔 런타임 토글·기본값 시드(카드 `approval_when`/approval 정책). `hitl_on → mode="draft_only"`·`off → "full"` 매핑 순수 함수(기존 `_apply_approval_gate` 재사용·확장). 검증: 토글 on/off·기본 시드·매핑 결정론. **불변식**: 노출 불변식(`mode`는 원래 노출하는 신뢰 상태값 — Answer 절)·전이≠기록.
+    - **(a) ✅ HITL 토글 상태 + →mode 매핑 순수 로직 [게이트 내·결정론]** — 에이전트별 토글(on/off)·콘솔 런타임 토글·기본값 시드(카드 `approval_when`/approval 정책). `hitl_on → mode="draft_only"`·`off → "full"` 매핑 순수 함수(기존 `_apply_approval_gate` 재사용·확장). 검증: 토글 on/off·기본 시드·매핑 결정론. **불변식**: 노출 불변식(`mode`는 원래 노출하는 신뢰 상태값 — Answer 절)·전이≠기록. **구현 완료(2026-06-27)** — `hitl.py`·`tests/test_hitl_toggle.py` 21개 테스트.
     - **(b) 콘솔 토글 명령 와이어링 [게이트 내·결정론]** — T9.2 (b) POST 명령이 토글 상태를 바꾸고, 이후 답이 그 mode로 나가는지. 검증: 토글 변경→다음 답 mode 반영 결정론. **불변식**: Authority 중앙(토글은 신뢰 게이트지 권한 선언 아님).
   - **의존성·우선순위**: (a) self-contained(권장 2번째 진입). (b)는 T9.2 (b) 위.
   - **외부 결정·결정 대기**: 없음(기존 draft_only/Approval 재사용이라 외부 결정 0 — 권장 조기 진입).
@@ -268,7 +270,7 @@
     - **(b) 요청/응답 매핑 + 스트리밍 조립 순수 함수 [게이트 내·결정론]** — 공급자 API 요청 빌드·응답→`Answer` 매핑·스트리밍 토막 조립을 순수 함수로 격리(SDK/IO 0). 검증: 고정 응답 fixture→`Answer` 매핑 결정론. **불변식**: 노출 불변식(매핑이 내부값 안 실음).
     - **(c) `ClaudeCodeRuntime` 대화 경로 교체 판단 [게이트 내·와이어링]** — 대화 답변 경로의 런타임을 공급자 어댑터로 교체(분류기·배치 경로의 `claude -p`는 잔존 가능 — 명시 구분). dispatcher/ask_org 주입 지점만 바꾸고 *라우팅·노출 불변식·미아 없음 회귀 0*. **불변식**: 미아 없음(런타임 교체가 종착 안 바꿈).
   - **의존성·우선순위**: ADR-D 선행(0010 supersede 명문화). (a)(b) self-contained 결정론. (c)는 T9.1 세션 와이어링과 합류.
-  - **외부 결정·결정 대기**: **첫 공급자(권장 Claude API+OAuth)** · 중앙 분류기 LLM 유지 여부(현재 claude/Haiku — 대화 경로만 교체면 분류기 잔존) · OAuth 흐름을 owner CLI/직접 중 무엇으로(opencode 패턴 참조 — 실 흐름은 T9.6).
+  - **외부 결정·결정 대기**: **✅ 첫 공급자 = Claude(Anthropic API+OAuth) 확정(2026-06-27)** · **✅ 중앙 분류기 LLM 잔존 확정**(대화 경로만 교체·ADR 0027 결정 3) · OAuth 흐름을 owner CLI/직접 중 무엇으로(opencode 패턴 참조 — 실 흐름은 T9.6 게이트 밖·결정 대기 유지).
   - **넘김**: ADR-D(0010 supersede·0017 재정의)·공급자 어댑터 shape → **domain-architect**(ADR 본체) 먼저. (a)(b) 결정론 매핑·Stub → **tdd-engineer**. (c) 교체 와이어링 → **tdd-engineer**. 실 OAuth·실 API 스트리밍은 T9.6.
 
 - [ ] **T9.5** 워커 등록/인증 — 콘솔 토큰 발급·승인·취소 + `_authenticate` 실 교체 (ADR-C 신규)

@@ -37,7 +37,7 @@ uv sync                     # 의존성 설치(.venv)
 ## 게이트(테스트·타입·린트)
 
 ```bash
-uv run pytest        # 단위 테스트(결정론) — 900 passed
+uv run pytest        # 단위 테스트(결정론) — 946 passed
 uv run pyright       # 타입 검사(strict) — 0 errors
 uv run ruff check    # 린트 — 0
 ```
@@ -158,7 +158,7 @@ uv run python -m agent_org_network.registry registry        # 5장 카드·6명 
 - 기술 설계: [`docs/trd-v0.md`](docs/trd-v0.md)
 - 작업 목록: [`docs/tasks-v0.md`](docs/tasks-v0.md)
 - 도메인 용어집: [`CONTEXT.md`](CONTEXT.md)
-- 아키텍처 결정: [`docs/adr/`](docs/adr/) (ADR 0001~0023)
+- 아키텍처 결정: [`docs/adr/`](docs/adr/) (ADR 0001~0027)
 
 ## 스택
 

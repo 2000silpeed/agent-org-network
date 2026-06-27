@@ -263,11 +263,11 @@
   - **외부 결정·결정 대기**: 없음(기존 draft_only/Approval 재사용이라 외부 결정 0 — 권장 조기 진입).
   - **넘김**: ADR-B·토글 shape → **domain-architect**. (a)(b) 결정론 → **tdd-engineer**. owner UI 검토·전송 조작은 T9.7 게이트 밖.
 
-- [ ] **T9.4** 공급자 런타임 추상 — `AgentRuntime` 공급자별 어댑터 (ADR-D 신규·게이트 내 조각)
+- [x] **T9.4** 공급자 런타임 추상 — `AgentRuntime` 공급자별 어댑터 (ADR-D 신규·게이트 내 조각)
   - **배경·근거**: ADR-D(0010 supersede·0017 결정 2 재정의)의 *게이트 내 조각*. owner OAuth 멀티-LLM(claude·codex·gemini)을 *기존 `AgentRuntime` 포트의 공급자별 어댑터*로 추상한다(`StubRuntime`·`ClaudeCodeRuntime`과 같은 포트). **인프로세스 OAuth+공급자 API 스트리밍**이 핵심(claude -p 프로세스 스폰·하네스 오버헤드 회피 = *속도 근거*). **한 공급자부터 증분**(권장 Claude = Anthropic API+OAuth 구독 토큰+스트리밍 먼저 → 속도·스트리밍 입증 → codex·gemini 추가). 자격증명 owner측(중앙 토큰 0 — 0010 "중앙 키 0" 보존·강화).
   - **슬라이스 분해**:
-    - **(a) 공급자 런타임 어댑터 shape + 주입 transport Stub [게이트 내·결정론]** — `ClaudeApiRuntime`(등) = `AgentRuntime` 구현·답 생성에 주입 transport(`ClaudeRunner`가 `_run_claude_headless` 주입받는 정신)를 쓴다. 주입 Stub transport로 결정론 — 요청/응답 매핑·스트리밍 토큰 조립 *결정 로직*만 게이트 내. 검증: Stub transport 주입→답 매핑·mode 보존·sources 결정론. **불변식**: Authority 중앙(런타임은 답 생성이지 권한 선언 아님)·노출 불변식(`Answer` 계약 보존).
-    - **(b) 요청/응답 매핑 + 스트리밍 조립 순수 함수 [게이트 내·결정론]** — 공급자 API 요청 빌드·응답→`Answer` 매핑·스트리밍 토막 조립을 순수 함수로 격리(SDK/IO 0). 검증: 고정 응답 fixture→`Answer` 매핑 결정론. **불변식**: 노출 불변식(매핑이 내부값 안 실음).
+    - **(a) ✅ 공급자 런타임 어댑터 shape + 주입 transport Stub [게이트 내·결정론]** — `ClaudeApiRuntime`(등) = `AgentRuntime` 구현·답 생성에 주입 transport(`ClaudeRunner`가 `_run_claude_headless` 주입받는 정신)를 쓴다. 주입 Stub transport로 결정론 — 요청/응답 매핑·스트리밍 토큰 조립 *결정 로직*만 게이트 내. 검증: Stub transport 주입→답 매핑·mode 보존·sources 결정론. **불변식**: Authority 중앙(런타임은 답 생성이지 권한 선언 아님)·노출 불변식(`Answer` 계약 보존). **구현 완료(2026-06-27)** — `provider_runtime.py`·`tests/test_provider_runtime.py` 50개 테스트.
+    - **(b) ✅ 요청/응답 매핑 + 스트리밍 조립 순수 함수 [게이트 내·결정론]** — 공급자 API 요청 빌드·응답→`Answer` 매핑·스트리밍 토막 조립을 순수 함수로 격리(SDK/IO 0). 검증: 고정 응답 fixture→`Answer` 매핑 결정론. **불변식**: 노출 불변식(매핑이 내부값 안 실음). **구현 완료(2026-06-27)** — `build_provider_request`·`assemble_stream`·`map_response_to_answer`.
     - **(c) `ClaudeCodeRuntime` 대화 경로 교체 판단 [게이트 내·와이어링]** — 대화 답변 경로의 런타임을 공급자 어댑터로 교체(분류기·배치 경로의 `claude -p`는 잔존 가능 — 명시 구분). dispatcher/ask_org 주입 지점만 바꾸고 *라우팅·노출 불변식·미아 없음 회귀 0*. **불변식**: 미아 없음(런타임 교체가 종착 안 바꿈).
   - **의존성·우선순위**: ADR-D 선행(0010 supersede 명문화). (a)(b) self-contained 결정론. (c)는 T9.1 세션 와이어링과 합류.
   - **외부 결정·결정 대기**: **✅ 첫 공급자 = Claude(Anthropic API+OAuth) 확정(2026-06-27)** · **✅ 중앙 분류기 LLM 잔존 확정**(대화 경로만 교체·ADR 0027 결정 3) · OAuth 흐름을 owner CLI/직접 중 무엇으로(opencode 패턴 참조 — 실 흐름은 T9.6 게이트 밖·결정 대기 유지).

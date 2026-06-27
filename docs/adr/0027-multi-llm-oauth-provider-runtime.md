@@ -76,6 +76,7 @@ def map_response_to_answer(resp, card) -> Answer: ...                         # 
 
 - `serialize_reply`·`render_mcp_notification`·`assemble_context`(ADR-A)와 **같은 투영 경계** — 매핑이 도메인 값에서만 투영해 내부값·비밀이 안 샌다. 고정 응답 fixture → `Answer` 매핑 결정론 테스트.
 - `Answer` 계약 보존 — `text`·`sources`·`mode`·`snapshot_sha`. 매핑이 새 필드를 안 만든다(노출 불변식).
+- **`ProviderRequest`는 `model` + `system` + `messages`를 싣는다.** `system`은 *카드 페르소나 투영*(team·owner·summary·domains·can/cannot_answer·knowledge_sources)이고 `messages`는 (옵셔널 맥락 + 질문). `ClaudeCodeRuntime._build_persona_prompt`가 같은 카드 정보를 프롬프트에 싣는 것과 동형이되, Anthropic API가 system을 *top-level 파라미터*로 받으므로 `system`을 messages가 아닌 **별 필드**로 둔다(역할 혼동 방지). `build_provider_request`가 페르소나를 *반드시* 요청에 실어야 한다 — 빌드만 하고 버리면 담당자 맥락 없이 맨 질문만 가 답 품질이 깨진다(T9.4 code-reviewer M1).
 
 ### 4. `ClaudeCodeRuntime` 대화 경로 교체 — 분류기·배치 `claude -p`는 잔존
 

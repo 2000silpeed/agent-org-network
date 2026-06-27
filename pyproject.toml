@@ -17,7 +17,8 @@ dependencies = [
 # 미설치 공급자 어댑터는 그 공급자를 선택(AON_PROVIDER)했을 때만 import되므로 다른 공급자 owner엔 무영향.
 [project.optional-dependencies]
 claude-api = ["anthropic>=0.112.0"]
-# 후속(공급자 추가 시 대칭 확장): codex = ["openai>=..."], gemini = ["google-genai>=..."]
+codex = ["openai>=2.0.0"]
+# 후속(공급자 추가 시 대칭 확장): gemini = ["google-genai>=..."]
 
 [dependency-groups]
 dev = [
@@ -27,6 +28,7 @@ dev = [
     "httpx>=0.28.1",
     # 게이트 타입검사용 — 전 공급자 어댑터를 pyright로 검사하려 dev에만 둔다(런타임 코어 의존 아님).
     "anthropic>=0.112.0",
+    "openai>=2.0.0",
 ]
 
 [build-system]

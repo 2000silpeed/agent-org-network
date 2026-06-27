@@ -18,7 +18,12 @@
 #   AON_PROVIDER=claude-api : ClaudeApiRuntime — owner OAuth 인프로세스 anthropic SDK 스트리밍
 #                           (프로세스 스폰 회피=속도·중앙 토큰 0·owner의 Anthropic OAuth 프로필
 #                            자동 해석). 전제: owner가 `claude` 로그인 또는 `ant auth login` 됨.
+#                           extra: uv sync --extra claude-api
+#   AON_PROVIDER=codex   : CodexApiRuntime — owner ~/.codex/auth.json(ChatGPT 구독 OAuth) 인프로세스
+#                           openai SDK 스트리밍(중앙 토큰 0). 전제: owner가 `codex login` 됨.
+#                           extra: uv sync --extra codex  (AON_PROVIDER=openai도 같은 어댑터)
 #   예: AON_PROVIDER=claude-api scripts/run_worker.sh cs_lead
+#       AON_PROVIDER=codex scripts/run_worker.sh cs_lead
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

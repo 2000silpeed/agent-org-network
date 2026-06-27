@@ -319,15 +319,35 @@ def _make_claude_api_runtime() -> AgentRuntime:
     return ClaudeApiRuntime(transport=AnthropicSdkTransport())
 
 
-# 별칭 → 공급자 키 (후속: "codex"/"openai" → "codex", "gemini"/"google" → "gemini").
+def _make_codex_runtime() -> AgentRuntime:
+    """Codex(OpenAI) 공급자 어댑터 — owner ~/.codex/auth.json OAuth 인프로세스 openai SDK 스트리밍.
+
+    claude 팩토리와 대칭: 자기 SDK extra(`[codex]` → openai)·자기 OAuth 자격(owner 기기
+    auth.json)을 *지연* import로 가둔다 — codex를 고를 때만 openai SDK를 건드린다(중앙 토큰 0).
+    """
+    try:
+        from agent_org_network.provider_runtime import CodexApiRuntime
+        from agent_org_network.provider_transport_codex import CodexOauthTransport
+    except ImportError as exc:  # 그 공급자 extra 미설치
+        raise SystemExit(
+            "AON_PROVIDER=codex 인데 openai SDK가 없습니다 — 자기 공급자 extra를 설치하세요: "
+            "pip install 'agent-org-network[codex]'  (uv: uv sync --extra codex)"
+        ) from exc
+    return CodexApiRuntime(transport=CodexOauthTransport())
+
+
+# 별칭 → 공급자 키 (후속: "gemini"/"google" → "gemini").
 _PROVIDER_ALIASES: dict[str, str] = {
     "claude-api": "claude-api",
     "anthropic": "claude-api",
     "provider": "claude-api",
+    "codex": "codex",
+    "openai": "codex",
 }
-# 공급자 키 → lazy 어댑터 팩토리 (후속: "codex": _make_codex_runtime, "gemini": _make_gemini_runtime).
+# 공급자 키 → lazy 어댑터 팩토리 (후속: "gemini": _make_gemini_runtime).
 _PROVIDER_FACTORIES: dict[str, Callable[[], AgentRuntime]] = {
     "claude-api": _make_claude_api_runtime,
+    "codex": _make_codex_runtime,
 }
 
 

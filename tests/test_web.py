@@ -24,6 +24,7 @@ from agent_org_network.conflict import (
 )
 from agent_org_network.demo import build_demo_ask_org
 from agent_org_network.runtime import Answer, StubRuntime
+from agent_org_network.session import InMemorySessionStore
 from agent_org_network.transport import WebSocketDispatcher
 from agent_org_network.user import User
 from agent_org_network.web import (
@@ -496,3 +497,130 @@ def test_web_ask_연속_요청이_모두_정상_응답을_반환한다():
     session_leaky = {"session_id", "transcript", "started_at", "last_active_at"}
     assert session_leaky.isdisjoint(set(first.body.keys()))
     assert session_leaky.isdisjoint(set(second.body.keys()))
+
+
+# ── Phase 9 익명 세션 쿠키 user_id 와이어링 (ADR 0024 결정 A) ──────────────
+
+
+def _cookie_client(store: InMemorySessionStore) -> TestClient:
+    """주입된 store 를 관찰 seam으로 쓰는 TestClient."""
+    app: FastAPI = create_app(runtime=StubRuntime(), session_store=store)
+    return TestClient(app, raise_server_exceptions=True)
+
+
+def _post_cookies(client: TestClient, url: str, payload: dict[str, Any]) -> Response:
+    http: Any = client
+    return cast(Response, http.post(url, json=payload))
+
+
+def test_쿠키없는_첫요청에_Set_Cookie가_응답헤더에_온다():
+    """쿠키 없이 POST /ask → 응답에 aon_uid Set-Cookie 헤더 존재."""
+    store = InMemorySessionStore()
+    client = _cookie_client(store)
+
+    res = _post_cookies(client, "/ask", {"question": "계약서 검토해줄 수 있어?"})
+
+    assert res.status_code == 200
+    set_cookie_header: str = res.headers.get("set-cookie", "")
+    assert "aon_uid=" in set_cookie_header
+
+
+def test_쿠키없는_첫요청_후_store에_세션_1개_생성된다():
+    """첫 POST /ask(쿠키 없음) → store.active_for_user(uid)가 None 이 아니다."""
+    store = InMemorySessionStore()
+    client = _cookie_client(store)
+
+    res = _post_cookies(client, "/ask", {"question": "계약서 검토해줄 수 있어?"})
+
+    assert res.status_code == 200
+    # Set-Cookie 에서 uid 추출
+    set_cookie_header: str = res.headers.get("set-cookie", "")
+    uid_part = next(p for p in set_cookie_header.split(";") if "aon_uid=" in p)
+    uid = uid_part.split("=", 1)[1].strip()
+
+    session = store.active_for_user(uid)
+    assert session is not None
+    assert session.user_id == uid
+
+
+def test_같은_쿠키_재요청은_같은_세션을_쓴다():
+    """동일 aon_uid 쿠키로 2회 POST /ask → active_for_user 결과 session_id 동일."""
+    store = InMemorySessionStore()
+    client = _cookie_client(store)
+
+    # 첫 요청 — 쿠키 없음, uid 발급
+    res1 = _post_cookies(client, "/ask", {"question": "계약서 검토해줄 수 있어?"})
+    set_cookie_header: str = res1.headers.get("set-cookie", "")
+    uid_part = next(p for p in set_cookie_header.split(";") if "aon_uid=" in p)
+    uid = uid_part.split("=", 1)[1].strip()
+
+    session_after_first = store.active_for_user(uid)
+    assert session_after_first is not None
+    sid1 = session_after_first.session_id
+
+    # 두 번째 요청 — 같은 uid 쿠키 전송
+    http: Any = client
+    res2 = cast(Response, http.post("/ask", json={"question": "계약 기간은?"}, cookies={"aon_uid": uid}))
+    assert res2.status_code == 200
+
+    session_after_second = store.active_for_user(uid)
+    assert session_after_second is not None
+    sid2 = session_after_second.session_id
+
+    assert sid1 == sid2, "같은 쿠키 → 같은 세션이어야 한다"
+
+
+def test_다른_쿠키_브라우저는_다른_세션을_만든다():
+    """브라우저 A(uid_a)·브라우저 B(uid_b) → 각자 별개 세션(session_id 다름)."""
+    store = InMemorySessionStore()
+    client = _cookie_client(store)
+
+    http: Any = client
+    uid_a = "browser-a-uid-00001"
+    uid_b = "browser-b-uid-00002"
+
+    res_a = cast(Response, http.post("/ask", json={"question": "계약서 검토해줄 수 있어?"}, cookies={"aon_uid": uid_a}))
+    res_b = cast(Response, http.post("/ask", json={"question": "환불 되나요?"}, cookies={"aon_uid": uid_b}))
+
+    assert res_a.status_code == 200
+    assert res_b.status_code == 200
+
+    session_a = store.active_for_user(uid_a)
+    session_b = store.active_for_user(uid_b)
+
+    assert session_a is not None
+    assert session_b is not None
+    assert session_a.session_id != session_b.session_id, "다른 쿠키 → 다른 세션이어야 한다"
+    assert session_a.user_id == uid_a
+    assert session_b.user_id == uid_b
+
+
+def test_쿠키값은_불투명_user_id만_담는다_라우팅구조_미노출():
+    """Set-Cookie 값이 조직 내부값(agent_id·routing_rules·session_id 등)을 포함하지 않는다."""
+    store = InMemorySessionStore()
+    client = _cookie_client(store)
+
+    res = _post_cookies(client, "/ask", {"question": "계약서 검토해줄 수 있어?"})
+
+    set_cookie_header: str = res.headers.get("set-cookie", "")
+    # 쿠키 값(불투명 uid)에 내부 식별자가 안 들어 있다
+    internal_keys = ["contract_ops", "legal_lead", "session_id", "routing", "candidate"]
+    for key in internal_keys:
+        assert key not in set_cookie_header, f"{key!r}가 쿠키 헤더에 노출됨"
+
+
+def test_ask_응답_body는_쿠키_이전과_동일하다_기존_회귀():
+    """쿠키 도입 후에도 /ask 응답 body 구조가 무변경(기존 test 회귀 0 확인)."""
+    store = InMemorySessionStore()
+    client = _cookie_client(store)
+
+    result = _post_cookies(client, "/ask", {"question": "계약서 검토해줄 수 있어?"})
+
+    assert result.status_code == 200
+    body: dict[str, Any] = result.json()
+    assert body["type"] == "answered"
+    assert body["answered_by"]["agent_id"] == "contract_ops"
+    assert body["mode"] == "full"
+    # 세션·쿠키 내부값이 응답 body에 없다
+    leaky = {"session_id", "transcript", "aon_uid", "user_id", "cookie"}
+    assert leaky.isdisjoint(set(body.keys()))

@@ -24,10 +24,11 @@ OrgReply(Answered | Pending)를 JSON으로 직렬화해 돌려준다.
 """
 
 import os
+import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -75,7 +76,7 @@ from agent_org_network.review import (
     DismissBackup,
 )
 from agent_org_network.runtime import AgentRuntime
-from agent_org_network.session import InMemorySessionStore, SessionAskOrg
+from agent_org_network.session import InMemorySessionStore, SessionAskOrg, SessionStore
 from agent_org_network.user import User
 
 if TYPE_CHECKING:
@@ -579,6 +580,7 @@ def create_app(
     session_secret: str | None = None,
     git_gateway: GitGateway | None = None,
     oidc_provider: OidcProvider | None = None,
+    session_store: SessionStore | None = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -591,6 +593,9 @@ def create_app(
     `oidc_provider`(T7.1·ADR 0021): SSO 신원 검증 포트. 주입 시 **SSO 모드**(`POST /login/sso`
     활성·무비밀번호 `POST /login`은 403 거부 — 신원 *선택* 우회 차단). 미주입이면 기존 동작
     (인증 모드 3단 중 OFF/무비밀번호 — ADR 0021 결정 4). 결정론 테스트는 `FakeOidcProvider` 주입.
+    `session_store`(Phase 9·ADR 0024 결정 A): 채팅 세션 저장소 관찰 seam. 주입 시
+    그 store를 쓴다(테스트가 active_for_user 등으로 세션 상태를 직접 검사). 미주입이면
+    `InMemorySessionStore()` 내부 생성(하위호환 — 기존 동작).
     """
     from starlette.middleware.sessions import SessionMiddleware
 
@@ -611,7 +616,8 @@ def create_app(
     )
     # T9.1(d): 세션 층 래퍼 — AskOrg를 *수정하지 않고* 감싸기로 세션을 붙인다.
     # /ask 엔드포인트만 교체. retrieve·dispatched·mcp_server는 이번 스코프 밖.
-    _session_store = InMemorySessionStore()
+    # Phase 9 쿠키 세션 seam: 주입 store가 있으면 그것을, 없으면 새 InMemory 생성(하위호환).
+    _session_store: SessionStore = session_store if session_store is not None else InMemorySessionStore()
     _session_ask = SessionAskOrg(ask=bundle.ask, session_store=_session_store)
     _review_store = review_store
     _review_service = review_service
@@ -632,9 +638,25 @@ def create_app(
     ) -> JSONResponse:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
 
+    _COOKIE_NAME = "aon_uid"
+
     @app.post("/ask")
-    def ask_endpoint(req: AskRequest) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-        reply = _session_ask.handle(req.question, _WEB_USER)
+    def ask_endpoint(  # pyright: ignore[reportUnusedFunction]
+        req: AskRequest,
+        request: Request,
+        response: Response,
+    ) -> dict[str, Any]:
+        uid: str | None = request.cookies.get(_COOKIE_NAME)
+        if uid is None:
+            uid = secrets.token_urlsafe(16)
+            response.set_cookie(
+                key=_COOKIE_NAME,
+                value=uid,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+        reply = _session_ask.handle(req.question, User(id=uid))
         return serialize_reply(reply)
 
     @app.get("/ask/{tracking}")

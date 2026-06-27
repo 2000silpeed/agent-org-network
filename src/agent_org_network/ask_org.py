@@ -124,6 +124,11 @@ class AskOrg:
         # owner 등 내부 구조가 새지 않게 한다(노출 불변식). 토큰은 uuid4 hex(미인코딩).
         # MVP는 정리 없음(프로세스 수명 = 토큰 수명) — TTL/GC·다중 인스턴스 공유는 후속.
         self._tracking: dict[str, WorkTicket] = {}
+        # 비동기 절차 상관키 보관소 — tracking → (user_id, question, decision)
+        # retrieve가 Delivered 첫 관측 시 answered 엔트리를 기록하는 데 쓴다.
+        self._pending_audit: dict[str, tuple[str, str, "Routed"]] = {}
+        # 이미 answered 엔트리를 기록한 tracking 집합 — 멱등 가드.
+        self._answered_recorded: set[str] = set()
 
     def _project_outcome(
         self,
@@ -219,6 +224,26 @@ class AskOrg:
         if ticket is None:
             return None
         outcome = self._dispatcher.poll(ticket)
+        # answered 엔트리 기록 — Delivered를 처음 관측할 때 1회만(멱등).
+        # 검토 store 덧씌움과 독립: 감사 사실(Delivered 도착)은 검토 오버레이와 무관하다.
+        if (
+            isinstance(outcome, Delivered)
+            and tracking not in self._answered_recorded
+            and tracking in self._pending_audit
+        ):
+            user_id, question, decision = self._pending_audit[tracking]
+            self._audit.record(
+                AuditEntry(
+                    timestamp=self._clock(),
+                    user_id=user_id,
+                    question=question,
+                    intent=decision.intent,
+                    decision=decision,
+                    dispatch_outcome=outcome,
+                    tracking=tracking,
+                )
+            )
+            self._answered_recorded.add(tracking)
         # 검토 store 덧씌움: Delivered backup 답에 검토 결과를 우선 투영(큐 무변경).
         if isinstance(outcome, Delivered) and self._review_store is not None:
             reviewed = self._review_store.get_by_ticket(ticket.ticket_id)
@@ -389,6 +414,8 @@ class AskOrg:
         # Unowned는 디스패치를 안 하므로 None. audit이 이 원형에서 answer를 파생하고
         # escalation 대상(manager_id·reason)까지 기록한다(2b 선결, ADR 0011).
         outcome: DispatchOutcome | None = None
+        # 비동기 절차의 상관키 — 비동기 Routed 분기에서만 세팅, 그 외 None.
+        tracking_token: str | None = None
         match decision:
             case Routed():
                 ticket = self._dispatcher.dispatch(question, decision.primary, context=context)
@@ -401,6 +428,10 @@ class AskOrg:
                 if not isinstance(outcome, Delivered):
                     tracking = uuid.uuid4().hex
                     self._tracking[tracking] = ticket
+                    # 모니터 answered 기록을 위해 상관키·맥락을 보관한다.
+                    # retrieve가 Delivered를 처음 관측할 때 answered 엔트리를 기록한다.
+                    self._pending_audit[tracking] = (user.id, question, decision)
+                    tracking_token = tracking
                 reply = self._project_outcome(
                     outcome,
                     decision.primary.owner,
@@ -453,6 +484,7 @@ class AskOrg:
                 intent=decision.intent,
                 decision=decision,
                 dispatch_outcome=outcome,
+                tracking=tracking_token,
             )
         )
         return reply

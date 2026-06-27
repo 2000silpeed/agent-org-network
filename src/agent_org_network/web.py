@@ -330,6 +330,32 @@ def _serialize_manager_resolution(resolution: ManagerResolution) -> dict[str, An
     return {"action": action_dict}
 
 
+def dedupe_audit_records(records: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
+    """같은 tracking의 복수 엔트리를 마지막(최신)만 남기고 dedup한다(모니터 목록 뷰).
+
+    - tracking이 None/없는 레코드는 dedup 대상 아님 — 그대로 유지.
+    - 같은 비None tracking을 가진 레코드는 마지막 출현(=최신=delivered)만 남긴다.
+    - 원래 인덱스(enumerate 기준)를 튜플로 보존한다(/monitor/{index} 상세 링크용).
+    - 입력 순서(마지막 출현 순서) 보존.
+    """
+    # 1패스: tracking별 마지막 원래인덱스 기록
+    last_index_for: dict[str, int] = {}
+    for i, record in enumerate(records):
+        t: Any = record.get("tracking")
+        if t is not None and isinstance(t, str):
+            last_index_for[t] = i
+
+    # 2패스: 원래 순서(인덱스 오름차순) 재조합 — tracking 없는 것은 그대로, tracking 있는 것은 마지막만
+    result: list[tuple[int, dict[str, Any]]] = []
+    for i, record in enumerate(records):
+        t2: Any = record.get("tracking")
+        if t2 is None or not isinstance(t2, str):
+            result.append((i, record))
+        elif last_index_for.get(t2) == i:
+            result.append((i, record))
+    return result
+
+
 def summarize_audit_record(index: int, record: dict[str, Any]) -> dict[str, Any]:
     """감사 레코드(dict)를 운영 모니터링 *목록 요약*向으로 줄인다(T5.1, 운영 면)."""
     decision: dict[str, Any] = record.get("decision") or {}
@@ -853,7 +879,7 @@ def create_app(
         if bundle.audit_reader is None:
             return []
         records = bundle.audit_reader.records()
-        return [summarize_audit_record(i, r) for i, r in enumerate(records)]
+        return [summarize_audit_record(i, r) for i, r in dedupe_audit_records(records)]
 
     # 정적 경로(/monitor/view)를 동적(/monitor/{index})보다 *먼저* 등록한다 —
     # 그러지 않으면 "view"가 {index}(int)에 잡혀 422가 난다(FastAPI 매칭 순서).

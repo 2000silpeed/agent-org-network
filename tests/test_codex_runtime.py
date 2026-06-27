@@ -6,6 +6,12 @@
 - ClaudeApiRuntime 대칭: 같은 파이프라인(build_provider_request → transport → assemble_stream → map_response_to_answer)
 - build_provider_request에 model 키워드 파라미터 추가 — 기존 테스트 무회귀
 
+A(ii) OKF 접지(게이트 내·결정론):
+- read_okf_bundle: tmp_path 기반 파일 I/O, stdlib만, 네트워크·SDK 0
+- build_provider_request okf 키워드: okf 있으면 system에 OKF 섹션 추가, 없으면 기존과 동일(무회귀)
+- CodexApiRuntime·ClaudeApiRuntime okf_root 주입: 센티넬 포함 여부로 접지 검증
+- okf_root 없으면 기존 동작 그대로(무회귀)
+
 불변식:
 - Answer 계약 보존: text·sources·mode·snapshot_sha 필드만·새 필드 없음
 - 노출 불변식 유지 (공급자 특권 없음 — claude 특권 없음)
@@ -16,6 +22,7 @@
 """
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +33,7 @@ from agent_org_network.provider_runtime import (
     ProviderRequest,
     StubProviderTransport,
     build_provider_request,
+    read_okf_bundle,
 )
 from agent_org_network.runtime import AgentRuntime, Answer
 
@@ -238,3 +246,199 @@ class TestProviderSymmetry:
 
         check_port(ClaudeApiRuntime(transport=StubProviderTransport(chunks=["답"])))
         check_port(CodexApiRuntime(transport=StubProviderTransport(chunks=["답"])))
+
+
+# ---------------------------------------------------------------------------
+# A(ii) OKF 접지 — read_okf_bundle (순수 헬퍼, stdlib·IO만·SDK 0)
+# ---------------------------------------------------------------------------
+
+
+class TestReadOkfBundle:
+    def test_두_md_파일을_파일명_정렬로_연결한다(self, tmp_path: Path) -> None:
+        """okf_root/{agent_id}/a.md · b.md → 파일명 정렬(a 먼저) 연결 반환."""
+        bundle = tmp_path / "cs_ops"
+        bundle.mkdir()
+        (bundle / "b.md").write_text("환불 규정 B")
+        (bundle / "a.md").write_text("환불 규정 A")
+
+        result = read_okf_bundle(tmp_path, "cs_ops")
+
+        assert "### a.md" in result
+        assert "환불 규정 A" in result
+        assert "### b.md" in result
+        assert "환불 규정 B" in result
+        # 파일명 정렬: a.md 섹션이 b.md 섹션보다 먼저 나와야 한다
+        assert result.index("### a.md") < result.index("### b.md")
+
+    def test_okf_root가_None이면_빈_문자열(self) -> None:
+        result = read_okf_bundle(None, "cs_ops")
+        assert result == ""
+
+    def test_번들_디렉터리가_없으면_빈_문자열(self, tmp_path: Path) -> None:
+        result = read_okf_bundle(tmp_path, "존재하지않는_에이전트")
+        assert result == ""
+
+    def test_md_파일이_없으면_빈_문자열(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "cs_ops"
+        bundle.mkdir()
+        (bundle / "readme.txt").write_text("텍스트 파일")
+        result = read_okf_bundle(tmp_path, "cs_ops")
+        assert result == ""
+
+    def test_파일_내용이_헤더와_함께_반환된다(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "refund_agent"
+        bundle.mkdir()
+        (bundle / "policy.md").write_text("환불 7일 이내")
+        result = read_okf_bundle(tmp_path, "refund_agent")
+        assert "### policy.md" in result
+        assert "환불 7일 이내" in result
+
+    def test_Path_객체를_okf_root로_받는다(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "eng_ops"
+        bundle.mkdir()
+        (bundle / "runbook.md").write_text("배포 절차")
+        result = read_okf_bundle(tmp_path, "eng_ops")
+        assert "배포 절차" in result
+
+    def test_문자열_okf_root도_허용한다(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "eng_ops"
+        bundle.mkdir()
+        (bundle / "runbook.md").write_text("배포 절차")
+        result = read_okf_bundle(str(tmp_path), "eng_ops")
+        assert "배포 절차" in result
+
+    def test_총_길이_100000자_초과시_자르고_표식_추가(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "big_agent"
+        bundle.mkdir()
+        # 100001자 넘는 내용 생성
+        (bundle / "huge.md").write_text("x" * 110_000)
+        result = read_okf_bundle(tmp_path, "big_agent")
+        assert len(result) <= 100_000 + len("\n…(생략)")
+        assert result.endswith("\n…(생략)")
+
+
+# ---------------------------------------------------------------------------
+# A(ii) OKF 접지 — build_provider_request okf 키워드 (무회귀 + 접지)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildProviderRequestOkf:
+    def test_okf_있으면_system에_OKF_헤더와_내용_포함(self, card: AgentCard) -> None:
+        req = build_provider_request("환불?", card, okf="환불은 7일 이내 가능")
+        assert "지식 베이스(OKF)" in req.system
+        assert "환불은 7일 이내 가능" in req.system
+
+    def test_okf_미지정_기본이면_system에_OKF_헤더_없음(self, card: AgentCard) -> None:
+        """무회귀: okf 기본값(빈 문자열)이면 기존 system 프롬프트와 동일."""
+        req_default = build_provider_request("환불?", card)
+        req_empty = build_provider_request("환불?", card, okf="")
+        assert "지식 베이스(OKF)" not in req_default.system
+        assert "지식 베이스(OKF)" not in req_empty.system
+        assert req_default.system == req_empty.system
+
+    def test_okf_있어도_기존_knowledge_sources_라벨_줄_유지(self, card: AgentCard) -> None:
+        req = build_provider_request("환불?", card, okf="내용")
+        for src in card.knowledge_sources:
+            assert src in req.system
+
+    def test_okf_있어도_Answer_계약_무변경(self, card: AgentCard) -> None:
+        """OKF가 주입돼도 ProviderRequest 구조는 동일(model·system·messages 3필드)."""
+        req = build_provider_request("환불?", card, okf="내용")
+        assert isinstance(req, ProviderRequest)
+        assert hasattr(req, "model")
+        assert hasattr(req, "system")
+        assert hasattr(req, "messages")
+
+    def test_okf_지시문에_근거_제한_포함(self, card: AgentCard) -> None:
+        req = build_provider_request("환불?", card, okf="환불 규정 내용")
+        assert "여기에 없으면 모른다고 말하라" in req.system
+
+
+# ---------------------------------------------------------------------------
+# A(ii) OKF 접지 — CodexApiRuntime okf_root 주입 (센티넬 검증)
+# ---------------------------------------------------------------------------
+
+
+class CapturingTransport:
+    """마지막으로 받은 ProviderRequest를 캡처하는 결정론 transport (SDK·네트워크 0)."""
+
+    def __init__(self, reply: str = "stub 응답") -> None:
+        self.last_request: ProviderRequest | None = None
+        self._reply = reply
+
+    def __call__(self, request: ProviderRequest) -> list[str]:
+        self.last_request = request
+        return [self._reply]
+
+
+class TestCodexApiRuntimeOkfGrounding:
+    def test_okf_root_주입시_센티넬이_system에_포함된다(
+        self, tmp_path: Path, card: AgentCard
+    ) -> None:
+        bundle = tmp_path / card.agent_id
+        bundle.mkdir()
+        (bundle / "refund.md").write_text("SENTINEL_환불_7일")
+
+        transport = CapturingTransport()
+        runtime = CodexApiRuntime(transport=transport, okf_root=tmp_path)
+        runtime.answer("환불 규정?", card)
+
+        assert transport.last_request is not None
+        assert "SENTINEL_환불_7일" in transport.last_request.system
+
+    def test_okf_root_없으면_기존_동작_유지(self, card: AgentCard) -> None:
+        transport = CapturingTransport()
+        runtime = CodexApiRuntime(transport=transport)
+        runtime.answer("환불 규정?", card)
+
+        assert transport.last_request is not None
+        assert "지식 베이스(OKF)" not in transport.last_request.system
+
+    def test_번들_디렉터리_없으면_okf_없이_동작(
+        self, tmp_path: Path, card: AgentCard
+    ) -> None:
+        transport = CapturingTransport()
+        runtime = CodexApiRuntime(transport=transport, okf_root=tmp_path)
+        runtime.answer("환불 규정?", card)
+
+        assert transport.last_request is not None
+        assert "지식 베이스(OKF)" not in transport.last_request.system
+
+
+# ---------------------------------------------------------------------------
+# A(ii) OKF 접지 — ClaudeApiRuntime okf_root 주입 (대칭 동일 테스트)
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeApiRuntimeOkfGrounding:
+    def test_okf_root_주입시_센티넬이_system에_포함된다(
+        self, tmp_path: Path, card: AgentCard
+    ) -> None:
+        bundle = tmp_path / card.agent_id
+        bundle.mkdir()
+        (bundle / "refund.md").write_text("SENTINEL_환불_7일")
+
+        transport = CapturingTransport()
+        runtime = ClaudeApiRuntime(transport=transport, okf_root=tmp_path)
+        runtime.answer("환불 규정?", card)
+
+        assert transport.last_request is not None
+        assert "SENTINEL_환불_7일" in transport.last_request.system
+
+    def test_okf_root_없으면_기존_동작_유지(self, card: AgentCard) -> None:
+        transport = CapturingTransport()
+        runtime = ClaudeApiRuntime(transport=transport)
+        runtime.answer("환불 규정?", card)
+
+        assert transport.last_request is not None
+        assert "지식 베이스(OKF)" not in transport.last_request.system
+
+    def test_번들_디렉터리_없으면_okf_없이_동작(
+        self, tmp_path: Path, card: AgentCard
+    ) -> None:
+        transport = CapturingTransport()
+        runtime = ClaudeApiRuntime(transport=transport, okf_root=tmp_path)
+        runtime.answer("환불 규정?", card)
+
+        assert transport.last_request is not None
+        assert "지식 베이스(OKF)" not in transport.last_request.system

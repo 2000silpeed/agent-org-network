@@ -88,6 +88,33 @@
     .sources { width: 100%; }
     .sources b { font-weight: 600; color: #4b5563; }
     .pending .bubble { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
+    .org .bubble { animation: pop 0.18s ease-out; }
+    @keyframes pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .stage {
+      align-self: center;
+      max-width: 92%;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      background: #eef1f5;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      animation: pop 0.18s ease-out;
+    }
+    .stage.active { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
+    .stage.done { background: #ecfdf5; border-color: #a7f3d0; color: #047857; }
+    .stage-icon { font-size: 13px; }
+    .dots { display: inline-flex; gap: 3px; margin-left: 1px; }
+    .dots i {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: currentColor; animation: blink 1.2s infinite both;
+    }
+    .dots i:nth-child(2) { animation-delay: 0.2s; }
+    .dots i:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
     form {
       display: flex;
       gap: 8px;
@@ -185,10 +212,8 @@
     }
 
     // dispatched(워커) 답은 즉답이 아니라 워커가 나중에 회신한다 — tracking으로 폴링해
-    // 준비되면 pending 말풍선을 실제 답으로 교체한다(미아 없음: 안 와도 처리함은 그대로).
-    async function pollForAnswer(tracking, row, bubble) {
-      const wait = el("div", "sources", "답변 기다리는 중…");
-      bubble.appendChild(wait);
+    // 준비되면 Answer를 돌려준다(미아 없음: 안 와도 처리함은 그대로). 진행 표시는 stage가 맡는다.
+    async function pollForAnswer(tracking) {
       for (let i = 0; i < 90; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         let data;
@@ -199,14 +224,55 @@
         } catch (_) {
           continue;
         }
-        if (data.type === "answered") {
-          row.classList.remove("pending");
-          fillBubble(bubble, data);
-          log.scrollTop = log.scrollHeight;
-          return;
-        }
+        if (data.type === "answered") return data;
       }
-      wait.textContent = "(아직 답을 받지 못했어요 — 담당 워커가 처리 중이거나 미연결)";
+      return null;
+    }
+
+    // 진행 단계 표시줄 — 보내는 즉시 "담당을 찾는 중"을 띄우고, 디스패치되면 "전달됨·작성 중"
+    // (경과 초)으로, 답이 오면 "담당이 답했어요"로 정착시킨다. 노출 불변식: 단계 라벨만 —
+    // 어떤 담당인지는 답(answered_by)에서만 드러난다.
+    function makeStage() {
+      const node = el("div", "stage active");
+      const icon = el("span", "stage-icon", "🔎");
+      const label = el("span", "stage-label", "담당을 찾는 중");
+      const dots = el("span", "dots");
+      dots.appendChild(el("i"));
+      dots.appendChild(el("i"));
+      dots.appendChild(el("i"));
+      node.appendChild(icon);
+      node.appendChild(label);
+      node.appendChild(dots);
+      log.appendChild(node);
+      log.scrollTop = log.scrollHeight;
+
+      let timer = null;
+      const start = Date.now();
+      return {
+        dispatched() {
+          icon.textContent = "📨";
+          label.textContent = "담당에게 전달됨 · 답변 작성 중";
+          if (timer) clearInterval(timer);
+          timer = setInterval(() => {
+            const s = Math.floor((Date.now() - start) / 1000);
+            label.textContent = "담당에게 전달됨 · 답변 작성 중 (" + s + "초)";
+          }, 1000);
+        },
+        done(text) {
+          if (timer) clearInterval(timer);
+          node.className = "stage done";
+          icon.textContent = "✓";
+          dots.remove();
+          label.textContent = text || "완료";
+        },
+        fail(text) {
+          if (timer) clearInterval(timer);
+          node.className = "stage";
+          icon.textContent = "⚠️";
+          dots.remove();
+          label.textContent = text || "응답을 받지 못했어요";
+        },
+      };
     }
 
     async function ask(question) {
@@ -226,17 +292,37 @@
       addMe(question);
       input.value = "";
       sendBtn.disabled = true;
+
+      const stage = makeStage(); // ① 보내는 즉시 "담당을 찾는 중…"
+      let reply;
       try {
-        const reply = await ask(question);
-        const { row, bubble } = addOrg(reply);
-        if (reply.type === "pending" && reply.tracking) {
-          pollForAnswer(reply.tracking, row, bubble);
-        }
+        reply = await ask(question);
       } catch (err) {
-        addOrg({ type: "pending", kind: "error", message: "지금은 답할 수 없어요. 잠시 후 다시 시도해 주세요." });
-      } finally {
+        stage.fail("지금은 답할 수 없어요 — 잠시 후 다시 시도해 주세요");
         sendBtn.disabled = false;
         input.focus();
+        return;
+      }
+      // POST가 끝나면(라우팅·디스패치 완료) 바로 다음 질문을 받을 수 있게 풀어준다.
+      sendBtn.disabled = false;
+      input.focus();
+
+      if (reply.type === "answered") {
+        stage.done("담당이 답했어요");
+        addOrg(reply);
+      } else if (reply.type === "pending" && reply.tracking) {
+        stage.dispatched(); // ② "담당에게 전달됨 · 답변 작성 중 (n초)"
+        const answer = await pollForAnswer(reply.tracking);
+        if (answer) {
+          stage.done("담당이 답했어요"); // ③ 정착
+          addOrg(answer); // 답은 별도 말풍선으로
+        } else {
+          stage.fail("아직 답을 받지 못했어요 — 담당 워커가 처리 중이거나 미연결");
+        }
+      } else {
+        // escalation·contested 등 — 단계는 끝났고 안내 메시지를 말풍선으로 보여준다.
+        stage.done("확인됨");
+        addOrg(reply);
       }
     });
   </script>

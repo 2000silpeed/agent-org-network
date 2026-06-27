@@ -306,8 +306,11 @@ def _loads(raw: Any) -> object:
 # 공급자 owner는 미설치 SDK를 안 건드림).
 
 
-def _make_claude_api_runtime() -> AgentRuntime:
-    """Claude 공급자 어댑터 — owner OAuth 인프로세스 anthropic SDK 스트리밍(중앙 토큰 0)."""
+def _make_claude_api_runtime(okf_root: str | Path | None) -> AgentRuntime:
+    """Claude 공급자 어댑터 — owner OAuth 인프로세스 anthropic SDK 스트리밍(중앙 토큰 0).
+
+    okf_root 주입으로 A(ii) OKF 접지 활성 — ClaudeCodeRuntime cwd 접지 대칭.
+    """
     try:
         from agent_org_network.provider_runtime import ClaudeApiRuntime
         from agent_org_network.provider_transport_anthropic import AnthropicSdkTransport
@@ -316,14 +319,15 @@ def _make_claude_api_runtime() -> AgentRuntime:
             "AON_PROVIDER=claude-api 인데 anthropic SDK가 없습니다 — 자기 공급자 extra를 설치하세요: "
             "pip install 'agent-org-network[claude-api]'  (uv: uv sync --extra claude-api)"
         ) from exc
-    return ClaudeApiRuntime(transport=AnthropicSdkTransport())
+    return ClaudeApiRuntime(transport=AnthropicSdkTransport(), okf_root=okf_root)
 
 
-def _make_codex_runtime() -> AgentRuntime:
+def _make_codex_runtime(okf_root: str | Path | None) -> AgentRuntime:
     """Codex(OpenAI) 공급자 어댑터 — owner ~/.codex/auth.json OAuth 인프로세스 openai SDK 스트리밍.
 
     claude 팩토리와 대칭: 자기 SDK extra(`[codex]` → openai)·자기 OAuth 자격(owner 기기
     auth.json)을 *지연* import로 가둔다 — codex를 고를 때만 openai SDK를 건드린다(중앙 토큰 0).
+    okf_root 주입으로 A(ii) OKF 접지 활성 — ClaudeApiRuntime 대칭.
     """
     try:
         from agent_org_network.provider_runtime import CodexApiRuntime
@@ -333,7 +337,7 @@ def _make_codex_runtime() -> AgentRuntime:
             "AON_PROVIDER=codex 인데 openai SDK가 없습니다 — 자기 공급자 extra를 설치하세요: "
             "pip install 'agent-org-network[codex]'  (uv: uv sync --extra codex)"
         ) from exc
-    return CodexApiRuntime(transport=CodexOauthTransport())
+    return CodexApiRuntime(transport=CodexOauthTransport(), okf_root=okf_root)
 
 
 # 별칭 → 공급자 키 (후속: "gemini"/"google" → "gemini").
@@ -344,8 +348,8 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "codex": "codex",
     "openai": "codex",
 }
-# 공급자 키 → lazy 어댑터 팩토리 (후속: "gemini": _make_gemini_runtime).
-_PROVIDER_FACTORIES: dict[str, Callable[[], AgentRuntime]] = {
+# 공급자 키 → lazy 어댑터 팩토리 (okf_root: str | Path | None → AgentRuntime).
+_PROVIDER_FACTORIES: dict[str, Callable[[str | Path | None], AgentRuntime]] = {
     "claude-api": _make_claude_api_runtime,
     "codex": _make_codex_runtime,
 }
@@ -380,7 +384,7 @@ def _select_runtime(okf_root: str | Path | None) -> AgentRuntime:
         f"[worker] AON_PROVIDER={flag} → owner OAuth 인프로세스 공급자 SDK 어댑터 사용"
         "(owner 프로필 자동 해석·중앙 토큰 0·게이트 밖 T9.6)."
     )
-    return factory()
+    return factory(okf_root)
 
 
 # ── CLI 진입점(수동 시연) ────────────────────────────────────────────────────

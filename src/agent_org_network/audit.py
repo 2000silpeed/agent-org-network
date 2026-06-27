@@ -43,6 +43,7 @@ class AuditEntry:
     intent: str
     decision: RoutingDecision
     dispatch_outcome: DispatchOutcome | None = None
+    tracking: str | None = None
 
     @property
     def answer(self) -> Answer | None:
@@ -66,6 +67,7 @@ class AuditEntry:
             "decision": _decision_record(self.decision),
             "answer": _answer_record(self.answer),
             "dispatch": _dispatch_record(self.dispatch_outcome),
+            "tracking": self.tracking,
         }
 
 

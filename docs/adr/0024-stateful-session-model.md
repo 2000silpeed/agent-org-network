@@ -96,6 +96,15 @@ message(user_id, question)
 - **기존 라우팅·노출 불변식·미아 없음 회귀 0이 1순위.** 0매칭→Unowned→escalation, Contested→합의, Precedent 자동 적용, Approval→draft_only가 *그대로* 종착한다 — 세션 층이 종착을 안 바꾼다.
 - `AskOrg.handle`에 맥락 주입은 *옵셔널*로(미주입이면 기존 무상태 동작 — `notifier: Notifier | None = None`·`propagator=None`과 동형 하위호환). 맥락은 Agent Runtime 프롬프트 조립에만 흘러 들어가고 라우팅 판정(intent·candidates)은 *현재 질문*으로 한다(맥락이 라우팅을 흔들지 않음 — 증분·안전).
 
+### 5-bis. 맥락이 런타임에 닿는 경로 — 결정 3·5의 실체화 (T9.4(c)·ADR 0027 결정 6·7·8 연장)
+
+T9.1(d)는 `assemble_context`를 *순수 함수로 닦되* `SessionAskOrg.handle`은 **handle 무수정 위임**이었다(맥락이 아직 어디로도 안 흐름 — 결정 5 와이어링은 *예고*). T9.4(c)가 그 예고를 *실체화*한다 — 맥락이 세션 보유처에서 `AgentRuntime`까지 4계층을 관통한다. 포트 변경은 되돌리기 어려우므로 **본체 결정은 ADR 0027 결정 6·7·8**에 두고, 여기엔 세션 ADR 관점의 경로만 못박는다.
+
+- **조립 위치 = `SessionAskOrg.handle`, *append_turn 전*** — `open_or_get` 직후·`ask.handle` 전에 `context = assemble_context(session, question)`를 부른다. *이번 턴 적재 전*이라 맥락 = *과거 턴 스레드만*(현재 질문·답 미포함). 현재 질문은 호출자(런타임의 `build_provider_request`)가 messages 마지막에 붙인다(결정 3 `assemble_context` 시그니처 정합 — `current_question`은 조립엔 안 접지만 호출 일관성용). 적재(`append_turn`)는 *답이 난 뒤* 기존 위치 그대로 — 그 턴이 *다음* 턴의 맥락이 된다.
+- **위임 경로** — `SessionAskOrg.handle` → `ask.handle(question, user, context=context)`(handle 옵셔널 진화) → `router.route(question)`(맥락 미투입) → `dispatch(question, card, context=context)` → 로컬은 `runtime.answer(question, card, context=context)`. ADR 0027 결정 7의 4계층 스레딩과 동일.
+- **라우팅 정합(결정 3 재확인)** — 결정 3·5가 약속한 "라우팅 판정은 현재 질문으로"가 *구조로 보장*된다: `route`엔 `question`만, `dispatch`에만 `context`가 간다(서로 다른 함수 인자). 맥락이 분류에 새는 경로가 호출 구조상 없다.
+- **게이트 경계** — 로컬 인프로세스 경로(web `/ask` → `LocalRuntimeDispatcher`)는 게이트 내 결정론으로 닫는다. 분산 WS 경로의 맥락 전파(`WorkTicket`·`TicketFrame` 와이어 진화)는 후속(T9.7·ADR 0027 결정 8). 세션 층은 *로컬 경로에서 멀티턴 실재*를 먼저 입증한다.
+
 ## 근거
 
 - **store 패턴 재사용** — 세션은 "미해소/활성 도메인 상태 + 전이 + 색인 조회"라는, 이미 네 번 검증된 모양(ConflictCase·BackupReview·Reeval·Precedent)이다. 새 추상을 만들 이유가 없다.
@@ -105,7 +114,7 @@ message(user_id, question)
 ## Consequences
 
 - **`session.py` 신규 모듈** — `Session`·`SessionTurn`·`SessionStatus`·`SessionStore`(Protocol)·`InMemorySessionStore`·`assemble_context`(순수 함수). `review.py`·`conflict.py` 구조를 본보기로.
-- **`AskOrg`에 옵셔널 맥락 주입** — `handle(question, user, *, context=None)`(미주입이면 기존 동작·하위호환). 세션 층 와이어링은 web/콘솔 어댑터가 `open_or_get → assemble → handle → append_turn`을 묶는다.
+- **`AskOrg`에 옵셔널 맥락 주입** — `handle(question, user, *, context=None)`(미주입이면 기존 동작·하위호환). 세션 층 와이어링은 web/콘솔 어댑터가 `open_or_get → assemble → handle → append_turn`을 묶는다. **T9.4(c)에서 실체화**(결정 5-bis·ADR 0027 결정 6·7): `handle`이 `context`를 받아 `dispatch(question, card, context=)`로만 흘리고(route엔 미투입), 로컬 디스패처가 `runtime.answer(question, card, context=)`로 런타임까지 전달한다.
 - **불변식 영향 없음**:
   - **미아 없음** — 세션은 라우팅 종착을 안 바꾼다(0매칭→Unowned→escalation 그대로). 세션이 만료돼도 새 메시지는 새 세션으로 *여전히* 라우팅된다.
   - **Authority 중앙** — 세션은 권한을 만들지 않는다(누가 담당인지는 여전히 Router·routing_rules.yaml).

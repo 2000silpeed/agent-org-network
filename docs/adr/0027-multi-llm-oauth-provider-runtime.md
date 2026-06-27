@@ -88,6 +88,50 @@ def map_response_to_answer(resp, card) -> Answer: ...                         # 
 - **첫 공급자 = Claude**(Anthropic API + OAuth 구독 토큰·확정 대기지만 권장) — 이미 배선됐고(claude 로컬 인증 입증) 스트리밍을 먼저 검증한다. Claude로 속도·스트리밍·매핑을 입증한 뒤 codex·gemini를 *같은 포트·다른 transport*로 추가(후속).
 - **다중 공급자 동시 지원은 후속 명시 연기**(과도 엔지니어링 회피·tasks line 214) — 지금은 한 공급자. 포트가 공급자 중립이라 추가는 어댑터 N번째일 뿐.
 
+### 6. `AgentRuntime.answer` 포트 옵셔널 진화 — 멀티턴 맥락 스레딩 (T9.4(c)·ADR 0024 결정 3 연장)
+
+T9.1(ADR 0024)이 `assemble_context(session, current_question) -> str`를 *순수 함수로* 닦았으나, 그 산출물이 **아무 데서도 답 생성에 안 흘러간다**(현재 답은 맥락 무관). 멀티턴이 실제로 동작하려면 맥락이 `AgentRuntime`까지 닿아야 하는데, 포트 `answer(question, card) -> Answer`엔 *맥락 자리가 없다*. 포트를 *옵셔널*로 진화시킨다 — 되돌리기 어려운 결정이라 여기 명문화한다.
+
+```python
+class AgentRuntime(Protocol):
+    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer: ...
+```
+
+- **옵셔널 진화(하위호환)** — `context: str | None = None`. 미주입이면 *기존 무상태 동작 그대로*다(`notifier=None`·`propagator=None`·`build_provider_request(context=None)`과 동형 — 이미 자리만 둔 파라미터를 *켠다*). 기존 구현·기존 호출처(인자 미전달)는 시그니처상 무변경으로 산다.
+- **구현별 소비**:
+  - `StubRuntime` — `context`를 *받되 답에 안 싣는다*(canned 답 결정론 보존). 단 **게이트 내 관측 가능성**을 위해 받은 `context`를 마지막 인자로 기록하는 *관측 seam*(예: `last_context` 속성 또는 주입 spy)을 둬, "맥락이 런타임까지 닿았다"를 결정론으로 단언할 수 있게 한다(아래 결정 7·tdd 슬라이스).
+  - `ClaudeApiRuntime` — `answer`가 `build_provider_request(question, card, context=context)`로 맥락을 *실제 소비*한다(이미 `context` 자리 존재·미사용 → 배선). 맥락은 `ProviderRequest.messages`의 선행 user 메시지로 들어가고(결정 3 — `messages=옵셔널 맥락+질문`), `system`(카드 페르소나)·라우팅엔 안 섞인다.
+  - `ClaudeCodeRuntime` — `context`를 *받되 이번 증분에선 무시*(프롬프트 미주입·기존 동작 보존). `claude -p` 프롬프트에 맥락을 싣는 건 후속(이 ADR이 대화 경로를 `ClaudeApiRuntime`으로 교체하는 방향이라 `ClaudeCodeRuntime` 프롬프트 진화는 우선순위 밖 — 무시가 정직).
+- **라우팅 정합(필수 분리)** — **분류기(`Router.route`)는 *맨 질문*만 본다.** 맥락+질문을 분류하면 과거 발화가 현재 의도를 흔들어 *오라우팅*한다("그럼 그 다음은?"이 과거 발화로 엉뚱한 담당에 가는 식). 그래서 맥락은 *런타임에만* 흐르고 `Router.route(question)`엔 절대 안 닿는다 — 이 분리는 **스레딩 경로의 구조가 보증**한다(결정 7): `AskOrg.handle`이 `route`엔 `question`만, `dispatch`에만 `context`를 넘긴다. 두 인자가 서로 다른 함수에 가므로 맥락이 분류에 새는 경로가 *타입·호출 구조상 없다*.
+
+### 7. 스레딩 경로 — `SessionAskOrg`(세션 보유) → `AskOrg.handle(context=)` → `dispatch(context=)` → `runtime.answer(context=)`
+
+맥락은 *세션을 보유한 곳*(`SessionAskOrg`)에서 조립돼 4계층을 관통해 런타임에 닿는다. ADR 0024 결정 5가 그린 와이어링(`context = assemble_context(...) → ask.handle(question, user, context=...)`)을 *실체화*한다.
+
+```
+SessionAskOrg.handle(question, user)            # 세션 보유
+  session = store.open_or_get(user.id)
+  context = assemble_context(session, question)  # 신규: 이전 턴 적재 전 조립(그 사용자 스레드만)
+  reply   = ask.handle(question, user, context=context)   # AskOrg.handle 옵셔널 진화
+     decision = router.route(question)            # 맥락 미투입 — 라우팅 정합(결정 6)
+     ticket   = dispatcher.dispatch(question, card, context=context)  # dispatch 옵셔널 진화
+        # 로컬: LocalRuntimeDispatcher → runtime.answer(question, card, context=context)
+  store.append_turn(...)                          # 기존(이번 턴 적재 — 다음 턴 맥락이 됨)
+```
+
+- **`AskOrg.handle` 옵셔널 진화** — `handle(question, user, *, context: str | None = None)`. T9.1(d)는 "handle 무수정 위임"이었으나(맥락이 아직 안 흘러서), 이제 *맥락이 런타임까지 닿아야* 하므로 진화한다. ADR 0024 결정 5·Consequences가 *이미 예고한* 시그니처(`handle(question, user, *, context=None)`)라 새 결정이 아니라 *예고 실체화*다. 미주입이면 기존 동작(하위호환).
+- **`RuntimeDispatcher.dispatch` 옵셔널 진화** — `dispatch(question, card, context: str | None = None)`. 맥락을 런타임까지 나르는 *유일한 추가 인자*. `RuntimeDispatcher` Protocol·`LocalRuntimeDispatcher`·`InMemoryWorkQueueDispatcher`·`WebSocketDispatcher`·`DispatchingRuntime`이 모두 이 옵셔널 인자를 받는다(미전달이면 기존 동작). **로컬 경로(`LocalRuntimeDispatcher`)만 맥락을 *런타임에 즉시 전달***한다(`runtime.answer(question, card, context=context)`) — 그 자리에서 동기 답 생성이라 와이어 직렬화를 안 거친다.
+- **분산 WS 경로는 이번 증분에서 맥락을 *나르지 않는다*(후속 명시 연기)** — `InMemoryWorkQueueDispatcher`/`WebSocketDispatcher`는 `context` 인자를 *받되 큐·`WorkTicket`·`TicketFrame`에 싣지 않는다*(시그니처 정합용 흡수). 이유는 결정 8(게이트 경계).
+- **전이≠기록 보존** — `append_turn`은 *답이 난 뒤* 그 턴을 적재한다(`SessionAskOrg`의 기존 위치). `assemble_context`는 *적재 전*에 부르므로 맥락 = *과거 턴만*(현재 질문·답 미포함). 현재 질문은 `messages`의 마지막 user 메시지로 호출자가 별도로 붙인다(결정 3·`assemble_context` docstring 정신).
+
+### 8. 게이트 내/밖 경계 — 로컬 경로만 닫고, WS 프로토콜 맥락·실 런타임 교체는 후속 연기
+
+가장 중요한 정직한 분리. 세 갈래로 가른다:
+
+- **로컬 인프로세스 경로(web `/ask` → `SessionAskOrg` → `AskOrg.handle` → `LocalRuntimeDispatcher` → 인프로세스 런타임) = 게이트 내·이번 증분.** 맥락 스레딩을 *게이트 내 결정론*으로 닫는다 — `StubRuntime`이 `context`를 관측하는지(관측 seam) + `ClaudeApiRuntime`이 `build_provider_request(context=)`로 소비하는지(`StubProviderTransport` 주입) + 멀티턴이 로컬에서 관측되는지(턴 N의 맥락에 턴 N-1 발화 포함). **실 LLM·실 네트워크 0 — 전부 결정론.**
+- **분산 WS 경로(중앙 → 워커 → 워커의 런타임) = 후속 연기(T9.7).** 맥락이 워커의 런타임까지 닿으려면 `WorkTicket`·`TicketFrame`(와이어 DTO)에 맥락 필드를 *추가*해야 한다 — **프로토콜 진화**다(`transport.py`·`worker.py`의 `handle_push_work`가 `ticket.question`만 받음). 이는 (a) 와이어 포맷 변경(되돌리기 어려움)·(b) *실 워커·실 owner OAuth 런타임*이 게이트 밖(T9.6)이라 *결정론 관측이 빈약*하다. 따라서 **WS 프레임 맥락 전파는 T9.7(owner 클라이언트)로 명시 연기** — 거기서 `ClaudeApiRuntime` 실 transport(T9.6)와 함께 와이어 진화를 한 슬라이스로 묶는다. 이번 증분은 dispatch 시그니처만 옵셔널 진화시켜 WS 디스패처가 *인자를 흡수*(미전파)하게 두고, 와이어 필드 추가는 후속.
+- **런타임 교체(`ClaudeCodeRuntime` → `ClaudeApiRuntime`) 판단** — `ClaudeApiRuntime`은 *실 transport가 게이트 밖*(T9.6 — `StubProviderTransport`만 게이트 내)이라, 로컬 대화 경로를 프로덕션에서 실제로 `ClaudeApiRuntime`으로 *교체*하는 것은 T9.6/T9.7과 합류한다. **이번 증분은 "교체"가 아니라 "맥락 소비 능력 배선"**이다 — `ClaudeApiRuntime.answer`가 `context`를 `build_provider_request`로 흘리게 만들어, *주입되면 동작하는* 상태로 둔다(web 기본 런타임 교체는 후속). 즉 포트 진화 + 두 런타임(Stub·ClaudeApi)의 맥락 소비 배선까지가 게이트 내, web `/ask` 기본 런타임을 `ClaudeApiRuntime`으로 바꾸는 와이어링은 T9.6 실 transport와 합류(후속).
+
 ## 근거
 
 - **포트 무변경·어댑터 추가** — `AgentRuntime`은 0007부터 포트였다. 0010(중앙 claude -p)·0017(owner OKF 읽는 중앙 claude -p)·0027(owner OAuth 인프로세스)은 *같은 포트의 다른 구현*이다. 포트가 바뀌지 않아 라우팅·dispatcher·노출 경계가 안 흔들린다(헥사고날 — 코어는 포트만 본다).
@@ -98,13 +142,17 @@ def map_response_to_answer(resp, card) -> Answer: ...                         # 
 ## Consequences
 
 - **공급자 어댑터 모듈(`runtime.py` 확장 또는 신규)** — `ClaudeApiRuntime`(첫 공급자) + 순수 매핑 함수(`build_provider_request`·`assemble_stream`·`map_response_to_answer`) + 주입 `ProviderTransport`(Stub 결정론·실 게이트 밖). 후속 `CodexApiRuntime`·`GeminiApiRuntime` 자리(`NotImplementedError` — `HttpOidcProvider`·`SlackChannel` 정신).
+- **`AgentRuntime` 포트 옵셔널 진화(T9.4(c)·결정 6)** — `answer(question, card, context: str|None=None)`. 되돌리기 어려운 포트 변경. 모든 구현(`StubRuntime`·`ClaudeCodeRuntime`·`ClaudeApiRuntime`·`Codex/GeminiApiRuntime` 자리)이 인자를 받는다. `StubRuntime`은 관측 seam으로 받되 답 무변경, `ClaudeApiRuntime`은 `build_provider_request(context=)`로 소비, `ClaudeCodeRuntime`은 이번 증분 무시(후속 프롬프트 진화).
+- **`AskOrg.handle`·`RuntimeDispatcher.dispatch` 옵셔널 진화(결정 7)** — `handle(question, user, *, context=None)`(ADR 0024 결정 5 예고 실체화)·`dispatch(question, card, context=None)`. 미주입이면 기존 동작(하위호환). `LocalRuntimeDispatcher`만 맥락을 런타임에 즉시 전달, WS 디스패처는 인자 흡수(미전파·후속 T9.7).
+- **게이트 경계(결정 8)** — 로컬 인프로세스 경로 맥락 스레딩은 게이트 내 결정론(`StubRuntime` 관측·`ClaudeApiRuntime` 맥락 소비·멀티턴 로컬 관측). 분산 WS 프레임 맥락 전파(`WorkTicket`·`TicketFrame` 와이어 진화)·web 기본 런타임을 `ClaudeApiRuntime`으로 교체는 **T9.6/T9.7로 명시 연기**.
 - **`ClaudeCodeRuntime` 대화 경로 교체** — dispatcher/ask_org 주입을 공급자 어댑터로(분류기·배치 `claude -p` 잔존). 라우팅·노출·미아 없음 회귀 0.
 - **WS 전송 1급 재부상** — owner 워커(ADR 0011) ↔ 중앙 아웃바운드 WS가 *기본 대화 경로*. ADR 0026 토큰 admission이 그 연결을 검증. `worker.py`의 `WorkerLogic`이 `ClaudeCodeRuntime` 대신 공급자 어댑터를 쥐고 돈다(T9.7 owner 클라이언트).
 - **실 OAuth·실 스트리밍(T9.6·게이트 밖)** — 실 owner 구독 토큰 획득·실 공급자 API 스트리밍. 새 의존성(공급자 SDK/HTTP) 판단은 이 ADR 갱신(결정 대기).
 - **불변식 영향 없음**:
   - **미아 없음** — 런타임 교체가 라우팅 종착을 안 바꾼다(0→Unowned·≥2→Contested·timeout→escalation 그대로). owner 워커 부재는 백업→Manager 폴백 사슬이 받음(ADR 0012·0014).
   - **Authority 중앙** — 런타임은 *답 생성*이지 *권한 선언*이 아니다. 누가 담당인지·누가 owner인지(routing_rules.yaml·card.owner)는 안 건드림. 멀티 공급자는 *답을 만드는 모델 선택*이지 권한이 아님.
-  - **노출 불변식** — `Answer` 계약 보존(매핑이 내부값 안 실음). 멀티턴 맥락(ADR-A)은 그 사용자 발화 스레드만(owner 격리).
+  - **노출 불변식** — `Answer` 계약 보존(매핑이 내부값 안 실음). 멀티턴 맥락(ADR-A)은 그 사용자 발화 스레드만(owner 격리). `assemble_context`가 이미 구조적으로 보증(다른 owner 답·다른 사용자 발화 미혼입).
+  - **라우팅 정합(맥락이 분류를 안 흔듦, 결정 6·7)** — `Router.route(question)`는 *맨 질문*만 본다. 맥락은 `dispatch(context=)`로만 흐르고 `route`엔 안 닿는다 — 두 인자가 서로 다른 함수에 가므로 맥락이 분류에 새는 경로가 호출 구조상 없다. 멀티턴이 라우팅 종착을 안 바꾼다(미아 없음 보존).
   - **전이 ≠ 기록** — 답 생성은 도메인 행위, audit 기록은 별 축(무변경).
   - **중앙 키/토큰 0(0010 보존·강화)** — 자격증명이 owner OAuth라 중앙은 모델 토큰을 0개 보관. 0010의 유효 핵심이 더 엄격해진다.
   - **owner 격리·등록 무결성** — owner 워커는 ADR 0026 토큰으로 admission(가장 차단), 맥락은 그 사용자 스레드만.

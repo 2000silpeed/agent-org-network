@@ -1,0 +1,280 @@
+# 스케일 라우팅 — published 지식 인덱스 + 2단 라우팅(중앙=목차·owner=내용)
+
+상태: accepted (2026-06-27) · 사용자 grill 합의 7개 결정 명문화 · **현 라우팅(Classifier→intent 1라벨→`card.domains` 정확매칭→Routed/Contested/Unowned)을 *refine***(대체 아님 — `RoutingDecision` sealed sum·Authority 중앙·Precedent·Contested 폴백은 그대로, 후보 *제안* 메커니즘만 인덱스 기반으로 정밀화) · **ADR 0017 결정 3②("실시간 충돌 자동해소")의 실체** · **PRD §5 "LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위"를 현금화** · ADR 0006(중앙 MCP)·0010/0027(owner측 실행·중앙 토큰 0)·0013(OKF)·0011/0012(WS 전송)·0019(staleness 패턴)·0004(Authority 중앙)·0015(intent 단일 출처)와 정합 · CONTEXT(신규 KnowledgeIndex·Concept·KnowledgeIndexMatcher·published index·stage-1/stage-2 용어)·TRD §2·§4·PRD §5 갱신 대상
+
+## 맥락 — 현 라우팅의 스케일 결함
+
+현 라우팅은 *질문 → intent 라벨 1개 → `card.domains` 정확매칭*이다(`router.py`·`classifier.py`):
+
+1. `LlmClassifier.classify(question)`가 **전 카드 `domains`의 합집합**을 후보로 LLM 프롬프트에 싣고(`build_prompt`) 하나를 고른다(또는 어휘 밖이면 `""`).
+2. `Router.route`가 그 intent를 가진 카드를 `intent in c.domains`로 정확매칭한다 → 0이면 Unowned, 1이면 Routed, ≥2면 Contested.
+
+이 설계는 *에이전트 수 × 각 에이전트 지식 깊이*가 커지면 두 군데서 깨진다:
+
+- **결함 ① 후보 폭발·정밀 붕괴(에이전트↑).** `build_prompt`가 *전 카드 domains 합집합*을 평평한 라벨 리스트로 LLM에 먹인다. 에이전트가 수백이면 후보 라벨이 수백 개 평평하게 펼쳐져 프롬프트가 폭발하고(토큰·비용), LLM이 그 중 하나를 정확히 고르는 정밀도가 무너진다. "전 개념을 LLM에 한 번에 먹이기"는 본질상 O(전 조직 지식)이라 스케일에 역행한다.
+- **결함 ② 라벨이 답가능성을 표현 못 함(지식 깊이↑).** `domains`는 owner가 자기보고하는 *거친 주제 라벨*(예: `"가격"`·`"환불"`)이다. 한 에이전트의 지식이 깊어지면 그 안에 수십 개 세부 주제가 생기는데, 라벨 하나는 "이 에이전트가 *이 구체적 질문*에 답할 수 있나"를 표현하지 못한다. 라벨은 *담당 영역*은 가리키지만 *답가능성·세부 주제*는 못 가린다.
+
+핵심 통찰: **라우팅 정밀도는 "에이전트가 *무엇을 아는가*"의 표현력에 달렸는데, 현 메커니즘은 그 표현을 owner 자기보고 라벨 1줄로 압축한다.** 표현력을 올리면서(지식 인덱스) 중앙 부담은 올리지 않는(목차만 보유) 구조가 필요하다.
+
+이 ADR은 사용자 grill로 *이미 확정*(2026-06-27)한 7개 결정을 명문화한다. 재논쟁이 아니라 충실한 화해·shape·SSOT 정합이다.
+
+---
+
+## 결정 (사용자 grill 확정 2026-06-27)
+
+### 1. published-index 라우팅 — 중앙=목차, owner=내용
+
+각 에이전트(owner 환경)가 자기 지식의 **경량 인덱스**(*목차*·"내가 무엇을 아는가" — 내용 자체가 아니라 *목차*)를 생성해 **중앙에 자동 배포(publish)**한다. 중앙은 배포된 인덱스들의 합집합으로 라우팅한다 — 매 질문마다 전 owner에게 fan-out해 "너 이거 알아?"를 묻지 않는다(그건 O(에이전트 수) 왕복).
+
+**핵심 불변 보존**: 중앙은 **목차(메타)만** 보유한다 — 지식 *내용*은 0이다. 그러므로 중앙 토큰 0·중앙 무지식·비소유(ADR 0006·0010·0017)는 **그대로 보존**된다(아래 §SSOT 화해 (a)). published 인덱스는 "이 에이전트가 *어떤 종류의 질문*에 답하는가"의 목록이지, 그 답의 *내용*이 아니다.
+
+이는 현 `card.domains`(owner 자기보고 라벨 1줄)의 *자연스러운 확장*이다 — 라벨 1줄 → 개념 목차. 카드는 그대로 라우팅 *권한*메타로 남고(admission·Authority), 인덱스는 그 위에 *커버리지 신호*를 더한다(§5).
+
+### 2. owner측 지식 엔진 = semantic-os(ontology + RAG), 레퍼런스 어댑터
+
+실제 지식 생성·발췌·인덱스 도출은 **owner 환경**에서 일어난다 — 중앙이 아니다. 레퍼런스 구현은 **semantic-os**(`~/ai-projects/semantic-os` — RDF/OWL 다중도메인 온톨로지)다: 에이전트당 Layer-3 도메인 온톨로지(Named Graph) + 내용 RAG. semantic-os 개념 노드에서 인덱스(§4 distill 스키마)를 도출하고, stage-2(§6)의 깊은 RAG 신뢰도를 그 온톨로지·RAG로 접지한다.
+
+**semantic-os는 *레퍼런스 어댑터*이지 코어 의존이 아니다.** 다른 owner는 더 가벼운 어댑터를 쓸 수 있다 — 예: **OKF 태그-인덱스 어댑터**(OKF 프론트매터 `type`·`title`·`description`·`tags`에서 곧장 인덱스 도출, 온톨로지·임베딩 없이). 코어가 RDF/OWL/임베딩에 묶이지 않게 하는 게 §3 포트의 목적이다.
+
+### 3. 포트 신설 — `KnowledgeIndex` + `KnowledgeIndexMatcher`
+
+`AgentRuntime`·`ProviderTransport`·`Classifier`·`OidcProvider`·`NotificationChannel`과 **같은 포트+어댑터 패턴**을 둔다. 코어는 RDF·임베딩·벡터 인프라에 *결합하지 않는다*. 중앙은 어떤 인덱스 빌더·어떤 매처에도 중립이다.
+
+- **`KnowledgeIndex`**(값 객체) — owner가 배포하는 인덱스. distill 스키마(§4).
+- **`KnowledgeIndexMatcher`**(Protocol) — 질문 + 배포된 인덱스들 → 후보 agent_id들. v1은 결정론 개념/키워드 오버랩, 스케일 어댑터는 로컬 임베딩 ANN(§7).
+- **stage-2 신뢰도 포트** — 모호(≥2 후보)일 때 각 후보 owner가 *접지된 신뢰도*를 자기평가(§6).
+
+`FakeMatcher`·`FakeIndex` 주입으로 결정론 경계를 둔다(`FakeClassifier`·`StubRuntime` 정신).
+
+### 4. distill 스키마 — 배포되는 인덱스의 모양
+
+라우팅 키는 semantic-os 개념 노드의 **`core_question` 필드**다 — "이 개념이 *어떤 질문에 답하는가*"(예: `core_question: "어떤 컴포넌트가 사용자 입력값을 캡처하나?"`). `domains` 라벨이 *주제*를 가리켰다면, `core_question`은 *답가능성*을 가리킨다(결함 ② 해소).
+
+```
+AgentKnowledgeIndex {
+    agent_id:      str                     # 어느 카드의 인덱스(Registry 카드와 admission 대조)
+    version:       str | int               # 또는 generated_at — staleness 판정(ADR 0012·0019 패턴)
+    generated_at:  datetime
+    concepts: [
+        Concept { id, label, core_question, type? }   # 내용 0 · 목차만
+    ]
+    edges?: [ ConceptEdge ]                # 개념 관계 — 계층 좁히기·후속(MVP는 죽은 필드 허용)
+}
+```
+
+중앙 stage-1 라우팅 = **질문 ↔ 전 에이전트 `concepts[].core_question` 합집합 매칭**. `concepts`는 *목차*다 — 각 항목은 "이런 질문에 답함"이라는 한 줄이지 그 답의 본문이 아니다(중앙 내용 0 보존). `edges`는 개념 계층을 좁히는 후속 자리(MVP는 싣되 매칭에 안 씀 — `OkfChangeEvent.changed_paths`가 죽은 필드인 정신, ADR 0019).
+
+### 5. 불변식 화해 — 인덱스 = *신호*, Authority는 *여전히* 중앙
+
+published 인덱스는 *지식 커버리지 신호*지 *권한 선언이 아니다*. 핵심 불변식 "권한(Authority)은 중앙(`routing_rules`)만 선언·카드 자기보고 금지"(ADR 0004)와 정면으로 화해한다:
+
+- **인덱스 매칭은 후보를 *제안*만 한다.** Authority(`routing_rules`)·Contested·Precedent가 여전히 **게이트**다. 인덱스가 "이 에이전트가 안다"고 신호해도, 권한·다툼·판례가 최종 처분을 정한다.
+- **admission-유사 재검증**: 에이전트가 publish한 개념은 *자기 권한(중앙이 선언한 owned domains) 안의 것만* 중앙이 수용한다. 권한 밖 개념을 publish해도 **라우팅되지 않는다**. 이는 카드 admission("유효하지 않은 카드는 등록되지 않는다")의 인덱스판 — 자기보고가 권한을 *넓힐* 수 없다(under-claim만 자기보고, ADR 0004).
+
+즉 인덱스는 "내가 무엇을 *아는가*"(커버리지)이고, `routing_rules`는 "누가 무엇을 *맡는가*"(권한)다. 전자는 후자 안에서만 효력을 갖는다.
+
+### 6. 2단 라우팅 + 모호 시 자동해소
+
+**stage-1(중앙·인덱스 매칭)** — 질문 → 후보 agent_id들:
+
+- **1 후보 → Routed**(현 단일 매칭 자리).
+- **0 후보 → Unowned/escalation**(루트 User로 — 미아 없음 보존, 현 0매칭 자리).
+- **≥2 후보 → 모호 → stage-2**(현 Contested 직행 대신 자동해소를 한 번 더 시도).
+
+**stage-2(owner측 깊은 RAG·*모호한 ≥2 후보에게만*)** — 각 후보가 *접지된 신뢰도*(RAG 검색 점수 등 — 자유 자기주장이 아니라 owner RAG로 접지된 수치)로 self-assess → 중앙이 **최고 신뢰도로 자동 라우팅**. 그래도 동률·전부 낮음이면 기존 **Contested(사람 1인칭 합의) + Precedent** 폴백으로 떨어진다(미아 없음·기존 종착 보존).
+
+**stage-2는 *권한 있는 후보들 사이의 tie-break*일 뿐**이다 — 권한을 새로 만들지 않는다(stage-1이 이미 §5 admission 재검증을 통과한 후보만 stage-2에 들어간다). 이것이 ADR 0017 결정 3②가 비전으로 둔 *"실시간 충돌 자동해소"*의 실체다 — Contested를 *항상* 사람에게 올리던 것을, 접지된 신뢰도로 *먼저* 자동해소하고 그래도 안 되면 사람에게.
+
+stage-2는 fan-out이지만 *전 owner가 아니라 ≥2 모호 후보에게만*이라 O(모호 후보 수)로 묶인다(결정 ①이 매 질문 전 owner fan-out을 막은 것과 정합). owner측 깊은 RAG·신뢰도는 owner OAuth 멀티-LLM(ADR 0027) 워커가 자기 환경에서 수행한다(중앙 토큰 0 보존).
+
+### 7. stage-1 매처 = 포트 + 계층
+
+stage-1 매처는 §3 포트이고 *계층*(점진 정교화)을 갖는다:
+
+- **v1 = 결정론 개념/키워드 오버랩.** 질문 토큰 ↔ `core_question`·개념 태그 토큰의 오버랩 매칭. **토큰 0**(LLM 호출 없음)·**게이트 결정론**(FakeMatcher 없이도 실 v1이 결정론)·**벡터 인프라 0**. 현 `intent in c.domains` 정확매칭의 자연스러운 후계(라벨 1개 정확매칭 → 개념 다수 오버랩).
+- **스케일 어댑터 = 로컬 임베딩 ANN.** owner가 publish할 때 *자기 개념 벡터까지* 함께 배포 → 중앙은 *쿼리(질문)만* 로컬 모델로 임베딩해 ANN으로 top-K를 찾는다. **중앙 토큰 0**(로컬 임베딩 모델·외부 API 아님)·개념 벡터는 owner가 만들어 보냄(중앙은 인덱싱만). 필요 시 top-K에 한해 LLM 리랭크(top-K만이라 결함 ① 재발 안 함).
+- **"전 개념을 LLM에 먹이기"는 기각.** 현 `build_prompt`가 전 domains 합집합을 LLM에 싣는 그 패턴이 결함 ①의 원인이라, 스케일 어댑터에서 *되살리지 않는다*. LLM은 (있더라도) top-K 리랭크에만 쓴다.
+
+---
+
+## SSOT 화해 (규칙 1 — 가장 중요)
+
+TRD(`docs/trd-v0.md`)·CONTEXT가 강하게 못박은 두 명제와 이 ADR의 관계를 명시 화해한다. **둘 다 보존된다 — 깨지 않는다.**
+
+### (a) "중앙은 RAG 인덱스로 안 든다 · 중앙 토큰 0 · 지식 비소유" — *보존*
+
+> TRD §2·§4·CONTEXT(Agent Runtime·Knowledge Bundle 절): *"중앙은 지식의 소유자·진실 원천이 아니라 답변 시 최신을 읽을 뿐이고 RAG 인덱스로 안 든다·중앙 키/토큰 0."*
+
+이 ADR은 이를 **보존**한다. 논거:
+
+1. **중앙은 *목차(메타)*만 보유한다.** published `KnowledgeIndex`는 `concepts[].core_question`(한 줄짜리 "이런 질문에 답함") 목록이지 지식 *내용*이 아니다. "RAG 인덱스"가 금지된 것은 *내용을 모아 임베딩·검색하는 지식 코퍼스*인데, 우리 중앙이 드는 건 *목차*다 — 답의 본문은 0이다. 그러므로 "지식 RAG 인덱스 비보유·중앙 무지식·비소유"는 그대로다.
+2. **stage-1 매칭은 로컬/결정론이다.** v1은 결정론 토큰 오버랩(토큰 0), 스케일 어댑터는 *로컬* 임베딩(쿼리만 임베딩·외부 모델 API 0). 중앙은 모델 토큰을 *0개* 보관한다(ADR 0010/0027 "중앙 키 0" 보존·강화).
+3. **내용 RAG는 owner 환경에만 있다.** stage-2 깊은 RAG·신뢰도는 owner 워커가 자기 온톨로지·RAG로 수행한다(§2·§6). 중앙은 그 *수치*만 받지 코퍼스를 안 든다.
+
+### (b) "벡터DB·RAG 0(답변 경로는 claude가 파일 읽음)" — *답변 경로*였고, 이 ADR은 *라우팅 경로*에 예외를 명시 선언
+
+> TRD §4·CONTEXT(OKF·Agent Runtime 절): *"벡터DB·RAG 인프라 0 — Claude Code가 파일 읽는 에이전트라 cwd 주입+읽기 도구면 성립."*
+
+이 "RAG 0" 명제는 **답변 경로**(answer path — `ClaudeCodeRuntime`/`ClaudeApiRuntime`이 OKF 번들을 *읽어* 답을 만드는 경로)에 관한 것이었다. 답을 만들 때 중앙이 벡터DB·임베딩을 안 든다는 뜻이지, *라우팅*(어느 에이전트로 보낼지)에 관한 게 아니었다.
+
+이 ADR은 **라우팅 경로**(routing path — 어느 에이전트로 분기할지)에:
+- owner측 ontology/RAG(stage-2 신뢰도 접지·§6), 그리고
+- 중앙 로컬-임베딩 매처(stage-1 스케일 어댑터·§7)
+
+를 도입한다. 그래서 **"라우팅용 RAG/임베딩은 예외"임을 명시적으로 선언한다** — "RAG 0"는 *답변 경로 한정* 명제이고, 라우팅 경로는 (a)의 제약(중앙은 목차만·내용 0·로컬 임베딩) 안에서 임베딩 매칭을 *옵션 어댑터로* 쓸 수 있다. 답변 경로의 "RAG 0"는 여전히 유효하다(이 ADR이 안 건드림 — 답은 여전히 claude가 OKF 파일을 읽어 만든다).
+
+요약: **답변 경로 RAG 0(불변) · 라우팅 경로 RAG 예외(이 ADR이 명시 도입·단 중앙은 목차/로컬만).**
+
+### 어느 기존 ADR을 refine/supersede 하는가
+
+- **현 라우팅(Classifier→intent→`card.domains`)을 *refine*한다(supersede 아님).** `RoutingDecision` sealed sum(Routed/Contested/Unowned)·Authority 중앙·Precedent·Contested 사람 폴백은 **그대로 재사용**한다. 바뀌는 건 *후보 제안 메커니즘*뿐 — `intent in c.domains` 정확매칭 → `KnowledgeIndexMatcher` 개념 오버랩(stage-1) + 모호 시 stage-2 자동해소. 종착(0→Unowned·1→Routed·동률/실패→Contested)은 불변. **이 ADR을 어느 ADR의 supersede로 헤더에 박지 않는다** — 기존 라우팅 ADR을 *대체*하는 게 아니라 *위에 인덱스 층을 더하는* refine이다.
+- **ADR 0015(intent 단일 출처) 정합.** 현 `RoutingDecision.intent`는 보존된다. 인덱스 매칭이 도입돼도 결정에 실리는 단일 라우팅 키는 여전히 하나다(매처가 고른 대표 개념/intent를 `intent` 자리에 실어 Precedent·ConflictCase·audit 색인을 그대로 쓴다 — 후속 정밀화 자리).
+- **ADR 0017 결정 3②의 실체.** "정책 변경 시 자동 재검토"(0019)와 짝을 이루는 "실시간 충돌 자동해소"가 stage-2(§6)로 실체화된다 — 0017을 *재정의*가 아니라 *실현*한다.
+- **ADR 0010/0027 정합(보존).** 중앙 토큰 0·owner측 실행은 위 (a)(b)로 보존. stage-2 owner RAG·인덱스 빌드는 owner OAuth 워커(0027)·OKF(0013) 위에서 돈다.
+
+---
+
+## 기존 도메인 재사용 (신규는 최소)
+
+**재사용(무변경):**
+- `RoutingDecision` sealed sum — Routed/Contested/Unowned. stage-1/stage-2 결과를 이 세 처분으로 투영(1→Routed·0→Unowned·동률/실패→Contested).
+- `Precedent`·`PrecedentStore` — stage-2 자동해소 결과·사람 합의 결과를 판례로 학습(현 그대로). 인덱스가 stale일 때의 판례 staleness는 ADR 0019 패턴 재사용.
+- `ConflictCase`·`ConsensusService` — stage-2가 자동해소 못 한 모호는 기존 Contested→ConflictCase→1인칭 합의로 떨어진다.
+- `Authority`(`routing_rules`)·`Registry`·`AgentCard` — 권한 선언·admission·라우팅 메타. 인덱스 권한 재검증(§5)이 이 admission 정신 재사용.
+- worker WS 전송(`transport.py`·`server.py`·`worker.py`·ADR 0011/0012/0026) — 인덱스 publish 프레임을 *이 채널 위에* 얹는다(새 채널 0).
+- `RuntimeDispatcher`·owner 워커(ADR 0027) — stage-2 신뢰도 self-assess를 owner 워커가 수행.
+
+**신규(이 ADR이 추가하는 것 전부):**
+- `KnowledgeIndex`/`Concept` 값 객체(§4).
+- `KnowledgeIndexMatcher` 포트 + stage-2 신뢰도 포트(§3·§7).
+- 중앙 published-index 스토어(에이전트별 최신 인덱스 보관 — `PrecedentStore`·`SessionStore` 패턴 N번째).
+- 인덱스 publish 프레임(WS 재사용 — 새 `Transport Frame` 변이 `PublishIndex`).
+- stage-2 owner RAG 신뢰도(owner 워커 수행).
+
+---
+
+## 인덱스 갱신·배포 (결정 ①의 운영면)
+
+- **워커 WS 채널 재사용**: owner 워커가 *연결 시* + *OKF/온톨로지 변경 시* 중앙으로 `PublishIndex` 프레임을 보낸다(워커→중앙 업스트림 — `RegisterWorker`·`SubmitAnswer`와 같은 봉투). OKF 커밋이 곧 변경 사건(ADR 0019 `OkfChangeEvent`)이라, 그 발화 지점에 인덱스 재배포를 옵셔널로 건다(`propagator`·`notifier` 옵셔널 주입 정신).
+- **중앙은 에이전트별 최신만 보관**: published-index 스토어가 `agent_id → 최신 KnowledgeIndex`를 든다(`version`/`generated_at`로 더 새 것만 수용 — ADR 0012 staleness·ADR 0019 신선도 패턴). 옛 인덱스는 새 것으로 갈아끼운다(append-only history는 운영면 옵션).
+- **publish 개념을 권한과 대조**(§5 admission 재검증): 수용 시 각 개념이 그 agent의 owned domains(중앙 선언) 안인지 검증 — 권한 밖 개념은 보관하되 라우팅 후보에서 제외(또는 거부). "유효하지 않은 카드는 등록되지 않는다"의 인덱스판.
+
+---
+
+## 포트 shape 제안 (코드 아님 · 미구현 통과 stub 수준 · 텍스트)
+
+> tdd-engineer/mcp-runtime-engineer가 red→green으로 실체화한다. 아래는 *모양*이지 구현이 아니다.
+
+**`Concept` / `KnowledgeIndex`**(frozen pydantic v2 값 객체 — `AgentCard` 정신):
+
+```
+class Concept(BaseModel, frozen=True):
+    id: str
+    label: str
+    core_question: str            # 라우팅 키
+    type: str | None = None       # OKF 프론트매터 type 등(선택)
+
+class KnowledgeIndex(BaseModel, frozen=True):
+    agent_id: str                 # Registry 카드와 admission 대조
+    version: str                  # 또는 int — staleness 판정
+    generated_at: datetime
+    concepts: tuple[Concept, ...]
+    edges: tuple[ConceptEdge, ...] = ()   # 죽은 필드 허용(후속 계층 좁히기)
+```
+
+**`KnowledgeIndexMatcher`**(Protocol — `Classifier`·`AgentRuntime` 포트 정신):
+
+```
+class IndexMatch(BaseModel, frozen=True):     # 또는 dataclass
+    agent_id: str
+    score: float                 # 결정론 오버랩 점수 또는 ANN 거리
+    matched_concept_id: str      # 어느 개념이 걸렸나(intent 자리 후보)
+
+class KnowledgeIndexMatcher(Protocol):
+    def match(
+        self, question: str, indexes: Sequence[KnowledgeIndex]
+    ) -> tuple[IndexMatch, ...]: ...   # stage-1 후보(0·1·다수)
+```
+
+- **`ConceptOverlapMatcher`**(v1 결정론 어댑터) — 토큰 오버랩·LLM 0·벡터 0.
+- **`EmbeddingAnnMatcher`**(스케일 어댑터·게이트 밖) — 로컬 임베딩 + ANN.
+- **`FakeMatcher`**(테스트) — 고정 후보 반환(결정론 경계).
+
+**stage-2 신뢰도 포트**(owner 워커 수행 — 접지된 self-assess):
+
+```
+class GroundedConfidence(BaseModel, frozen=True):
+    agent_id: str
+    confidence: float            # RAG 검색 점수 등으로 접지(자유 자기주장 아님)
+    grounding: str = ""          # 근거 메모(운영면·노출 불변식상 사용자 미노출)
+
+class ConfidenceAssessor(Protocol):    # owner측 — AgentRuntime 정신
+    def assess(self, question: str, card: AgentCard) -> GroundedConfidence: ...
+```
+
+- **`FakeAssessor`**(테스트) — 고정 신뢰도(2단 라우팅 자동해소 로직을 결정론 단언).
+
+**2단 라우팅 통합**(`Router` 또는 얇은 상위 — Fake 주입):
+
+```
+matches = matcher.match(question, store.all_indexes())     # stage-1
+matches = [m for m in matches if authorized(m.agent_id, m.matched_concept_id)]  # §5 admission 재검증
+if len(matches) == 0: -> Unowned(escalated_to=root)
+elif len(matches) == 1: -> Routed(primary=...)             # _attach_gates 재사용
+else:  # ≥2 모호 -> stage-2
+    confs = [assessor.assess(question, card) for card in candidate_cards]
+    winner = argmax(confs)
+    if clear_winner(confs): -> Routed(primary=winner)      # 자동해소
+    else: -> Contested(candidates=...)                     # 기존 사람 폴백
+```
+
+---
+
+## 게이트 내/밖 경계
+
+**게이트 내(결정론·`.venv` pytest로 잠금):**
+- `KnowledgeIndex`·`Concept` 값 객체(frozen pydantic·admission 검증).
+- `KnowledgeIndexMatcher` 포트 + `ConceptOverlapMatcher`(v1 결정론 토큰 오버랩) + `FakeMatcher`.
+- 2단 라우팅 로직(stage-1 후보→admission 재검증→1/0/≥2 분기→stage-2 자동해소→RoutingDecision 투영) — `FakeMatcher`·`FakeAssessor` 주입 결정론.
+- `PublishIndex` 프레임(pydantic DTO) + 중앙 published-index 스토어(InMemory) + 권한 대조 검증.
+- `RoutingDecision` 통합(1→Routed·0→Unowned·동률/실패→Contested — 기존 sealed sum·`_attach_gates`·미아 없음 회귀).
+
+**게이트 밖(수동·실 인프라·비결정):**
+- 실 semantic-os 온톨로지 빌드·실 `core_question` distill(`SubprocessGitGateway`·실 OAuth 정신).
+- 실 로컬 임베딩 ANN(`EmbeddingAnnMatcher` — 실 모델·새 의존성).
+- 실 owner RAG 신뢰도(`ConfidenceAssessor` 실 구현 — owner 환경 RAG).
+- 실 크로스머신 인덱스 배포(실 WS·실 워커 — `worker.py` 실 셸 정신).
+
+---
+
+## planner 넘김용 슬라이스 제안 (리스크 낮은 순)
+
+> 상세 슬라이싱은 planner가 받는다. 게이트 내부터 의존성 순으로:
+
+1. **`KnowledgeIndex`/`Concept` 값 객체** — frozen pydantic·admission 검증·`agent_id` 형식 재사용. self-contained 첫 진입.
+2. **`KnowledgeIndexMatcher` 포트 + `ConceptOverlapMatcher`(오버랩) + `FakeMatcher`** — 결정론 매칭. (1) 위.
+3. **2단 라우팅 통합** — stage-1→admission 재검증→1/0/≥2→stage-2(FakeAssessor)→RoutingDecision. (1)(2) 위·기존 `Router`/`RoutingDecision` 재사용·미아 없음 회귀.
+4. **`PublishIndex` 프레임 + 중앙 스토어 + 권한 대조** — WS 봉투 재사용·InMemory 스토어·staleness 수용. (1) 위·기존 `transport.py` 재사용.
+5. **`EmbeddingAnnMatcher`(스케일 어댑터)** — 게이트 밖(실 임베딩·새 의존성). (2) 위.
+
+---
+
+## 핵심 불변식 자체점검
+
+- **미아 없음** — stage-1 0 후보 → Unowned/루트 escalation(현 0매칭 자리 보존). stage-2 자동해소 실패(동률·전부 낮음) → 기존 Contested→ConflictCase→1인칭 합의/Manager 큐(현 종착 보존). 어느 단계도 질문을 떨구지 않는다 — 모든 경로가 Routed·Unowned·Contested 중 하나로 종착.
+- **Authority 중앙** — 인덱스는 *커버리지 신호*지 권한 선언이 아니다(§5). `routing_rules`·Contested·Precedent가 여전히 게이트. publish 개념은 owned domains(중앙 선언) 안의 것만 수용(admission 재검증) — 자기보고가 권한을 *넓힐* 수 없다(ADR 0004 보존). stage-2 신뢰도는 *권한 있는 후보 사이 tie-break*일 뿐 권한 생성 아님.
+- **중앙 토큰 0 · 비소유** — 중앙은 *목차(메타)*만 보유(내용 0). stage-1은 로컬/결정론(v1 토큰 0·스케일 어댑터 로컬 임베딩·외부 모델 API 0). 내용 RAG·신뢰도는 owner 환경(§SSOT 화해 (a)). ADR 0010/0027 "중앙 키 0" 보존·강화.
+- **전이 ≠ 기록** — 라우팅 결정(전이)은 `RoutingDecision` 도메인, 기록은 audit. 인덱스 publish(전이/배포)는 published-index 스토어 도메인이지 절차 로그가 아니다(`PrecedentStore`·`Work Queue`가 전이≠기록인 정신). 인덱스 스토어는 *최신 보관*이지 audit 아님.
+- **노출 불변식** — stage-2 신뢰도·`grounding`·후보 목록·matched_concept은 *조직 내부값*이라 사용자向 `OrgReply`/`Answered`에 안 싣는다(audit·운영면만). 사용자는 담당·승인·출처만 본다(`intent`·confidence를 떨구는 현 투영 정신 그대로).
+- **등록 무결성** — `KnowledgeIndex`의 `agent_id`는 Registry 카드와 대조(미등록 agent 인덱스 거부). 개념 권한 검증(§5)이 admission 정신. "유효하지 않은 인덱스는 라우팅에 들지 않는다"가 "유효하지 않은 카드는 등록되지 않는다"의 짝.
+
+---
+
+## Open Questions / 게이트 밖
+
+- **`core_question` distill의 품질** — semantic-os 개념 노드 → `core_question` 도출이 라우팅 정밀도를 좌우한다. 골든셋 eval(ADR 0003)로 검증·게이트 밖(실 LLM/실 온톨로지).
+- **`intent` 단일 출처와 다개념 매칭의 정합(ADR 0015)** — stage-1이 여러 개념을 매칭할 때 `RoutingDecision.intent`에 실을 *대표 키* 선정 규칙(최고 score 개념? matched_concept_id?). MVP는 대표 1개를 싣되 정밀화는 후속.
+- **stage-2 "clear winner" 임계** — 자동해소 vs Contested 폴백을 가르는 신뢰도 격차 임계(`DelegationSnapshot` staleness 임계 주입 정신 — 정책값 주입). 게이트 내 결정론 단언은 임계를 주입해 검증.
+- **인덱스 staleness 전파** — OKF 변경 시 인덱스 재배포와 *그 인덱스에 기댄 과거 판례* staleness(ADR 0019)의 짝. MVP는 인덱스 재배포만·판례 재검토 정밀화는 후속.
+- **이름 충돌**(CONTEXT 명문화) — semantic-os의 "card/node"는 우리 "Agent Card"(권한·라우팅 메타)와 *다르다*. "OKF"=지식 내용, "KnowledgeIndex"=OKF/온톨로지에서 도출한 *목차*.
+- **fan-out과의 관계** — stage-2의 ≥2 후보 평가는 *tie-break*(담당 1명)이지 fan-out(여러 담당 동시 답)이 아니다. fan-out은 Phase 9에서 명시 연기됨(`Routed.collaborators` 씨앗) — 이 ADR도 메시지당 담당 1명을 유지한다.

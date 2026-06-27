@@ -207,3 +207,14 @@ SessionAskOrg.handle(question, user)            # 세션 보유
 - **대칭 레지스트리.** 워커의 `_select_runtime`은 `AON_PROVIDER`(별칭)→공급자 어댑터 lazy 팩토리 *레지스트리*다(`worker.py`). 공급자 SDK는 *그 공급자를 고를 때만* import한다 — 다른 공급자 owner는 미설치 SDK를 안 건드린다. **claude 특권 없음**: 새 공급자(codex·gemini)는 레지스트리에 한 줄 + extra 한 줄이면 대칭으로 붙는다. 알 수 없는 공급자는 *명시 실패*(조용히 claude로 안 떨어짐 — owner 의도 보존).
 - **레거시 기본의 위상.** `AON_PROVIDER` 미설정 시 워커 기본은 `ClaudeCodeRuntime`(`claude -p` CLI)인데, 이건 *레거시 기본*이지 코어의 claude **pip 의존**이 아니다(`claude` CLI는 owner가 고르는 런타임 도구). owner는 `AON_PROVIDER`로 자기 공급자를 고른다. (분류기 `LlmClassifier`의 `claude -p`도 *opt-in*이고 기본은 claude 무관한 `RuleBasedClassifier` — 코어는 분류에도 claude를 강제 안 함. 분류기까지 공급자 중립화는 *후속*으로 남긴다.)
 - **불변식 보존** — 중앙 키/토큰 0(공급자 SDK가 코어에 없으니 강화)·Authority 중앙·노출 불변식·포트 무변경. 이 결정은 *패키징/배선*을 바꾸지 도메인을 안 바꾼다.
+
+### 12. 인프로세스 공급자 OKF 접지 — owner 워커가 자기 OKF를 로컬에서 읽어 프롬프트에 주입 (✅ 확정 2026-06-27·A(ii))
+
+**문제(실 시연으로 발견)**: ADR 0027 인프로세스 공급자 경로(`CodexApiRuntime`·`ClaudeApiRuntime`)가 답을 만들 때 **owner OKF 번들 내용을 안 읽었다** — `build_provider_request`가 카드 필드(summary·domains·`knowledge_sources` **라벨**·can_answer)만 프롬프트에 실어, codex 워커가 "환불" 질문에 실제 정책 대신 "위키/환불정책 링크를 주세요"라는 일반론을 답했다. 즉 **ADR 0027(멀티-LLM 인프로세스)이 ADR 0017/0013(`ClaudeCodeRuntime`의 OKF cwd 접지)의 접지를 회귀시켰다**.
+
+**결정**: 인프로세스 공급자 런타임도 **owner 워커가 자기 OKF를 로컬 파일로 읽어** 프롬프트에 주입한다 — `claude -p`의 cwd 접지와 *대칭*. 중앙은 안 읽는다(중앙 토큰 0·owner 지식 격리 보존·중앙 RAG 회피, TRD 정합).
+
+- **경로 규약 = `ClaudeCodeRuntime.bundle_dir`과 동일** — `okf_root/{agent_id}/*.md`(레이블 아닌 `agent_id`가 규약, ADR 0013 안 B). 순수 헬퍼 `read_okf_bundle(okf_root, agent_id)`(stdlib pathlib만·**공급자 SDK 0**·코어 중립 보존)가 파일명 정렬로 읽어 `### 파일명\n내용`으로 조립(100_000자 방어 상한).
+- **주입 지점 = `build_provider_request(..., okf="")`** — `okf` 비면 기존과 100% 동일(무회귀), 있으면 system 프롬프트에 "## 지식 베이스(OKF) — 아래 내용에만 근거해 답하라. 여기에 없으면 모른다고 말하라" 섹션. OKF는 *공급자 프롬프트(system)*에만 들어가고 사용자向 Answer엔 안 샌다(노출 불변식). `ProviderApiRuntime(okf_root=)`·워커 팩토리(`_make_codex_runtime(okf_root)` 등)가 okf_root를 받아 배선.
+- **실 시연 입증(2026-06-27)** — codex 워커가 `okf/cs_ops/refund-policy.md`를 접지해 "7일 전액·8~30일 50%·30일 초과 불가·단순변심 10% 수수료"를 정확히 답함(이전 일반론 → OKF 접지 답). 게이트 1203 passed·pyright 0·ruff 0.
+- **남은 결정(후속·B·C)**: 전체 번들 주입 → 큰 OKF엔 RAG 검색이 필요할 수 있음(B). 라우팅 입도(단일 flat intent-라벨 매칭)·인덱스 갱신 방법론은 별도 ADR(domain-architect)로 — *라우팅 인덱스(owner 선언 메타·중앙 권위)와 지식 인덱스(중앙 비소유) 분리* 원칙 위에서.

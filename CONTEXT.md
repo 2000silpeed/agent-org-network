@@ -126,6 +126,30 @@ _Avoid_: Directory, Store, 중앙 서버
 질문을 받아 등록된 Agent Card들과 대조해 담당 후보를 결정하는 모듈.
 _Avoid_: Broker, Dispatcher, 중앙 서버
 
+### Scale routing (스케일 라우팅 — published 지식 인덱스 + 2단 라우팅, ADR 0028)
+
+> 에이전트 수 × 각 에이전트 지식 깊이가 커질 때의 라우팅. 현 `Classifier→intent 1라벨→card.domains 정확매칭`을 *대체가 아니라 refine* 한다 — `RoutingDecision` sealed sum·Authority 중앙·Precedent·Contested 폴백은 그대로이고, *후보 제안 메커니즘*만 인덱스 기반으로 정밀화. **이름 충돌 주의**: semantic-os의 "card/node"는 우리 **Agent Card**(권한·라우팅 메타)와 *다른 것*이다. **OKF**=지식 *내용*(answer-path), **KnowledgeIndex**=OKF/온톨로지에서 도출한 *목차*(routing-path). "RAG 0"는 *답변 경로* 명제이고(보존), 이 절의 임베딩·온톨로지는 *라우팅 경로* 예외다(ADR 0028 SSOT 화해).
+
+**KnowledgeIndex (지식 인덱스 — published 목차)**:
+한 에이전트가 자기 지식의 *경량 목차*("내가 무엇을 아는가" — 내용이 아니라 목차)를 담아 중앙에 **배포(publish)** 하는 frozen 값 객체(`agent_id` · `version`/`generated_at` · `concepts` · `edges?`). 중앙은 배포된 인덱스들의 *합집합*으로 라우팅한다(매 질문 전 owner fan-out 불요). **중앙은 이 목차만 보유 — 지식 내용 0** 이라 "중앙 토큰 0·무지식·비소유"(ADR 0006·0010·0017)가 보존된다. `domains` 라벨 1줄의 자연스러운 확장(라벨→개념 목차)이되, 카드는 그대로 라우팅 *권한* 메타로 남고(admission·Authority) 인덱스는 그 위에 *커버리지 신호*를 더한다. 인덱스 도출(distill)은 **owner 환경**의 지식 엔진이 한다 — 레퍼런스 어댑터 semantic-os(RDF/OWL 다중도메인 온톨로지 — `~/ai-projects/semantic-os`)이거나 더 가벼운 OKF 태그-인덱스 어댑터(프론트매터 `type`·`tags`에서 곧장). 코어는 RDF·임베딩에 *결합 안 함*(아래 KnowledgeIndexMatcher 포트). **Published index = 신호이지 권한 선언이 아니다**(아래 §5 화해) — 에이전트가 publish한 개념은 *자기 권한(중앙 선언 owned domains) 안의 것만* 중앙이 수용(admission-유사 재검증)·권한 밖 개념은 라우팅 안 됨. `version`/`generated_at`으로 에이전트별 최신만 보관(ADR 0012·0019 신선도 패턴). 배포는 워커 WS 채널 재사용 — 연결 시 + OKF/온톨로지 변경 시(`OkfChangeEvent` 발화 지점) `PublishIndex` 프레임. (ADR 0028)
+_Avoid_: RAG index(이건 답변 경로 인프라·금지 — KnowledgeIndex는 목차·내용 0), Vector store(단독), card/node(semantic-os 용어 — Agent Card와 혼동), Manifest
+
+**Concept (개념 — 인덱스 노드)**:
+KnowledgeIndex의 한 항목 — `id` · `label` · **`core_question`**(라우팅 키 — "이 개념이 *어떤 질문에 답하나*", 예: `"어떤 컴포넌트가 사용자 입력값을 캡처하나?"`) · `type?`. semantic-os 개념 노드의 `core_question` 필드가 출처다. `domains` 라벨이 *주제*를 가리켰다면 `core_question`은 *답가능성*을 가리킨다(지식 깊이↑일 때 라벨이 세부 답가능성을 표현 못 하던 결함 해소). **내용 0·목차만** — 각 Concept은 "이런 질문에 답함" 한 줄이지 그 답의 본문이 아니다(중앙 내용 0 보존). 중앙 stage-1 라우팅 = 질문 ↔ 전 에이전트 `core_question` 합집합 매칭. (ADR 0028)
+_Avoid_: Topic(이건 Intent 결·Concept은 더 세밀), Node(단독 — semantic-os node와 혼동), Entry
+
+**KnowledgeIndexMatcher (인덱스 매처)**:
+질문 + 배포된 KnowledgeIndex들을 받아 stage-1 후보(agent_id들·0·1·다수)를 내는 포트 — `match(question, indexes) -> 후보`. `Classifier`·`AgentRuntime`·`ProviderTransport`와 *같은 포트+어댑터 패턴*(코어는 RDF·임베딩·벡터 인프라에 결합 안 함·중앙은 어떤 빌더/매처에도 중립). **계층(점진 정교화)**: v1 = **결정론 개념/키워드 오버랩**(질문 토큰 ↔ `core_question`·개념 태그 — 토큰 0·게이트 결정론·벡터 인프라 0, 현 `intent in c.domains` 정확매칭의 자연 후계) · 스케일 어댑터 = **로컬 임베딩 ANN**(owner가 publish 시 자기 개념 벡터까지 배포 → 중앙은 *쿼리만* 로컬 모델로 임베딩·외부 모델 API 0·중앙 토큰 0 + 필요 시 top-K LLM 리랭크). **"전 개념을 LLM에 먹이기"는 기각**(현 `build_prompt`가 전 domains 합집합을 LLM에 싣는 그 패턴이 스케일 결함 ①의 원인 — 되살리지 않음·LLM은 top-K 리랭크에만). `FakeMatcher` 주입 결정론 경계(`FakeClassifier`·`StubRuntime` 정신). (ADR 0028)
+_Avoid_: Classifier(이건 intent 1라벨 — 매처는 다개념 오버랩·후보 다수), Search(단독), Ranker(단독)
+
+**Published index (배포된 인덱스)**:
+owner 환경에서 도출돼 중앙에 배포된 KnowledgeIndex가 중앙 published-index 스토어에 *에이전트별 최신*으로 보관된 상태 — *지식 커버리지 신호*지 *권한 선언이 아니다*(ADR 0004 화해). 인덱스 매칭은 후보를 *제안*만 하고, Authority(`routing_rules`)·Contested·Precedent가 게이트. 스토어는 `agent_id → 최신 KnowledgeIndex`(`PrecedentStore`·`SessionStore` 포트 패턴 N번째·전이≠기록 — 최신 보관이지 절차 로그 아님). publish 수용 시 개념을 owned domains(중앙 선언)와 대조 검증(admission-유사 — "유효하지 않은 인덱스는 라우팅에 안 든다"가 "유효하지 않은 카드는 등록 안 된다"의 짝). (ADR 0028)
+_Avoid_: Authority(권한 선언과 혼동 — 인덱스는 신호일 뿐), Registration(카드 admission과 혼동)
+
+**Stage-1 / stage-2 routing (2단 라우팅)**:
+**stage-1**(중앙·인덱스 매칭) = 질문 → KnowledgeIndexMatcher 후보. **1→Routed · 0→Unowned/escalation(루트 User·미아 없음) · ≥2→모호→stage-2**. **stage-2**(owner측 깊은 RAG·*모호한 ≥2 후보에게만*) = 각 후보가 *접지된 신뢰도*(RAG 검색 점수 등으로 접지·자유 자기주장 아님)로 self-assess → 중앙이 최고 신뢰도로 **자동 라우팅**. 그래도 동률·전부 낮음 → 기존 **Contested(사람 1인칭 합의)+Precedent** 폴백(미아 없음·기존 종착 보존). **stage-2는 *권한 있는 후보들 사이 tie-break*일 뿐**(권한 생성 아님 — stage-1 admission 재검증 통과 후보만 진입)이며, ADR 0017 결정 3② 비전 *"실시간 충돌 자동해소"*의 실체다(Contested를 *항상* 사람에게 올리던 것을 접지 신뢰도로 먼저 자동해소). stage-2 fan-out은 *전 owner가 아니라 ≥2 모호 후보에게만*(O(모호 후보 수))이라 결정 ①의 "매 질문 fan-out 불요"와 정합. 깊은 RAG·신뢰도는 owner OAuth 멀티-LLM 워커(ADR 0027)가 자기 환경에서 수행(중앙 토큰 0 보존). 신뢰도·후보·근거는 *조직 내부값*이라 사용자向 OrgReply에 미노출(노출 불변식). (ADR 0028)
+_Avoid_: Contested(stage-2는 그 *전* 자동해소 — Contested는 stage-2 실패 폴백), Fan-out(stage-2는 tie-break·담당 1명이지 다중 답 fan-out 아님 — fan-out은 Phase 9 연기)
+
 ### Routing outcomes
 
 **RoutingDecision**:

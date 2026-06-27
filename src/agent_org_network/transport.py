@@ -303,11 +303,13 @@ class WebSocketDispatcher:
 
     # ── 중앙측(질문 측): 내부 큐에 위임 ──────────────────────────────────────
 
-    def dispatch(self, question: str, card: "AgentCard") -> WorkTicket:
+    def dispatch(self, question: str, card: "AgentCard", context: str | None = None) -> WorkTicket:
         """작업을 큐에 적재하고, 그 owner 워커가 연결돼 있으면 즉시 push한다.
 
         큐 적재는 합성한 `_queue.dispatch`에 위임(도메인). 연결된 워커가 있으면 claim해
         PushWork를 send 콜백으로 내보낸다. 미연결이면 큐에 대기(기존 AwaitingWorker).
+        context는 인자로 흡수하되 이번 증분에서 큐·WorkTicket에 싣지 않는다(ADR 0027 결정 8
+        — WS 프레임 맥락 전파는 T9.7 후속).
         """
         ticket = self._queue.dispatch(question, card)
         self._push_pending(card.owner)

@@ -600,7 +600,7 @@ def test_LocalRuntimeDispatcher_poll_answer가_runtime_답과_동일():
 def test_LocalRuntimeDispatcher_mode_보존_draft_only():
     """draft_only 런타임 주입 시 Delivered.answer.mode가 draft_only."""
     class DraftOnlyRuntime:
-        def answer(self, question: str, card: AgentCard) -> Answer:
+        def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
             return Answer(text="초안 답변", sources=(), mode="draft_only")
 
     dispatcher = LocalRuntimeDispatcher(

@@ -156,7 +156,7 @@ IDLE_TIMEOUT_SECONDS = InMemorySessionStore.IDLE_TIMEOUT_SECONDS
 class _AskHandle(Protocol):
     """SessionAskOrg 가 위임하는 handle 시그니처 최소 Protocol."""
 
-    def handle(self, question: str, user: "User") -> "OrgReply": ...
+    def handle(self, question: str, user: "User", *, context: str | None = None) -> "OrgReply": ...
 
 
 class SessionAskOrg:
@@ -185,7 +185,8 @@ class SessionAskOrg:
         from agent_org_network.ask_org import Answered
 
         session = self._session_store.open_or_get(user.id)
-        reply: OrgReply = self._ask.handle(question, user)
+        assembled = assemble_context(session, question)
+        reply: OrgReply = self._ask.handle(question, user, context=assembled or None)
 
         if isinstance(reply, Answered):
             turn = SessionTurn(

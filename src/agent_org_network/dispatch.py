@@ -183,7 +183,7 @@ class RuntimeDispatcher(Protocol):
     포트 패턴은 ConflictCaseStore·PrecedentStore와 동일(Protocol + InMemory).
     """
 
-    def dispatch(self, question: str, card: "AgentCard") -> WorkTicket: ...
+    def dispatch(self, question: str, card: "AgentCard", context: str | None = None) -> WorkTicket: ...
 
     def poll(self, ticket: WorkTicket) -> DispatchOutcome: ...
 
@@ -251,7 +251,7 @@ class InMemoryWorkQueueDispatcher:
         """
         return self._clock()
 
-    def dispatch(self, question: str, card: "AgentCard") -> WorkTicket:
+    def dispatch(self, question: str, card: "AgentCard", context: str | None = None) -> WorkTicket:
         ticket = WorkTicket(
             owner_id=card.owner,
             agent_id=card.agent_id,
@@ -468,15 +468,16 @@ class LocalRuntimeDispatcher:
         self._answers: dict[str, "Answer"] = {}
         self.history: list[WorkTicket] = []
 
-    def dispatch(self, question: str, card: "AgentCard") -> WorkTicket:
+    def dispatch(self, question: str, card: "AgentCard", context: str | None = None) -> WorkTicket:
         """그 자리에서 로컬 런타임으로 답을 만들고, 회신 완료 상태의 추적표를 돌려준다.
 
         디제너레이트 케이스(워커=중앙 한몸): 큐 길이 0, 미회신/timeout 구조적 불가.
         dispatch 시점에 runtime.answer를 동기 호출해 _answers에 저장, poll은 항상 Delivered.
+        로컬 경로(ADR 0027 결정 7): context를 runtime.answer(context=)로 즉시 전달한다.
         """
         from agent_org_network.runtime import Answer as _Answer  # 순환 import 회피
 
-        answer: _Answer = self._runtime.answer(question, card)
+        answer: _Answer = self._runtime.answer(question, card, context=context)
         ticket = WorkTicket(
             owner_id=card.owner,
             agent_id=card.agent_id,
@@ -538,10 +539,10 @@ class DispatchingRuntime:
         self._dispatcher = dispatcher
         self._worker = worker
 
-    def answer(self, question: str, card: "AgentCard") -> "Answer":
+    def answer(self, question: str, card: "AgentCard", context: str | None = None) -> "Answer":
         from agent_org_network.runtime import Answer as _Answer
 
-        ticket = self._dispatcher.dispatch(question, card)
+        ticket = self._dispatcher.dispatch(question, card, context=context)
 
         if self._worker is not None:
             self._worker(self._dispatcher)

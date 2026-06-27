@@ -29,7 +29,7 @@ class Answer:
 
 
 class AgentRuntime(Protocol):
-    def answer(self, question: str, card: AgentCard) -> Answer: ...
+    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer: ...
 
 
 class ClaudeRunner(Protocol):
@@ -45,7 +45,17 @@ class ClaudeRunner(Protocol):
 
 
 class StubRuntime:
-    def answer(self, question: str, card: AgentCard) -> Answer:
+    """결정론 AgentRuntime stub — canned 답·관측 seam(last_context).
+
+    context를 받되 답에 싣지 않는다(canned 답 결정론 보존). 테스트가
+    "맥락이 런타임까지 닿았다"를 last_context 속성으로 단언할 수 있다.
+    """
+
+    def __init__(self) -> None:
+        self.last_context: str | None = None
+
+    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
+        self.last_context = context
         return Answer(
             text=f"[{card.agent_id}] {card.summary}",
             sources=tuple(card.knowledge_sources),
@@ -179,7 +189,7 @@ class ClaudeCodeRuntime:
         candidate = self._okf_root / card.agent_id
         return candidate if candidate.is_dir() else None
 
-    def answer(self, question: str, card: AgentCard) -> Answer:
+    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
         prompt = self.build_prompt(question, card)
         sources = tuple(card.knowledge_sources)
 

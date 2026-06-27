@@ -156,8 +156,8 @@ class ClaudeApiRuntime:
     def __init__(self, transport: ProviderTransport) -> None:
         self._transport = transport
 
-    def answer(self, question: str, card: AgentCard) -> Answer:
-        request = build_provider_request(question, card)
+    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
+        request = build_provider_request(question, card, context=context)
         chunks = self._transport(request)
         text = assemble_stream(chunks)
         return map_response_to_answer(text, card)
@@ -174,7 +174,7 @@ class CodexApiRuntime:
     ClaudeApiRuntime로 속도·스트리밍 입증 후 같은 포트·다른 transport로 추가.
     """
 
-    def answer(self, question: str, card: AgentCard) -> Answer:
+    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
         raise NotImplementedError("CodexApiRuntime은 후속 공급자 슬라이스(T9.6+)에서 구현한다.")
 
 
@@ -184,5 +184,5 @@ class GeminiApiRuntime:
     ClaudeApiRuntime로 속도·스트리밍 입증 후 같은 포트·다른 transport로 추가.
     """
 
-    def answer(self, question: str, card: AgentCard) -> Answer:
+    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
         raise NotImplementedError("GeminiApiRuntime은 후속 공급자 슬라이스(T9.6+)에서 구현한다.")

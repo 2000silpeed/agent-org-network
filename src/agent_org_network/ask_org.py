@@ -382,7 +382,7 @@ class AskOrg:
         self._manager_queue_store.enqueue(item)
         self._push_manager_notification(mid, item.item_id, item.created_at)
 
-    def handle(self, question: str, user: User) -> OrgReply:
+    def handle(self, question: str, user: User, *, context: str | None = None) -> OrgReply:
         decision = self._router.route(question)
 
         # 디스패치 절차의 결말 — Routed일 때만 채워지고(dispatch→poll), Contested/
@@ -391,7 +391,7 @@ class AskOrg:
         outcome: DispatchOutcome | None = None
         match decision:
             case Routed():
-                ticket = self._dispatcher.dispatch(question, decision.primary)
+                ticket = self._dispatcher.dispatch(question, decision.primary, context=context)
                 outcome = self._dispatcher.poll(ticket)
                 # 미회신(AwaitingWorker/EscalatedToManager)이면 답 회수용 불투명 토큰을
                 # 발급해 ticket을 서버에 보관한다 — 사용자가 나중에 retrieve로 답을 가져올

@@ -58,11 +58,13 @@ class FakeAskOrg:
         self.call_count = 0
         self.last_question: str | None = None
         self.last_user: User | None = None
+        self.last_context: str | None = None
 
-    def handle(self, question: str, user: User) -> OrgReply:
+    def handle(self, question: str, user: User, *, context: str | None = None) -> OrgReply:
         self.call_count += 1
         self.last_question = question
         self.last_user = user
+        self.last_context = context
         return self._reply
 
 
@@ -191,7 +193,7 @@ def test_연속_Answered이면_턴이_누적된다():
             self._replies = replies
             self._idx = 0
 
-        def handle(self, question: str, user: User) -> OrgReply:
+        def handle(self, question: str, user: User, *, context: str | None = None) -> OrgReply:
             r: OrgReply = self._replies[self._idx % len(self._replies)]
             self._idx += 1
             return r
@@ -307,7 +309,7 @@ def test_alice와_bob_세션이_격리된다():
     bob = User(id="bob")
 
     class _UserFake:
-        def handle(self, question: str, user: User) -> OrgReply:
+        def handle(self, question: str, user: User, *, context: str | None = None) -> OrgReply:
             return _make_answered(text=f"{user.id} 답변", agent_id="contract_ops")
 
     fake = _UserFake()

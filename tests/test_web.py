@@ -450,3 +450,49 @@ def test_회수_tracking_토큰은_ticket_id를_노출하지_않는다():
     assert ticket is not None
     assert ticket.ticket_id not in tracking
     assert ticket.owner_id not in tracking
+
+
+# ── T9.1(d) 세션 와이어링 통합 (web 레벨) ────────────────────────────
+#
+# web.py 의 `/ask`가 `_session_ask.handle`로 교체됐음을 HTTP 왕복으로 직접 못 박는다.
+# 래핑 전후 OrgReply 동일(노출 불변식)·세션값 미노출을 엔드포인트 레벨에서 검증.
+
+
+def test_web_ask_세션_래퍼_통과_후_응답이_Answered_직렬화와_동일하다():
+    """/ask 가 SessionAskOrg 를 거쳐도 응답 구조가 래핑 전후 동일하다(노출 불변식).
+
+    - type="answered"·answered_by·mode·sources 직렬화 형태 보존.
+    - session_id·transcript 등 세션 내부값이 응답에 없다.
+    """
+    client = _client()
+
+    result = _post(client, "/ask", {"question": "계약서 검토해줄 수 있어?"})
+
+    assert result.status == 200
+    body: dict[str, Any] = result.body
+    assert body["type"] == "answered"
+    assert body["answered_by"]["agent_id"] == "contract_ops"
+    assert body["mode"] == "full"
+    # 세션 내부값이 응답에 새지 않는다.
+    session_leaky = {"session_id", "transcript", "started_at", "last_active_at"}
+    assert session_leaky.isdisjoint(set(body.keys()))
+
+
+def test_web_ask_연속_요청이_모두_정상_응답을_반환한다():
+    """같은 앱 인스턴스(= 같은 _session_store)로 2회 POST /ask 가 모두 200.
+
+    세션 층이 두 번째 호출에도 기존 세션을 재사용하며 응답 구조를 망가뜨리지 않음을 확인.
+    """
+    client = _client()
+
+    first = _post(client, "/ask", {"question": "계약서 검토해줄 수 있어?"})
+    second = _post(client, "/ask", {"question": "계약 기간은 얼마나 되나요?"})
+
+    assert first.status == 200
+    assert second.status == 200
+    assert first.body["type"] == "answered"
+    assert second.body["type"] == "answered"
+    # 두 응답 모두 세션 내부값 미노출.
+    session_leaky = {"session_id", "transcript", "started_at", "last_active_at"}
+    assert session_leaky.isdisjoint(set(first.body.keys()))
+    assert session_leaky.isdisjoint(set(second.body.keys()))

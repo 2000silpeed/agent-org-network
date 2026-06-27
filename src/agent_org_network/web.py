@@ -75,6 +75,7 @@ from agent_org_network.review import (
     DismissBackup,
 )
 from agent_org_network.runtime import AgentRuntime
+from agent_org_network.session import InMemorySessionStore, SessionAskOrg
 from agent_org_network.user import User
 
 if TYPE_CHECKING:
@@ -608,6 +609,10 @@ def create_app(
         manager_queue_store=manager_queue_store,
         audit_log=audit_log,
     )
+    # T9.1(d): 세션 층 래퍼 — AskOrg를 *수정하지 않고* 감싸기로 세션을 붙인다.
+    # /ask 엔드포인트만 교체. retrieve·dispatched·mcp_server는 이번 스코프 밖.
+    _session_store = InMemorySessionStore()
+    _session_ask = SessionAskOrg(ask=bundle.ask, session_store=_session_store)
     _review_store = review_store
     _review_service = review_service
     _manager_queue_store = manager_queue_store
@@ -629,7 +634,7 @@ def create_app(
 
     @app.post("/ask")
     def ask_endpoint(req: AskRequest) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-        reply = bundle.ask.handle(req.question, _WEB_USER)
+        reply = _session_ask.handle(req.question, _WEB_USER)
         return serialize_reply(reply)
 
     @app.get("/ask/{tracking}")

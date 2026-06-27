@@ -1,4 +1,5 @@
 """상태 세션 — Session 값 객체 + SessionStore 포트 + InMemorySessionStore (T9.1(a), ADR 0024).
+SessionAskOrg — AskOrg 감싸기 래퍼 (T9.1(d), ADR 0024 결정 5).
 
 기존 store 패턴(PrecedentStore·ConflictCaseStore·BackupReviewStore·ReevalStore)의
 N번째 인스턴스 — 새 메커니즘 0.
@@ -8,6 +9,8 @@ N번째 인스턴스 — 새 메커니즘 0.
   - owner 격리: 세션은 사용자 귀속이지 조직 내부 미노출. 각 사용자 세션이 독립.
   - end 후 맥락(트랜스크립트) 비워짐: 끝난 세션은 빈 튜플(위생·노출 표면 축소).
   - 암묵 시작: 첫 메시지에 open_or_get이 세션을 열음(별도 시작 API 불필요).
+  - SessionAskOrg 노출 불변식: 세션 층이 OrgReply에 아무것도 더하지 않는다.
+  - Answered → 턴 적재 / Pending → 세션 열리되 턴 미적재(동기 Answered에만).
 """
 
 from __future__ import annotations
@@ -16,7 +19,11 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
+
+if TYPE_CHECKING:
+    from agent_org_network.ask_org import OrgReply
+    from agent_org_network.user import User
 
 SessionStatus = Literal["active", "ended"]
 
@@ -144,6 +151,52 @@ class InMemorySessionStore:
 
 
 IDLE_TIMEOUT_SECONDS = InMemorySessionStore.IDLE_TIMEOUT_SECONDS
+
+
+class _AskHandle(Protocol):
+    """SessionAskOrg 가 위임하는 handle 시그니처 최소 Protocol."""
+
+    def handle(self, question: str, user: "User") -> "OrgReply": ...
+
+
+class SessionAskOrg:
+    """AskOrg + SessionStore 합성 래퍼 (T9.1(d), ADR 0024 결정 5).
+
+    기존 AskOrg.handle을 수정하지 않고 *감싸기*로 세션 층을 붙인다.
+
+    불변식:
+      - 라우팅 종착 무변경: AskOrg.handle 결과를 그대로 반환(위임).
+      - 노출 불변식: OrgReply에 아무것도 추가하지 않는다.
+      - Answered → SessionTurn 적재(answered_by = agent_id = 튜플 index 1).
+      - Pending → 세션 열리되 턴 미적재(dispatched 턴 적재는 후속 Task).
+    """
+
+    def __init__(
+        self,
+        ask: _AskHandle,
+        session_store: SessionStore,
+        clock: Clock = default_clock,
+    ) -> None:
+        self._ask = ask
+        self._session_store = session_store
+        self._clock = clock
+
+    def handle(self, question: str, user: "User") -> "OrgReply":
+        from agent_org_network.ask_org import Answered
+
+        session = self._session_store.open_or_get(user.id)
+        reply: OrgReply = self._ask.handle(question, user)
+
+        if isinstance(reply, Answered):
+            turn = SessionTurn(
+                question=question,
+                answer_text=reply.text,
+                answered_by=reply.answered_by[1],
+                at=self._clock(),
+            )
+            self._session_store.append_turn(session.session_id, turn)
+
+        return reply
 
 
 def assemble_context(session: Session, current_question: str) -> str:

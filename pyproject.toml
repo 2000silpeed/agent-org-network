@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "개인별 업무 에이전트 + 중앙 라우터 조직형 멀티에이전트 네트워크"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=0.112.0",
     "fastapi>=0.138.0",
     "itsdangerous>=2.2.0",
     "mcp>=1.28.0",

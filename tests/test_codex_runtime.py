@@ -158,8 +158,8 @@ class TestCodexApiRuntimeAnswer:
 
 
 class TestCodexApiRuntimeDefaultModel:
-    def test_codex_기본_모델이_gpt_5_2_codex이다(self, card: AgentCard) -> None:
-        """CodexApiRuntime이 build_provider_request에 gpt-5.2-codex를 모델로 넘긴다."""
+    def test_codex_기본_모델이_gpt_5_5이다(self, card: AgentCard) -> None:
+        """CodexApiRuntime이 build_provider_request에 gpt-5.5를 모델로 넘긴다(실 시연 검증값)."""
         captured_requests: list[ProviderRequest] = []
 
         class CapturingTransport:
@@ -170,7 +170,7 @@ class TestCodexApiRuntimeDefaultModel:
         runtime = CodexApiRuntime(transport=CapturingTransport())
         runtime.answer("질문", card)
         assert len(captured_requests) == 1
-        assert captured_requests[0].model == "gpt-5.2-codex"
+        assert captured_requests[0].model == "gpt-5.5"
 
 
 # ---------------------------------------------------------------------------
@@ -180,8 +180,8 @@ class TestCodexApiRuntimeDefaultModel:
 
 class TestBuildProviderRequestModelParam:
     def test_model_파라미터를_ProviderRequest_model에_싣는다(self, card: AgentCard) -> None:
-        req = build_provider_request("질문", card, model="gpt-5.2-codex")
-        assert req.model == "gpt-5.2-codex"
+        req = build_provider_request("질문", card, model="gpt-5.5")
+        assert req.model == "gpt-5.5"
 
     def test_model_파라미터로_claude_모델_지정(self, card: AgentCard) -> None:
         req = build_provider_request("질문", card, model="claude-opus-4-8")
@@ -197,8 +197,8 @@ class TestBuildProviderRequestModelParam:
         assert req.model != ""  # 비어있지 않음 — 기존 단언
 
     def test_model_파라미터는_context와_함께_사용_가능(self, card: AgentCard) -> None:
-        req = build_provider_request("질문", card, context="맥락", model="gpt-5.2-codex")
-        assert req.model == "gpt-5.2-codex"
+        req = build_provider_request("질문", card, context="맥락", model="gpt-5.5")
+        assert req.model == "gpt-5.5"
         assert isinstance(req.model, str)
 
 

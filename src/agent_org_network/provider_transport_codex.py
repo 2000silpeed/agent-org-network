@@ -47,8 +47,6 @@ from agent_org_network.provider_runtime import ProviderRequest
 CHATGPT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 # codex CLI가 보내는 User-Agent 모사 — ChatGPT 구독 백엔드가 codex 클라이언트를 식별한다.
 CODEX_USER_AGENT = "codex_cli_rs/0.0.0"
-# 스트리밍 기본 최대 토큰 — 긴 출력의 서버측 timeout 회피.
-DEFAULT_MAX_OUTPUT_TOKENS = 64_000
 
 
 def _codex_home() -> Path:
@@ -176,12 +174,11 @@ class CodexOauthTransport:
     기기·owner 소유 파일이 진실 원천). 401이면 auth.json을 재독해 재시도 1회(codex CLI가 갱신).
     """
 
-    def __init__(self, *, max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS) -> None:
+    def __init__(self) -> None:
         # 클라이언트·토큰은 *지연 로드*한다 — 모듈 import·인스턴스 생성만으론 auth.json 파일·
         # 네트워크를 안 탄다(게이트가 이 transport를 주입해도 호출 전까진 무접촉). 첫 호출에서
         # owner auth.json을 읽어 클라이언트를 만든다(중앙 토큰 0).
         self._client: openai.OpenAI | None = None
-        self._max_output_tokens = max_output_tokens
 
     def _build_client(self) -> openai.OpenAI:
         access_token, account_id = _read_codex_auth()
@@ -224,7 +221,7 @@ class CodexOauthTransport:
             model=model,
             instructions=instructions,
             input=input_items,  # pyright: ignore[reportArgumentType]
-            max_output_tokens=self._max_output_tokens,
+            store=False,  # ChatGPT 구독 codex 백엔드 요구(실 시연 확인 — store=false 강제·max_output_tokens 미지원).
         ) as stream:
             for event in stream:
                 # Responses API SSE: `response.output_text.delta` 이벤트의 delta가 텍스트 청크.

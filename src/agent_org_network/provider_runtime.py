@@ -197,11 +197,12 @@ class CodexApiRuntime(ProviderApiRuntime):
     """OpenAI Codex API 공급자 어댑터 (ADR 0027 결정 1·11).
 
     ClaudeApiRuntime과 대칭 — model+transport만 다른 같은 ProviderApiRuntime 베이스.
-    기본 모델: gpt-5.2-codex (ADR 0027 결정 10 · 설정 override 가능).
+    기본 모델: gpt-5.5 (ADR 0027 결정 10 · 설정 override 가능 · 실 시연 검증값 —
+    ChatGPT 구독 codex 백엔드가 gpt-5.2-codex는 미지원, gpt-5.5·gpt-5.4 등 지원).
     실 OAuth·openai SDK·실 네트워크는 게이트 밖 슬라이스 2.
     """
 
-    _DEFAULT_CODEX_MODEL = "gpt-5.2-codex"
+    _DEFAULT_CODEX_MODEL = "gpt-5.5"
 
     def __init__(self, transport: ProviderTransport) -> None:
         super().__init__(transport, model=self._DEFAULT_CODEX_MODEL)

@@ -175,31 +175,23 @@ AON_PROVIDER=codex scripts/run_worker.sh cs_lead
 사용자向 답은 담당·승인·출처만 싣고 내부(모델·토큰)는 감춘다(노출 불변식·`map_response_to_answer`
 보존).
 
-### 검증 항목 (수동 — demo에서 bespoke 통합 최종 확인)
+### ✅ 실 시연 검증 완료 (2026-06-27 · owner ChatGPT 구독)
 
-- [ ] **auth.json 키 구조** — `~/.codex/auth.json`의 `access_token`(`tokens.access_token` 또는
-      top-level)·account id(`tokens.account_id` 또는 `id_token` JWT의 `chatgpt_account_id`
-      claim)가 transport의 방어적 파싱(`_read_codex_auth`)과 맞는지. 안 맞으면 그 키 위치를
-      `_read_codex_auth`에 추가한다(코드 한 곳).
-- [ ] **엔드포인트 도달** — `base_url=https://chatgpt.com/backend-api/codex`(ChatGPT 구독 경로,
-      `api.openai.com` 아님)에 openai SDK가 `/responses`를 붙여 도달한다. 400
-      "Instructions are required"가 안 나면 `instructions`(=system) 매핑이 맞는 것이다.
-- [ ] **Responses API 응답 형식** — SSE 이벤트 `response.output_text.delta`의 `delta`가 텍스트
-      청크로 yield된다. 형식이 다르면 `_stream`의 이벤트 타입 분기를 demo 관찰값으로 맞춘다.
-- [ ] **User-Agent 요구** — `User-Agent: codex_cli_rs/...` 헤더 없이 403이 나는지(있어야 하면
-      `CODEX_USER_AGENT`를 codex CLI 실제 값으로). `ChatGPT-Account-ID` 헤더 요구 여부도 확인.
-- [ ] **401 갱신** — 토큰 만료 시 401→auth.json 재독→재시도 1회로 흡수되는지(codex CLI가
-      백그라운드 갱신). 그래도 401이면 `codex login` 재실행 안내가 전파된다.
-- [ ] **게이트 무영향** — `uv run pytest`(1184)·`uv run pyright`(0)·`uv run ruff check`(0)이
-      그대로 green(codex 실 transport는 opt-in·지연이라 결정론 테스트 무접촉).
-- [ ] **공급자 중립** — `uv sync --no-dev`(코어만)엔 openai SDK가 없다. codex를 *고를 때만*
-      `[codex]` extra를 설치하고 transport가 openai를 import한다(claude owner는 무영향).
+실제 owner 구독으로 `CodexApiRuntime.answer`까지 한 바퀴 돌려 **접속·OAuth·스트리밍을 입증**했다(답 생성 성공·카드 페르소나 반영·`sources` 보존·`mode=full`·중앙 토큰 0). 그 과정에서 bespoke 백엔드의 요구 3가지를 확정해 코드에 반영했다:
+
+- [x] **auth.json 키 구조** — `tokens.access_token`·`tokens.account_id`·`tokens.id_token`(JWT) 확인(`_read_codex_auth` 정합·`OPENAI_API_KEY: null` = 구독 OAuth 경로).
+- [x] **엔드포인트·OAuth 도달** — `base_url=https://chatgpt.com/backend-api/codex`에 도달·OAuth 토큰 인증 성공(401 아님).
+- [x] **모델 = ChatGPT 계정 지원 모델만** — `gpt-5.2-codex`는 *미지원*(400 "not supported when using Codex with a ChatGPT account"). 지원: `gpt-5.5`(기본)·`gpt-5.4`·`gpt-5.4-mini`·`gpt-5.3-codex-spark`(`~/.codex/models_cache.json`·`config.toml`). → **기본 모델을 `gpt-5.5`로 수정**(`CodexApiRuntime._DEFAULT_CODEX_MODEL`).
+- [x] **`store=false` 강제** — 미설정 시 400 "Store must be set to false". → `responses.stream(store=False)`.
+- [x] **`max_output_tokens` 미지원** — 보내면 400 "Unsupported parameter". → 제거.
+- [x] **Responses API SSE** — `response.output_text.delta`의 `delta`가 텍스트 청크로 yield(형식 맞음).
+- [x] **게이트 무영향·공급자 중립** — `uv run pytest` 1184·pyright 0·ruff 0 그대로. `uv sync --no-dev`엔 openai 0(codex 고를 때만 `[codex]` extra·import).
+- [ ] **남은 확인**: 토큰 만료 401→재독 재시도(장시간 세션)·다른 owner 기기/계정에서 동일 동작.
 
 > codex transport도 **워커·중앙 코드에 키/토큰을 박지 않는다** — owner `~/.codex/auth.json`이
 > 진실 원천이고 그 파일은 owner 기기·owner 소유다(중앙 토큰 0·ADR 0027 결정 2·9·11).
 >
-> **SDK vs raw httpx 폴백**: 1차 구현은 공식 openai SDK(결정 9)로 `client.responses.stream(...)`을
-> 쓴다. demo에서 SDK가 ChatGPT 구독 base_url+Responses 경로/SSE 형식에 안 맞으면(예: SDK가
-> 기대하는 응답 envelope와 codex 백엔드 SSE가 다르면) `_stream`을 raw httpx 직접 POST+SSE 파싱으로
-> 바꾼다 — 게이트 밖이라 *실제로 통하는 쪽*을 demo로 정한다(어느 쪽이든 `__call__` 안에 캡슐화·
-> 포트·매핑 함수 무변경).
+> **SDK 검증 완료**: 공식 openai SDK(결정 9)의 `client.responses.stream(base_url=chatgpt 구독·store=False)`이
+> ChatGPT 구독 codex 백엔드와 정합함을 실 시연으로 확인했다(httpx 폴백 불요). `response.output_text.delta`
+> SSE를 그대로 yield. 백엔드 변경 시 폴백이 필요해지면 `_stream`만 raw httpx로 바꾼다(`__call__` 안에
+> 캡슐화·포트·매핑 함수 무변경).

@@ -37,7 +37,7 @@ uv sync                     # 의존성 설치(.venv)
 ## 게이트(테스트·타입·린트)
 
 ```bash
-uv run pytest        # 단위 테스트(결정론) — 1070 passed
+uv run pytest        # 단위 테스트(결정론) — 1085 passed
 uv run pyright       # 타입 검사(strict) — 0 errors
 uv run ruff check    # 린트 — 0
 ```

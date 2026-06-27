@@ -81,7 +81,11 @@ class InMemorySessionStore:
     def open_or_get(self, user_id: str) -> Session:
         session_id = self._active_by_user.get(user_id)
         if session_id and session_id in self._active:
-            return self._active[session_id]
+            existing = self._active[session_id]
+            if self._is_idle_expired(existing):
+                self._auto_end(existing)
+            else:
+                return existing
 
         now = self._clock()
         new_session = Session(
@@ -95,6 +99,12 @@ class InMemorySessionStore:
         self._active[new_session.session_id] = new_session
         self._active_by_user[user_id] = new_session.session_id
         return new_session
+
+    def _auto_end(self, session: Session) -> None:
+        ended = replace(session, status="ended", transcript=())
+        del self._active[session.session_id]
+        self._active_by_user.pop(session.user_id, None)
+        self._ended[session.session_id] = ended
 
     def get(self, session_id: str) -> Session | None:
         return self._active.get(session_id) or self._ended.get(session_id)
@@ -121,8 +131,37 @@ class InMemorySessionStore:
         self._ended[session_id] = ended
         return ended
 
+    def _is_idle_expired(self, session: Session) -> bool:
+        now = self._clock()
+        elapsed = (now - session.last_active_at).total_seconds()
+        return elapsed >= self.IDLE_TIMEOUT_SECONDS
+
     def active_for_user(self, user_id: str) -> Session | None:
         session_id = self._active_by_user.get(user_id)
         if session_id is None:
             return None
         return self._active.get(session_id)
+
+
+IDLE_TIMEOUT_SECONDS = InMemorySessionStore.IDLE_TIMEOUT_SECONDS
+
+
+def assemble_context(session: Session, current_question: str) -> str:
+    """그 사용자의 발화 스레드를 멀티턴 맥락으로 조립하는 순수 함수(IO 0).
+
+    ADR 0024 결정 3: owner 격리·노출 불변식.
+    - 그 사용자 발화 스레드만 포함(다른 사용자 발화·조직 내부 구조 미포함).
+    - 종료 세션(transcript 빈 튜플)은 빈 맥락을 반환(맥락 누출 0).
+
+    current_question은 이 함수 내부에서 맥락에 접지 않는다. 맥락은 과거 발화
+    스레드(transcript)이고, 현재 질문은 호출자(build_provider_request의 messages)가
+    별도로 붙인다. 시그니처에 둔 이유는 향후 list[messages] 조립 여지와 호출
+    일관성 확보(ADR 0024 결정 3 시그니처 정합 — 제거 금지).
+    """
+    if not session.transcript:
+        return ""
+    parts: list[str] = []
+    for turn in session.transcript:
+        parts.append(f"User: {turn.question}")
+        parts.append(f"Assistant: {turn.answer_text}")
+    return "\n".join(parts)

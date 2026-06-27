@@ -12,9 +12,14 @@
   - 실 동작 검증은 수동 시연(T9.6·`scripts/demo_e2e_provider.md`)이다.
 
 불변식:
-  - **중앙 키/토큰 0** — `anthropic.Anthropic()`를 *인자 없이* 만든다. SDK가 owner의 Anthropic
-    OAuth 프로필(`ant auth login` 또는 기존 Claude Code 로그인이 심은 프로필·같은 resolution)을
-    자동 해석한다. 생성자에 api_key·auth_token을 *절대 주입하지 않는다*(중앙 토큰 0·결정 2·9).
+  - **중앙 키/토큰 0** — `anthropic.Anthropic()`를 *인자 없이* 만든다. SDK가 owner의
+    `ANTHROPIC_API_KEY` env 또는 `ant auth login`(공식 console OAuth) 프로필을 자동 해석한다.
+    생성자에 api_key·auth_token을 *절대 주입하지 않는다*(중앙 토큰 0·결정 2·9).
+  - **⚠️ 실 시연 정정(2026-06-27)** — 인자 없는 SDK는 **Claude Code `/login` 구독 자격**
+    (`~/.claude/.credentials.json`·`claudeAiOauth`)은 *해석 못 한다*(다른 위치). 그 구독 토큰을
+    직접 API에 쓰는 건 ToS/계정 정지 위험이라 *안 한다*. **Claude 구독 답은 `claude -p`
+    (`ClaudeCodeRuntime`)가 공식·robust 경로**(실 시연 확인). 이 SDK transport는 *API 키/`ant`
+    OAuth* owner용 인프로세스 빠른 경로다(codex는 자기 CLI 토큰 파일로 구독 인프로세스 — 비대칭).
   - **포트 무변경** — `__call__(request: ProviderRequest) -> Iterator[str]`(ProviderTransport
     Protocol 그대로). 청크를 yield하면 `assemble_stream`이 조립하고 `map_response_to_answer`가
     Answer로 매핑한다(노출 불변식·게이트 내 순수 함수 재사용).
@@ -41,9 +46,9 @@ class AnthropicSdkTransport:
     yield한다 — 기존 `ProviderTransport.__call__(request) -> Iterable[str]`을 만족(포트·매핑
     함수 무변경·`StubProviderTransport`와 교체 가능).
 
-    OAuth 프로필 위임(결정 2·9): 인자 없는 `anthropic.Anthropic()`가 owner의 Anthropic OAuth
-    프로필을 자동 해석한다 — API 키·중앙 토큰 주입 0. OAuth 토큰 헤더(`Authorization: Bearer`
-    + `anthropic-beta: oauth-2025-04-20`)는 SDK가 처리한다(워커가 헤더 수작업 0).
+    자격 위임(결정 2·9·실 시연 정정): 인자 없는 `anthropic.Anthropic()`가 owner의
+    `ANTHROPIC_API_KEY` env 또는 `ant auth login`(공식 console OAuth) 프로필을 자동 해석한다 —
+    중앙 토큰 주입 0. (Claude Code `/login` 구독 자격은 미해석·ToS/밴 위험 → 구독 답은 `claude -p`.)
 
     모델 기본값(결정 10): `claude-opus-4-8`(adaptive thinking·streaming). 단, 실제 모델은
     `request.model`이 권위다 — 어댑터(`ClaudeApiRuntime`)/구성이 `build_provider_request`로
@@ -56,9 +61,9 @@ class AnthropicSdkTransport:
     _DEFAULT_MODEL = "claude-opus-4-8"
 
     def __init__(self, *, max_tokens: int = DEFAULT_MAX_TOKENS) -> None:
-        # 클라이언트는 *지연 생성*한다 — 모듈 import·인스턴스 생성만으론 실 OAuth 프로필 해석·
-        # 네트워크를 안 탄다(게이트가 이 transport를 주입해도 호출 전까진 무접촉). 첫 호출에서
-        # 인자 없는 Anthropic()를 만들어 owner 프로필을 자동 해석한다(중앙 토큰 0).
+        # 클라이언트는 *지연 생성*한다 — 모듈 import·인스턴스 생성만으론 실 자격 해석·네트워크를
+        # 안 탄다(게이트가 이 transport를 주입해도 호출 전까진 무접촉). 첫 호출에서 인자 없는
+        # Anthropic()를 만들어 owner ANTHROPIC_API_KEY/`ant` OAuth 프로필을 자동 해석한다(중앙 토큰 0).
         self._client: anthropic.Anthropic | None = None
         self._max_tokens = max_tokens
 

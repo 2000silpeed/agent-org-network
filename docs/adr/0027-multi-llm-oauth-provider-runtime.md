@@ -81,11 +81,11 @@ def map_response_to_answer(resp, card) -> Answer: ...                         # 
 ### 4. `ClaudeCodeRuntime` 대화 경로 교체 — 분류기·배치 `claude -p`는 잔존
 
 - **대화 답변 경로**만 공급자 어댑터로 교체한다. dispatcher/ask_org 주입 지점만 바꾸고 *라우팅·노출 불변식·미아 없음 회귀 0*(런타임 교체가 종착을 안 바꿈).
-- **분류기·배치 경로의 `claude -p`는 잔존 가능**(명시 구분) — `LlmClassifier`(중앙 분류·`classifier.py`)·골든셋 eval·배치는 `claude -p`를 그대로 쓸 수 있다. 교체 대상은 *대화 답변 경로의 `ClaudeCodeRuntime`*뿐이다. 중앙 분류기 LLM 유지 여부는 결정 대기(권장: 잔존 — 대화 경로만 교체).
+- **분류기·배치 경로의 `claude -p`는 잔존 가능**(명시 구분) — `LlmClassifier`(중앙 분류·`classifier.py`)·골든셋 eval·배치는 `claude -p`를 그대로 쓸 수 있다. 교체 대상은 *대화 답변 경로의 `ClaudeCodeRuntime`*뿐이다. 중앙 분류기 LLM 유지 여부는 ✅ 확정: **잔존**(아래 결정 3 — 대화 경로만 교체).
 
 ### 5. 한 공급자부터 증분 (권장 Claude)
 
-- **첫 공급자 = Claude**(Anthropic API + OAuth 구독 토큰·확정 대기지만 권장) — 이미 배선됐고(claude 로컬 인증 입증) 스트리밍을 먼저 검증한다. Claude로 속도·스트리밍·매핑을 입증한 뒤 codex·gemini를 *같은 포트·다른 transport*로 추가(후속).
+- **첫 공급자 = Claude**(✅ 확정 — Anthropic 공식 SDK + owner OAuth 프로필 위임·결정 9; 기본 모델 `claude-opus-4-8`·결정 10) — 이미 배선됐고(claude 로컬 인증 입증) 스트리밍을 먼저 검증한다. Claude로 속도·스트리밍·매핑을 입증한 뒤 codex(openai SDK)·gemini(google SDK)를 *같은 포트·다른 transport·자기 SDK·자기 프로필 위임*으로 추가(후속).
 - **다중 공급자 동시 지원은 후속 명시 연기**(과도 엔지니어링 회피·tasks line 214) — 지금은 한 공급자. 포트가 공급자 중립이라 추가는 어댑터 N번째일 뿐.
 
 ### 6. `AgentRuntime.answer` 포트 옵셔널 진화 — 멀티턴 맥락 스레딩 (T9.4(c)·ADR 0024 결정 3 연장)
@@ -147,7 +147,7 @@ SessionAskOrg.handle(question, user)            # 세션 보유
 - **게이트 경계(결정 8)** — 로컬 인프로세스 경로 맥락 스레딩은 게이트 내 결정론(`StubRuntime` 관측·`ClaudeApiRuntime` 맥락 소비·멀티턴 로컬 관측). 분산 WS 프레임 맥락 전파(`WorkTicket`·`TicketFrame` 와이어 진화)·web 기본 런타임을 `ClaudeApiRuntime`으로 교체는 **T9.6/T9.7로 명시 연기**.
 - **`ClaudeCodeRuntime` 대화 경로 교체** — dispatcher/ask_org 주입을 공급자 어댑터로(분류기·배치 `claude -p` 잔존). 라우팅·노출·미아 없음 회귀 0.
 - **WS 전송 1급 재부상** — owner 워커(ADR 0011) ↔ 중앙 아웃바운드 WS가 *기본 대화 경로*. ADR 0026 토큰 admission이 그 연결을 검증. `worker.py`의 `WorkerLogic`이 `ClaudeCodeRuntime` 대신 공급자 어댑터를 쥐고 돈다(T9.7 owner 클라이언트).
-- **실 OAuth·실 스트리밍(T9.6·게이트 밖)** — 실 owner 구독 토큰 획득·실 공급자 API 스트리밍. 새 의존성(공급자 SDK/HTTP) 판단은 이 ADR 갱신(결정 대기).
+- **실 OAuth·실 스트리밍(T9.6·게이트 밖)** — 실 owner OAuth 프로필 재사용(owner CLI 위임·결정 2·9 확정)·실 anthropic SDK 인프로세스 스트리밍(결정 4·9 확정). 새 의존성 `anthropic` SDK는 *첫 공급자 슬라이스에서* `pyproject.toml`에 추가(되돌리기 어려움·결정 9); openai·google SDK는 후속 자리. 기본 모델 `claude-opus-4-8`(결정 10·override 가능).
 - **불변식 영향 없음**:
   - **미아 없음** — 런타임 교체가 라우팅 종착을 안 바꾼다(0→Unowned·≥2→Contested·timeout→escalation 그대로). owner 워커 부재는 백업→Manager 폴백 사슬이 받음(ADR 0012·0014).
   - **Authority 중앙** — 런타임은 *답 생성*이지 *권한 선언*이 아니다. 누가 담당인지·누가 owner인지(routing_rules.yaml·card.owner)는 안 건드림. 멀티 공급자는 *답을 만드는 모델 선택*이지 권한이 아님.
@@ -163,14 +163,34 @@ SessionAskOrg.handle(question, user)            # 세션 보유
 ### 1. 첫 공급자 — **✅ 확정: Claude(Anthropic API + OAuth 구독)**
 - **근거**: 이미 배선됨(claude 로컬 인증·`ClaudeCodeRuntime` 입증)·스트리밍 먼저 검증. codex·gemini는 같은 포트·다른 transport로 후속. *인프로세스 스트리밍·어댑터 패턴을 known-good 공급자로 먼저 입증한 뒤 멀티 공급자로 확장*(리스크 최소).
 
-### 2. OAuth 흐름 — owner CLI vs 직접 — **권장 보류**(T9.6 게이트 밖·후속 확정) *(확정 대기)*
-- **trade-off(둘 다 적음)**:
-  - **owner CLI 위임**(owner가 `claude`/공급자 CLI로 이미 로그인한 자격을 워커가 재사용) — 가장 마찰 적음(owner가 OAuth 흐름을 안 거침)·opencode가 codex/claude를 붙이는 방식과 유사. 단 CLI 인증 형식에 종속.
-  - **직접 OAuth**(워커가 자체 OAuth code/PKCE 흐름으로 구독 토큰 획득) — CLI 비종속·표준 OAuth. 단 워커에 OAuth 흐름·redirect·refresh를 구현(무거움).
-- **권장**: T9.6 게이트 밖·opencode 패턴 참조해 실 흐름 확정. 단 ADR-D에 두 안의 trade-off를 적어 둠(여기).
+### 2. OAuth 흐름 — owner CLI vs 직접 — **✅ 확정: owner CLI 위임(직접 PKCE 기각)** (2026-06-27)
+- **확정**: owner의 **Anthropic OAuth 프로필**(`ant auth login` 또는 *기존 Claude Code 로그인* — 둘이 같은 프로필 resolution 공유)을 워커가 재사용한다. 워커의 `anthropic.Anthropic()`(인자 없이)가 그 프로필을 **자동 해석**한다(API 키 아님·OAuth 구독 토큰). 직접 PKCE 흐름(워커가 자체 code/redirect/refresh 구현)은 **기각** — 무거움·owner 마찰·재발명. 상세는 아래 **결정 9**.
+- **공식 경로**(reverse-engineering 아님) — Claude Code/Agent SDK가 쓰는 그 인증. 자격증명 owner측·중앙 토큰 0(이 ADR 핵심 불변식 그대로). 현 분산 워커가 *이미 로컬 claude 구독 인증*을 쓰므로 owner 재설정 0.
+- **남은 수동 시연 검증**: Claude Code `/login` 자격과 `ant` 프로필 충돌 가능성(claude-api 스킬이 경고) — T9.6 시연 때 확인.
+- **trade-off(역사 기록 — 둘 다 마찰 적었으나 owner CLI 위임이 더 적음)**:
+  - **owner CLI 위임**(채택) — 가장 마찰 적음(owner가 추가 OAuth 흐름을 안 거침)·opencode가 codex/claude를 붙이는 방식과 유사·이미 배선됨. 단 CLI/프로필 형식에 종속.
+  - **직접 OAuth**(기각) — CLI 비종속·표준 OAuth. 단 워커에 OAuth 흐름·redirect·refresh를 구현(무거움)·owner가 흐름을 한 번 더 거쳐야 함.
 
 ### 3. 중앙 분류기 LLM 유지 여부 — **✅ 확정: 잔존**(대화 경로만 교체·결정 1 "Claude 먼저"와 정합)
 - **근거**: 분류기(`LlmClassifier`·Haiku)·배치·골든셋 eval의 `claude -p`는 *중앙 운영*이지 owner 대화 답이 아니다. 대화 경로만 교체하면 분류기 잔존(명시 구분·tasks line 271). 확정 결정 1(첫 공급자 Claude·대화 경로만)에서 자연 도출.
 
-### 4. 공급자 API SDK/라이브러리(새 의존성)·스트리밍 프로토콜 — **결정 대기**(T9.6 게이트 밖)
-- 새 무거운 의존성(공급자 SDK 또는 HTTP 직접) 판단은 실 스트리밍 슬라이스(T9.6)에서·이 ADR 갱신(`HttpOidcProvider`·`SubprocessGitGateway`가 새 의존성 판단을 게이트 밖으로 미룬 정신).
+### 4. 공급자 API SDK/라이브러리(새 의존성)·스트리밍 프로토콜 — **✅ 확정: 공급자별 공식 SDK + 인프로세스 스트리밍** (2026-06-27)
+- **확정**: raw HTTP가 아니라 **각 공급자의 공식 SDK**를 쓴다 — anthropic SDK(Claude)·openai SDK(codex/GPT)·google genai(gemini). 단일 SDK 아님·공급자별. 인프로세스 스트리밍(`client.messages.stream().text_stream` → `Iterable[str]` 청크)이 *기존 `ProviderTransport` Protocol 시그니처를 그대로 만족*(`__call__(request) -> Iterable[str]`). 상세는 아래 **결정 9**.
+- **새 의존성(되돌리기 어려움)**: **`anthropic` SDK 먼저**(첫 공급자 Claude·증분). openai·google SDK는 **후속 공급자 슬라이스에서 자리만**. 의존성 추가 시점은 T9.6 실 transport 슬라이스(게이트 밖) — 그때 `pyproject.toml`에 `anthropic` 추가.
+- **근거**: claude-api 스킬이 Python 프로젝트는 raw HTTP 아닌 *공식 SDK* 사용을 명시 — 인증·재시도·에러·스트리밍 내장. OAuth 토큰은 `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20`을 SDK가 처리(워커가 헤더 수작업 0).
+
+### 9. 공급자별 공식 SDK + OAuth 프로필 위임 — 어댑터마다 자기 SDK·자기 자격 위임을 가둔다 (✅ 확정 2026-06-27·되돌리기 어려움)
+
+결정 2·4를 한 어댑터 경계로 묶는 본 결정. **포트는 무변경**(결정 1 — `AgentRuntime`은 공급자를 모름). 공급자별 차이(SDK·OAuth 프로필 해석·스트리밍 프로토콜)는 *각 어댑터 안*에만 산다.
+
+- **공식 SDK(공급자별·결정 4)** — anthropic SDK(Claude)·openai SDK(codex/GPT)·google genai(gemini). raw HTTP 아님·단일 SDK 아님. 어댑터마다 *자기 공급자 SDK*를 가둔다(`ClaudeApiRuntime`→anthropic, `CodexApiRuntime`→openai, `GeminiApiRuntime`→google). 인프로세스 스트리밍이 `ProviderTransport.__call__(request) -> Iterable[str]`를 그대로 만족하므로 **포트·Protocol·게이트 내 매핑 함수 시그니처 무변경**(`build_provider_request`·`assemble_stream`·`map_response_to_answer`·`StubProviderTransport` 그대로).
+- **OAuth 프로필 위임(owner CLI 위임·결정 2)** — 워커의 실 transport 구현이 인자 없는 `anthropic.Anthropic()`를 만들면 SDK가 owner의 Anthropic OAuth 프로필을 *자동 해석*한다(`ant auth login` 또는 기존 Claude Code 로그인이 심은 프로필 — 같은 resolution). API 키 환경변수·중앙 토큰 주입 0. 어댑터마다 *자기 공급자의 OAuth/프로필 위임*을 가둔다(공급자별 프로필 형식이 달라도 어댑터 경계가 흡수).
+- **현 분산 워커 진화** — 워커는 *이미 로컬 claude 구독 인증*을 쓴다(`ClaudeCodeRuntime`이 `claude -p` 서브프로세스로). T9.6은 답 생성을 `claude -p` 서브프로세스 → *같은 프로필*의 인프로세스 SDK로 바꾸는 것뿐 — owner 재설정 0·프로세스 스폰 회피(속도 근거 2의 실현).
+- **되돌리기 어려운 결정 명시** — (a) **새 의존성 `anthropic` SDK**(첫 공급자·증분; openai·google은 후속 자리), (b) **OAuth 위임 방식**(owner CLI 위임·인자 없는 클라이언트 자동 해석에 의존). 둘 다 게이트 밖 T9.6에서 `pyproject.toml`·실 transport에 박는다 — 결정론 게이트로 못 잠그는 외부 의존이라 ADR에 못박는다(`HttpOidcProvider`·`SubprocessGitGateway`가 실 본체를 게이트 밖으로 미룬 정신).
+- **게이트 내/밖 경계 재확인** — *게이트 내*(이번까지 그린): 어댑터 shape(`ClaudeApiRuntime`)·순수 매핑 함수·`StubProviderTransport`·`ProviderTransport` Protocol. *게이트 밖*(T9.6 수동): 실 anthropic SDK transport(인자 없는 `Anthropic()` + `messages.stream`)·실 OAuth 프로필 해석·실 네트워크 스트리밍. 실 transport는 *주입만 교체*(Stub→실 SDK)이고 어댑터·매핑·포트는 그대로다 — 게이트 내 조각이 게이트 밖 본체의 *결정 로직 전부*를 이미 닫았다.
+
+### 10. 공급자별 권장 모델 기본값 — 어댑터 안의 설정 가능 기본값 (✅ 확정 2026-06-27)
+
+- **확정**: 답변 모델은 *연결 서비스별 recommended 모델*을 어댑터 기본값으로 둔다. **Anthropic → `claude-opus-4-8`**(adaptive thinking·streaming·claude-api 스킬 기본 권장값). OpenAI·Google은 각 공급자 권장 모델(후속 슬라이스에서 그 어댑터가 결정).
+- **설정값(override 가능)** — owner/운영자가 어댑터별로 override할 수 있다. 공급자 중립 포트라 **모델 선택은 각 어댑터 안**에 산다(포트는 모델을 모름). 현재 게이트 내 `build_provider_request`가 `ProviderRequest.model`에 박는 placeholder(`claude-3-5-haiku-20241022`)는 *게이트 내 결정론 매핑용 더미*였다 — 실 기본값(`claude-opus-4-8`)은 실 어댑터/transport 구성에서 적용한다(게이트 밖). 매핑 함수 자체는 모델 문자열에 무관해 게이트 내 테스트 무영향.
+- **Authority와 무관** — 모델 선택은 *답을 만드는 모델*이지 *권한 선언*이 아니다(누가 담당·누가 owner는 `routing_rules.yaml`·`card.owner`가 쥠). 멀티 모델/멀티 공급자는 답 생성 축이지 Authority 축이 아니다(불변식 보존).

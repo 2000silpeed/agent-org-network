@@ -289,15 +289,15 @@
   - **외부 결정·결정 대기**: **토큰 형식/만료/refresh 정책**(결정 대기 — (a) 결정 로직은 게이트 내지만 실 형식은 외부 결정) · 워커 신원과 owner SSO 신원 연계 여부.
   - **넘김**: ADR-C·토큰 shape → **domain-architect**. (a)(b)(c) 결정론 → **tdd-engineer**. `_authenticate` 실 교체 전송 측 → **mcp-runtime-engineer**. (d) 실 연결 → **mcp-runtime-engineer**/**수동 시연**.
 
-- [ ] **T9.6** 실 멀티-LLM OAuth + 공급자 API 스트리밍 [게이트 밖·외부 결정 선행] (ADR-D 본체)
-  - **배경·근거**: T9.4 게이트 내 조각(공급자 어댑터·매핑·Stub) 위에 *실 OAuth 흐름·실 공급자 API 스트리밍*을 입힌다. **전부 게이트 밖**(실 네트워크·실 OAuth·비결정 스트리밍)이고 외부 결정이 무거워 *결정 선행 없이 진행 불가*. 한 공급자(권장 Claude)부터 — 속도·스트리밍 입증 후 codex·gemini.
+- [ ] **T9.6** 실 멀티-LLM OAuth + 공급자 API 스트리밍 [게이트 밖·수동·✅ 외부 결정 확정(2026-06-27)] (ADR-D 본체)
+  - **배경·근거**: T9.4 게이트 내 조각(공급자 어댑터·매핑·Stub) 위에 *실 OAuth 프로필 위임·실 공급자 API 스트리밍*을 입힌다. **전부 게이트 밖**(실 네트워크·실 OAuth·비결정 스트리밍)이라 결정론 게이트로 못 잠근다 — 수동 시연으로 검증. **외부 결정 3건 ✅ 확정(2026-06-27)**: OAuth 흐름=owner CLI 위임(직접 PKCE 기각) · 전송=공급자별 공식 SDK(`anthropic` 먼저) · 모델=공급자별 권장 기본값(`claude-opus-4-8`). 한 공급자(Claude·anthropic SDK)부터 — 속도·스트리밍 입증 후 codex(openai)·gemini(google).
   - **슬라이스 분해**:
-    - **(a) 실 OAuth 흐름(owner 구독 토큰 획득) [게이트 밖]** — owner가 OAuth로 공급자 구독에 인증·토큰 획득·갱신. 자격증명 owner측(중앙 토큰 0). OAuth 흐름을 **owner CLI vs 직접** 중 무엇으로(opencode 패턴 참조 — 결정 대기). 외부 의존: 실 IdP/공급자 OAuth·실 브라우저/CLI.
-    - **(b) 실 공급자 API 스트리밍 [게이트 밖]** — 인프로세스에서 공급자 API를 직접 호출·토큰 스트리밍(프로세스 스폰 회피·속도). 외부 의존: 실 공급자 API·실 네트워크·실 토큰. 새 의존성(공급자 SDK/HTTP) 판단 — ADR 갱신(되돌리기 어려운 결정).
-    - **(c) end-to-end 시연 [게이트 밖 수동]** — owner OAuth→실 API 스트리밍 답→세션 트랜스크립트·HITL 토글까지 한 바퀴. 외부 의존: 전부 실.
-  - **의존성·우선순위**: T9.4 게이트 내 조각 그린 후. 외부 결정(첫 공급자·OAuth 흐름·SDK) 선행. **결정 전엔 전체 "결정 대기".**
-  - **외부 결정·결정 대기**: 첫 공급자(권장 Claude) · OAuth 흐름(owner CLI vs 직접·opencode 참조) · 공급자 API SDK/라이브러리(새 의존성) · 스트리밍 프로토콜.
-  - **넘김**: (a)(b)(c) 실 OAuth·실 API·전송 → **mcp-runtime-engineer**(외부 결정 후). 새 의존성·OAuth 흐름 설계 → **domain-architect**(ADR-D 갱신).
+    - **(a) 실 OAuth 프로필 위임(owner 구독 인증 재사용) [게이트 밖·수동] — ✅ 결정 확정(2026-06-27)** — **owner CLI 위임 확정·직접 PKCE 기각**(ADR 0027 결정 2·9). 워커의 인자 없는 `anthropic.Anthropic()`가 owner의 Anthropic OAuth 프로필(`ant auth login` 또는 *기존 Claude Code 로그인*·같은 프로필 resolution)을 *자동 해석*(API 키 아님·OAuth 구독 토큰·공식 경로). 자격증명 owner측·중앙 토큰 0. owner 재설정 0(현 워커가 이미 로컬 claude 구독 인증을 씀). 외부 의존: 실 owner OAuth 프로필. **수동 시연 검증**: Claude Code `/login` 자격과 `ant` 프로필 충돌 가능성(claude-api 스킬 경고) — 시연 때 확인.
+    - **(b) 실 공급자 API 스트리밍(공식 SDK·인프로세스) [게이트 밖·수동] — ✅ 결정 확정(2026-06-27)** — **공급자별 공식 SDK 확정**(ADR 0027 결정 4·9·raw HTTP 아님·단일 SDK 아님). **`anthropic` SDK 먼저**(첫 공급자 Claude·`pyproject.toml`에 새 의존성 추가 = 되돌리기 어려움; openai·google SDK는 후속 공급자 슬라이스 자리). 인프로세스 `client.messages.stream().text_stream`이 기존 `ProviderTransport.__call__(request)->Iterable[str]` 시그니처를 그대로 만족(어댑터·매핑·포트 무변경·주입만 Stub→실 SDK 교체). OAuth 토큰 헤더(`Authorization: Bearer`+`anthropic-beta: oauth-2025-04-20`)는 SDK가 처리. **기본 모델 `claude-opus-4-8`**(adaptive thinking·streaming·ADR 0027 결정 10·override 가능). 외부 의존: 실 공급자 API·실 네트워크·실 OAuth 프로필.
+    - **(c) end-to-end 시연 [게이트 밖 수동]** — owner OAuth 프로필→실 anthropic SDK 스트리밍 답→세션 트랜스크립트·HITL 토글까지 한 바퀴. 외부 의존: 전부 실.
+  - **의존성·우선순위**: T9.4 게이트 내 조각 그린 후. **외부 결정 3건 ✅ 확정(2026-06-27 — OAuth 흐름·SDK/스트리밍·기본 모델)** → 착수 가능. **한 공급자(Claude) 먼저 증분** — `anthropic` SDK 추가는 첫 공급자 transport 슬라이스 시점. codex(openai)·gemini(google)는 후속(자리만·동시 지원 아님).
+  - **외부 결정·결정 대기**: **✅ 전부 확정(2026-06-27)** — OAuth 흐름=owner CLI 위임(직접 PKCE 기각·ADR 0027 결정 2·9) · 전송=공급자별 공식 SDK(anthropic 먼저·결정 4·9) · 답변 모델=공급자별 권장 기본값(Anthropic→`claude-opus-4-8`·override 가능·결정 10). 남은 건 *수동 시연 검증*뿐(프로필 충돌 확인).
+  - **넘김**: (a)(b)(c) 실 OAuth 프로필 위임·실 anthropic SDK 스트리밍·전송 → **mcp-runtime-engineer**(결정 확정됨·착수 가능). 결정 명문화(ADR 0027 결정 2·4·9·10) → **domain-architect**(✅ 완료 2026-06-27).
 
 - [ ] **T9.7** owner 분산 에이전트 클라이언트 — 로컬 프로세스 + 로컬 웹 UI [게이트 밖·수동] (ADR-A·ADR-B·ADR-D 연계)
   - **배경·근거**: UI 2개 중 하나(다른 하나는 T9.2 운영자 콘솔). owner 분산 에이전트 클라이언트 = 로컬 프로세스 + 로컬 웹 UI. 중앙에만 WS 연결(토큰 인증·T9.5). 라우팅 질문 + 사용자-스레드 맥락 수신→LLM 초안→HITL on이면 owner가 로컬 UI에서 검토·수정·전송, off면 자동. **거의 게이트 밖**(실 로컬 프로세스·실 웹 UI·실 WS) — 결정론 조각은 기존 `worker.py`의 `WorkerLogic`·`parse_central_frame` 정신(프레임 핸들링 코어)뿐.

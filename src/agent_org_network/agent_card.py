@@ -18,6 +18,25 @@ AGENT_ID_PATTERN: Final[str] = r"^[A-Za-z0-9][A-Za-z0-9_-]*\Z"
 _AGENT_ID_RE: Final[re.Pattern[str]] = re.compile(AGENT_ID_PATTERN)
 
 
+def validate_agent_id_format(value: str) -> str:
+    """agent_id 형식 검증 공유 헬퍼(ADR 0023).
+
+    AgentCard·KnowledgeIndex 등 agent_id를 갖는 *모든* 값 객체가 이 함수를
+    field_validator 내부에서 호출해 동일 admission 규칙을 보장한다.
+    중복 정의 없이 단일 권위 소스를 공유한다.
+    """
+    if len(value) > AGENT_ID_MAX_LENGTH:
+        raise ValueError(
+            f"agent_id는 {AGENT_ID_MAX_LENGTH}자 이하여야 합니다: {value!r}"
+        )
+    if not _AGENT_ID_RE.match(value):
+        raise ValueError(
+            f"agent_id 형식이 올바르지 않습니다(영숫자로 시작 + 영숫자/_/- 만 허용): "
+            f"{value!r}"
+        )
+    return value
+
+
 class AgentCard(BaseModel, frozen=True):
     agent_id: str
     owner: str
@@ -44,13 +63,4 @@ class AgentCard(BaseModel, frozen=True):
         길이 상한(`AGENT_ID_MAX_LENGTH`)을 넘으면 ValueError → pydantic ValidationError로
         승격되어 빌더 `{ok:False, errors}`·로더 `RegistryError`로 자연히 매핑된다.
         """
-        if len(value) > AGENT_ID_MAX_LENGTH:
-            raise ValueError(
-                f"agent_id는 {AGENT_ID_MAX_LENGTH}자 이하여야 합니다: {value!r}"
-            )
-        if not _AGENT_ID_RE.match(value):
-            raise ValueError(
-                f"agent_id 형식이 올바르지 않습니다(영숫자로 시작 + 영숫자/_/- 만 허용): "
-                f"{value!r}"
-            )
-        return value
+        return validate_agent_id_format(value)

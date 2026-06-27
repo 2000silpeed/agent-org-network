@@ -200,10 +200,14 @@ class TestClaudeApiRuntime:
 
 
 class TestFutureProviderStubs:
-    def test_CodexApiRuntime_answer는_NotImplementedError(self, card: AgentCard) -> None:
-        runtime = CodexApiRuntime()
-        with pytest.raises(NotImplementedError):
-            runtime.answer("질문", card)
+    def test_CodexApiRuntime은_AgentRuntime_포트를_구현한다(self, card: AgentCard) -> None:
+        """CodexApiRuntime은 슬라이스 1에서 StubTransport로 구현 완료."""
+        from agent_org_network.runtime import AgentRuntime
+
+        transport = StubProviderTransport(chunks=["codex 답"])
+        runtime: AgentRuntime = CodexApiRuntime(transport=transport)
+        answer = runtime.answer("질문", card)
+        assert isinstance(answer, Answer)
 
     def test_GeminiApiRuntime_answer는_NotImplementedError(self, card: AgentCard) -> None:
         runtime = GeminiApiRuntime()

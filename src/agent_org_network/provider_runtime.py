@@ -81,14 +81,20 @@ class StubProviderTransport:
 # ---------------------------------------------------------------------------
 
 
+_DEFAULT_MODEL = "claude-3-5-haiku-20241022"
+
+
 def build_provider_request(
     question: str,
     card: AgentCard,
     context: str | None = None,
+    *,
+    model: str = _DEFAULT_MODEL,
 ) -> ProviderRequest:
     """공급자 API 요청을 빌드하는 순수 함수 (SDK/IO/네트워크 0).
 
     context는 옵셔널 — T9.1(b) assemble_context 미완이라 자리만 둔다(기본 None).
+    model은 런타임이 자기 공급자 모델을 주입한다 — 기본값은 placeholder(기존 호환).
     """
     system_parts: list[str] = [
         f"당신은 '{card.team}' 팀의 담당자 {card.owner}(담당 영역: {card.agent_id})입니다.",
@@ -111,7 +117,7 @@ def build_provider_request(
     messages.append({"role": "user", "content": question})
 
     return ProviderRequest(
-        model="claude-3-5-haiku-20241022",
+        model=model,
         system="\n".join(system_parts),
         messages=messages,
     )
@@ -141,47 +147,70 @@ def map_response_to_answer(resp: str, card: AgentCard) -> Answer:
 
 
 # ---------------------------------------------------------------------------
-# 슬라이스 (a) — ClaudeApiRuntime (AgentRuntime 포트 · 첫 공급자)
+# 슬라이스 (a) — ProviderApiRuntime 공급자 중립 베이스 (ADR 0027 결정 1·11)
 # ---------------------------------------------------------------------------
 
 
-class ClaudeApiRuntime:
-    """Anthropic API + owner OAuth 구독의 AgentRuntime 포트 구현 (ADR 0027 결정 1·5).
+class ProviderApiRuntime:
+    """공급자 중립 AgentRuntime 포트 베이스 (ADR 0027 결정 1·11).
 
-    StubRuntime·ClaudeCodeRuntime과 같은 포트(answer(question, card) -> Answer).
-    주입 transport(ProviderTransport)로 요청 빌드 → 스트리밍 → 조립 → Answer 매핑.
-    실 OAuth·실 API 스트리밍은 게이트 밖 T9.6.
+    어떤 공급자도 1급 아님 — claude·codex·gemini는 model+transport만 다른 같은 어댑터.
+    파이프라인: build_provider_request(model=self._model) → transport → assemble_stream → map_response_to_answer.
     """
 
-    def __init__(self, transport: ProviderTransport) -> None:
+    def __init__(self, transport: ProviderTransport, *, model: str) -> None:
         self._transport = transport
+        self._model = model
 
     def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
-        request = build_provider_request(question, card, context=context)
+        request = build_provider_request(question, card, context=context, model=self._model)
         chunks = self._transport(request)
         text = assemble_stream(chunks)
         return map_response_to_answer(text, card)
 
 
 # ---------------------------------------------------------------------------
-# 후속 공급자 자리 — NotImplementedError (HttpOidcProvider·SlackChannel 정신)
+# 슬라이스 (a) — ClaudeApiRuntime (AgentRuntime 포트 · 첫 공급자)
 # ---------------------------------------------------------------------------
 
 
-class CodexApiRuntime:
-    """OpenAI Codex API 공급자 어댑터 자리 — 후속 구현 (ADR 0027 결정 5).
+class ClaudeApiRuntime(ProviderApiRuntime):
+    """Anthropic API + owner OAuth 구독의 AgentRuntime 포트 구현 (ADR 0027 결정 1·5).
 
-    ClaudeApiRuntime로 속도·스트리밍 입증 후 같은 포트·다른 transport로 추가.
+    StubRuntime·ClaudeCodeRuntime과 같은 포트(answer(question, card) -> Answer).
+    ProviderApiRuntime 베이스 상속 — model 기본값은 기존 placeholder(무회귀).
+    실 OAuth·실 API 스트리밍은 게이트 밖 T9.6.
     """
 
-    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
-        raise NotImplementedError("CodexApiRuntime은 후속 공급자 슬라이스(T9.6+)에서 구현한다.")
+    _DEFAULT_CLAUDE_MODEL = _DEFAULT_MODEL  # 기존 placeholder 유지(기존 테스트 무회귀)
+
+    def __init__(self, transport: ProviderTransport) -> None:
+        super().__init__(transport, model=self._DEFAULT_CLAUDE_MODEL)
+
+
+# ---------------------------------------------------------------------------
+# 슬라이스 1 — CodexApiRuntime (OpenAI Codex · 대칭 공급자 어댑터)
+# ---------------------------------------------------------------------------
+
+
+class CodexApiRuntime(ProviderApiRuntime):
+    """OpenAI Codex API 공급자 어댑터 (ADR 0027 결정 1·11).
+
+    ClaudeApiRuntime과 대칭 — model+transport만 다른 같은 ProviderApiRuntime 베이스.
+    기본 모델: gpt-5.2-codex (ADR 0027 결정 10 · 설정 override 가능).
+    실 OAuth·openai SDK·실 네트워크는 게이트 밖 슬라이스 2.
+    """
+
+    _DEFAULT_CODEX_MODEL = "gpt-5.2-codex"
+
+    def __init__(self, transport: ProviderTransport) -> None:
+        super().__init__(transport, model=self._DEFAULT_CODEX_MODEL)
 
 
 class GeminiApiRuntime:
     """Google Gemini API 공급자 어댑터 자리 — 후속 구현 (ADR 0027 결정 5).
 
-    ClaudeApiRuntime로 속도·스트리밍 입증 후 같은 포트·다른 transport로 추가.
+    ClaudeApiRuntime·CodexApiRuntime 입증 후 같은 포트·다른 transport로 추가.
     """
 
     def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:

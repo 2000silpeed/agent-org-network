@@ -194,3 +194,13 @@ SessionAskOrg.handle(question, user)            # 세션 보유
 - **확정**: 답변 모델은 *연결 서비스별 recommended 모델*을 어댑터 기본값으로 둔다. **Anthropic → `claude-opus-4-8`**(adaptive thinking·streaming·claude-api 스킬 기본 권장값). OpenAI·Google은 각 공급자 권장 모델(후속 슬라이스에서 그 어댑터가 결정).
 - **설정값(override 가능)** — owner/운영자가 어댑터별로 override할 수 있다. 공급자 중립 포트라 **모델 선택은 각 어댑터 안**에 산다(포트는 모델을 모름). 현재 게이트 내 `build_provider_request`가 `ProviderRequest.model`에 박는 placeholder(`claude-3-5-haiku-20241022`)는 *게이트 내 결정론 매핑용 더미*였다 — 실 기본값(`claude-opus-4-8`)은 실 어댑터/transport 구성에서 적용한다(게이트 밖). 매핑 함수 자체는 모델 문자열에 무관해 게이트 내 테스트 무영향.
 - **Authority와 무관** — 모델 선택은 *답을 만드는 모델*이지 *권한 선언*이 아니다(누가 담당·누가 owner는 `routing_rules.yaml`·`card.owner`가 쥠). 멀티 모델/멀티 공급자는 답 생성 축이지 Authority 축이 아니다(불변식 보존).
+
+### 11. 공급자 중립 = 코어는 어떤 공급자 SDK에도 의존하지 않는다 (✅ 확정 2026-06-27·불변식)
+
+**원칙(사용자 지시 2026-06-27)**: "claude에 종속되는 레포를 만들지 않는다 — owner별 구독 서비스가 다를 수 있으니 *전체를 다 받아들이는 구조*." 이는 결정 1("공급자 중립·어떤 공급자도 1급 아님")을 *의존성·패키징 축까지* 끌어올린 **불변식**이다.
+
+- **코어 런타임 의존 = 공급자 SDK 0.** `pyproject.toml`의 `[project.dependencies]`는 어떤 공급자 SDK도 안 든다(`anthropic`·`openai`·`google-genai` 0). `pip install agent-org-network`(코어)는 공급자 SDK를 *안* 끌어온다. → owner가 claude를 안 써도 레포가 claude를 강제하지 않는다.
+- **공급자 SDK = 선택 의존성(extra).** `[project.optional-dependencies]`에 공급자별 extra(`claude-api = ["anthropic"]`·후속 `codex = ["openai"]`·`gemini = ["google-genai"]`). **owner는 자기 구독 공급자만 설치**(`pip install agent-org-network[claude-api]`). 게이트/CI는 전 공급자 어댑터를 pyright로 타입검사하려 그 SDK들을 `[dependency-groups].dev`에 둔다 — *런타임 코어 의존이 아니라 검사용*(`uv sync --no-dev`엔 안 들어옴).
+- **대칭 레지스트리.** 워커의 `_select_runtime`은 `AON_PROVIDER`(별칭)→공급자 어댑터 lazy 팩토리 *레지스트리*다(`worker.py`). 공급자 SDK는 *그 공급자를 고를 때만* import한다 — 다른 공급자 owner는 미설치 SDK를 안 건드린다. **claude 특권 없음**: 새 공급자(codex·gemini)는 레지스트리에 한 줄 + extra 한 줄이면 대칭으로 붙는다. 알 수 없는 공급자는 *명시 실패*(조용히 claude로 안 떨어짐 — owner 의도 보존).
+- **레거시 기본의 위상.** `AON_PROVIDER` 미설정 시 워커 기본은 `ClaudeCodeRuntime`(`claude -p` CLI)인데, 이건 *레거시 기본*이지 코어의 claude **pip 의존**이 아니다(`claude` CLI는 owner가 고르는 런타임 도구). owner는 `AON_PROVIDER`로 자기 공급자를 고른다. (분류기 `LlmClassifier`의 `claude -p`도 *opt-in*이고 기본은 claude 무관한 `RuleBasedClassifier` — 코어는 분류에도 claude를 강제 안 함. 분류기까지 공급자 중립화는 *후속*으로 남긴다.)
+- **불변식 보존** — 중앙 키/토큰 0(공급자 SDK가 코어에 없으니 강화)·Authority 중앙·노출 불변식·포트 무변경. 이 결정은 *패키징/배선*을 바꾸지 도메인을 안 바꾼다.

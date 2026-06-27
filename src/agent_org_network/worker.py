@@ -298,35 +298,69 @@ def _loads(raw: Any) -> object:
 # ── 답 생성 런타임 선택(opt-in 공급자 어댑터, ADR 0027 T9.6) ──────────────────
 
 
+# ── 공급자 레지스트리 (ADR 0027 결정 1·11 — 공급자 중립) ──────────────────────────
+# AON_PROVIDER 값(별칭) → 공급자 어댑터. 각 공급자는 *대칭*: 자기 SDK extra + 자기 OAuth 프로필
+# + 권장 모델을 어댑터 안에 가둔다. 코어는 어떤 공급자도 1급이 아니고 *어떤 공급자 SDK에도 의존하지
+# 않는다*(SDK는 선택 의존성 — `pip install agent-org-network[claude-api]`). 새 공급자(codex·gemini)는
+# 아래 두 맵에 한 줄씩 추가한다 — claude 특권 없음. SDK import는 그 공급자를 *고를 때만* 한다(다른
+# 공급자 owner는 미설치 SDK를 안 건드림).
+
+
+def _make_claude_api_runtime() -> AgentRuntime:
+    """Claude 공급자 어댑터 — owner OAuth 인프로세스 anthropic SDK 스트리밍(중앙 토큰 0)."""
+    try:
+        from agent_org_network.provider_runtime import ClaudeApiRuntime
+        from agent_org_network.provider_transport_anthropic import AnthropicSdkTransport
+    except ImportError as exc:  # 그 공급자 extra 미설치
+        raise SystemExit(
+            "AON_PROVIDER=claude-api 인데 anthropic SDK가 없습니다 — 자기 공급자 extra를 설치하세요: "
+            "pip install 'agent-org-network[claude-api]'  (uv: uv sync --extra claude-api)"
+        ) from exc
+    return ClaudeApiRuntime(transport=AnthropicSdkTransport())
+
+
+# 별칭 → 공급자 키 (후속: "codex"/"openai" → "codex", "gemini"/"google" → "gemini").
+_PROVIDER_ALIASES: dict[str, str] = {
+    "claude-api": "claude-api",
+    "anthropic": "claude-api",
+    "provider": "claude-api",
+}
+# 공급자 키 → lazy 어댑터 팩토리 (후속: "codex": _make_codex_runtime, "gemini": _make_gemini_runtime).
+_PROVIDER_FACTORIES: dict[str, Callable[[], AgentRuntime]] = {
+    "claude-api": _make_claude_api_runtime,
+}
+
+
 def _select_runtime(okf_root: str | Path | None) -> AgentRuntime:
-    """env 플래그로 워커의 답 생성 런타임을 고른다 — 기본은 기존 `claude -p`, opt-in은 공급자 SDK.
+    """env 플래그로 워커의 답 생성 런타임을 고른다 — 공급자 중립 레지스트리(ADR 0027 결정 1·11).
 
     `AON_PROVIDER`(또는 `AON_RUNTIME`):
-      - 미설정/`claude-code` → `ClaudeCodeRuntime`(기존 동작·`claude -p` 서브프로세스·okf cwd).
-        **게이트·기존 데모 무변경** — 플래그를 안 켜면 지금까지의 워커와 완전히 같다.
-      - `claude-api`/`provider` → `ClaudeApiRuntime(AnthropicSdkTransport())`(owner OAuth
-        인프로세스 SDK 스트리밍·ADR 0027 결정 2·4·9·10). 실 anthropic SDK·실 OAuth 프로필·실
-        네트워크 = 게이트 밖 수동 시연(T9.6). import는 *플래그가 켜졌을 때만* 한다 — 미설정
-        경로는 anthropic SDK를 안 건드린다(기존 워커 의존 0 변화).
+      - 미설정/`claude-code` → `ClaudeCodeRuntime`(레거시 기본·`claude -p` 서브프로세스·okf cwd).
+        **게이트·기존 데모 무변경.** 이건 claude CLI를 쓰는 *레거시 기본*이지 코어의 claude 의존이
+        아니다 — 코어 pip 의존엔 어떤 공급자 SDK도 없다(SDK는 선택 extra). owner는 `AON_PROVIDER`로
+        자기 구독 공급자를 고른다.
+      - 등록된 공급자(`claude-api` 등) → 그 공급자의 OAuth 인프로세스 SDK 어댑터(중앙 토큰 0).
+        공급자 SDK는 *그 공급자를 고를 때만* import(미설치면 extra 설치 안내).
+      - 알 수 없는 값 → 명시 실패(조용히 claude로 안 떨어진다 — owner 의도 보존).
 
-    두 구현 모두 같은 `AgentRuntime` 포트라 `WorkerLogic`은 무변경(런타임 교체가 종착·라우팅·
-    노출 불변식을 안 바꿈). 자격증명은 owner측(로컬 claude 로그인 또는 anthropic OAuth 프로필)
-    이고 **중앙은 키/토큰 0**(공급자 SDK도 인자 없는 `Anthropic()`로 owner 프로필 자동 해석).
+    모든 어댑터가 같은 `AgentRuntime` 포트라 `WorkerLogic` 무변경(런타임 교체가 종착·라우팅·노출
+    불변식을 안 바꿈). 자격증명은 owner측·**중앙은 키/토큰 0**.
     """
     import os
 
     flag = (os.environ.get("AON_PROVIDER") or os.environ.get("AON_RUNTIME") or "").strip().lower()
-    if flag in ("claude-api", "provider", "anthropic"):
-        # 실 공급자 transport는 opt-in일 때만 import한다 — 미설정 경로는 anthropic SDK 무접촉.
-        from agent_org_network.provider_runtime import ClaudeApiRuntime
-        from agent_org_network.provider_transport_anthropic import AnthropicSdkTransport
-
-        print(
-            "[worker] AON_PROVIDER=claude-api — owner OAuth 인프로세스 SDK 스트리밍 사용"
-            "(anthropic.Anthropic() 프로필 자동 해석·중앙 토큰 0·게이트 밖 T9.6)."
-        )
-        return ClaudeApiRuntime(transport=AnthropicSdkTransport())
-    return ClaudeCodeRuntime(okf_root=okf_root)
+    if not flag or flag == "claude-code":
+        return ClaudeCodeRuntime(okf_root=okf_root)
+    provider = _PROVIDER_ALIASES.get(flag)
+    factory = _PROVIDER_FACTORIES.get(provider) if provider is not None else None
+    if factory is None:
+        supported = ", ".join(sorted(_PROVIDER_ALIASES))
+        raise SystemExit(f"알 수 없는 AON_PROVIDER={flag!r} — 지원: claude-code(기본), {supported}")
+    print(
+        f"[worker] AON_PROVIDER={flag} → owner OAuth 인프로세스 공급자 SDK 어댑터 사용"
+        "(owner 프로필 자동 해석·중앙 토큰 0·게이트 밖 T9.6)."
+    )
+    return factory()
 
 
 # ── CLI 진입점(수동 시연) ────────────────────────────────────────────────────

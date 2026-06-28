@@ -22,7 +22,9 @@ from agent_org_network.conflict import (
     Resolution,
     StillOpen,
 )
+from agent_org_network.agent_card import AgentCard
 from agent_org_network.demo import build_demo_ask_org
+from agent_org_network.registry import Registry
 from agent_org_network.runtime import Answer, StubRuntime
 from agent_org_network.session import InMemorySessionStore
 from agent_org_network.transport import WebSocketDispatcher
@@ -170,16 +172,98 @@ def _sample_case() -> ConflictCase:
     )
 
 
+def _sample_registry() -> Registry:
+    """serialize_case 테스트용 최소 Registry — cs_ops·finance_ops 카드 포함."""
+    from datetime import date
+
+    reg = Registry()
+    reg.register_user(User(id="cs_lead"))
+    reg.register_user(User(id="finance_lead"))
+    reg.register(
+        AgentCard(
+            agent_id="cs_ops",
+            owner="cs_lead",
+            team="cs",
+            summary="고객 환불·보상 처리",
+            domains=["환불", "보상"],
+            knowledge_sources=["cs_wiki", "환불정책"],
+            last_reviewed_at=date(2026, 1, 1),
+        )
+    )
+    reg.register(
+        AgentCard(
+            agent_id="finance_ops",
+            owner="finance_lead",
+            team="finance",
+            summary="가격·보상 정책 관리",
+            domains=["가격", "보상"],
+            knowledge_sources=["재무규정"],
+            last_reviewed_at=date(2026, 1, 1),
+        )
+    )
+    return reg
+
+
 def test_serialize_case는_intent_question_후보를_담는다():
-    body = serialize_case(_sample_case())
+    body = serialize_case(_sample_case(), _sample_registry())
 
     assert body["case_id"] == "case-xyz"
     assert body["intent"] == "보상"
     assert body["question"] == "보상 기준?"
     assert body["candidates"] == [
-        {"agent_id": "cs_ops", "owner": "cs_lead"},
-        {"agent_id": "finance_ops", "owner": "finance_lead"},
+        {
+            "agent_id": "cs_ops",
+            "owner": "cs_lead",
+            "summary": "고객 환불·보상 처리",
+            "domains": ["환불", "보상"],
+            "knowledge_sources": ["cs_wiki", "환불정책"],
+        },
+        {
+            "agent_id": "finance_ops",
+            "owner": "finance_lead",
+            "summary": "가격·보상 정책 관리",
+            "domains": ["가격", "보상"],
+            "knowledge_sources": ["재무규정"],
+        },
     ]
+
+
+def test_serialize_case_미등록_agent_id는_커버리지_필드_생략():
+    """registry에 없는 agent_id를 가진 후보는 agent_id·owner만 담고 예외 없음."""
+    case = ConflictCase(
+        intent="테스트",
+        question="질문",
+        candidates=(Candidate(agent_id="unknown_ops", owner="some_lead"),),
+        opened_at=_fixed_clock(),
+        case_id="case-unknown",
+    )
+    reg = Registry()
+
+    body = serialize_case(case, reg)
+
+    assert body["case_id"] == "case-unknown"
+    cand = body["candidates"][0]
+    assert cand["agent_id"] == "unknown_ops"
+    assert cand["owner"] == "some_lead"
+    assert "summary" not in cand
+    assert "domains" not in cand
+    assert "knowledge_sources" not in cand
+
+
+def test_serialize_case_커버리지는_카드에서_채운다():
+    """registry 주입 시 각 후보에 summary·domains·knowledge_sources가 채워진다."""
+    reg = _sample_registry()
+    body = serialize_case(_sample_case(), reg)
+
+    cs = body["candidates"][0]
+    assert cs["summary"] == "고객 환불·보상 처리"
+    assert cs["domains"] == ["환불", "보상"]
+    assert cs["knowledge_sources"] == ["cs_wiki", "환불정책"]
+
+    fin = body["candidates"][1]
+    assert fin["summary"] == "가격·보상 정책 관리"
+    assert fin["domains"] == ["가격", "보상"]
+    assert fin["knowledge_sources"] == ["재무규정"]
 
 
 def test_serialize_outcome_agreed():

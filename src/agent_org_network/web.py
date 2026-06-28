@@ -26,7 +26,7 @@ OrgReply(Answered | Pending)를 JSON으로 직렬화해 돌려준다.
 import os
 import secrets
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, assert_never
+from typing import Any, Literal, assert_never
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -75,12 +75,10 @@ from agent_org_network.review import (
     CorrectBackup,
     DismissBackup,
 )
+from agent_org_network.registry import Registry
 from agent_org_network.runtime import AgentRuntime
 from agent_org_network.session import InMemorySessionStore, SessionAskOrg, SessionStore
 from agent_org_network.user import User
-
-if TYPE_CHECKING:
-    from agent_org_network.registry import Registry
 
 _WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
 _INDEX_HTML = _WEB_DIR / "index.html"
@@ -189,15 +187,28 @@ def serialize_reply(reply: OrgReply) -> dict[str, Any]:
             assert_never(never)
 
 
-def serialize_case(case: ConflictCase) -> dict[str, Any]:
-    """ConflictCase를 처리함 운영 화면向 dict로 변환한다(내부값 노출 OK)."""
+def serialize_case(case: ConflictCase, registry: Registry) -> dict[str, Any]:
+    """ConflictCase를 처리함 운영 화면向 dict로 변환한다(내부값 노출 OK).
+
+    registry: 각 후보 카드의 커버리지(summary·domains·knowledge_sources)를 조회하는 데 쓴다.
+    미등록 agent_id는 agent_id·owner만 담고 커버리지 필드는 생략한다(방어적).
+    """
+    candidates: list[dict[str, Any]] = []
+    for c in case.candidates:
+        cand: dict[str, Any] = {"agent_id": c.agent_id, "owner": c.owner}
+        try:
+            card = registry.get(c.agent_id)
+            cand["summary"] = card.summary
+            cand["domains"] = list(card.domains)
+            cand["knowledge_sources"] = list(card.knowledge_sources)
+        except KeyError:
+            pass
+        candidates.append(cand)
     return {
         "case_id": case.case_id,
         "intent": case.intent,
         "question": case.question,
-        "candidates": [
-            {"agent_id": c.agent_id, "owner": c.owner} for c in case.candidates
-        ],
+        "candidates": candidates,
     }
 
 
@@ -774,7 +785,7 @@ def create_app(
         """
         owner_id = _session_identity(request)
         cases = bundle.case_store.open_for_owner(owner_id)
-        return [serialize_case(c) for c in cases]
+        return [serialize_case(c, bundle.registry) for c in cases]
 
     @app.get("/inbox/backup-reviews")
     def inbox_backup_reviews(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
@@ -1020,7 +1031,7 @@ def create_app(
         def inbox_cases_legacy(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
             """하위호환(인증 OFF 전용): path param으로 owner 지정."""
             cases = bundle.case_store.open_for_owner(owner_id)
-            return [serialize_case(c) for c in cases]
+            return [serialize_case(c, bundle.registry) for c in cases]
 
         @app.get("/manager/{manager_id}")
         def manager_queue_legacy(manager_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]

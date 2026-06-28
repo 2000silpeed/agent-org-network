@@ -154,6 +154,23 @@
     .cand input { accent-color: var(--me); }
     .cand .who { font-weight: 600; }
     .cand .owner { color: var(--muted); font-size: 12px; }
+    .cand-coverage {
+      margin-top: 4px;
+      margin-left: 28px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .cand-coverage .cov-summary { color: var(--ink); font-size: 12px; }
+    .cand-coverage .cov-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: baseline; }
+    .cand-coverage .cov-label { font-weight: 600; white-space: nowrap; }
+    .cand-coverage .cov-tag {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: #f3f4f6;
+      font-size: 11px;
+    }
     .rationale {
       width: 100%;
       padding: 10px 12px;
@@ -329,6 +346,7 @@
       const cands = el("div", "candidates");
       const radioName = "primary_" + c.case_id;
       for (const cand of c.candidates) {
+        const wrap = el("div");
         const label = el("label", "cand");
         const radio = el("input");
         radio.type = "radio";
@@ -338,7 +356,27 @@
         const who = el("span", "who", cand.agent_id);
         label.appendChild(who);
         label.appendChild(el("span", "owner", "(" + cand.owner + ")"));
-        cands.appendChild(label);
+        wrap.appendChild(label);
+
+        if (cand.summary || (cand.domains && cand.domains.length) || (cand.knowledge_sources && cand.knowledge_sources.length)) {
+          const cov = el("div", "cand-coverage");
+          if (cand.summary) cov.appendChild(el("div", "cov-summary", cand.summary));
+          if (cand.domains && cand.domains.length) {
+            const row = el("div", "cov-row");
+            row.appendChild(el("span", "cov-label", "담당:"));
+            for (const d of cand.domains) row.appendChild(el("span", "cov-tag", d));
+            cov.appendChild(row);
+          }
+          if (cand.knowledge_sources && cand.knowledge_sources.length) {
+            const row = el("div", "cov-row");
+            row.appendChild(el("span", "cov-label", "출처:"));
+            for (const s of cand.knowledge_sources) row.appendChild(el("span", "cov-tag", s));
+            cov.appendChild(row);
+          }
+          wrap.appendChild(cov);
+        }
+
+        cands.appendChild(wrap);
       }
       wrap.appendChild(cands);
 

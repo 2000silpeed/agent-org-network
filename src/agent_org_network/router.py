@@ -1,10 +1,27 @@
 import dataclasses
+from typing import Protocol
 
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.classifier import Classifier
 from agent_org_network.conflict import PrecedentStore
 from agent_org_network.decision import Contested, RoutingDecision, Routed, Unowned
 from agent_org_network.registry import Registry
+
+
+class RouterPort(Protocol):
+    """질문→RoutingDecision 라우팅 포트(ADR 0028 §13 — 와이어 지점 추상화).
+
+    구조적 타이핑(Protocol)으로 `Router`(분류기 기반)와 `TwoStageRouter`(인덱스 기반)를
+    *둘 다* 만족시킨다 — 두 라우터 모두 `route(question) -> RoutingDecision` 시그니처가
+    동일하므로 코드 변경 없이 통과한다. `AskOrg`·`SessionAskOrg`가 이 포트로 주입받아
+    플래그(`AON_ROUTER`)에 따라 어느 구현을 쓸지 build_demo가 선택한다.
+
+    Classifier·AgentRuntime·KnowledgeIndexMatcher 포트와 동일 패턴(포트+어댑터).
+    """
+
+    def route(self, question: str) -> RoutingDecision:
+        """사용자 질문을 라우팅해 RoutingDecision(Routed/Contested/Unowned)을 돌려준다."""
+        ...
 
 
 def collaborators_for(intent: str, primary: AgentCard, registry: Registry) -> tuple[AgentCard, ...]:

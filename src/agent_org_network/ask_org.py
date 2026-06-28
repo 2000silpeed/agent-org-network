@@ -14,7 +14,7 @@ from agent_org_network.dispatch import (
     RuntimeDispatcher,
     WorkTicket,
 )
-from agent_org_network.router import Router
+from agent_org_network.router import RouterPort
 from agent_org_network.runtime import AnswerMode
 from agent_org_network.user import User
 
@@ -84,7 +84,7 @@ class AskOrg:
 
     def __init__(
         self,
-        router: Router,
+        router: RouterPort,
         dispatcher: RuntimeDispatcher,
         audit_log: AuditLog,
         clock: Clock = default_clock,

@@ -31,9 +31,15 @@ from agent_org_network.dispatch import (
     LocalRuntimeDispatcher,
     RuntimeDispatcher,
 )
+from agent_org_network.index_matcher import ConceptOverlapMatcher
+from agent_org_network.okf_index import build_knowledge_index_from_okf
 from agent_org_network.registry import Registry
-from agent_org_network.router import Router
+from agent_org_network.router import Router, RouterPort
 from agent_org_network.runtime import AgentRuntime, ClaudeCodeRuntime
+from agent_org_network.two_stage_router import (
+    InMemoryPublishedIndexStore,
+    TwoStageRouter,
+)
 from agent_org_network.user import User
 
 if TYPE_CHECKING:
@@ -165,6 +171,49 @@ class DemoBundle:
     audit_reader: AuditReader | None = None
 
 
+# 데모 인덱스 라우팅 시드의 고정 generated_at — OKF→인덱스 도출이 결정론이 되도록
+# now()가 아닌 고정 타임스탬프를 주입한다(staleness는 T10.4 책임·여기선 시드만).
+_INDEX_SEED_AT = datetime(2026, 6, 28, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def select_router(
+    flag: str,
+    registry: Registry,
+    classifier: Classifier,
+    precedents: PrecedentStore,
+) -> RouterPort:
+    """`AON_ROUTER` 플래그로 라우터 구현을 *결정론*으로 고른다(게이트 내 테스트 가능).
+
+    - flag == "index" → `TwoStageRouter`(published 지식 인덱스 기반 2단 라우팅).
+        데모 지름길: 중앙이 repo `okf/`를 직접 읽어 owner별 KnowledgeIndex를 *시드*한다
+        (실 경로는 owner publish — T10.4·okf_index 모듈 docstring 참조). 중앙은 여전히
+        목차만 보유(내용 0). assessor=None이라 단일 담당은 Routed·≥2는 Contested(stage-2
+        자동해소 없음 — T10.5 owner측 RAG 전).
+    - 그 외(미설정·임의 문자열) → 기존 `Router`(분류기 기반·기본·무회귀).
+
+    선택 함수로 분리해 와이어 분기를 게이트 내에서 단언한다(env 미설정 시 옛 Router 보존).
+    """
+    if flag == "index":
+        store = InMemoryPublishedIndexStore(
+            [
+                build_knowledge_index_from_okf(
+                    card, DEMO_OKF_ROOT, generated_at=_INDEX_SEED_AT
+                )
+                for card in registry.all_cards()
+            ]
+        )
+        matcher = ConceptOverlapMatcher()
+        return TwoStageRouter(
+            registry,
+            matcher,
+            store,
+            root_user=ROOT_USER,
+            precedents=precedents,
+            assessor=None,
+        )
+    return Router(registry, classifier, root_user=ROOT_USER, precedents=precedents)
+
+
 def build_demo(
     runtime: AgentRuntime | None = None,
     dispatcher: RuntimeDispatcher | None = None,
@@ -210,7 +259,11 @@ def build_demo(
             classifier = RuleBasedClassifier(_KEYWORD_INTENTS)
     precedents = InMemoryPrecedentStore()
     case_store = InMemoryConflictCaseStore()
-    router = Router(registry, classifier, root_user=ROOT_USER, precedents=precedents)
+    # 라우터 선택(AON_ROUTER 플래그·기본 무회귀). 미설정/기타 → 기존 Router(분류기 기반),
+    # AON_ROUTER=index → TwoStageRouter(인덱스 기반·OKF 시드). 선택은 select_router가
+    # 결정론으로 한다(게이트 내 테스트). 데모 지름길 주석은 select_router·okf_index 참조.
+    router_flag = os.environ.get("AON_ROUTER", "").strip().lower()
+    router = select_router(router_flag, registry, classifier, precedents)
     # ask_org는 RuntimeDispatcher 경유로 답을 모은다(T6.3 슬라이스2). 데모/in-process는
     # 분산이 아니라 즉답이 필요하므로 동기 런타임을 LocalRuntimeDispatcher로 감싼다 —
     # dispatch가 곧 답(항상 Delivered). 분산 회수 경로(2b-i)를 검증할 땐 WebSocketDispatcher

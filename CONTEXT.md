@@ -103,11 +103,27 @@ _Avoid_: SyncDispatcher, InlineRuntime
 _Avoid_: Broker, WsServer(단독 — 디스패처는 포트 구현, WS 서버 핸들러는 그 위 어댑터)
 
 **Transport Frame (전송 프레임)**:
-owner 워커↔중앙 WebSocket으로 오가는 와이어 메시지 — `type` 판별 필드를 가진 봉투(envelope), pydantic v2 DTO(`transport.py`). 도메인 값 객체(`WorkTicket`·`Answer`, frozen dataclass)가 *아니라* 전송 DTO라 분리하고 경계에서 변환한다(전이 ≠ 전송). 워커→중앙(업스트림): `RegisterWorker`(owner 신원 선언·인증 연결점) · `SubmitAnswer`(답 회신, `ticket_id` 멱등) · **`PublishIndex`**(자기 소유 agent의 KnowledgeIndex 배포 — 아래 절) · `Heartbeat`/`Ack`(연결 생존·수신 확인). 중앙→워커(다운스트림): `Welcome`/`AuthError`(등록 수락·거부) · `PushWork`(claim한 작업 전달) · `Ping`(생존 확인). `WorkerFrame` sealed union(`type`로 판별)은 *추가 변이*만 무회귀로 진화한다 — 새 프레임은 새 `type` 키·기존 분기 무변경·미지 `type`은 `else: return None`으로 안전 무시(전방 호환). 봉투(`_Frame`)는 `extra="forbid"`라 *필드 추가*는 안전·*제거/이름변경*은 와이어 깨짐(되돌리기 어려움). (ADR 0011 결정 6-3·0028 §14)
+owner 워커↔중앙 WebSocket으로 오가는 와이어 메시지 — `type` 판별 필드를 가진 봉투(envelope), pydantic v2 DTO(`transport.py`). 도메인 값 객체(`WorkTicket`·`Answer`, frozen dataclass)가 *아니라* 전송 DTO라 분리하고 경계에서 변환한다(전이 ≠ 전송). 워커→중앙(업스트림): `RegisterWorker`(owner 신원 선언·인증 연결점) · `SubmitAnswer`(답 회신, `ticket_id` 멱등) · **`PublishIndex`**(자기 소유 agent의 KnowledgeIndex 배포 — 아래 절) · **`DocumentContent`**(요청받은 OKF 문서 본문 회신 — 아래 절) · `Heartbeat`/`Ack`(연결 생존·수신 확인). 중앙→워커(다운스트림): `Welcome`/`AuthError`(등록 수락·거부) · `PushWork`(claim한 작업 전달) · **`FetchDocument`**(특정 OKF 문서 본문 요청 — 아래 절) · `Ping`(생존 확인). `WorkerFrame`·`CentralFrame` sealed union(`type`로 판별)은 *추가 변이*만 무회귀로 진화한다 — 새 프레임은 새 `type` 키·기존 분기 무변경·미지 `type`은 `else: return None`으로 안전 무시(전방 호환). 봉투(`_Frame`)는 `extra="forbid"`라 *필드 추가*는 안전·*제거/이름변경*은 와이어 깨짐(되돌리기 어려움). (ADR 0011 결정 6-3·0028 §14·§15)
 
 **PublishIndex (인덱스 배포 프레임)**:
 owner 워커가 자기 소유 agent의 KnowledgeIndex를 중앙에 *배포*하는 워커→중앙 업스트림 `Transport Frame` 변이 — `RegisterWorker`/`SubmitAnswer`와 같은 봉투(`_Frame`·`type: Literal["publish_index"]`·payload `index: KnowledgeIndex`[frozen pydantic 중첩 직렬화]). 워커가 *연결·인증 직후* 자기 로컬 OKF에서 `build_knowledge_index_from_okf`로 인덱스를 도출해 송신한다(중앙은 받아 보관만 — **중앙은 OKF 내용을 안 읽는다**, 비소유 강화). **워커-소유자 스코핑(Worker–Owner Scoping)**: 중앙이 수용 전, 그 인덱스의 `agent_id`가 *연결 세션의 인증 owner(`RegisterWorker.owner_id`)가 소유한 카드*인지 검증한다 — `card.owner == session_owner`(중앙 `registry` 선언)일 때만 수용·불일치/미등록이면 그 프레임 거부(다른 owner 사칭 차단·`SubmitAnswer`가 연결 owner로 회신 출처를 강제하는 정신). 프레임에 owner를 다시 싣지 않는다(소켓이 곧 그 owner). "유효하지 않은 인덱스는 안 받는다" = 카드 admission의 publish 짝. 데모 시드 지름길(중앙이 repo `okf/`를 직접 읽어 시드, `select_router`)은 *워커 미연결 테스트/라이브용*으로 격리되고 실 경로는 워커 publish다. (ADR 0028 §14)
 _Avoid_: Message(단독), Event, Packet
+
+**FetchDocument (문서 요청 프레임)**:
+중앙→워커 다운스트림 `Transport Frame` 변이 — 인박스에서 owner가 연관 개념(`relevant_concepts`)을 *클릭*한 순간, 중앙이 그 개념의 *문서 본문*을 owner 워커에서 *그때* 끌어오려 보내는 요청(`_Frame`·`type: Literal["fetch_document"]`·payload `agent_id`·`concept_id`·`request_id`). `PushWork`와 같은 봉투(중앙→워커). `concept_id = OKF 파일 stem`(`okf_index` 도출 규칙)이라 워커가 `okf_root/{agent_id}/{concept_id}.md`를 읽는다. `agent_id`를 *싣는다*(한 owner가 여러 카드 소유라 어느 카드의 문서인지 선택자 — `TicketFrame.owner_id` 생략과 대비). `request_id`는 응답(`DocumentContent`)과 짝짓는 correlation 키(`ticket_id`가 `PushWork`↔`SubmitAnswer` 짝짓는 정신). (ADR 0028 §15)
+_Avoid_: GetDoc, ReadFile, DocumentRequest(장황)
+
+**DocumentContent (문서 본문 회신 프레임)**:
+워커→중앙 업스트림 `Transport Frame` 변이 — `FetchDocument`를 받은 워커가 자기 OKF 문서 본문을 회신(`_Frame`·`type: Literal["document_content"]`·payload `request_id`·`found: bool`·`content: str`). `SubmitAnswer`와 같은 봉투(워커→중앙·`request_id` echo로 correlation). 워커는 **자기 소유 카드(`self._cards`에 그 `agent_id`)의 문서만** 읽는다 — 미소유·파일 없음이면 `found=False`·`content=""`(사칭 차단·워커측 권한 게이트·예외 아닌 정상 회신). 중앙은 이 본문을 web 응답으로 *통과시킬* 뿐 **보관하지 않는다**(비소유 중계·아래 절). (ADR 0028 §15)
+_Avoid_: DocResponse, FileContent(단독), DocumentReply
+
+**on-demand 문서 fetch (요청 시 문서 추출)**:
+처리함 다툼 케이스 합의 보조 — 인박스가 후보별 *연관 개념 목차*(`core_question`·published 인덱스, 슬라이스 1)를 보여주고, owner가 한 개념을 **클릭하면 중앙이 그 문서를 owner 워커에서 *그때* 추출**해 표시하는 경로(`FetchDocument`→워커 OKF 읽기→`DocumentContent`→인박스). **lazy·중앙 저장 0** — 중앙은 *목차만* 갖고 본문은 클릭 순간 owner에서 가져와 *중계*만 한다(다음 클릭에 다시 fetch). **correlation = 동기 대기**(폴링 아님): web 핸들러가 `request_id`로 future를 등록하고 `FetchDocument`를 디스패치한 뒤 타임아웃까지 블록, `DocumentContent` 도착 시 그 future 완료. 로컬 파일 1개 읽기라 즉시(LLM 0·작업 큐 종착 무관)·`/ask`의 async 폴링(`tracking`)과 *다름*(답 생성은 느려 폴링·fetch는 즉시라 동기). **권한 두 축**: ① 요청 측 = 세션 owner가 *자기 케이스 후보 문서만*(`concur` 후보 스코프 정신·남의 OKF 무단 열람 차단) · ② 읽기 측 = 워커가 *자기 소유 카드만*(§14 워커-소유자 스코핑의 fetch판). **오프라인 = 우아한 degradation**: 담당 워커 미연결/무응답이면 "추출 불가"(에러 아님·HTTP 200·비소유의 자연 결과 — 내용은 owner 환경에만). 이는 ADR 0017 결정 4 **옵션 B-1(사설 데이터 커넥터 — 데이터 *접근만* owner 노출·조립/실행 중앙)** 의 OKF 마크다운판 실체다(데이터 종류가 OKF라 옵션 B의 경량판). (ADR 0028 §15·ADR 0017 결정 4)
+_Avoid_: 문서 동기화(틀림 — 중앙은 본문 저장 0·동기화 아님), 문서 캐시(중앙 저장 0이라 캐시 없음), 문서 RAG(LLM 0·순수 패스스루)
+
+**비소유 중계 (Relay-only / 저장 0)**:
+중앙이 owner 본문 데이터(`DocumentContent.content`)를 web 응답으로 *통과시킬* 뿐 어디에도 보관하지 않는 원칙 — 스토어·캐시·인덱스 0. 중앙=목차·owner=내용을 *본문 경로*에서도 지킨다(published 인덱스 스토어는 목차만·on-demand fetch는 본문을 lazy 중계). "중앙 비소유"(ADR 0006/0010/0017)가 라우팅 목차뿐 아니라 *문서 본문 추출*에서도 성립함을 보장하는 말 — fetch는 *조회(읽기 중계)*이지 전이도 기록도 아니다(correlation future는 1회용·완료 후 정리·audit 아님). (ADR 0028 §15)
+_Avoid_: 프록시(틀림 아님이나 장황), 미러링(저장 함의·틀림), 동기화(저장 함의·틀림)
 
 **DispatchingRuntime (동기 호환 어댑터)**:
 `RuntimeDispatcher` 위에 동기 `AgentRuntime.answer`를 얹는 어댑터(ADR 0011 슬라이스1 산물) — dispatch→블로킹 poll로 동기 계약을 보존한다. 단 `ask_org`는 이를 **거치지 않는다**(ask_org는 디스패처를 직접 보고 escalation/미회신을 `Pending`으로 표면화 — ADR 0011 결정 4, "Answer 위장 금지"). 이 어댑터의 `EscalatedToManager`/`AwaitingWorker` → 폴백 `Answer` 변환은 *AgentRuntime 계약(항상 Answer 반환)을 지키기 위한 어댑터 한정 동작*이지 도메인 처분을 답으로 뭉개도 된다는 뜻이 아니다 — "동기 answer를 꼭 요구하는 비-ask_org 호출처"의 호환 경로로만 남는다(현재 그런 호출처는 단위 테스트뿐, 프로덕션 경로 아님).

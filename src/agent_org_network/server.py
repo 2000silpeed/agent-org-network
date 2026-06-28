@@ -31,6 +31,7 @@ from agent_org_network.transport import (
     Ack,
     AuthError,
     CentralFrame,
+    DocumentContent,
     Heartbeat,
     PublishIndex,
     RegisterWorker,
@@ -60,6 +61,8 @@ def _parse_worker_frame(raw: object) -> WorkerFrame | None:
         model = SubmitAnswer
     elif frame_type == "publish_index":
         model = PublishIndex  # ADR 0028 §14 결정 A — 추가 한 줄(기존 분기 무회귀·새 키)
+    elif frame_type == "document_content":
+        model = DocumentContent  # ADR 0028 §15 결정 A — 추가 한 줄(기존 분기 무회귀·새 키)
     elif frame_type == "heartbeat":
         model = Heartbeat
     elif frame_type == "ack":
@@ -148,6 +151,12 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
                         owner_id,
                         frame.index.agent_id,
                     )
+            elif isinstance(frame, DocumentContent):
+                # on-demand 문서 fetch 회신(ADR 0028 §15 결정 B) — request_id로 대기 중인
+                # web 핸들러 슬롯을 깨운다. 본문은 슬롯을 거쳐 web 응답으로 통과만 한다
+                # (중앙 저장 0·비소유 중계, 결정 E). 미지 request_id(타임아웃/중복)는 멱등
+                # 무시(resolve_fetch 안에서). 큐 전이 없음(읽기 중계라 작업 큐 무관).
+                dispatcher.resolve_fetch(frame)
             # Heartbeat/Ack/미지 프레임은 생존 신호로만(생존 판정 보강, 6-4). 큐 전이 없음.
 
     send_task = asyncio.ensure_future(send_loop())

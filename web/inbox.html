@@ -189,9 +189,25 @@
       border-left: 2px solid var(--line);
       margin-bottom: 4px;
       font-size: 12px;
+      cursor: pointer;
     }
+    .rel-concept-item:hover { border-left-color: var(--muted); }
     .rel-concept-item .rc-label { font-weight: 600; color: var(--ink); }
     .rel-concept-item .rc-cq { color: var(--muted); font-size: 11px; }
+    .rel-concept-item .rc-doc {
+      margin-top: 6px;
+      padding: 8px;
+      background: #f6f6f4;
+      border-radius: 4px;
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--ink);
+      cursor: default;
+    }
+    .rel-concept-item .rc-doc.loading { color: var(--muted); font-style: italic; }
+    .rel-concept-item .rc-doc.unavailable { color: var(--muted); }
+    .rel-concept-item .rc-doc.error { color: #b00020; }
     .rationale {
       width: 100%;
       padding: 10px 12px;
@@ -344,6 +360,22 @@
       return data;
     }
 
+    // on-demand 문서 fetch(ADR 0028 §15) — 연관 개념 클릭 시 owner 워커에서 문서를 끌어온다.
+    // 중앙은 본문을 저장하지 않고 중계만 한다(비소유). 응답: {found, available, content?, message?}.
+    async function postFetchDocument(caseId, agentId, conceptId) {
+      const res = await fetch("/inbox/cases/" + encodeURIComponent(caseId) + "/document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id: agentId, concept_id: conceptId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data && data.detail ? data.detail : "요청 실패: " + res.status;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
     function renderOutcome(node, outcome) {
       node.className = "result " + outcome.type;
       if (outcome.type === "still_open") {
@@ -399,13 +431,42 @@
 
         if (cand.relevant_concepts && cand.relevant_concepts.length) {
           const rcWrap = el("div", "rel-concepts");
-          rcWrap.appendChild(el("div", "rel-label", "연관 개념"));
+          rcWrap.appendChild(el("div", "rel-label", "연관 개념 (클릭하면 문서 펼침)"));
           for (const rc of cand.relevant_concepts) {
             const item = el("div", "rel-concept-item");
             item.dataset.conceptId = rc.id;
             item.dataset.agentId = cand.agent_id;
             item.appendChild(el("span", "rc-label", rc.label));
             item.appendChild(el("span", "rc-cq", rc.core_question));
+            // 문서 본문(또는 degradation)을 펼쳐 보일 자리 — 클릭 시 lazy fetch.
+            const doc = el("div", "rc-doc");
+            doc.style.display = "none";
+            item.appendChild(doc);
+            item.addEventListener("click", async () => {
+              if (doc.dataset.open === "1") {
+                // 토글 닫기.
+                doc.style.display = "none";
+                doc.dataset.open = "0";
+                return;
+              }
+              doc.style.display = "block";
+              doc.dataset.open = "1";
+              doc.className = "rc-doc loading";
+              doc.textContent = "문서 추출 중…";
+              try {
+                const data = await postFetchDocument(c.case_id, cand.agent_id, rc.id);
+                if (data.found) {
+                  doc.className = "rc-doc";
+                  doc.textContent = data.content;
+                } else {
+                  doc.className = "rc-doc unavailable";
+                  doc.textContent = data.message || "추출 불가";
+                }
+              } catch (err) {
+                doc.className = "rc-doc error";
+                doc.textContent = err.message || "추출 실패";
+              }
+            });
             rcWrap.appendChild(item);
           }
           wrap.appendChild(rcWrap);

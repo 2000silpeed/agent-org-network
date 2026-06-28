@@ -1,6 +1,6 @@
 # 스케일 라우팅 — published 지식 인덱스 + 2단 라우팅(중앙=목차·owner=내용)
 
-상태: accepted (2026-06-27) · **§13 T10.3 통합 shape 확정(2026-06-27 — 결정 A~E)** · **§14 T10.4 publish 경로 shape 확정(2026-06-28 — 결정 A~F·`PublishIndex` 프레임·워커-소유자 스코핑·`generated_at` staleness·와이어 포맷 변경=되돌리기 어려움)** · 사용자 grill 합의 7개 결정 명문화 · **현 라우팅(Classifier→intent 1라벨→`card.domains` 정확매칭→Routed/Contested/Unowned)을 *refine***(대체 아님 — `RoutingDecision` sealed sum·Authority 중앙·Precedent·Contested 폴백은 그대로, 후보 *제안* 메커니즘만 인덱스 기반으로 정밀화) · **ADR 0017 결정 3②("실시간 충돌 자동해소")의 실체** · **PRD §5 "LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위"를 현금화** · ADR 0006(중앙 MCP)·0010/0027(owner측 실행·중앙 토큰 0)·0013(OKF)·0011/0012(WS 전송)·0019(staleness 패턴)·0004(Authority 중앙)·0015(intent 단일 출처)와 정합 · CONTEXT(신규 KnowledgeIndex·Concept·KnowledgeIndexMatcher·published index·stage-1/stage-2 용어)·TRD §2·§4·PRD §5 갱신 대상
+상태: accepted (2026-06-27) · **§13 T10.3 통합 shape 확정(2026-06-27 — 결정 A~E)** · **§14 T10.4 publish 경로 shape 확정(2026-06-28 — 결정 A~F·`PublishIndex` 프레임·워커-소유자 스코핑·`generated_at` staleness·와이어 포맷 변경=되돌리기 어려움)** · **§15 on-demand 문서 fetch shape 확정(2026-06-28 — 결정 A~F·`FetchDocument`/`DocumentContent` 프레임 2개·동기 대기 correlation·요청 owner 자기 케이스 스코핑·워커 자기 카드만 읽기·중앙 중계만 저장 0·ADR 0017 결정 4 옵션 B-1 실체·양 union 동시 진화=되돌리기 어려움)** · 사용자 grill 합의 7개 결정 명문화 · **현 라우팅(Classifier→intent 1라벨→`card.domains` 정확매칭→Routed/Contested/Unowned)을 *refine***(대체 아님 — `RoutingDecision` sealed sum·Authority 중앙·Precedent·Contested 폴백은 그대로, 후보 *제안* 메커니즘만 인덱스 기반으로 정밀화) · **ADR 0017 결정 3②("실시간 충돌 자동해소")의 실체** · **PRD §5 "LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위"를 현금화** · ADR 0006(중앙 MCP)·0010/0027(owner측 실행·중앙 토큰 0)·0013(OKF)·0011/0012(WS 전송)·0019(staleness 패턴)·0004(Authority 중앙)·0015(intent 단일 출처)와 정합 · CONTEXT(신규 KnowledgeIndex·Concept·KnowledgeIndexMatcher·published index·stage-1/stage-2 용어)·TRD §2·§4·PRD §5 갱신 대상
 
 ## 맥락 — 현 라우팅의 스케일 결함
 
@@ -475,6 +475,100 @@ WorkerFrame = RegisterWorker | SubmitAnswer | Heartbeat | Ack | PublishIndex   #
 - **전이 ≠ 기록**: 스토어는 *agent_id별 최신 보관*(전이/배포 결과)이지 audit이 아니다. 옛 인덱스는 갈아끼우고 버린다(append-only history는 운영면 옵션).
 - **노출 불변식**: `KnowledgeIndex`·`Concept`·`grounding`은 조직 내부값(사용자向 `OrgReply` 미노출). publish는 owner↔중앙 운영 채널이지 사용자 경로가 아니다.
 - **기존 `WorkerFrame` 파싱 무회귀(제약)**: `PublishIndex`는 *추가 변이*(새 `type` 키)·기존 4종 분기 무변경·`else: return None`이 미지 프레임을 안전히 떨군다(전방 호환). `_Frame extra="forbid"`로 *추가*는 안전·*제거/이름변경*만 깨짐(되돌리기 어려움 명시).
+
+---
+
+## 15. on-demand 문서 fetch shape (domain-architect 확정 2026-06-28 — 결정 A~F)
+
+> §14(publish 경로)가 *목차*(`KnowledgeIndex`)를 owner→중앙으로 흘려 중앙이 보관·라우팅하게 닫았다. 이 절은 그 **목차의 한 개념을 클릭하면 그 *내용*을 *그때* owner 워커에서 추출**하는 경로(on-demand 문서 fetch)를 닫는다. T10.4.5(슬라이스 1)가 처리함 다툼 케이스 후보별 *연관 개념*(`relevant_concepts` — core_question 목차)을 표시하고 각 항목에 `data-concept-id`·`data-agent-id`를 심어 *배선을 준비*해뒀다. 이 절은 그 클릭이 owner 워커에서 문서를 끌어와 인박스에 표시하는 **슬라이스 2**의 shape다. **구현 아님** — mcp-runtime-engineer(전송·워커·web 라우트)·tdd-engineer(프레임 DTO·correlation·워커 읽기·권한 결정론) 넘김용 *모양*. `transport.py`·`worker.py`·`server.py`·`web.py`·`okf_index.py`를 읽고 확정.
+>
+> **되돌리기 어려움(와이어 포맷 변경)**: 이 결정은 양방향 union을 *둘 다* 진화시킨다 — `CentralFrame`(중앙→워커)에 새 변이 `FetchDocument`, `WorkerFrame`(워커→중앙)에 새 변이 `DocumentContent`. §14 `PublishIndex`와 같은 등급의 결정 — 한번 배포되면 *판별 필드·payload 모양*은 호환을 깨지 않고는 바꾸기 어렵다(배포된 워커 ↔ 중앙 무회귀). `_Frame extra="forbid"`라 *필드 추가*는 안전·*제거/이름변경*은 깨진다. **두 union을 동시에 늘리는 첫 사례**(§14는 `WorkerFrame` 한쪽만)라 더 신중히 닫는다.
+>
+> **핵심 전환(비소유 보존·lazy)**: 중앙은 *목차만* 갖고(§14에서 확보), 내용은 **클릭 순간 owner에서 가져와 *중계*만**(저장 0). 슬라이스 1이 표시한 `core_question`은 목차(메타)이고, 이 절의 `DocumentContent.content`는 owner OKF 문서 본문이다 — **중앙은 그 본문을 *통과시킬* 뿐 보관하지 않는다**(목차만 유지). 이게 ADR 0017 **결정 4 옵션 B-1(분산 전송 = *사설 데이터 커넥터* 한정 옵션 — "그 담당이 데이터 *접근만* owner 쪽에 노출하고 중앙이 호출")** 의 실체에 가깝다. 차이: 0017 결정 4가 그린 옵션 B는 *사설 실시간 데이터·자격증명*(DB·메일·사내 API)이고, 여기 fetch는 *owner OKF 마크다운 문서*다 — 같은 "데이터 접근만 노출, 실행/조립은 중앙" 패턴이되 데이터 종류가 OKF(공유 가능 마크다운)라 옵션 B의 *경량판(B-1)*이다. **중앙 토큰 0 보존**: 이 경로는 LLM을 *안 부른다* — 워커가 파일을 읽어 반환하고 중앙은 중계만 한다(답 생성과 무관·순수 데이터 패스스루).
+
+### 결정 A — 새 프레임 2개: `FetchDocument`(중앙→워커)·`DocumentContent`(워커→중앙)
+
+양방향 union을 *각각* 한 변이씩 늘린다(§14 `PublishIndex` 봉투 패턴 재사용):
+
+```
+class FetchDocument(_Frame):                       # 중앙→워커 (CentralFrame 변이)
+    type: Literal["fetch_document"] = "fetch_document"
+    agent_id: str          # 어느 카드의 문서인가 (OKF 디렉터리 키)
+    concept_id: str        # OKF 파일 stem (okf_index: concept.id = 파일 stem)
+    request_id: str        # 요청/응답 correlation 키 (결정 B)
+
+class DocumentContent(_Frame):                     # 워커→중앙 (WorkerFrame 변이)
+    type: Literal["document_content"] = "document_content"
+    request_id: str        # FetchDocument의 그 id (correlation)
+    found: bool            # 파일이 있었나 (없으면 found=False·content="")
+    content: str = ""      # OKF 문서 본문 (found=False면 빈 문자열)
+
+CentralFrame = Welcome | AuthError | PushWork | Ping | FetchDocument   # ← 변이 1개 추가
+WorkerFrame  = RegisterWorker | SubmitAnswer | PublishIndex | Heartbeat | Ack | DocumentContent  # ← 변이 1개 추가
+```
+
+- **봉투 = `_Frame`(frozen·`extra="forbid"`)·`type` 판별.** `FetchDocument`는 `PushWork`와 *같은 봉투*(중앙→워커·소켓이 곧 그 owner)·`DocumentContent`는 `SubmitAnswer`와 *같은 봉투*(워커→중앙·`request_id` 멱등 키 정신). `PublishIndex`처럼 중첩 값객체가 아니라 평평한 스칼라 필드(추가 DTO 불요).
+- **`FetchDocument`에 `agent_id`를 *싣는다*(생략 안 함)**: `TicketFrame`이 `owner_id`를 생략하는 것(소켓이 곧 그 owner)과 *다르다* — 한 워커가 *여러 카드*를 소유할 수 있어(§14 결정 B "한 owner가 여러 카드 소유") 어느 카드의 문서인지를 워커가 알아야 `okf_root/{agent_id}/{concept_id}.md`로 읽는다. owner는 여전히 연결 귀속(프레임에 안 실음)·`agent_id`는 *그 owner 소유 카드 중 어느 것*인지의 선택자.
+- **`request_id`는 correlation 키(결정 B)**: 중앙이 발급해 `FetchDocument`에 싣고 워커가 `DocumentContent`에 그대로 되싣는다(echo). 한 워커가 *연달아 여러 fetch*를 받을 수 있어(인박스에서 여러 개념 클릭) 응답을 요청과 짝지으려면 키가 필요하다 — `ticket_id`가 `PushWork`↔`SubmitAnswer`를 짝짓는 정신.
+- **전방 호환(union 진화 무회귀)**: 두 파서(`parse_central_frame`[워커측]·`_parse_worker_frame`[중앙측])가 *각각 elif 한 줄* 추가로 닫힌다. 새 `type` 키(`"fetch_document"`·`"document_content"`)는 기존 키와 안 겹쳐 무회귀·`else: return None`이 *구버전*에서 미지 프레임을 안전히 떨군다(워커가 신버전인데 중앙이 구버전이어도, 그 역도 안 깨짐). **두 union 진화가 기존 프레임 파싱을 무회귀**임을 명시 — `Welcome`/`AuthError`/`PushWork`/`Ping` 분기·`RegisterWorker`/`SubmitAnswer`/`PublishIndex`/`Heartbeat`/`Ack` 분기 *전부 무변경*.
+
+### 결정 B — 요청/응답 correlation: **동기 대기**(폴링 아님)
+
+중앙이 `request_id`로 `FetchDocument`를 보내고 `DocumentContent`를 그 id로 매칭한다. web 요청이 결과를 받는 방식 = **동기 대기**(web 핸들러가 future/타임아웃까지 블록).
+
+- **택1 근거(동기 vs async 폴링)**: `/ask`(`tracking` 발급 + `GET /ask/{tracking}` 폴 엔드포인트, ADR 0011 결정 6-5)는 **async 폴링**이다 — 답 생성이 LLM 호출이라 수십 초·작업 큐 도메인(단조 종착·timeout escalation)을 통과한다. **fetch는 다르다**: ① owner OKF *로컬 파일 1개 읽기*라 거의 즉시(LLM 호출 0·순수 데이터 패스스루) · ② 작업 큐 도메인과 *무관*(라우팅 종착·escalation 대상 아님 — 읽기 중계일 뿐) · ③ 클릭→내용 표시가 단일 UX 라운드라 폴 엔드포인트·tracking 발급의 비용이 이득 0. → **동기 대기 채택**(로컬 파일이라 빠름·UX·correlation 스토어 단순). async 폴링은 *명시 기각*(fetch는 큐 종착 무관·즉시성이라 폴링 인프라 과대).
+- **correlation 스토어 shape**: `request_id → Future[DocumentContent]`(또는 동등한 1회용 슬롯). web 핸들러가 `request_id`를 발급하고 그 future를 등록한 뒤 `FetchDocument`를 워커로 디스패치하고 future를 await(타임아웃 동반). `recv_loop`가 `DocumentContent` 수신 시 `request_id`로 그 future를 *완료*시킨다(set_result). 디스패처가 *발급/대기/완료* 세 연산을 소유한다(`tracking → WorkTicket` 보관 정신의 N번째·단 이건 1회용·완료 후 정리). server.py의 send 콜백이 *동기*(`call_soon_threadsafe`)인 패턴과 정합 — fetch도 같은 outbound 큐로 `FetchDocument`를 내보내고 future로 응답을 기다린다.
+- **타임아웃·응답 없음 처리(명시)**: future가 타임아웃 안에 완료 안 되면(워커 무응답·끊김) web는 **"추출 불가(담당 워커 응답 없음)"** 를 돌려준다(에러가 아니라 정상 degradation·결정 C와 같은 클래스). 타임아웃 슬롯은 정리(`request_id` 누수 방지·`poll`이 escalation 종착 시 라우팅 표식 정리하는 정신). 타임아웃 값은 정책(주입 — 로컬 파일이라 짧게·`staleness_threshold` 주입 정신).
+
+### 결정 C — 워커 라우팅·오프라인: owner 워커에 push·미연결이면 우아한 degradation
+
+중앙은 `FetchDocument`를 **`agent_id`의 owner에 연결된 워커**에게 보낸다(`WebSocketDispatcher`의 per-owner 연결 재사용).
+
+- **라우팅 = card.owner → 연결**: 중앙이 `registry.get(agent_id).owner`로 그 카드의 owner를 찾고(중앙 선언·Authority 중앙), `_connections[owner_id]`의 연결(우선순위 primary→backup·`_select_connection` 정신 또는 단순 primary)로 `FetchDocument`를 push한다. fetch는 작업 큐 claim/submit과 무관(읽기 중계)이라 큐를 안 통과 — 연결 레지스트리만 재사용한다.
+- **오프라인 = 우아한 degradation(에러 아님)**: 그 owner 워커가 **미연결이면** 중앙은 `FetchDocument`를 보낼 곳이 없다 → web가 **"추출 불가(담당 워커 미연결)"** 를 정상 응답한다(HTTP 200·degradation 메시지·예외 아님). 비소유의 자연스러운 결과 — *내용은 owner 환경에만* 있으므로 owner가 자리에 없으면 *지금* 못 가져온다(목차는 이미 published라 표시는 됨·내용만 lazy 실패). PRD §3 "모르면 안전하게 넘김"·결정 9 "위임 stale/부재면 거부"의 fetch판 — *조용히 깨지지 않고* 명시적 degradation 메시지로 표면화한다.
+
+### 결정 D — 워커 핸들러: 자기 소유 카드 문서만 읽어 회신(사칭 차단)
+
+워커가 `FetchDocument` 수신 → `okf_root/{agent_id}/{concept_id}.md`를 읽어 `DocumentContent`로 회신한다.
+
+- **읽기 경로(okf_index 규칙 재사용)**: `concept.id = OKF 파일 stem`(`okf_index.py` 도출 규칙)이라 `okf_root/{agent_id}/{concept_id}.md`가 그 개념의 원본 문서다. 파일이 있으면 `DocumentContent(request_id, found=True, content=<본문>)`·없으면 `DocumentContent(request_id, found=False, content="")`. `publish_frames`가 OKF를 *읽는 정신*(워커측 도출·중앙은 안 읽음)과 같은 자리 — 단 이번엔 *목차 도출*이 아니라 *본문 반환*.
+- **자기 소유 카드만(사칭 차단)**: 워커는 `self._cards`에 그 `agent_id`가 *있어야* 읽는다(`handle_push_work`의 카드 조회 정신). 없으면 `found=False`(또는 명시적 거부) — *남의 owner 카드 문서*를 owner 사칭으로 끌어내지 못하게(§14 결정 B 워커-소유자 스코핑의 fetch판·워커측 1차 방어). 중앙측 권한 스코핑(결정 E)과 *이중 게이트* — 워커가 자기 카드만 읽고, 중앙이 요청 owner를 자기 케이스 범위로 제한.
+- **⚠️ `concept_id`·`agent_id` 경로 sanitization 필수(보안 불변식·code-review 발견 2026-06-28).** `concept_id`/`agent_id`는 **HTTP body 신뢰 불가 입력**이고 워커가 `okf_root/{agent_id}/{concept_id}.md`로 파일을 읽는다 — sanitization이 없으면 `concept_id="../finance_ops/pricing"`·`"/abs/path"`로 **경로 traversal**(다른 owner OKF·okf_root 바깥 유출)이 가능하다(own-cards 게이트는 `agent_id`만 봐 `concept_id` 축으로 우회·web 케이스-후보 게이트도 `concept_id` 미검증). 정상 UI는 `concept_id=concept.id=파일 stem`이라 안전하지만 *"정상값 안전 ≠ 입력 안전"*. **워커가 최종 신뢰 경계**: ① 화이트리스트(순수 파일명 컴포넌트 — 구분자·`..`·절대경로·숨김 거부, `_is_safe_path_component`) ② resolve 후 `okf_root/{agent_id}` 하위 확인(`is_relative_to` — 심볼릭링크·잔여 traversal 방어). 거부 시 `found=False`(degradation 일관). web 라우트는 1차 형식 검증(이중 방어)이되 워커가 권위. traversal 음성 테스트(공격 A 형제 owner·B okf_root 탈출·C 절대경로·D agent_id·E 심볼릭) 필수.
+- **`found=False` content content="" 규약**: 파일 없음·미소유는 *예외가 아니라* `found=False`로 정상 회신한다(요청이 미아로 떠 있지 않게·web가 "문서 없음" 표시). `handle_push_work`가 미등록 agent_id를 폴백 답으로 종착시키는 정신.
+
+### 결정 E — 비소유·권한 스코핑: 중계만·저장 0·요청 owner 자기 케이스 범위
+
+중앙은 내용을 *중계*만(저장 0·목차만 유지)·권한은 요청 owner를 *자기 케이스 후보 문서*로 제한한다.
+
+- **비소유(중계만·저장 0)**: 중앙은 `DocumentContent.content`를 web 응답으로 *통과시킬* 뿐 **어디에도 보관하지 않는다**(스토어·캐시 0). 다음 클릭에 다시 fetch(lazy 일관). published 인덱스 스토어(§14)는 *목차*만 갖고 본문은 안 갖는다 — 이 절이 그 *비소유*를 본문 경로에서도 지킨다(중앙 = 목차·owner = 내용 항상 유지).
+- **요청 owner 스코핑(권한)**: web 요청의 **세션 owner가 *자기가 후보로 걸린 다툼 케이스의 후보 문서만* fetch** 가능하다. 임의 owner가 남의 OKF를 무단 열람하는 걸 차단 — 스코프를 *그 케이스의 후보*로 제한한다. 검증: `case_store`에서 그 `case_id`(또는 question)의 케이스를 찾아 ① 세션 owner가 그 케이스 후보인지(`concur` 스코프 "세션 owner가 후보 아니면 403"의 fetch판) ② `agent_id`가 그 케이스 후보 중 하나인지. 둘 다 통과해야 `FetchDocument`를 보낸다(불통이면 403). 인박스가 *owner 운영 면*이라 운영값 노출은 OK이되(serialize_case 내부값 노출 OK 정신) *자기 케이스 범위로 한정*한다.
+- **두 권한 축(요청 측·읽기 측)**: ① *요청* 측 = 세션 owner 자기 케이스 후보로 제한(중앙·web 핸들러) · ② *읽기* 측 = 워커가 자기 소유 카드만(결정 D·워커). 두 축이 각각 막아 "남의 OKF를 owner 사칭으로도·자기 케이스 밖으로도" 못 끌어낸다.
+
+### 결정 F — 게이트 경계
+
+**게이트 내(결정론·`.venv` pytest로 잠금):**
+- `FetchDocument`·`DocumentContent` 프레임 DTO 직렬화/역직렬화 왕복(`model_dump_json`↔`model_validate`).
+- 두 union 파싱 무회귀(`parse_central_frame`이 `fetch_document` 추가·기존 4종 무변경·`_parse_worker_frame`이 `document_content` 추가·기존 5종 무변경·미지는 None).
+- correlation 로직(`request_id` 발급·future 등록·`DocumentContent` 도착 시 매칭 완료·타임아웃 시 degradation·완료 후 슬롯 정리·멱등).
+- 워커 문서 읽기(`okf_root/{agent_id}/{concept_id}.md`·tmp OKF·found True/False·자기 소유 카드만 읽기·미소유 found=False).
+- 권한 스코핑(세션 owner 자기 케이스 후보 제한·비후보 403·`agent_id`가 케이스 후보인지).
+- web 핸들러 처리 로직(가짜 fetch 디스패처 주입으로 fetch 라우트의 동기 대기·degradation 분기 결정론).
+
+**게이트 밖(수동·실 인프라·비결정):**
+- 실 WS fetch 왕복(실 owner 워커가 실 소켓으로 `FetchDocument` 수신·`DocumentContent` 송신).
+- 워커 오프라인 실연(워커 끊고 클릭 → "담당 워커 미연결" degradation).
+- 클릭→내용 표시 end-to-end(브라우저 인박스에서 개념 클릭 → 실 워커 OKF 본문 → 인박스 표시).
+
+### 불변식 보존 자체점검 (결정 A~F)
+
+- **중앙 토큰 0**: fetch는 LLM을 안 부른다(워커가 파일 읽어 반환·중앙 중계). 답 생성과 무관한 순수 데이터 패스스루.
+- **비소유 보존(핵심)**: 중앙은 본문을 *중계만*·저장 0·목차만 유지(스토어·캐시 0·lazy). 중앙=목차·owner=내용이 본문 경로에서도 지켜진다(ADR 0006/0010/0017 비소유의 fetch판).
+- **Authority 중앙**: 워커는 *자기 소유 카드 문서만* 읽고(결정 D·사칭 차단), 요청 owner는 *자기 케이스 후보 문서만* 가져온다(결정 E). 두 축 다 자기보고가 경계를 넘지 못함(§14 결정 B 워커-소유자 스코핑·`concur` 후보 스코프 재사용).
+- **등록 무결성**: `registry.get(agent_id)`로 owner 라우팅(미등록 agent_id면 보낼 곳 없음·degradation).
+- **미아 없음**: fetch는 *라우팅 종착과 무관*(읽기 중계일 뿐·작업 큐 안 통과). fetch 실패(미연결·미소유·파일 없음)가 *질문을 떨구지 않는다* — 어떤 질문도 fetch 때문에 미아가 안 된다(라우팅은 이미 §13/§14가 종착).
+- **전이 ≠ 기록**: fetch는 *조회*(읽기 중계)이지 전이도 기록도 아니다. correlation 스토어는 1회용 future(완료 후 정리)이지 audit 아님.
+- **노출 불변식**: fetch는 *owner 운영 면*(처리함·다툼 케이스 합의 보조)이지 사용자 경로(`OrgReply`)가 아니다. 본문 노출은 owner↔owner 운영 채널이고 *자기 케이스 범위로 한정*(결정 E).
+- **기존 `CentralFrame`/`WorkerFrame` 파싱 무회귀(제약)**: 양 union에 *추가 변이*(새 `type` 키)·기존 분기 전부 무변경·`else: return None` 전방 호환. `_Frame extra="forbid"`로 *추가*는 안전·*제거/이름변경*만 깨짐(되돌리기 어려움 — 와이어 포맷 변경·§14와 같은 등급).
 
 ---
 

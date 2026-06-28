@@ -30,7 +30,7 @@ from typing import Any, Literal, assert_never
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from agent_org_network.ask_org import Answered, OrgReply, Pending
 from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog
@@ -159,6 +159,45 @@ class ConcurRequest(BaseModel):
     on_agent: str
     rationale: str = ""
     by_owner: str = ""  # 하위호환 — 인증 활성 시 무시, 미활성 시 body에서 읽음
+
+
+class FetchDocumentRequest(BaseModel):
+    """POST /inbox/cases/{case_id}/document 요청 바디 — on-demand 문서 fetch(ADR 0028 §15 결정 E).
+
+    인박스에서 owner가 한 후보의 연관 개념을 클릭하면 그 문서 본문을 *그때* owner 워커에서
+    끌어온다. `agent_id`(어느 후보 카드)·`concept_id`(OKF 파일 stem)로 그 owner 워커에
+    `FetchDocument`를 보낸다. 권한은 요청 owner를 *자기 케이스 후보 문서*로 제한한다(결정 E).
+
+    1차 경로 traversal 방어: concept_id에 경로 구분자·'..'·절대경로가 포함되면 422로 거부.
+    **워커측이 최종 신뢰 경계**(분산 신뢰 경계 — 워커 `handle_fetch_document`가 최종 권위로
+    재검증). 이 web 검증은 조기 차단으로 불필요한 dispatch를 막는 1차 방어다.
+    """
+
+    agent_id: str
+    concept_id: str
+
+    @field_validator("concept_id")
+    @classmethod
+    def concept_id_must_be_safe_stem(cls, v: str) -> str:
+        """concept_id가 순수 파일명 컴포넌트인지 검증(경로 traversal 1차 방어).
+
+        구분자('/', '\\', os.sep)·'..'·절대경로·빈 문자열을 포함하면 422로 거부.
+        워커측이 최종 권위이므로 이 검증은 1차 조기 차단이다.
+        """
+        import os
+        from pathlib import Path as _Path
+
+        if not v:
+            raise ValueError("concept_id는 빈 문자열일 수 없습니다")
+        if v in (".", ".."):
+            raise ValueError("concept_id는 '.' 또는 '..'일 수 없습니다")
+        if os.sep in v or "/" in v or "\\" in v:
+            raise ValueError("concept_id에 경로 구분자가 포함될 수 없습니다")
+        if os.path.isabs(v):
+            raise ValueError("concept_id는 절대경로일 수 없습니다")
+        if _Path(v).name != v:
+            raise ValueError("concept_id는 단일 파일명 컴포넌트여야 합니다")
+        return v
 
 
 def serialize_reply(reply: OrgReply) -> dict[str, Any]:
@@ -846,6 +885,53 @@ def create_app(
             if case is not None:
                 bundle.ask.enqueue_deadlock(case, reason=outcome.reason)
         return serialize_outcome(outcome)
+
+    @app.post("/inbox/cases/{case_id}/document")
+    def inbox_fetch_document(  # pyright: ignore[reportUnusedFunction]
+        case_id: str, req: FetchDocumentRequest, request: Request
+    ) -> dict[str, Any]:
+        """on-demand 문서 fetch — 연관 개념 클릭 시 owner 워커에서 문서 본문을 끌어온다.
+
+        권한 두 축 중 *요청 측*(ADR 0028 §15 결정 E): 세션 owner가 *자기가 후보로 걸린
+        다툼 케이스의 후보 문서만* fetch할 수 있다. 검증(인증 활성 시):
+          ① case_id로 케이스를 찾는다(미존재 → 404).
+          ② 세션 owner가 그 케이스 후보인지(`concur` 스코프 "후보 아니면 403"의 fetch판).
+          ③ `agent_id`가 그 케이스 후보 중 하나인지(남의 OKF 무단 열람 차단).
+        ②·③ 둘 다 통과해야 `FetchDocument`를 보낸다(불통이면 403). 통과 시 디스패처로
+        fetch(결정 B/C) → 본문(또는 degradation 메시지)을 응답한다. **중앙 저장 0**(중계만,
+        결정 E) — 본문은 디스패처 슬롯을 거쳐 이 응답으로 통과만 한다.
+
+        읽기 측 권한(워커 자기 카드만·결정 D)은 워커가 따로 진다(이중 게이트).
+        """
+        from agent_org_network.transport import WebSocketDispatcher as _WSD
+
+        case = bundle.case_store.get(case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail=f"미존재 케이스: {case_id!r}")
+        if _auth_enabled:
+            session_owner = _session_identity(request)  # 미로그인 → 401
+            if not case.involves_owner(session_owner):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"자기 케이스 후보만 문서를 열 수 있습니다(세션 {session_owner!r}).",
+                )
+        # agent_id가 그 케이스 후보인지 — 인증 무관 항상 검사(케이스 범위 한정).
+        if req.agent_id not in case.candidate_ids():
+            raise HTTPException(
+                status_code=403,
+                detail=f"케이스 후보가 아닌 카드입니다: {req.agent_id!r}",
+            )
+        if not isinstance(dispatcher, _WSD):
+            # 분산 전송(WS 디스패처)이 아니면 owner 워커 연결이 없다 — degradation.
+            return {"found": False, "available": False, "message": "추출 불가(분산 전송 비활성)"}
+        result = dispatcher.fetch_document(req.agent_id, req.concept_id)
+        if result.status == "offline":
+            return {"found": False, "available": False, "message": "추출 불가(담당 워커 미연결)"}
+        if result.status == "timeout":
+            return {"found": False, "available": False, "message": "추출 불가(담당 워커 응답 없음)"}
+        if not result.found:
+            return {"found": False, "available": True, "message": "문서를 찾을 수 없습니다."}
+        return {"found": True, "available": True, "content": result.content}
 
     @app.get("/manager/queue")
     def manager_queue(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]

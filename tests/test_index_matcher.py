@@ -23,6 +23,7 @@ from agent_org_network.index_matcher import (
     FakeMatcher,
     IndexMatch,
     KnowledgeIndexMatcher,
+    relevant_concepts,
 )
 from agent_org_network.knowledge_index import Concept, KnowledgeIndex
 
@@ -352,3 +353,91 @@ class TestFakeMatcher:
         """FakeMatcher가 KnowledgeIndexMatcher로 타입 어노테이션 가능."""
         fake: KnowledgeIndexMatcher = FakeMatcher(())
         _ = fake.match("q", [])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 8. relevant_concepts — 질문과 연관된 개념 추출 (슬라이스 1)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestRelevantConcepts:
+    """relevant_concepts(question, index) → tuple[Concept, ...] 순수 헬퍼."""
+
+    def test_오버랩_있는_개념만_반환(self) -> None:
+        """질문과 오버랩 > 0인 개념만 포함한다."""
+        idx = _index("agent_a", _C_PRICE, _C_UNRELATED)
+        result = relevant_concepts("상품 가격이 얼마인가요?", idx)
+        ids = {c.id for c in result}
+        assert "c_price" in ids
+        assert "c_x" not in ids
+
+    def test_오버랩_0_개념은_제외(self) -> None:
+        """공유 토큰이 0이면 결과에 포함하지 않는다."""
+        idx = _index("agent_a", _C_UNRELATED)
+        result = relevant_concepts("상품 가격이 얼마인가요?", idx)
+        assert result == ()
+
+    def test_빈_인덱스_빈_튜플(self) -> None:
+        """concepts=() 인덱스 → 빈 튜플 반환."""
+        idx = _index("agent_empty")
+        result = relevant_concepts("가격", idx)
+        assert result == ()
+
+    def test_매칭_0_빈_튜플(self) -> None:
+        """오버랩 있는 개념이 하나도 없으면 빈 튜플."""
+        idx = _index("agent_a", _C_UNRELATED)
+        result = relevant_concepts("xyz abc def unique_word_not_in_concepts", idx)
+        assert result == ()
+
+    def test_점수_내림차순_정렬(self) -> None:
+        """오버랩 점수 내림차순 정렬 — 더 많은 토큰 오버랩 개념이 앞에 온다.
+
+        c_high: "상품 가격 환불 정책" — 질문 "상품 가격 환불"과 3개 이상 공유
+        c_low:  "가격 안내" — 1개(가격)만 공유
+        높은 오버랩 개념이 먼저 와야 한다(c_h가 c_l보다 앞).
+        """
+        question = "상품 가격 환불"
+        c_high = _concept("c_h", "가격", "상품 가격 환불 정책")
+        c_low = _concept("c_l", "가격", "가격 안내")
+        idx = _index("agent_a", c_low, c_high)
+        result = relevant_concepts(question, idx)
+        assert len(result) >= 2
+        # c_high가 c_low보다 앞에 와야 한다
+        ids = [c.id for c in result]
+        assert ids.index("c_h") < ids.index("c_l")
+
+    def test_동점_concept_id_오름차순(self) -> None:
+        """동점일 때 concept.id 오름차순 — 결정론 안정성."""
+        same_q = "가격이 얼마인가?"
+        c_z = _concept("zzz", "가격", same_q)
+        c_a = _concept("aaa", "가격", same_q)
+        c_m = _concept("mmm", "가격", same_q)
+        idx = _index("agent_a", c_z, c_a, c_m)
+        result = relevant_concepts(same_q, idx)
+        ids = [c.id for c in result]
+        assert ids == sorted(ids)
+
+    def test_반환_타입_tuple_of_Concept(self) -> None:
+        """반환 타입이 tuple[Concept, ...]."""
+        idx = _index("agent_a", _C_PRICE)
+        result = relevant_concepts("가격", idx)
+        assert isinstance(result, tuple)
+        for item in result:
+            assert isinstance(item, Concept)
+
+    def test_여러_개념_모두_매칭_전부_반환(self) -> None:
+        """오버랩 있는 개념이 여럿이면 전부 반환."""
+        idx = _index("agent_a", _C_PRICE, _C_REFUND, _C_DELIVERY)
+        result = relevant_concepts("가격 환불 배송", idx)
+        ids = {c.id for c in result}
+        assert "c_price" in ids
+        assert "c_refund" in ids
+        assert "c_delivery" in ids
+
+    def test_결정론_같은_입력_같은_출력(self) -> None:
+        """같은 질문+인덱스 반복 호출 → 같은 결과."""
+        idx = _index("agent_a", _C_PRICE, _C_REFUND, _C_UNRELATED)
+        question = "상품 가격 환불"
+        r1 = relevant_concepts(question, idx)
+        r2 = relevant_concepts(question, idx)
+        assert r1 == r2

@@ -171,6 +171,27 @@
       background: #f3f4f6;
       font-size: 11px;
     }
+    .rel-concepts {
+      margin-top: 6px;
+      margin-left: 28px;
+    }
+    .rel-concepts .rel-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+    .rel-concept-item {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      padding: 4px 8px;
+      border-left: 2px solid var(--line);
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+    .rel-concept-item .rc-label { font-weight: 600; color: var(--ink); }
+    .rel-concept-item .rc-cq { color: var(--muted); font-size: 11px; }
     .rationale {
       width: 100%;
       padding: 10px 12px;
@@ -374,6 +395,20 @@
             cov.appendChild(row);
           }
           wrap.appendChild(cov);
+        }
+
+        if (cand.relevant_concepts && cand.relevant_concepts.length) {
+          const rcWrap = el("div", "rel-concepts");
+          rcWrap.appendChild(el("div", "rel-label", "연관 개념"));
+          for (const rc of cand.relevant_concepts) {
+            const item = el("div", "rel-concept-item");
+            item.dataset.conceptId = rc.id;
+            item.dataset.agentId = cand.agent_id;
+            item.appendChild(el("span", "rc-label", rc.label));
+            item.appendChild(el("span", "rc-cq", rc.core_question));
+            rcWrap.appendChild(item);
+          }
+          wrap.appendChild(rcWrap);
         }
 
         cands.appendChild(wrap);

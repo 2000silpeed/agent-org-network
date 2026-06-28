@@ -394,6 +394,13 @@
   - **외부 결정·결정 대기**: ~~권한 밖 개념 처리(보관+제외 vs 거부)~~ **§14 결정 D에서 over-claim concept 필터(저장 단계·인덱스 자체는 빈 concepts로 보관) 확정** · ~~staleness 키~~ **§14 결정 C에서 `generated_at` 확정** · 실 크로스머신 인덱스 배포(실 WS·실 워커)는 T10.5·게이트 밖 · OKF 변경 재배포 트리거(`OkfChangeEvent` 연동)·인덱스 staleness 전파(과거 판례·ADR 0028 OQ ④·MVP는 재배포만·판례 재검토 후속).
   - **넘김(shape 확정 완료·ADR 0028 §14)** → **mcp-runtime-engineer**: (a) `WorkerFrame` union 끼움·`server._parse_worker_frame`·(b) `_handle_worker` 수용 검증 와이어·(e) `run_worker` register 직후 publish 송신·시드 격리(실 WS·게이트 밖 시연 포함). **tdd-engineer**: (a) 프레임 DTO 왕복·union 파싱 무회귀·(b) 스코핑 수용 검증 결정론·(c) `put` staleness·(d) over-claim concept 필터·(e) `WorkerLogic.publish_frames` 결정론(`FakeMatcher`/`FakePublishedIndexStore`/고정 OKF·주입 clock). 실 크로스머신 publish·OKF 변경 재배포 → **mcp-runtime-engineer**(T10.5·게이트 밖).
 
+- [x] **T10.4.5** 처리함 다툼 케이스 — 후보 연관 개념 표시 (슬라이스 1, 게이트 내·결정론)
+  - **✅ 구현 완료(tdd-engineer, 2026-06-28)** — 처리함 운영 화면에서 합의하는 owner가 "이 후보의 *어떤 지식*이 이 질문에 걸렸나"를 볼 수 있도록 각 후보 카드에 `relevant_concepts` 목록을 추가.
+  - **구현 내용**: (1) `index_matcher.relevant_concepts(question, index) -> tuple[Concept, ...]` 순수 헬퍼 신설 — `_tokenize`·`_overlap_score` 재사용·score > 0 개념만·오버랩 점수 내림차순 동점 concept.id 오름차순 결정론 정렬·빈 인덱스/매칭 0 → 빈 튜플. (2) `web.serialize_case(case, registry, published_index_store=None)` — `published_index_store` 옵셔널 파라미터 추가(하위호환·기존 동작 보존)·store 주입 시 각 후보에 `relevant_concepts: [{id, label, core_question}]` 추가·store None/인덱스 없음 → 필드 생략(방어적). (3) `inbox_cases`·legacy 호출부가 `bundle.published_index_store`를 전달. (4) `web/inbox.html` `renderCase` — 연관 개념 블록 렌더(label + core_question·각 항목에 `data-concept-id`·`data-agent-id` 심어 슬라이스 2 배선 준비).
+  - **매칭 규칙**: 개념 토큰화 대상 = `core_question + label + type`(ConceptOverlapMatcher와 동일 토큰화)·score > 0 임계(공유 토큰 1개 이상)·중앙 토큰 0·LLM·외부 API·벡터 0·순수 함수.
+  - **불변식**: 중앙 목차(목차 표시·내용 추출 0·슬라이스 2)·비소유(개념 core_question은 목차)·운영 면 노출 OK·무회귀(기존 serialize_case·커버리지 필드 보존).
+  - **테스트**: `tests/test_index_matcher.py` `TestRelevantConcepts` 9개 신규·`tests/test_web.py` serialize_case 관련 8개 신규(store 주입·store None·커버리지 보존·필드 구조·미등록 방어·오버랩 0 빈 리스트). **게이트 1433 passed·`uv run pyright` 0 errors·ruff All checks passed**.
+
 - [ ] **T10.5** 게이트 밖 — `EmbeddingAnnMatcher`(스케일 어댑터) + 실 distill · 실 owner RAG 신뢰도 · 실 배포 [게이트 밖·수동·실 인프라] (ADR 0028 §7·§게이트 경계·슬라이스 ⑤)
   - **배경·근거**: 마지막(리스크 최상·게이트 밖). **실 외부 의존(실 임베딩 모델·실 semantic-os 온톨로지·실 owner RAG·실 크로스머신 WS)은 비결정이라 결정론 게이트가 검증 못 함** — `SubprocessGitGateway`·`HttpOidcProvider`·`ClaudeApiRuntime`이 실 본체를 게이트 밖으로 미룬 정신. 게이트 내 슬라이스(T10.1~T10.4)가 *계약*을 잠근 뒤, 실 어댑터가 *그 계약을 채운다*. **"전 개념을 LLM에 먹이기"는 기각**(현 `build_prompt`가 결함 ①의 원인 — 스케일 어댑터에서 되살리지 않음·LLM은 top-K 리랭크에만).
   - **슬라이스 분해**:

@@ -29,6 +29,8 @@ from agent_org_network.runtime import Answer, StubRuntime
 from agent_org_network.session import InMemorySessionStore
 from agent_org_network.transport import WebSocketDispatcher
 from agent_org_network.user import User
+from agent_org_network.knowledge_index import Concept, KnowledgeIndex
+from agent_org_network.two_stage_router import InMemoryPublishedIndexStore
 from agent_org_network.web import (
     create_app,
     serialize_case,
@@ -264,6 +266,166 @@ def test_serialize_case_커버리지는_카드에서_채운다():
     assert fin["summary"] == "가격·보상 정책 관리"
     assert fin["domains"] == ["가격", "보상"]
     assert fin["knowledge_sources"] == ["재무규정"]
+
+
+# ── serialize_case + published_index_store 단위 ────────────────────────────
+
+
+def _sample_published_store() -> InMemoryPublishedIndexStore:
+    """cs_ops·finance_ops 인덱스를 담은 InMemoryPublishedIndexStore."""
+    now = datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
+    cs_idx = KnowledgeIndex(
+        agent_id="cs_ops",
+        version="v1",
+        generated_at=now,
+        concepts=(
+            Concept(
+                id="c_refund",
+                label="환불",
+                core_question="환불 정책이 어떻게 되나?",
+                domain="환불",
+            ),
+            Concept(
+                id="c_comp",
+                label="보상",
+                core_question="보상 기준이 무엇인가?",
+                domain="보상",
+            ),
+            Concept(
+                id="c_unrelated",
+                label="기타",
+                core_question="전혀 관계없는 매우 특이한 주제",
+                domain="기타",
+            ),
+        ),
+    )
+    fin_idx = KnowledgeIndex(
+        agent_id="finance_ops",
+        version="v1",
+        generated_at=now,
+        concepts=(
+            Concept(
+                id="c_price",
+                label="가격",
+                core_question="가격 정책이 어떻게 되나?",
+                domain="가격",
+            ),
+            Concept(
+                id="c_comp2",
+                label="보상",
+                core_question="보상 기준이 어떻게 적용되나?",
+                domain="보상",
+            ),
+        ),
+    )
+    store = InMemoryPublishedIndexStore()
+    store.put(cs_idx)
+    store.put(fin_idx)
+    return store
+
+
+def test_serialize_case_store_주입시_relevant_concepts_채운다():
+    """published_index_store 주입 시 각 후보에 relevant_concepts 필드가 채워진다."""
+    reg = _sample_registry()
+    store = _sample_published_store()
+    body = serialize_case(_sample_case(), reg, published_index_store=store)
+
+    cs = body["candidates"][0]
+    assert "relevant_concepts" in cs
+    # 질문 "보상 기준?" → cs_ops의 c_comp(보상 기준이 무엇인가?)와 오버랩
+    rc_ids = {r["id"] for r in cs["relevant_concepts"]}
+    assert "c_comp" in rc_ids
+    # c_unrelated는 오버랩 없으므로 제외
+    assert "c_unrelated" not in rc_ids
+
+
+def test_serialize_case_store_None이면_relevant_concepts_생략():
+    """published_index_store=None이면 relevant_concepts 필드 없음 — 기존 동작 보존."""
+    reg = _sample_registry()
+    body = serialize_case(_sample_case(), reg)
+
+    for cand in body["candidates"]:
+        assert "relevant_concepts" not in cand
+
+
+def test_serialize_case_store_None_기존_커버리지_보존():
+    """store=None일 때 기존 커버리지 필드(summary·domains·knowledge_sources)는 유지."""
+    reg = _sample_registry()
+    body = serialize_case(_sample_case(), reg)
+
+    cs = body["candidates"][0]
+    assert cs["summary"] == "고객 환불·보상 처리"
+    assert cs["domains"] == ["환불", "보상"]
+    assert cs["knowledge_sources"] == ["cs_wiki", "환불정책"]
+
+
+def test_serialize_case_relevant_concepts_필드_구조():
+    """relevant_concepts 각 항목에 id·label·core_question이 있다."""
+    reg = _sample_registry()
+    store = _sample_published_store()
+    body = serialize_case(_sample_case(), reg, published_index_store=store)
+
+    for cand in body["candidates"]:
+        for rc in cand.get("relevant_concepts", []):
+            assert "id" in rc
+            assert "label" in rc
+            assert "core_question" in rc
+
+
+def test_serialize_case_미등록_agent_id_방어():
+    """store에 인덱스 없는 agent_id — relevant_concepts 필드 생략(방어적)."""
+    case = ConflictCase(
+        intent="테스트",
+        question="보상 기준?",
+        candidates=(Candidate(agent_id="unknown_ops", owner="some_lead"),),
+        opened_at=_fixed_clock(),
+        case_id="case-unknown2",
+    )
+    reg = Registry()
+    store = _sample_published_store()  # unknown_ops 없음
+    body = serialize_case(case, reg, published_index_store=store)
+
+    cand = body["candidates"][0]
+    assert "relevant_concepts" not in cand
+
+
+def test_serialize_case_store_주입시_기존_커버리지_보존():
+    """store 주입 시에도 기존 커버리지(summary·domains·knowledge_sources) 필드는 유지."""
+    reg = _sample_registry()
+    store = _sample_published_store()
+    body = serialize_case(_sample_case(), reg, published_index_store=store)
+
+    cs = body["candidates"][0]
+    assert cs["summary"] == "고객 환불·보상 처리"
+    assert cs["domains"] == ["환불", "보상"]
+    assert cs["knowledge_sources"] == ["cs_wiki", "환불정책"]
+    assert "relevant_concepts" in cs  # 둘 다 공존
+
+
+def test_serialize_case_오버랩_0이면_relevant_concepts_빈_리스트():
+    """질문과 오버랩이 전혀 없으면 relevant_concepts=[] (빈 리스트)."""
+    now = datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
+    # 질문 "보상 기준?"과 전혀 무관한 개념들만 가진 인덱스
+    cs_idx = KnowledgeIndex(
+        agent_id="cs_ops",
+        version="v1",
+        generated_at=now,
+        concepts=(
+            Concept(
+                id="c_unrelated",
+                label="기타",
+                core_question="전혀 관계없는 매우 특이한 주제",
+                domain="기타",
+            ),
+        ),
+    )
+    store = InMemoryPublishedIndexStore()
+    store.put(cs_idx)
+    reg = _sample_registry()
+    body = serialize_case(_sample_case(), reg, published_index_store=store)
+
+    cs = next(c for c in body["candidates"] if c["agent_id"] == "cs_ops")
+    assert cs["relevant_concepts"] == []
 
 
 def test_serialize_outcome_agreed():

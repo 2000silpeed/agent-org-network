@@ -19,7 +19,7 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from agent_org_network.knowledge_index import KnowledgeIndex
+from agent_org_network.knowledge_index import Concept, KnowledgeIndex
 
 # ── 토큰화 ────────────────────────────────────────────────────────────────────
 # 형태소 분석 없이 정규식으로 근사 — ADR 0028 §7 v1 정책:
@@ -143,6 +143,36 @@ class ConceptOverlapMatcher:
         # 결정론 정렬: score 내림차순, 동점 agent_id 오름차순
         candidates.sort(key=lambda m: (-m.score, m.agent_id))
         return tuple(candidates)
+
+
+# ── relevant_concepts 순수 헬퍼 ──────────────────────────────────────────────
+
+
+def relevant_concepts(question: str, index: KnowledgeIndex) -> tuple[Concept, ...]:
+    """질문과 오버랩 > 0인 개념만 추려 반환한다.
+
+    index.concepts 중 core_question + label + type 토큰이 질문 토큰과
+    1개 이상 겹치는 개념만 포함한다(score > 0).
+    정렬: 오버랩 점수 내림차순, 동점은 concept.id 오름차순(결정론).
+    빈 인덱스·매칭 0 → 빈 튜플.
+
+    중앙 토큰 0: LLM·외부 API·벡터 인프라 0 — 순수 토큰 오버랩.
+    """
+    q_tokens = _tokenize(question)
+    scored: list[tuple[float, str, Concept]] = []
+
+    for concept in index.concepts:
+        concept_text = concept.core_question + " " + concept.label
+        if concept.type:
+            concept_text += " " + concept.type
+        concept_tokens = _tokenize(concept_text)
+        score = _overlap_score(q_tokens, concept_tokens)
+        if score > 0.0:
+            scored.append((score, concept.id, concept))
+
+    # 점수 내림차순, 동점 concept.id 오름차순
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return tuple(c for _, _, c in scored)
 
 
 # ── 테스트 더블 ───────────────────────────────────────────────────────────────

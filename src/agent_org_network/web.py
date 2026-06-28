@@ -75,8 +75,10 @@ from agent_org_network.review import (
     CorrectBackup,
     DismissBackup,
 )
+from agent_org_network.index_matcher import relevant_concepts
 from agent_org_network.registry import Registry
 from agent_org_network.runtime import AgentRuntime
+from agent_org_network.two_stage_router import PublishedIndexStore
 from agent_org_network.session import InMemorySessionStore, SessionAskOrg, SessionStore
 from agent_org_network.user import User
 
@@ -187,11 +189,16 @@ def serialize_reply(reply: OrgReply) -> dict[str, Any]:
             assert_never(never)
 
 
-def serialize_case(case: ConflictCase, registry: Registry) -> dict[str, Any]:
+def serialize_case(
+    case: ConflictCase,
+    registry: Registry,
+    published_index_store: PublishedIndexStore | None = None,
+) -> dict[str, Any]:
     """ConflictCase를 처리함 운영 화면向 dict로 변환한다(내부값 노출 OK).
 
-    registry: 각 후보 카드의 커버리지(summary·domains·knowledge_sources)를 조회하는 데 쓴다.
-    미등록 agent_id는 agent_id·owner만 담고 커버리지 필드는 생략한다(방어적).
+    registry: 각 후보 카드의 커버리지(summary·domains·knowledge_sources)를 조회한다.
+    published_index_store: 주어지면 후보에 relevant_concepts(질문 연관 개념) 추가.
+    미등록 agent_id는 agent_id·owner만 담고 커버리지·relevant_concepts 생략(방어적).
     """
     candidates: list[dict[str, Any]] = []
     for c in case.candidates:
@@ -203,6 +210,14 @@ def serialize_case(case: ConflictCase, registry: Registry) -> dict[str, Any]:
             cand["knowledge_sources"] = list(card.knowledge_sources)
         except KeyError:
             pass
+        if published_index_store is not None:
+            index = published_index_store.get(c.agent_id)
+            if index is not None:
+                concepts = relevant_concepts(case.question, index)
+                cand["relevant_concepts"] = [
+                    {"id": rc.id, "label": rc.label, "core_question": rc.core_question}
+                    for rc in concepts
+                ]
         candidates.append(cand)
     return {
         "case_id": case.case_id,
@@ -785,7 +800,10 @@ def create_app(
         """
         owner_id = _session_identity(request)
         cases = bundle.case_store.open_for_owner(owner_id)
-        return [serialize_case(c, bundle.registry) for c in cases]
+        return [
+            serialize_case(c, bundle.registry, bundle.published_index_store)
+            for c in cases
+        ]
 
     @app.get("/inbox/backup-reviews")
     def inbox_backup_reviews(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
@@ -1031,7 +1049,10 @@ def create_app(
         def inbox_cases_legacy(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
             """하위호환(인증 OFF 전용): path param으로 owner 지정."""
             cases = bundle.case_store.open_for_owner(owner_id)
-            return [serialize_case(c, bundle.registry) for c in cases]
+            return [
+                serialize_case(c, bundle.registry, bundle.published_index_store)
+                for c in cases
+            ]
 
         @app.get("/manager/{manager_id}")
         def manager_queue_legacy(manager_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]

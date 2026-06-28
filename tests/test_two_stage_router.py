@@ -162,15 +162,38 @@ class TestInMemoryPublishedIndexStore:
         assert store.get("없는_에이전트") is None
 
     def test_put_갱신(self) -> None:
+        """put staleness(T10.4·ADR 0028 §14 결정 C) — generated_at 기준 더 새 것만 교체.
+
+        version(str)은 staleness 키가 아니다 — 같은 generated_at의 v1·v2는 동률이라
+        뒤엣것이 거부(멱등·기존 보존)되고, generated_at이 더 새야 교체된다.
+        """
+        from datetime import timedelta
+
         store = InMemoryPublishedIndexStore()
         c = _concept("c1", "가격", "가격이 얼마인가?", domain="가격")
-        idx_v1 = _index("agent_a", c, version="v1")
-        idx_v2 = _index("agent_a", c, version="v2")
+        # 같은 generated_at(_NOW) → 동률이라 v2 거부(version은 staleness 키 아님).
+        idx_v1 = KnowledgeIndex(
+            agent_id="agent_a", version="v1", generated_at=_NOW, concepts=(c,)
+        )
+        idx_v2 = KnowledgeIndex(
+            agent_id="agent_a", version="v2", generated_at=_NOW, concepts=(c,)
+        )
         store.put(idx_v1)
         store.put(idx_v2)
         result = store.get("agent_a")
         assert result is not None
-        assert result.version == "v2"
+        assert result.version == "v1"  # 동률 거부 — 첫 것 보존
+        # 더 새 generated_at → 교체.
+        idx_v3 = KnowledgeIndex(
+            agent_id="agent_a",
+            version="v3",
+            generated_at=_NOW + timedelta(hours=1),
+            concepts=(c,),
+        )
+        store.put(idx_v3)
+        result2 = store.get("agent_a")
+        assert result2 is not None
+        assert result2.version == "v3"
 
 
 # ════════════════════════════════════════════════════════════════════════════

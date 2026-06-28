@@ -22,11 +22,11 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from agent_org_network.agent_card import AgentCard
+from agent_org_network.agent_card import AgentCard, domain_authorized
 from agent_org_network.conflict import PrecedentStore
 from agent_org_network.decision import Contested, RoutingDecision, Routed, Unowned
 from agent_org_network.index_matcher import IndexMatch, KnowledgeIndexMatcher
-from agent_org_network.knowledge_index import KnowledgeIndex
+from agent_org_network.knowledge_index import Concept, KnowledgeIndex
 from agent_org_network.registry import Registry
 from agent_org_network.router import attach_gates
 
@@ -99,7 +99,11 @@ class PublishedIndexStore(Protocol):
 class InMemoryPublishedIndexStore:
     """PublishedIndexStore 프로토콜의 in-memory 구현(테스트·데모용).
 
-    T10.4에서 staleness 대조·권한 검증이 추가된다 — 지금은 단순 보관.
+    `put`은 `generated_at`(datetime) 기준 *더 새 것만 수용*한다(ADR 0028 §14 결정 C) —
+    첫 인덱스 무조건 수용·더 새면 교체·동률/역행은 거부(no-op·멱등). per-agent 격리
+    (`_store` 키가 agent_id). `version: str`은 형식 자유라 순서를 정의 못 하므로 staleness
+    판정에 쓰지 않는다(운영 메타로만). 스코핑·over-claim 권한 검증은 store 밖
+    (`accept_published_index` 핸들러 함수)에서 하고 store는 staleness만 본다.
     """
 
     def __init__(self, indexes: Sequence[KnowledgeIndex] = ()) -> None:
@@ -112,7 +116,87 @@ class InMemoryPublishedIndexStore:
         return self._store.get(agent_id)
 
     def put(self, index: KnowledgeIndex) -> None:
-        self._store[index.agent_id] = index
+        """더 새 인덱스만 수용한다(ADR 0028 §14 결정 C — generated_at staleness).
+
+        첫 인덱스는 무조건 수용·`generated_at`이 더 새면 교체·동률/역행(`<=`)은 거부(no-op).
+        역행 거부: 옛 인덱스가 재연결/재전송으로 늦게 도착해도 최신을 덮지 않는다. 동률
+        거부(멱등): 같은 인덱스 재도착을 흡수한다(`SubmitAnswer` ticket_id 멱등 정신).
+        결정론 `build_knowledge_index_from_okf`가 같은 OKF·같은 generated_at→같은 인덱스를
+        보장하므로 동률 교체는 무의미하다. per-agent 격리: 한 agent 갱신이 다른 agent 무영향.
+        """
+        existing = self._store.get(index.agent_id)
+        if existing is None:
+            self._store[index.agent_id] = index
+        elif index.generated_at > existing.generated_at:
+            self._store[index.agent_id] = index
+        # else: 동률·역행 → 거부(no-op·기존 보존)
+
+
+# ── PublishIndex 수용 경로(중앙 핸들러 처리 로직, ADR 0028 §14 결정 B·D·F) ─────
+#
+# owner 워커가 보낸 PublishIndex를 중앙이 수용할 때의 *결정론 처리 로직*. 순수 함수로
+# 분리해 가짜 프레임·InMemory store·registry로 단위 테스트한다(실 WS 수신 루프 연결만
+# 게이트 밖). 두 게이트를 순서대로 통과해야 보관된다:
+#   B. 워커-소유자 스코핑(publishable): 연결 세션의 인증 owner == index.agent_id의 card.owner
+#      (사칭/미등록 차단 — 인덱스 단위 거부).
+#   D. over-claim concept 필터(filter_authorized_concepts): card 권한 안의 concept만 보관
+#      (concept 단위 필터 — 전부 떨어지면 빈 concepts로 보관·인덱스 자체는 안 거부).
+
+
+def publishable(session_owner_id: str, index: KnowledgeIndex, registry: Registry) -> bool:
+    """워커-소유자 스코핑 술어 — 이 인덱스를 그 인증 owner가 publish할 수 있는가(결정 B).
+
+    `index.agent_id`의 카드가 *연결 세션의 인증 owner*(`RegisterWorker.owner_id`) 소유여야
+    한다(`card.owner == session_owner_id`). 미등록 agent_id(`registry.get` KeyError)·타 owner
+    카드면 거부(다른 owner 사칭 차단). owner는 프레임에 다시 싣지 않는다 — 소켓이 곧 그
+    owner(`SubmitAnswer`가 연결 owner로 회신 출처를 강제하는 정신). Authority 중앙: 어느
+    카드를 어느 owner가 소유하나는 *중앙 registry 선언*이지 워커 자기보고가 아니다.
+    """
+    try:
+        card = registry.get(index.agent_id)
+    except KeyError:
+        return False  # 미등록 agent_id — "유효하지 않은 인덱스는 안 받는다"(등록 무결성)
+    return card.owner == session_owner_id
+
+
+def filter_authorized_concepts(index: KnowledgeIndex, card: AgentCard) -> KnowledgeIndex:
+    """over-claim concept을 떨궈낸 인덱스를 만든다(저장 단계 admission, 결정 D).
+
+    `domain_authorized`(공유 권위 술어)를 통과한 concept만 보관한다 — over-claim
+    (`domain ∉ card.domains`)·`cannot_answer` concept은 떨군다. 전부 떨어지면 *빈 concepts
+    인덱스로 보관*한다(0 concept → 라우팅 0 후보로 자연 처리·미아 없음과 무관). 인덱스
+    자체는 거부하지 않는다 — concept 단위 필터(인덱스 단위 거부는 스코핑[결정 B]의 owner
+    사칭만). 라우팅 시 `TwoStageRouter.route`의 권한 재검증과 *같은* 함수를 공유한다(이중
+    게이트·단일 권위). frozen이라 새 인덱스로 교체한다(version·generated_at·edges 보존).
+    """
+    kept: tuple[Concept, ...] = tuple(
+        c for c in index.concepts if domain_authorized(c.domain, card)
+    )
+    if len(kept) == len(index.concepts):
+        return index  # 전부 통과 — 새 객체 안 만들고 그대로(불변)
+    return index.model_copy(update={"concepts": kept})
+
+
+def accept_published_index(
+    session_owner_id: str,
+    index: KnowledgeIndex,
+    registry: Registry,
+    store: PublishedIndexStore,
+) -> bool:
+    """중앙이 PublishIndex 한 건을 수용 처리한다 — 스코핑→필터→put(결정 F 통합).
+
+    순서: ① 워커-소유자 스코핑(`publishable`, 결정 B) — 불통이면 거부(보관 안 함·False).
+    ② over-claim concept 필터(`filter_authorized_concepts`, 결정 D) — 권한 안 concept만 남김.
+    ③ `store.put`(staleness, 결정 C) — 더 새 것만 수용(동률/역행 거부). 이 *처리 로직*은
+    결정론(실 WS 수신 루프 연결만 게이트 밖). 반환: 스코핑 통과로 store.put까지 갔으면
+    True(staleness로 put이 no-op이어도 스코핑 자체는 통과했으므로 True)·스코핑 거부면 False.
+    """
+    if not publishable(session_owner_id, index, registry):
+        return False
+    card = registry.get(index.agent_id)  # publishable 통과 → 존재 보장
+    filtered = filter_authorized_concepts(index, card)
+    store.put(filtered)
+    return True
 
 
 # ── TwoStageRouter ───────────────────────────────────────────────────────────
@@ -199,7 +283,9 @@ class TwoStageRouter:
             domain = _find_concept_by_id(idx, match.matched_concept_id)
             if not domain:
                 continue
-            if domain in card.domains and domain not in card.cannot_answer:
+            # 공유 권위 술어(agent_card.domain_authorized) — publish over-claim 필터(T10.4
+            # 결정 D)와 *같은* 함수. 이중 게이트: publish가 1차 admission, 이 라우팅이 2차 방어.
+            if domain_authorized(domain, card):
                 authorized.append((match, domain))
 
         # ── 0 후보 → Unowned(미아 없음) ───────────────────────────────────────
@@ -228,11 +314,8 @@ class TwoStageRouter:
                     # 권한 재검증: precedent primary 카드도 card.domains 게이트 통과 필수.
                     # 미통과(over-claim) 또는 cannot_answer 등록 → 단축 건너뜀 → stage-1
                     # authorized 투영으로 폴백(미아 없음 보존 — authorized는 이미 1+).
-                    primary_authorized = (
-                        representative_intent in card.domains
-                        and representative_intent not in card.cannot_answer
-                    )
-                    if primary_authorized:
+                    # 공유 권위 술어(publish over-claim 필터와 같은 함수).
+                    if domain_authorized(representative_intent, card):
                         return attach_gates(
                             Routed(
                                 primary=card,

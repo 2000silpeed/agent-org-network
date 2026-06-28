@@ -1,6 +1,6 @@
 # 스케일 라우팅 — published 지식 인덱스 + 2단 라우팅(중앙=목차·owner=내용)
 
-상태: accepted (2026-06-27) · 사용자 grill 합의 7개 결정 명문화 · **현 라우팅(Classifier→intent 1라벨→`card.domains` 정확매칭→Routed/Contested/Unowned)을 *refine***(대체 아님 — `RoutingDecision` sealed sum·Authority 중앙·Precedent·Contested 폴백은 그대로, 후보 *제안* 메커니즘만 인덱스 기반으로 정밀화) · **ADR 0017 결정 3②("실시간 충돌 자동해소")의 실체** · **PRD §5 "LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위"를 현금화** · ADR 0006(중앙 MCP)·0010/0027(owner측 실행·중앙 토큰 0)·0013(OKF)·0011/0012(WS 전송)·0019(staleness 패턴)·0004(Authority 중앙)·0015(intent 단일 출처)와 정합 · CONTEXT(신규 KnowledgeIndex·Concept·KnowledgeIndexMatcher·published index·stage-1/stage-2 용어)·TRD §2·§4·PRD §5 갱신 대상
+상태: accepted (2026-06-27) · **§13 T10.3 통합 shape 확정(2026-06-27 — 결정 A~E)** · **§14 T10.4 publish 경로 shape 확정(2026-06-28 — 결정 A~F·`PublishIndex` 프레임·워커-소유자 스코핑·`generated_at` staleness·와이어 포맷 변경=되돌리기 어려움)** · 사용자 grill 합의 7개 결정 명문화 · **현 라우팅(Classifier→intent 1라벨→`card.domains` 정확매칭→Routed/Contested/Unowned)을 *refine***(대체 아님 — `RoutingDecision` sealed sum·Authority 중앙·Precedent·Contested 폴백은 그대로, 후보 *제안* 메커니즘만 인덱스 기반으로 정밀화) · **ADR 0017 결정 3②("실시간 충돌 자동해소")의 실체** · **PRD §5 "LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위"를 현금화** · ADR 0006(중앙 MCP)·0010/0027(owner측 실행·중앙 토큰 0)·0013(OKF)·0011/0012(WS 전송)·0019(staleness 패턴)·0004(Authority 중앙)·0015(intent 단일 출처)와 정합 · CONTEXT(신규 KnowledgeIndex·Concept·KnowledgeIndexMatcher·published index·stage-1/stage-2 용어)·TRD §2·§4·PRD §5 갱신 대상
 
 ## 맥락 — 현 라우팅의 스케일 결함
 
@@ -359,11 +359,130 @@ class FakeAssessor:                     # 테스트 더블 — agent_id→고정
 
 ---
 
+## 14. T10.4 publish 경로 shape (domain-architect 확정 2026-06-28 — 결정 A~F)
+
+> §인덱스 갱신·배포(운영면)와 §13(라우팅 통합)이 *의사코드/연결점*으로 열어둔 **실 publish 경로**를 닫는다. **구현 아님** — mcp-runtime-engineer(전송·워커)·tdd-engineer(프레임 DTO·스토어 staleness·권한 결정론) 넘김용 *모양*. T10.3b까지 green인 코드(`transport.py`·`server.py`·`worker.py`·`two_stage_router.py`·`okf_index.py`)를 읽고 확정.
+>
+> **되돌리기 어려움(와이어 포맷 변경)**: 이 결정은 `WorkerFrame` sealed union을 진화시킨다(새 변이 `PublishIndex`). 한번 owner 워커들이 이 프레임을 송신하기 시작하면 *판별 필드·payload 모양*은 호환을 깨지 않고는 바꾸기 어렵다(배포된 워커 ↔ 중앙 무회귀). `_Frame`의 `extra="forbid"`가 미지 필드를 거부하므로 *추가*는 안전하나 *필드 제거/이름 변경*은 깨진다. ADR 0011/0012 와이어 프레임 진화와 같은 등급의 결정.
+>
+> **핵심 전환(비소유 강화)**: 현 라이브 슬라이스는 *중앙이 repo `okf/`를 직접 읽어* 인덱스를 시드한다(`demo.select_router`·데모 지름길). T10.4는 이를 **owner 워커가 자기 로컬 OKF에서 인덱스를 도출(`okf_index.build_knowledge_index_from_okf`)해 `PublishIndex`로 *배포*하고 중앙은 받아 보관만** 하는 경로로 바꾼다 — **중앙은 OKF 내용을 안 읽는다**. 이게 ADR 0006/0010 "중앙 비소유·목차만"을 *진짜로* 실현한다(데모 시드는 in-process 단축이었음).
+
+### 결정 A — `PublishIndex` 프레임: `WorkerFrame` sealed union에 새 변이 추가
+
+워커→중앙 업스트림 프레임 `WorkerFrame`(`transport.py:143`)에 **새 변이 `PublishIndex`**를 더한다. `RegisterWorker`/`SubmitAnswer`와 *같은 봉투 패턴*:
+
+```
+class PublishIndex(_Frame):
+    type: Literal["publish_index"] = "publish_index"
+    index: KnowledgeIndex          # frozen pydantic이라 중첩 직렬화 자연스러움
+
+WorkerFrame = RegisterWorker | SubmitAnswer | Heartbeat | Ack | PublishIndex   # ← 변이 1개 추가
+```
+
+- **봉투 = `_Frame`(frozen·`extra="forbid"`) 상속·`type: Literal["publish_index"]` 판별.** `SubmitAnswer`가 `answer: AnswerFrame`(중첩 frozen DTO)을 싣듯, `PublishIndex`는 `index: KnowledgeIndex`(중첩 frozen 값객체)를 싣는다. `KnowledgeIndex`/`Concept`가 이미 frozen pydantic v2(`knowledge_index.py`)라 pydantic이 중첩 직렬화/역직렬화를 자동 처리한다 — 와이어 DTO를 따로 안 만든다(`AnswerFrame`처럼 도메인↔DTO 변환이 *불요*. 단 `generated_at: datetime`은 `model_dump(mode="json")`로 ISO 직렬화·`TicketFrame.enqueued_at` 정밀 동일).
+  - **주의 — `_Frame` vs `KnowledgeIndex`의 `extra` 정책 차이**: `_Frame`은 `extra="forbid"`(미지 필드 거부)지만 `KnowledgeIndex`는 그 설정이 없다(`frozen=True`만). T10.4는 *프레임 봉투*만 `extra="forbid"`로 닫고, 중첩 `index`의 미지 필드 정책은 `KnowledgeIndex` 현 상태(허용)를 그대로 둔다 — 인덱스 스키마 진화(후속 `edges` 등 죽은 필드)에 여지를 남긴다. 봉투 무회귀만 보장하면 충분.
+- **discriminated 직렬화/역직렬화 — 무회귀 끼움**: 중앙측 `server._parse_worker_frame`(`server.py:42`)·워커측 송신이 *추가 한 가지(elif 한 줄)*로 닫힌다. 현 파서는 `type` 문자열로 분기하는 *수동 판별*(pydantic `Field(discriminator=...)` 미사용·`if/elif` 체인):
+  ```
+  if frame_type == "register_worker": model = RegisterWorker
+  elif frame_type == "submit_answer": model = SubmitAnswer
+  elif frame_type == "publish_index": model = PublishIndex   # ← 추가 한 줄(무회귀)
+  elif frame_type == "heartbeat":     model = Heartbeat
+  elif frame_type == "ack":           model = Ack
+  else: return None                                          # 미지는 그대로 None(와이어 안전)
+  ```
+  기존 5개 분기는 *문자열 키가 안 겹쳐* 무회귀다(`"publish_index"`는 새 키). `else: return None`(미지 프레임 무시)이 *구버전 중앙*에서도 미지 `publish_index`를 안전히 떨군다(전방 호환 — 워커가 먼저 신버전이어도 중앙이 깨지지 않음). 워커측은 `RegisterWorker`처럼 `model_dump_json()`으로 송신.
+- **`Concept.domain`은 publish 와이어에 *반드시* 실린다**(결정 D 권한 대조의 키). T10.1에서 `Concept`에 `domain: str`이 이미 추가됐으므로(§13 결정 B·green) 별도 와이어 변경 없음 — `KnowledgeIndex`를 통째로 싣는 순간 `concept.domain`이 따라온다.
+
+### 결정 B — 워커-소유자 스코핑(보안·핵심): 인증 owner ↔ index.agent_id의 card.owner 대조
+
+**워커는 자기 인증된 owner가 *소유한* agent의 인덱스만 publish할 수 있다.** 다른 owner의 `agent_id`로 인덱스를 publish하는 사칭을 차단한다. 이게 "유효하지 않은 인덱스는 안 받는다"의 *publish 짝*(카드 admission의 인덱스판).
+
+- **인증 owner의 출처 = 연결 세션**(`RegisterWorker`). `_handle_worker`(`server.py:110`)가 연결 직후 `owner_id = first.owner_id`로 *그 소켓의 인증 owner*를 잡는다(이미 존재). `PublishIndex`는 `SubmitAnswer`와 똑같이 그 *연결 귀속 owner*를 진실로 쓴다 — 프레임 안에 owner를 *다시 싣지 않는다*(소켓이 곧 그 owner, `TicketFrame.owner_id`를 생략하는 정신과 동일). 워커가 프레임에 owner를 자기보고할 여지를 안 준다.
+- **스코핑 술어(중앙이 수용 전 검증)**:
+  ```
+  publishable(session_owner_id, index) :=
+      card = registry.get(index.agent_id)        # 미등록 agent_id면 거부(등록 무결성)
+      card.owner == session_owner_id             # 그 owner가 그 카드를 *소유*해야 함(사칭 차단)
+  ```
+  `card.owner`(중앙 선언·`registry`)와 *연결 세션의 인증 owner*가 일치할 때만 수용한다. 불일치(다른 owner agent)·미등록(`KeyError`)이면 **그 `PublishIndex`를 통째 거부**(보관 안 함). `RegisterWorker` admission(owner 신원 인증·6-5)이 *연결*을 닫고, 이 스코핑이 *그 연결이 무엇을 publish할 수 있나*를 닫는다 — 둘은 같은 owner 축의 두 게이트.
+- **불변식(Authority 중앙)**: 어느 카드를 어느 owner가 소유하나는 *중앙(`registry`) 선언*이지 워커 자기보고가 아니다. 워커가 `index.agent_id`를 위조해도 `card.owner != session_owner`면 거부 — 자기보고가 소유 경계를 *넘을* 수 없다(ADR 0004·§5 admission 재검증의 owner 축).
+- **한 owner가 여러 카드 소유**: owner는 자기 소유 카드 *여럿*에 대해 각각 `PublishIndex`를 보낼 수 있다(각 인덱스의 `agent_id`마다 `card.owner == session_owner` 검증). 한 연결로 여러 카드 인덱스를 배포하는 것은 허용 — 다른 owner 카드만 막는다.
+
+### 결정 C — 스토어 `put` staleness: `generated_at` 키로 더 새 것만 수용
+
+`InMemoryPublishedIndexStore.put`(`two_stage_router.py:114`, 현재 단순 덮어쓰기)을 **더 새 인덱스만 수용**하도록 닫는다. staleness 키 = **`generated_at`(datetime)** — `version`(str) 아님.
+
+- **키 선택 근거(`generated_at` 우선)**: `version: str`은 *형식 자유*(예 `"okf-1"`·`"v2.3"`·커밋 SHA)라 *순서를 정의하지 못한다*(문자열 비교는 신선도와 무관). `generated_at: datetime`은 *자연 전순서*가 있어 "더 최신"이 명확하다(ADR 0012 `snapshot_at`·ADR 0019 신선도가 모두 datetime을 신선도 기준으로 쓰는 패턴 재사용). `version`은 운영면 식별·디스플레이 메타로 남기되 staleness 판정엔 안 쓴다.
+- **수용 규칙(동률·역행 처리)**:
+  ```
+  put(index):
+      existing = self._store.get(index.agent_id)
+      if existing is None: store it                       # 첫 인덱스는 무조건 수용
+      elif index.generated_at > existing.generated_at: replace   # 더 새 것만 교체
+      else: reject (no-op)                                # 동률·역행은 거부(기존 보존)
+  ```
+  - **역행(`generated_at < existing`) → 거부**(no-op): 옛 인덱스가 늦게 도착(재연결·재전송)해도 최신을 덮지 않는다. ADR 0019 "옛 SHA = stale"·ADR 0012 "stale 거부" 정신.
+  - **동률(`generated_at == existing`) → 거부**(no-op·멱등): 같은 인덱스 재도착(재연결 시 워커가 또 publish)을 흡수한다 — `SubmitAnswer` `ticket_id` 멱등·`PrecedentStore.invalidate` 멱등 정신. 동률을 *교체*로 두면 같은 인덱스를 무의미하게 다시 쓰고, *거부*로 두면 멱등이 명확하다. (같은 `generated_at`인데 내용이 다른 두 인덱스는 owner 도출 결정론 위반이라 가정 밖 — 결정론 `build_knowledge_index_from_okf`가 같은 OKF·같은 `generated_at`→같은 인덱스 보장.)
+  - **per-agent 격리**: staleness는 *`agent_id`별 독립*이다(한 agent의 새 인덱스가 다른 agent 인덱스에 영향 0). `_store: dict[str, KnowledgeIndex]` 키가 `agent_id`라 자연 격리.
+- **불변식(전이≠기록)**: 스토어는 *agent_id별 최신 보관*이지 audit이 아니다(append-only history는 운영면 옵션·MVP 미포함). 옛 인덱스는 갈아끼우고 버린다 — `PrecedentStore`/`Work Queue`가 "최신 상태 보관 ≠ 절차 로그"인 정신.
+
+### 결정 D — 수용 시 권한 검증: over-claim concept 필터(저장 단계 admission)
+
+`PublishIndex` 수용 시 각 concept의 `domain ∈ card.domains`(중앙 선언)인 것만 보관한다(over-claim concept 거부/필터). §5 admission 재검증의 *저장 단계 적용*.
+
+- **필터 규칙(권장: publish에서 over-claim 필터)**:
+  ```
+  authorized_concepts := [
+      c for c in index.concepts
+      if c.domain in card.domains and c.domain not in card.cannot_answer
+  ]
+  ```
+  over-claim concept(`domain ∉ card.domains`)·`cannot_answer` concept을 *떨궈낸* 인덱스를 보관한다. **전부 떨궈지면**(authorized 0개) 그래도 *빈 concepts 인덱스로 보관*한다(0 concept → 라우팅 0 후보로 자연 처리·미아 없음과 무관). 인덱스 자체를 거부하진 않는다 — *concept 단위* 필터(인덱스 단위 거부는 결정 B의 owner 사칭만).
+  - **§13 `authorized()`와 *같은 규칙* 공유**: 라우팅 시 `TwoStageRouter.route`의 권한 재검증(`two_stage_router.py:202`)과 *동일 술어*(`domain in card.domains and domain not in card.cannot_answer`). 한 함수로 추출해 publish·라우팅 양쪽이 공유하게 한다(중복 정의 금지·단일 권위) — `attach_gates`를 모듈 함수로 뽑은 정신(§13 결정 A).
+- **이중 게이트 — publish에서 걸러도 라우팅 authorized는 *방어적 잔존***: publish 시 over-claim을 거른 인덱스만 보관하지만, `TwoStageRouter.route`의 권한 재검증은 *그대로 둔다*. 근거 — ① 카드의 `domains`가 publish 이후 *축소*되면(owner under-claim 갱신·중앙 권한 변경) 보관된 인덱스에 이제 over-claim이 된 concept이 남을 수 있다(저장은 과거 카드 기준). ② `FakePublishedIndexStore`(권한 미검증 직접 주입) 테스트 경로가 라우팅에 들어올 수 있다. ③ 방어적 잔존 비용이 거의 0(이미 §13에서 green). **결론: publish가 1차 admission(저장 단계)·라우팅이 2차 방어(처분 단계). 둘 다 같은 술어를 공유**하므로 모순 0·이중 비용 미미.
+- **불변식(Authority 중앙)**: `card.domains`(중앙 선언)가 권위. owner가 OKF에서 over-claim domain의 concept을 도출해 보내도 중앙이 저장 단계에서 떨군다 — 자기보고가 권한을 *넓힐* 수 없다(ADR 0004). publish는 under-claim(권한 안쪽 concept만)이 자연 통과·over-claim은 필터.
+
+### 결정 E — 워커 publish 트리거: RegisterWorker 직후 + OKF 변경 재배포(후속)
+
+워커가 `RegisterWorker`(연결·인증) *직후* 자기 OKF에서 인덱스를 빌드해 `PublishIndex`를 송신한다.
+
+- **트리거 자리(연결 시)**: `WorkerLogic.register_frame`(`worker.py:155`)이 `RegisterWorker`를 만든 직후, 워커가 자기 소유 카드(`self._cards`)마다 `build_knowledge_index_from_okf(card, okf_root, generated_at=now)`로 인덱스를 도출해 `PublishIndex`로 송신한다. 실 송신 자리는 `run_worker`의 register 직후(`worker.py:226`·`Welcome` 수신 후)·게이트 밖(실 WS). 결정론 단위는 `WorkerLogic`에 `publish_frames() -> list[PublishIndex]`(자기 카드들→인덱스→프레임) 순수 메서드를 둬 FakeClock·고정 OKF로 단언(`handle_push_work` 정신).
+  - **`generated_at` 출처**: 워커가 publish 시점의 시각(또는 OKF 최종 변경 시각)을 싣는다 — 결정 C staleness 키. 결정론 테스트는 주입 clock으로 고정.
+- **OKF 변경 시 재배포(후속·게이트 밖)**: OKF 커밋이 곧 변경 사건(ADR 0019 `OkfChangeEvent`)이라, 그 발화 지점에 인덱스 재배포를 *옵셔널*로 건다(`propagator`/`notifier` 옵셔널 주입 정신). MVP/T10.4는 **연결 시 publish만** 닫고, OKF 변경 재배포는 *자리만*(후속). 재연결마다 다시 publish하므로 staleness(결정 C)가 중복을 멱등 흡수한다.
+- **데모 시드 지름길 처분(`select_router`의 중앙 OKF 읽기)**: **정상 경로는 워커 publish**다. `demo.select_router`(`demo.py:196`)의 중앙 OKF 직접 읽기(`build_knowledge_index_from_okf`를 중앙에서 호출)는 ① **"워커 미연결 테스트용/라이브 시드"로 명시 격리**하거나 ② 워커 publish 실연이 닫히면 제거한다. **권장: 격리(즉시 제거 안 함)** — 게이트 내 결정론 테스트(`test_demo_router_flag`)와 워커 없는 라이브 데모가 빈 스토어로 깨지지 않게 *명시적으로 "시드(테스트/데모용)·실 경로는 워커 publish"* 주석을 박아 남긴다. `okf_index` 모듈 docstring의 "데모 지름길" 경계 명시를 그대로 잇는다. 실 크로스머신 워커 publish가 게이트 밖에서 닫히면 그때 시드 제거를 재검토(되돌리기 쉬운 후속 결정).
+
+### 결정 F — 게이트 경계
+
+**게이트 내(결정론·`.venv` pytest로 잠금):**
+- `PublishIndex` 프레임 DTO 직렬화/역직렬화 왕복(`model_dump_json`↔`model_validate`·중첩 `KnowledgeIndex`·`generated_at` ISO 정밀).
+- `WorkerFrame` union 파싱 무회귀(`_parse_worker_frame`이 기존 4종 + `publish_index`를 정확 판별·미지는 None).
+- `InMemoryPublishedIndexStore.put` staleness(첫 수용·더 새 것 교체·동률 거부·역행 거부·per-agent 격리).
+- 워커-소유자 스코핑 수용 검증(`card.owner == session_owner` 통과·불일치 거부·미등록 거부 — 결정 B).
+- 수용 시 권한 검증(over-claim concept 필터·`cannot_answer` 제외·전부 떨궈지면 빈 concepts 보관 — 결정 D).
+- `WorkerLogic.publish_frames()`(자기 카드들→인덱스→프레임·고정 OKF·주입 clock).
+
+**게이트 밖(수동·실 인프라·비결정):**
+- 실 WS 크로스머신 publish(실 owner 워커가 실 소켓으로 `PublishIndex` 송신·`run_worker`).
+- 워커 connect→register→publish 실연(실 OKF·실 네트워크).
+- OKF 변경 시 재배포(`OkfChangeEvent` 발화 연동·후속).
+
+### 불변식 보존 자체점검 (결정 A~F)
+
+- **중앙 토큰 0 · 비소유(강화)**: 중앙은 *목차(메타)*만 받아 보관(내용 0)·**이제 OKF를 안 읽는다**(워커가 도출·publish). 데모 시드(중앙 OKF 읽기)는 테스트/라이브 단축으로 격리. ADR 0006/0010 "중앙 비소유"를 진짜로 실현.
+- **Authority 중앙**: `card.domains`·`card.owner`(중앙 `registry` 선언)가 권위. publish 수용 시 over-claim concept 필터(결정 D)·워커-소유자 스코핑(결정 B)이 자기보고가 권한·소유를 넓히는 것을 차단. 자기보고는 under-claim(권한 안쪽 concept)만 통과(ADR 0004).
+- **등록 무결성**: 미등록 `agent_id` 인덱스 거부(결정 B `registry.get` KeyError)·타 owner agent 인덱스 거부(`card.owner != session_owner`). "유효하지 않은 인덱스는 안 받는다" = 카드 admission의 publish 짝.
+- **미아 없음**: publish는 *라우팅 종착과 무관*(스토어 적재일 뿐). 빈 concepts·미수용 인덱스여도 라우팅은 stage-1 0 후보→Unowned(root)로 종착(§13 미아 없음 보존). publish 거부가 질문을 떨구지 않는다.
+- **전이 ≠ 기록**: 스토어는 *agent_id별 최신 보관*(전이/배포 결과)이지 audit이 아니다. 옛 인덱스는 갈아끼우고 버린다(append-only history는 운영면 옵션).
+- **노출 불변식**: `KnowledgeIndex`·`Concept`·`grounding`은 조직 내부값(사용자向 `OrgReply` 미노출). publish는 owner↔중앙 운영 채널이지 사용자 경로가 아니다.
+- **기존 `WorkerFrame` 파싱 무회귀(제약)**: `PublishIndex`는 *추가 변이*(새 `type` 키)·기존 4종 분기 무변경·`else: return None`이 미지 프레임을 안전히 떨군다(전방 호환). `_Frame extra="forbid"`로 *추가*는 안전·*제거/이름변경*만 깨짐(되돌리기 어려움 명시).
+
+---
+
 ## Open Questions / 게이트 밖
 
 - **`core_question` distill의 품질** — semantic-os 개념 노드 → `core_question` 도출이 라우팅 정밀도를 좌우한다. 골든셋 eval(ADR 0003)로 검증·게이트 밖(실 LLM/실 온톨로지).
 - **`intent` 단일 출처와 다개념 매칭의 정합(ADR 0015)** — ~~대표 키 선정 규칙~~ **결정 13 §E에서 `concept.domain`으로 확정**. 다후보 Contested 시 대표 domain 선정(최고 점수 후보)의 정밀화만 후속.
 - **stage-2 "clear winner" 임계** — 자동해소 vs Contested 폴백을 가르는 신뢰도 격차 임계(`DelegationSnapshot` staleness 임계 주입 정신 — 정책값 주입). 게이트 내 결정론 단언은 임계를 주입해 검증(결정 13 §D — `clear_winner_margin` 주입 확정·실 정책값은 결정 대기).
-- **인덱스 staleness 전파** — OKF 변경 시 인덱스 재배포와 *그 인덱스에 기댄 과거 판례* staleness(ADR 0019)의 짝. MVP는 인덱스 재배포만·판례 재검토 정밀화는 후속.
+- **인덱스 staleness 전파** — OKF 변경 시 인덱스 재배포와 *그 인덱스에 기댄 과거 판례* staleness(ADR 0019)의 짝. ~~`put` staleness 키~~ **§14 결정 C에서 `generated_at`(datetime·더 새 것만 수용·동률/역행 거부)으로 확정**. OKF 변경 시 재배포 트리거(`OkfChangeEvent` 연동)·그에 기댄 과거 판례 재검토 정밀화는 후속(게이트 밖).
 - **이름 충돌**(CONTEXT 명문화) — semantic-os의 "card/node"는 우리 "Agent Card"(권한·라우팅 메타)와 *다르다*. "OKF"=지식 내용, "KnowledgeIndex"=OKF/온톨로지에서 도출한 *목차*.
 - **fan-out과의 관계** — stage-2의 ≥2 후보 평가는 *tie-break*(담당 1명)이지 fan-out(여러 담당 동시 답)이 아니다. fan-out은 Phase 9에서 명시 연기됨(`Routed.collaborators` 씨앗) — 이 ADR도 메시지당 담당 1명을 유지한다.

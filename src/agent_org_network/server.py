@@ -19,6 +19,7 @@ escalation)는 합성한 `WebSocketDispatcher`(→`InMemoryWorkQueueDispatcher`)
 """
 
 import asyncio
+import logging
 import os
 from typing import Any, cast
 
@@ -31,12 +32,15 @@ from agent_org_network.transport import (
     AuthError,
     CentralFrame,
     Heartbeat,
+    PublishIndex,
     RegisterWorker,
     SubmitAnswer,
     WebSocketDispatcher,
     WorkerFrame,
     from_answer_frame,
 )
+
+_log = logging.getLogger("agent_org_network.server")
 
 
 def _parse_worker_frame(raw: object) -> WorkerFrame | None:
@@ -54,6 +58,8 @@ def _parse_worker_frame(raw: object) -> WorkerFrame | None:
         model = RegisterWorker
     elif frame_type == "submit_answer":
         model = SubmitAnswer
+    elif frame_type == "publish_index":
+        model = PublishIndex  # ADR 0028 §14 결정 A — 추가 한 줄(기존 분기 무회귀·새 키)
     elif frame_type == "heartbeat":
         model = Heartbeat
     elif frame_type == "ack":
@@ -127,6 +133,21 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
             if isinstance(frame, SubmitAnswer):
                 # 회신을 내부 큐로 중계 — 멱등(ticket_id)·단조 종착은 큐가 보장(6-4).
                 dispatcher.submit(frame.ticket_id, from_answer_frame(frame.answer))
+            elif isinstance(frame, PublishIndex):
+                # 인덱스 배포 수용(ADR 0028 §14 결정 F) — *연결 세션의 인증 owner*와 묶어
+                # 스코핑(B)·over-claim 필터(D)·staleness put(C). owner는 프레임에 없다(소켓이
+                # 곧 그 owner). 처리 로직은 dispatcher.accept_index→accept_published_index
+                # (순수·결정론). 스코핑/staleness 거부는 질문 종착과 무관(미아 없음)이라 큐를
+                # 안 깨지만 *조용히 버리지 않는다* — 거부면 보안 이벤트(사칭/미등록 시도) 또는
+                # 미배선(B1 회귀)이므로 가시화한다(m1 보안 가시화·register AuthError와 대비).
+                accepted = dispatcher.accept_index(owner_id, frame)
+                if not accepted:
+                    _log.warning(
+                        "PublishIndex 거부 — owner=%s agent_id=%s "
+                        "(스코핑 거부=사칭/미등록 시도 또는 store 미배선)",
+                        owner_id,
+                        frame.index.agent_id,
+                    )
             # Heartbeat/Ack/미지 프레임은 생존 신호로만(생존 판정 보강, 6-4). 큐 전이 없음.
 
     send_task = asyncio.ensure_future(send_loop())
@@ -205,6 +226,14 @@ def create_central_app(
     `oidc_provider`(T7.1·ADR 0021): SSO 신원 검증 포트. 주입 시 SSO 모드(`POST /login/sso`
     활성·무비밀번호 `POST /login` 403 거부). 미주입이면 기존 동작(OFF/무비밀번호). 실 IdP
     연동(`HttpOidcProvider`)은 게이트 밖 수동 — 모듈 기본 앱은 미주입(env 분기는 후속).
+
+    published 인덱스 라이브 배선(T10.4·ADR 0028 §14 결정 F): `AON_ROUTER=index`면 `create_app`
+    안의 `build_demo`가 `TwoStageRouter`가 보는 published 인덱스 스토어를 만들어 `DemoBundle`로
+    노출하고, `create_app`이 *그 같은 인스턴스*를 이 디스패처에 `bind_published_index`로 꽂는다
+    (라우터↔디스패처 공유). 그래서 워커 publish(`/worker` WS의 `PublishIndex`→`recv_loop`→
+    `accept_index`→`put`)가 라우터가 라우팅에 쓰는 store에 도달한다(워커 publish의 더 새
+    `generated_at`이 시드를 교체). 디스패처를 store 미배선으로 두면 `accept_index`가 무조건
+    no-op이라 publish가 조용히 버려진다(B1) — 배선이 그 회귀를 막는다.
 
     이 앱은 실 owner 워커 프로세스가 붙는 *수동 시연용* 진입점이다(`uvicorn`으로 띄움). 결정론
     테스트는 여전히 `create_worker_app`(주입 디스패처)·`web.create_app`을 따로 쓴다 — 이

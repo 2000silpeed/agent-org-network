@@ -37,13 +37,16 @@ from agent_org_network.dispatch import (
     WorkTicket,
     default_clock,
 )
+from agent_org_network.knowledge_index import KnowledgeIndex
 
 if TYPE_CHECKING:
     # 어댑터 시그니처 예고용 — 런타임 import 순환을 피해 타입 체크 시에만 끌어온다.
     from agent_org_network.agent_card import AgentCard
     from agent_org_network.notify import Notifier
+    from agent_org_network.registry import Registry
     from agent_org_network.review import BackupReviewStore
     from agent_org_network.runtime import Answer
+    from agent_org_network.two_stage_router import PublishedIndexStore
 
 
 # ── 전송 프레임(Transport Frame): 와이어 DTO ─────────────────────────────────
@@ -127,6 +130,28 @@ class SubmitAnswer(_Frame):
     answer: AnswerFrame
 
 
+class PublishIndex(_Frame):
+    """owner 워커가 자기 소유 agent의 KnowledgeIndex를 중앙에 배포하는 업스트림 프레임.
+
+    워커가 *연결·인증 직후* 자기 로컬 OKF에서 `build_knowledge_index_from_okf`로 인덱스를
+    도출해 송신한다(ADR 0028 §14 결정 A·E). 중앙은 받아 *보관만* 한다 — OKF 내용을 읽지
+    않는다(비소유 강화). `SubmitAnswer`가 `answer: AnswerFrame`을 싣듯 `index: KnowledgeIndex`
+    (frozen pydantic v2 값객체)를 통째로 싣는다 — 와이어 DTO를 따로 안 만든다(중첩 직렬화는
+    pydantic이 자동 처리, `generated_at: datetime`은 `model_dump(mode="json")`로 ISO).
+
+    봉투(`_Frame`)는 `extra="forbid"`(미지 필드 거부·봉투 무회귀)지만, 중첩 `index`
+    (`KnowledgeIndex`)의 미지 필드 정책은 그 모델 현 상태(허용)를 그대로 둔다 — 인덱스
+    스키마 진화에 여지를 남긴다(§14 결정 A 주의).
+
+    owner는 프레임에 *다시 싣지 않는다* — 그 소켓이 곧 그 owner(`TicketFrame.owner_id`
+    생략 정신). 중앙이 수용 전 *연결 세션의 인증 owner*와 `index.agent_id`의 card.owner를
+    대조한다(워커-소유자 스코핑, §14 결정 B).
+    """
+
+    type: Literal["publish_index"] = "publish_index"
+    index: KnowledgeIndex
+
+
 class Heartbeat(_Frame):
     """연결 생존 신호(6-4) — 중앙이 워커별 마지막 수신 시각을 갱신한다."""
 
@@ -140,8 +165,10 @@ class Ack(_Frame):
     ticket_id: str
 
 
-WorkerFrame = RegisterWorker | SubmitAnswer | Heartbeat | Ack
+WorkerFrame = RegisterWorker | SubmitAnswer | PublishIndex | Heartbeat | Ack
 #   워커→중앙 업스트림 프레임의 sealed 판별 유니온(type 필드로 갈림).
+#   PublishIndex는 추가 변이(새 type 키 "publish_index") — 기존 4종 분기 무변경(ADR 0028 §14
+#   결정 A). _Frame extra="forbid"라 *추가*는 안전·*제거/이름변경*만 와이어 깨짐(되돌리기 어려움).
 
 
 # ── 중앙→워커(다운스트림) 프레임 ─────────────────────────────────────────────
@@ -266,6 +293,8 @@ class WebSocketDispatcher:
         staleness_threshold: timedelta | None = None,
         review_store: "BackupReviewStore | None" = None,
         notifier: "Notifier | None" = None,
+        registry: "Registry | None" = None,
+        published_index_store: "PublishedIndexStore | None" = None,
     ) -> None:
         # 작업 큐 도메인은 합성으로 재사용 — 큐 상태기계·단조 종착·timeout escalation은
         # 이 객체가 소유한다(WS는 그 위 전송층). 주입 가능하게 둬 결정론 테스트가 고정
@@ -300,6 +329,14 @@ class WebSocketDispatcher:
         # 실시간 push 통지(T7.4·ADR 0022 결정 4) — backup 답 종착 직후 owner에게 push.
         # 미주입이면 기존 동작(하위호환·게이트 보존). 비None이면 review_store.add 직후 발화.
         self._notifier = notifier
+        # PublishIndex 수용 경로(ADR 0028 §14 결정 B·D·F) — 워커가 보낸 인덱스를 스코핑·
+        # over-claim 필터·staleness put으로 보관한다. registry(card.owner·domains 권위)와
+        # published_index_store(보관소)를 *둘 다* 주입받아야 수용한다(`accept_index`). 둘 중
+        # 하나라도 미주입이면 publish 수용 안 함(no-op·하위호환 — publish 모르는 디스패처는
+        # 기존 동작 그대로). 핵심 처리 로직은 `accept_published_index`(순수·결정론 단위 테스트)
+        # 가 갖고, 디스패처는 *연결 세션의 인증 owner*를 묶어 그 함수로 위임한다.
+        self._registry = registry
+        self._published_index_store = published_index_store
 
     # ── 중앙측(질문 측): 내부 큐에 위임 ──────────────────────────────────────
 
@@ -346,6 +383,42 @@ class WebSocketDispatcher:
         같은 owner를 다시 등록하면 최신 스냅샷으로 갱신한다(동기화 시 snapshot_at 진전).
         """
         self._delegations[snapshot.owner_id] = snapshot
+
+    def bind_published_index(
+        self,
+        registry: "Registry",
+        store: "PublishedIndexStore",
+    ) -> None:
+        """publish 수용에 필요한 registry·store를 사후 주입한다(라이브 배선, ADR 0028 §14 결정 F).
+
+        디스패처가 `build_demo`(라우터 store 생성)보다 *먼저* 생성되는 통합 조립
+        (`create_central_app`→`create_app`→`build_demo`) 때문에 생성자에 store를 못 넣는
+        경우가 있다. 이 seam으로 *같은* store 인스턴스를 라우터·디스패처 양쪽에 꽂는다 —
+        그래야 워커 publish(`accept_index`→`put`)가 라우터가 보는 store에 도달한다(T10.4
+        Blocker B1: 미주입이면 `accept_index`가 무조건 False·no-op이라 publish가 버려짐).
+        생성자 주입(`registry=`·`published_index_store=`)과 동등 — 결정론 테스트는 생성자로,
+        통합 조립은 이 사후 바인딩으로 같은 인스턴스를 공유한다.
+        """
+        self._registry = registry
+        self._published_index_store = store
+
+    def accept_index(self, session_owner_id: str, frame: "PublishIndex") -> bool:
+        """워커가 보낸 PublishIndex를 수용 처리한다 — 스코핑→필터→put(ADR 0028 §14 결정 F).
+
+        WS 핸들러가 *연결 세션의 인증 owner*(`RegisterWorker.owner_id`)와 함께 호출한다 —
+        owner는 프레임에 없다(소켓이 곧 그 owner). 처리 로직은 순수 함수
+        `accept_published_index`(스코핑[B]·over-claim 필터[D]·staleness put[C])가 갖고, 이
+        메서드는 주입된 `registry`·`published_index_store`를 묶어 위임한다. 둘 중 하나라도
+        미주입이면 *수용 안 함*(no-op·False — publish 모르는 디스패처는 기존 동작 그대로).
+        반환: 스코핑 통과로 put까지 갔으면 True·거부면 False(핸들러는 무시).
+        """
+        if self._registry is None or self._published_index_store is None:
+            return False
+        from agent_org_network.two_stage_router import accept_published_index
+
+        return accept_published_index(
+            session_owner_id, frame.index, self._registry, self._published_index_store
+        )
 
     # ── 워커측(WS 핸들러가 호출): 전송 중계 ──────────────────────────────────
 

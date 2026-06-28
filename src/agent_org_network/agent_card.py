@@ -18,6 +18,18 @@ AGENT_ID_PATTERN: Final[str] = r"^[A-Za-z0-9][A-Za-z0-9_-]*\Z"
 _AGENT_ID_RE: Final[re.Pattern[str]] = re.compile(AGENT_ID_PATTERN)
 
 
+def domain_authorized(domain: str, card: "AgentCard") -> bool:
+    """domain이 card의 owned 권한 안인가 — 단일 권위 술어(ADR 0028 §13 결정 B·§14 결정 D).
+
+    `domain ∈ card.domains AND domain ∉ card.cannot_answer`. publish 수용 시 over-claim
+    concept 필터(T10.4 결정 D)와 라우팅 권한 재검증(`TwoStageRouter.route` stage-1·
+    precedent 단축, 결정 B)이 *같은* 이 함수를 호출한다 — 중복 정의 금지·단일 권위
+    (`attach_gates`를 모듈 함수로 뽑은 정신). 자기보고가 권한을 *넓힐* 수 없게 막는
+    Authority 중앙 술어(ADR 0004) — under-claim(권한 안쪽)만 통과, over-claim은 거부.
+    """
+    return domain in card.domains and domain not in card.cannot_answer
+
+
 def validate_agent_id_format(value: str) -> str:
     """agent_id 형식 검증 공유 헬퍼(ADR 0023).
 

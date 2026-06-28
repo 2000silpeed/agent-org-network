@@ -1,14 +1,17 @@
-"""OKF→KnowledgeIndex 어댑터 (ADR 0028 §13 Phase 10 라이브 슬라이스·데모 지름길).
+"""OKF→KnowledgeIndex 어댑터 (ADR 0028 §13·§14 Phase 10).
 
 owner의 OKF 번들(`okf/{agent_id}/*.md`, YAML 프론트매터)을 읽어 중앙용 경량
 *목차*(KnowledgeIndex)를 도출한다. 순수·결정론(stdlib+pyyaml만·공급자 SDK 0).
 
-정직한 경계(데모 지름길):
-  실 경로(T10.4)는 *owner가 자기 환경에서 인덱스를 도출해 중앙에 publish*한다 —
-  중앙은 owner의 OKF 내용을 보지 않는다(중앙 비소유). 이 함수는 데모를 한 바퀴
-  돌리려고 *중앙이 repo의 okf/를 직접 읽어 인덱스를 시드*하는 지름길이다. 도출된
-  인덱스 자체는 여전히 목차(내용 0·Concept는 title/description 토큰만)지만, "owner가
-  도출·배포"라는 분산 경로를 데모에선 in-process 시드로 단축한다. 이 차이를 명시.
+두 호출 경로(§14 결정 E로 정정):
+  - **실 경로(워커측·T10.4)**: owner 워커가 *자기 환경*에서 이 함수로 인덱스를 도출해
+    `PublishIndex` 프레임으로 중앙에 배포한다(`WorkerLogic.publish_frames`). 중앙은 받아
+    보관만 — **OKF 내용을 안 읽는다**(중앙 비소유 강화).
+  - **데모 시드 지름길(중앙측·테스트/라이브용)**: `demo.select_router`(AON_ROUTER=index)가
+    *중앙이 repo의 okf/를 직접 읽어* 인덱스를 in-process 시드한다. 이건 **워커 미연결
+    테스트/라이브 시드 전용**이고 실 경로는 워커 publish다(§14 결정 E — 즉시 제거 안 함·
+    명시 격리). 같은 순수 함수를 양쪽이 쓰되 *어디서 호출하나*(워커 환경 vs 중앙)가 다르다.
+  도출된 인덱스는 어느 경로든 목차(내용 0·Concept는 title/description 토큰만)다.
 
 도출 규칙(파일당 1 Concept):
   - 대상: `okf_root/{card.agent_id}/*.md`를 *파일명 정렬*로 읽는다.
@@ -100,8 +103,9 @@ def build_knowledge_index_from_okf(
     okf_root/{card.agent_id}/*.md를 파일명 정렬로 읽어 각 문서의 프론트매터에서
     Concept를 도출한다(위 도출 규칙). OKF 디렉터리/문서가 없으면 빈 인덱스를 돌려준다.
 
-    데모 지름길: 중앙이 repo okf/를 직접 읽어 인덱스를 시드한다(실 경로는 owner publish·
-    모듈 docstring 참조). 같은 OKF·같은 generated_at → 같은 인덱스(결정론).
+    두 경로 공용(§14 결정 E): 실 경로는 *워커측* `publish_frames`가 owner 환경에서 호출하고
+    (중앙은 OKF 안 읽음), 데모 시드는 *중앙측* `select_router`가 호출한다(테스트/라이브 격리·
+    모듈 docstring 참조). 같은 OKF·같은 generated_at → 같은 인덱스(결정론·staleness 멱등 보장).
     """
     agent_dir = okf_root / card.agent_id
     concepts: list[Concept] = []

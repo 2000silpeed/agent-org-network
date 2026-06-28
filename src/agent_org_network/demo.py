@@ -160,6 +160,12 @@ class DemoBundle:
     InMemoryAuditLog)가 record(쓰기)+records/record_at(읽기)를 다 구현하므로,
     `ask`(쓰기)와 모니터링 면(읽기)이 *같은 인스턴스*를 본다. 그동안 build_demo가
     audit_log를 내부 하드코딩하고 노출하지 않아 읽을 손잡이가 없던 것을 연다.
+
+    `published_index_store`(T10.4 라이브 배선·ADR 0028 §14 결정 F): index 모드일 때
+    `TwoStageRouter`가 라우팅에 쓰는 *바로 그* published 인덱스 스토어를 노출하는 손잡이다.
+    `create_central_app`이 이 인스턴스를 `WebSocketDispatcher`에도 같이 주입해야 워커
+    publish(`accept_index`→`put`)가 라우터가 보는 store에 도달한다(라우터↔디스패처 공유).
+    index 모드가 아니면 None(기본 Router는 인덱스 라우팅을 안 봄).
     """
 
     ask: AskOrg
@@ -169,6 +175,7 @@ class DemoBundle:
     registry: Registry
     review_store: "BackupReviewStore | None" = None
     audit_reader: AuditReader | None = None
+    published_index_store: InMemoryPublishedIndexStore | None = None
 
 
 # 데모 인덱스 라우팅 시드의 고정 generated_at — OKF→인덱스 도출이 결정론이 되도록
@@ -176,31 +183,51 @@ class DemoBundle:
 _INDEX_SEED_AT = datetime(2026, 6, 28, 0, 0, 0, tzinfo=timezone.utc)
 
 
+def seed_published_index_store(registry: Registry) -> InMemoryPublishedIndexStore:
+    """데모 카드들의 OKF에서 인덱스를 도출해 시드한 published 인덱스 스토어를 만든다.
+
+    데모 시드 격리(ADR 0028 §14 결정 E): 여기 중앙 OKF 직접 읽기는 **워커 미연결
+    테스트/라이브 시드 전용**이고 *실 경로는 owner 워커 publish*(`WorkerLogic.publish_frames`
+    →`PublishIndex`→중앙 `accept_index`)다. 시드는 워커가 안 붙은 상태에서도 라우팅이
+    빈 스토어로 안 깨지게 하는 fallback이다. 워커가 붙어 publish하면 `_INDEX_SEED_AT`보다
+    *더 새* `generated_at`(워커 `datetime.now(utc)`)이라 `store.put` staleness가 시드를
+    교체한다(의도대로 — 라이브 배선 시 워커 publish가 시드를 덮음). 중앙은 여전히 목차만
+    보유(내용 0).
+    """
+    return InMemoryPublishedIndexStore(
+        [
+            build_knowledge_index_from_okf(
+                card, DEMO_OKF_ROOT, generated_at=_INDEX_SEED_AT
+            )
+            for card in registry.all_cards()
+        ]
+    )
+
+
 def select_router(
     flag: str,
     registry: Registry,
     classifier: Classifier,
     precedents: PrecedentStore,
+    published_index_store: InMemoryPublishedIndexStore | None = None,
 ) -> RouterPort:
     """`AON_ROUTER` 플래그로 라우터 구현을 *결정론*으로 고른다(게이트 내 테스트 가능).
 
     - flag == "index" → `TwoStageRouter`(published 지식 인덱스 기반 2단 라우팅).
-        데모 지름길: 중앙이 repo `okf/`를 직접 읽어 owner별 KnowledgeIndex를 *시드*한다
-        (실 경로는 owner publish — T10.4·okf_index 모듈 docstring 참조). 중앙은 여전히
-        목차만 보유(내용 0). assessor=None이라 단일 담당은 Routed·≥2는 Contested(stage-2
-        자동해소 없음 — T10.5 owner측 RAG 전).
+        `published_index_store`를 주입하면 *그 공유 인스턴스*를 라우터에 꽂는다(라우터↔
+        디스패처가 같은 store를 봐 워커 publish가 라우팅에 도달, T10.4 라이브 배선). 미주입
+        이면 `seed_published_index_store`로 시드 store를 만든다(워커 미연결 테스트/라이브
+        fallback — 기존 단위 테스트 무회귀). assessor=None이라 단일 담당은 Routed·≥2는
+        Contested(stage-2 자동해소 없음 — T10.5 owner측 RAG 전).
     - 그 외(미설정·임의 문자열) → 기존 `Router`(분류기 기반·기본·무회귀).
 
     선택 함수로 분리해 와이어 분기를 게이트 내에서 단언한다(env 미설정 시 옛 Router 보존).
     """
     if flag == "index":
-        store = InMemoryPublishedIndexStore(
-            [
-                build_knowledge_index_from_okf(
-                    card, DEMO_OKF_ROOT, generated_at=_INDEX_SEED_AT
-                )
-                for card in registry.all_cards()
-            ]
+        store = (
+            published_index_store
+            if published_index_store is not None
+            else seed_published_index_store(registry)
         )
         matcher = ConceptOverlapMatcher()
         return TwoStageRouter(
@@ -262,8 +289,24 @@ def build_demo(
     # 라우터 선택(AON_ROUTER 플래그·기본 무회귀). 미설정/기타 → 기존 Router(분류기 기반),
     # AON_ROUTER=index → TwoStageRouter(인덱스 기반·OKF 시드). 선택은 select_router가
     # 결정론으로 한다(게이트 내 테스트). 데모 지름길 주석은 select_router·okf_index 참조.
+    #
+    # index 모드면 published 인덱스 스토어를 *여기서 한 번 만들어* 라우터에 주입하고
+    # DemoBundle로 노출한다(라이브 배선 — ADR 0028 §14 결정 F·T10.4 Blocker B1). 그래야
+    # `create_central_app`이 *같은 인스턴스*를 `WebSocketDispatcher`에도 꽂아 워커 publish
+    # (`accept_index`→`put`)가 라우터가 보는 store에 도달한다. 시드(워커 미연결 fallback)는
+    # `seed_published_index_store`가 채우고, 워커 publish는 더 새 generated_at으로 시드를
+    # 교체한다(put staleness). 기본 모드면 store는 None(인덱스 라우팅 안 봄).
     router_flag = os.environ.get("AON_ROUTER", "").strip().lower()
-    router = select_router(router_flag, registry, classifier, precedents)
+    published_index_store: InMemoryPublishedIndexStore | None = (
+        seed_published_index_store(registry) if router_flag == "index" else None
+    )
+    router = select_router(
+        router_flag,
+        registry,
+        classifier,
+        precedents,
+        published_index_store=published_index_store,
+    )
     # ask_org는 RuntimeDispatcher 경유로 답을 모은다(T6.3 슬라이스2). 데모/in-process는
     # 분산이 아니라 즉답이 필요하므로 동기 런타임을 LocalRuntimeDispatcher로 감싼다 —
     # dispatch가 곧 답(항상 Delivered). 분산 회수 경로(2b-i)를 검증할 땐 WebSocketDispatcher
@@ -304,6 +347,7 @@ def build_demo(
         registry=registry,
         review_store=review_store,
         audit_reader=audit_impl,
+        published_index_store=published_index_store,
     )
 
 

@@ -640,6 +640,18 @@ def create_app(
         manager_queue_store=manager_queue_store,
         audit_log=audit_log,
     )
+    # 라이브 publish 배선(T10.4 Blocker B1·ADR 0028 §14 결정 F): index 모드면 라우터가
+    # 보는 *바로 그* published 인덱스 스토어를 디스패처에 같이 꽂는다 — 그래야 워커
+    # publish(`recv_loop`→`accept_index`→`put`)가 라우터가 라우팅에 쓰는 store에 도달한다.
+    # 미바인딩이면 `accept_index`가 무조건 False·no-op이라 받은 PublishIndex가 버려진다.
+    # 디스패처가 `WebSocketDispatcher`이고 store가 있을 때만(분산 전송·index 모드).
+    from agent_org_network.transport import WebSocketDispatcher
+
+    if (
+        isinstance(dispatcher, WebSocketDispatcher)
+        and bundle.published_index_store is not None
+    ):
+        dispatcher.bind_published_index(bundle.registry, bundle.published_index_store)
     # T9.1(d): 세션 층 래퍼 — AskOrg를 *수정하지 않고* 감싸기로 세션을 붙인다.
     # /ask 엔드포인트만 교체. retrieve·dispatched·mcp_server는 이번 스코프 밖.
     # Phase 9 쿠키 세션 seam: 주입 store가 있으면 그것을, 없으면 새 InMemory 생성(하위호환).

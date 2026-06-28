@@ -28,6 +28,9 @@ from agent_org_network.index_matcher import FakeMatcher, IndexMatch
 from agent_org_network.knowledge_index import Concept, KnowledgeIndex
 from agent_org_network.registry import Registry
 from agent_org_network.two_stage_router import (
+    ConfidenceAssessor,
+    FakeAssessor,
+    GroundedConfidence,
     InMemoryPublishedIndexStore,
     PublishedIndexStore,
     TwoStageRouter,
@@ -705,3 +708,406 @@ class TestPrecedentReauthorization:
         # concept 못 찾음 → domain="" → 권한 필터 탈락 → Unowned
         assert isinstance(result, Unowned)
         assert result.escalated_to == "root"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 11. T10.3b — stage-2 자동해소 (ConfidenceAssessor·FakeAssessor·GroundedConfidence)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _router_with_assessor(
+    registry: Registry,
+    matcher: FakeMatcher,
+    store: PublishedIndexStore,
+    assessor: ConfidenceAssessor | None = None,
+    clear_winner_margin: float | None = None,
+    root_user: str = "root",
+) -> TwoStageRouter:
+    return TwoStageRouter(
+        registry=registry,
+        matcher=matcher,
+        store=store,
+        root_user=root_user,
+        assessor=assessor,
+        clear_winner_margin=clear_winner_margin,
+    )
+
+
+class TestGroundedConfidence:
+    """GroundedConfidence 값 객체 검증."""
+
+    def test_기본_grounding_빈_문자열(self) -> None:
+        gc = GroundedConfidence(agent_id="cs_ops", confidence=0.9)
+        assert gc.grounding == ""
+
+    def test_grounding_설정(self) -> None:
+        gc = GroundedConfidence(agent_id="cs_ops", confidence=0.8, grounding="RAG 점수 기반")
+        assert gc.grounding == "RAG 점수 기반"
+
+    def test_frozen_불변(self) -> None:
+        from pydantic import ValidationError
+
+        gc = GroundedConfidence(agent_id="cs_ops", confidence=0.9)
+        with pytest.raises((AttributeError, TypeError, ValidationError)):
+            gc.confidence = 0.5  # type: ignore[misc]
+
+    def test_RoutingDecision에_grounding_없음(self) -> None:
+        """GroundedConfidence.grounding은 조직 내부값 — RoutingDecision에 안 실림(노출 불변식)."""
+        card_a = _card("cs_ops", domains=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        idx_a = _index("cs_ops", c_a)
+        idx_b = _index("finance_ops", c_b)
+        store = InMemoryPublishedIndexStore([idx_a, idx_b])
+        reg = _registry(card_a, card_b)
+        matcher = FakeMatcher((
+            _match("cs_ops", 1.0, "c_a"),
+            _match("finance_ops", 0.8, "c_b"),
+        ))
+        assessor = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.3})
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.3)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        # grounding은 GroundedConfidence 내부값 — RoutingDecision에 안 실림
+        assert not hasattr(result, "grounding")
+
+
+class TestFakeAssessor:
+    """FakeAssessor 테스트 더블 검증."""
+
+    def test_주입_confidence_반환(self) -> None:
+        card = _card("cs_ops", domains=["환불"])
+        assessor = FakeAssessor({"cs_ops": 0.85})
+        gc = assessor.assess("환불 질문", card)
+        assert gc.agent_id == "cs_ops"
+        assert gc.confidence == 0.85
+
+    def test_없는_agent_id_기본값_0(self) -> None:
+        card = _card("unknown_agent", domains=["환불"])
+        assessor = FakeAssessor({"cs_ops": 0.85})
+        gc = assessor.assess("환불 질문", card)
+        assert gc.confidence == 0.0
+
+    def test_결정론_같은_입력_같은_결과(self) -> None:
+        card = _card("cs_ops", domains=["환불"])
+        assessor = FakeAssessor({"cs_ops": 0.7})
+        results = [assessor.assess("환불 질문", card) for _ in range(5)]
+        assert all(r.confidence == 0.7 for r in results)
+
+
+class TestStage2AutoResolve:
+    """stage-2 자동해소 — assessor 주입 시 ≥2 후보 처리."""
+
+    def _setup_two_candidates(self) -> tuple[Registry, FakeMatcher, InMemoryPublishedIndexStore]:
+        card_a = _card("cs_ops", domains=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        idx_a = _index("cs_ops", c_a)
+        idx_b = _index("finance_ops", c_b)
+        store = InMemoryPublishedIndexStore([idx_a, idx_b])
+        reg = _registry(card_a, card_b)
+        matcher = FakeMatcher((
+            _match("cs_ops", 1.0, "c_a"),
+            _match("finance_ops", 0.8, "c_b"),
+        ))
+        return reg, matcher, store
+
+    def test_clear_winner_Routed_자동해소(self) -> None:
+        """격차 ≥ margin → clear winner → Routed(자동해소)."""
+        reg, matcher, store = self._setup_two_candidates()
+        assessor = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.3})
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.5)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+
+    def test_clear_winner_intent_domain(self) -> None:
+        """자동해소 Routed.intent = 승자 후보의 concept.domain."""
+        reg, matcher, store = self._setup_two_candidates()
+        assessor = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.3})
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.5)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.intent == "환불"
+
+    def test_clear_winner_attach_gates_적용(self) -> None:
+        """자동해소 Routed에도 attach_gates(approval_when) 적용."""
+        card_a = _card("cs_ops", domains=["환불"], approval_when=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        idx_a = _index("cs_ops", c_a)
+        idx_b = _index("finance_ops", c_b)
+        store = InMemoryPublishedIndexStore([idx_a, idx_b])
+        reg = _registry(card_a, card_b)
+        matcher = FakeMatcher((
+            _match("cs_ops", 1.0, "c_a"),
+            _match("finance_ops", 0.8, "c_b"),
+        ))
+        assessor = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.3})
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.5)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.requires_approval is True
+
+    def test_격차_부족_Contested_폴백(self) -> None:
+        """격차 < margin → 자동해소 실패 → Contested."""
+        reg, matcher, store = self._setup_two_candidates()
+        assessor = FakeAssessor({"cs_ops": 0.7, "finance_ops": 0.5})
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.3)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+
+    def test_동점_Contested_동률(self) -> None:
+        """두 후보 같은 confidence → 동점 → Contested."""
+        reg, matcher, store = self._setup_two_candidates()
+        assessor = FakeAssessor({"cs_ops": 0.8, "finance_ops": 0.8})
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.0)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+
+    def test_assessor_None_기존_동작_무회귀(self) -> None:
+        """assessor=None → ≥2→Contested(T10.3a 동작 무회귀·명시 단언)."""
+        reg, matcher, store = self._setup_two_candidates()
+        router = _router_with_assessor(reg, matcher, store, assessor=None)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+
+    def test_margin_None_assessor_주입_단독_최고면_clear(self) -> None:
+        """margin=None + assessor 주입 → 기본 margin=0.0으로 처리 → 단독 최고면 Routed."""
+        reg, matcher, store = self._setup_two_candidates()
+        assessor = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.8})
+        router = _router_with_assessor(
+            reg, matcher, store, assessor=assessor, clear_winner_margin=None
+        )
+
+        result = router.route("환불 질문")
+        # margin None → 기본 0.0 → 격차 0.1 >= 0.0 → 단독 최고 → Routed
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+
+    def test_margin_None_assessor_주입_동점_Contested(self) -> None:
+        """margin=None + assessor 주입 + 동점(격차 0.0) → 동점 → Contested."""
+        reg, matcher, store = self._setup_two_candidates()
+        assessor = FakeAssessor({"cs_ops": 0.8, "finance_ops": 0.8})
+        router = _router_with_assessor(
+            reg, matcher, store, assessor=assessor, clear_winner_margin=None
+        )
+
+        result = router.route("환불 질문")
+        # 동점 → Contested
+        assert isinstance(result, Contested)
+
+    def test_margin_경계값_정확히_같음_clear(self) -> None:
+        """격차 == margin(정확히 같으면) → clear winner → Routed."""
+        reg, matcher, store = self._setup_two_candidates()
+        assessor = FakeAssessor({"cs_ops": 0.8, "finance_ops": 0.5})
+        # 격차 = 0.3, margin = 0.3 → 같음 → clear
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.3)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+
+    def test_margin_경계값_0_001_부족_Contested(self) -> None:
+        """격차 = 0.29, margin = 0.3 → 격차 < margin → Contested."""
+        reg, matcher, store = self._setup_two_candidates()
+        assessor = FakeAssessor({"cs_ops": 0.79, "finance_ops": 0.5})
+        # 격차 = 0.29, margin = 0.3 → 격차 < margin → Contested
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.3)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+
+
+class TestStage2AuthorityInvariant:
+    """stage-2는 권한통과 후보만 평가 — Authority 불변식."""
+
+    def test_권한_밖_후보는_assess_안_함(self) -> None:
+        """권한 밖(over-claim) 후보는 stage-1에서 이미 탈락 — assess조차 안 불림."""
+        # cs_ops: 환불 권한 있음, it_ops: 환불 권한 없음
+        card_cs = _card("cs_ops", domains=["환불"])
+        card_it = _card("it_ops", domains=["IT지원"])
+        c_cs = _concept("c_cs", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_it = _concept("c_it", "환불", "환불 IT 절차", domain="환불")
+        idx_cs = _index("cs_ops", c_cs)
+        idx_it = _index("it_ops", c_it)
+        store = InMemoryPublishedIndexStore([idx_cs, idx_it])
+        reg = _registry(card_cs, card_it)
+        matcher = FakeMatcher((
+            _match("cs_ops", 1.0, "c_cs"),
+            _match("it_ops", 0.9, "c_it"),
+        ))
+        # it_ops: 권한 밖 → stage-1에서 탈락 → stage-2에서 평가 안 됨
+        # assess 호출 여부를 추적하는 assessor
+        assessed_ids: list[str] = []
+
+        class TrackingAssessor:
+            def assess(self, question: str, card: AgentCard) -> GroundedConfidence:
+                assessed_ids.append(card.agent_id)
+                return GroundedConfidence(agent_id=card.agent_id, confidence=0.9)
+
+        router = TwoStageRouter(
+            registry=reg,
+            matcher=matcher,
+            store=store,
+            root_user="root",
+            assessor=TrackingAssessor(),
+            clear_winner_margin=0.0,
+        )
+        result = router.route("환불 질문")
+
+        # cs_ops만 권한 통과 → 1 후보 → stage-2 안 들어감(1→Routed 직행)
+        # it_ops는 assess 호출 안 됨
+        assert isinstance(result, Routed)
+        assert "it_ops" not in assessed_ids
+
+    def test_stage2_권한통과_후보만_평가_3후보중_2통과(self) -> None:
+        """3 후보 중 2개만 권한 통과 → stage-2는 그 2개만 평가."""
+        card_a = _card("cs_ops", domains=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        card_c = _card("it_ops", domains=["IT지원"])  # 환불 권한 없음
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        c_c = _concept("c_c", "환불", "환불 IT 절차", domain="환불")
+        idx_a = _index("cs_ops", c_a)
+        idx_b = _index("finance_ops", c_b)
+        idx_c = _index("it_ops", c_c)
+        store = InMemoryPublishedIndexStore([idx_a, idx_b, idx_c])
+        reg = _registry(card_a, card_b, card_c)
+        matcher = FakeMatcher((
+            _match("cs_ops", 1.0, "c_a"),
+            _match("finance_ops", 0.8, "c_b"),
+            _match("it_ops", 0.7, "c_c"),
+        ))
+        assessed_ids: list[str] = []
+
+        class TrackingAssessor:
+            def assess(self, question: str, card: AgentCard) -> GroundedConfidence:
+                assessed_ids.append(card.agent_id)
+                confidences = {"cs_ops": 0.9, "finance_ops": 0.3}
+                return GroundedConfidence(
+                    agent_id=card.agent_id,
+                    confidence=confidences.get(card.agent_id, 0.0),
+                )
+
+        router = TwoStageRouter(
+            registry=reg,
+            matcher=matcher,
+            store=store,
+            root_user="root",
+            assessor=TrackingAssessor(),
+            clear_winner_margin=0.5,
+        )
+        result = router.route("환불 질문")
+
+        # it_ops는 권한 밖 → assess 안 불림
+        assert "it_ops" not in assessed_ids
+        # cs_ops와 finance_ops만 평가
+        assert set(assessed_ids) == {"cs_ops", "finance_ops"}
+        # cs_ops 격차 0.9-0.3=0.6 >= 0.5 → Routed
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+
+
+class TestStage2Determinism:
+    """stage-2 결정론 — 같은 입력·같은 결과·tie-break 안정."""
+
+    def test_같은_입력_반복_같은_결과(self) -> None:
+        card_a = _card("cs_ops", domains=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        idx_a = _index("cs_ops", c_a)
+        idx_b = _index("finance_ops", c_b)
+        store = InMemoryPublishedIndexStore([idx_a, idx_b])
+        reg = _registry(card_a, card_b)
+        matcher = FakeMatcher((
+            _match("cs_ops", 1.0, "c_a"),
+            _match("finance_ops", 0.8, "c_b"),
+        ))
+        assessor = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.3})
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.5)
+
+        results = [router.route("환불 질문") for _ in range(5)]
+        assert all(isinstance(r, Routed) for r in results)
+        assert all(r.primary.agent_id == "cs_ops" for r in results)  # type: ignore[union-attr]
+
+    def test_동점_tie_break_agent_id_오름차순(self) -> None:
+        """동점 tie-break은 agent_id 오름차순 — 결정론 고정."""
+        card_a = _card("aaa_ops", domains=["환불"])
+        card_b = _card("zzz_ops", domains=["환불"])
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        idx_a = _index("aaa_ops", c_a)
+        idx_b = _index("zzz_ops", c_b)
+        store = InMemoryPublishedIndexStore([idx_a, idx_b])
+        reg = _registry(card_a, card_b)
+        matcher = FakeMatcher((
+            _match("aaa_ops", 1.0, "c_a"),
+            _match("zzz_ops", 0.8, "c_b"),
+        ))
+        # 동점 → Contested(동점이라 동률 처리)
+        assessor = FakeAssessor({"aaa_ops": 0.8, "zzz_ops": 0.8})
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.0)
+
+        result = router.route("환불 질문")
+        # 동점(0.8 == 0.8) → Contested
+        assert isinstance(result, Contested)
+
+    def test_1후보_assessor있어도_stage2_안_들어감(self) -> None:
+        """1 후보 → stage-2 무관 — assessor 있어도 Routed 직행."""
+        card = _card("cs_ops", domains=["환불"])
+        c = _concept("c_r", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        idx = _index("cs_ops", c)
+        store = InMemoryPublishedIndexStore([idx])
+        reg = _registry(card)
+        matcher = FakeMatcher((_match("cs_ops", 1.0, "c_r"),))
+        assessor = FakeAssessor({"cs_ops": 0.0})  # confidence 0이어도
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.5)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+
+    def test_0후보_assessor있어도_Unowned(self) -> None:
+        """0 후보 → stage-2 무관 — assessor 있어도 Unowned."""
+        store = InMemoryPublishedIndexStore()
+        reg = _registry()
+        matcher = FakeMatcher(())
+        assessor = FakeAssessor({})
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.5)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Unowned)
+        assert result.escalated_to == "root"
+
+    def test_노출_불변식_confidence_grounding_미노출(self) -> None:
+        """confidence·grounding은 조직 내부값 — RoutingDecision에 안 실림."""
+        card_a = _card("cs_ops", domains=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        idx_a = _index("cs_ops", c_a)
+        idx_b = _index("finance_ops", c_b)
+        store = InMemoryPublishedIndexStore([idx_a, idx_b])
+        reg = _registry(card_a, card_b)
+        matcher = FakeMatcher((
+            _match("cs_ops", 1.0, "c_a"),
+            _match("finance_ops", 0.8, "c_b"),
+        ))
+        assessor = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.3})
+        router = _router_with_assessor(reg, matcher, store, assessor=assessor, clear_winner_margin=0.5)
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert not hasattr(result, "grounding")

@@ -2,7 +2,7 @@
 
 stage-1: matcher.match(question, store.all_indexes()) → 후보 IndexMatch들
          → authorized() admission 재검증 → 0/1/≥2 분기 → RoutingDecision 투영
-stage-2(T10.3b, 이번 범위 밖): ≥2 모호 후보 → assessor 자동해소 자리(옵셔널 주입)
+stage-2(T10.3b): ≥2 모호 후보 → assessor.assess() → clear winner? → Routed/Contested
 
 기존 Router와 *공존*(수정 아님·ADR 0028 §13 결정 A). 와이어 지점(AskOrg/SessionAskOrg)이
 둘 중 하나를 주입받는다.
@@ -10,15 +10,17 @@ stage-2(T10.3b, 이번 범위 밖): ≥2 모호 후보 → assessor 자동해소
 불변식:
   - 미아 없음: 권한통과 0 → Unowned(root escalation) · 1 → Routed · ≥2 → Contested.
   - Authority 중앙: authorized() = card.domains 기반 — 인덱스는 신호(제안)만.
-  - 중앙 토큰 0: matcher는 결정론(LLM/외부 API 0).
+  - 중앙 토큰 0: matcher는 결정론(LLM/외부 API 0) · assessor는 owner측(FakeAssessor 주입).
   - 기존 Router 무회귀: Router 코드 무수정(attach_gates 추출은 동작 보존 리팩터).
-  - 노출 불변식: score·matched_concept_id는 RoutingDecision에 안 실림.
+  - 노출 불변식: score·matched_concept_id·confidence·grounding은 RoutingDecision에 안 실림.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Protocol
+
+from pydantic import BaseModel
 
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.conflict import PrecedentStore
@@ -27,6 +29,48 @@ from agent_org_network.index_matcher import IndexMatch, KnowledgeIndexMatcher
 from agent_org_network.knowledge_index import KnowledgeIndex
 from agent_org_network.registry import Registry
 from agent_org_network.router import attach_gates
+
+
+# ── stage-2 값 객체 및 포트 ──────────────────────────────────────────────────
+
+
+class GroundedConfidence(BaseModel, frozen=True):
+    """owner RAG 검색 점수 등으로 접지된 신뢰도 값 객체(ADR 0028 §13 결정 D).
+
+    confidence: owner RAG로 접지(자유 자기주장 아님).
+    grounding: 근거 메모(조직 내부값 — 노출 불변식상 사용자 미노출).
+    """
+
+    agent_id: str
+    confidence: float
+    grounding: str = ""
+
+
+class ConfidenceAssessor(Protocol):
+    """owner측 신뢰도 자기평가 포트(ADR 0028 §13 결정 D·owner측 — AgentRuntime 정신).
+
+    stage-2에서 각 권한통과 후보 카드에 대해 호출된다.
+    실 구현은 T10.5(게이트 밖·owner 환경 RAG) — 게이트 내는 FakeAssessor 주입.
+    """
+
+    def assess(self, question: str, card: AgentCard) -> GroundedConfidence:
+        """question에 대해 card(owner 에이전트)의 접지된 신뢰도를 반환한다."""
+        ...
+
+
+class FakeAssessor:
+    """ConfidenceAssessor 테스트 더블 — 생성 시 agent_id→confidence 고정 주입.
+
+    결정론 경계: FakeClassifier·StubRuntime 정신과 동일.
+    없는 agent_id는 confidence=0.0 반환.
+    """
+
+    def __init__(self, confidences: dict[str, float]) -> None:
+        self._confidences = confidences
+
+    def assess(self, question: str, card: AgentCard) -> GroundedConfidence:
+        confidence = self._confidences.get(card.agent_id, 0.0)
+        return GroundedConfidence(agent_id=card.agent_id, confidence=confidence)
 
 
 # ── PublishedIndexStore 포트 ─────────────────────────────────────────────────
@@ -97,8 +141,11 @@ class TwoStageRouter:
       store:       PublishedIndexStore — all_indexes()로 stage-1 입력.
       root_user:   Unowned 시 escalated_to(미아 없음 보장).
       precedents:  PrecedentStore(옵셔널 — 주입 시 stage-1 직후 판례 단축경로).
-      assessor:    ConfidenceAssessor(옵셔널 — T10.3b stage-2 자동해소 자리·이번 미사용).
-      clear_winner_margin: stage-2 자동해소 임계(옵셔널·T10.3b 자리).
+      assessor:    ConfidenceAssessor(옵셔널 — None이면 ≥2→Contested T10.3a 동작,
+                   주입 시 stage-2 자동해소 시도).
+      clear_winner_margin: stage-2 clear winner 판정 임계(옵셔널 — None이면 기본 0.0).
+                   assessor 주입 시 top.confidence - second.confidence >= margin이면
+                   단독 최고 후보로 Routed 자동해소. None이면 0.0 적용.
     """
 
     def __init__(
@@ -108,7 +155,7 @@ class TwoStageRouter:
         store: PublishedIndexStore,
         root_user: str,
         precedents: PrecedentStore | None = None,
-        assessor: object | None = None,
+        assessor: ConfidenceAssessor | None = None,
         clear_winner_margin: float | None = None,
     ) -> None:
         self._registry = registry
@@ -116,9 +163,9 @@ class TwoStageRouter:
         self._store = store
         self._root_user = root_user
         self._precedents = precedents
-        # T10.3b 자리만(이번 미사용)
         self._assessor = assessor
-        self._clear_winner_margin = clear_winner_margin
+        # None이면 기본 0.0 — 단독 최고면 clear, 동점이면 Contested
+        self._clear_winner_margin: float = clear_winner_margin if clear_winner_margin is not None else 0.0
 
     def route(self, question: str) -> RoutingDecision:
         """2단 라우팅 — stage-1 인덱스 매칭 + 권한 재검증 + RoutingDecision 투영.
@@ -217,7 +264,7 @@ class TwoStageRouter:
                 self._registry,
             )
 
-        # ── ≥2 후보 → Contested(T10.3a — stage-2 자동해소는 T10.3b) ─────────
+        # ── ≥2 후보 → stage-2 자동해소 시도(assessor 주입 시) or Contested ──────
         candidate_cards: list[AgentCard] = []
         for match, _domain in authorized:
             try:
@@ -226,8 +273,65 @@ class TwoStageRouter:
             except KeyError:
                 continue
 
+        # assessor 미주입 → T10.3a 동작(≥2→Contested) 무회귀
+        if self._assessor is None:
+            return Contested(
+                candidates=tuple(candidate_cards),
+                reason=f"후보 {len(candidate_cards)}건, Authority 미정(assessor 미주입)",
+                intent=representative_intent,
+            )
+
+        # stage-2: 권한통과 후보에게만 assess 호출(권한 밖은 이미 제외)
+        confidences: list[GroundedConfidence] = [
+            self._assessor.assess(question, card) for card in candidate_cards
+        ]
+
+        # confidence 내림차순 정렬 — 동점 tie-break: agent_id 오름차순(결정론)
+        sorted_confs = sorted(
+            confidences, key=lambda gc: (-gc.confidence, gc.agent_id)
+        )
+
+        top = sorted_confs[0]
+        second = sorted_confs[1]
+
+        # 동점(top.confidence == second.confidence) → Contested
+        if top.confidence == second.confidence:
+            return Contested(
+                candidates=tuple(candidate_cards),
+                reason=f"후보 {len(candidate_cards)}건, stage-2 동점(confidence={top.confidence:.3f})",
+                intent=representative_intent,
+            )
+
+        # clear winner: top - second >= margin → Routed 자동해소
+        if top.confidence - second.confidence >= self._clear_winner_margin:
+            try:
+                winner_card = self._registry.get(top.agent_id)
+            except KeyError:
+                # 카드 조회 실패 → Contested 폴백(미아 없음 보존)
+                return Contested(
+                    candidates=tuple(candidate_cards),
+                    reason=f"stage-2 winner 카드 조회 실패: {top.agent_id}",
+                    intent=representative_intent,
+                )
+            # winner의 domain: authorized에서 agent_id로 domain 찾기
+            winner_domain = representative_intent
+            for match, domain in authorized:
+                if match.agent_id == top.agent_id:
+                    winner_domain = domain
+                    break
+            return attach_gates(
+                Routed(
+                    primary=winner_card,
+                    reason=f"stage-2 자동해소: intent '{winner_domain}' → {top.agent_id} (confidence={top.confidence:.3f})",
+                    intent=winner_domain,
+                ),
+                winner_domain,
+                self._registry,
+            )
+
+        # 격차 < margin → Contested 폴백
         return Contested(
             candidates=tuple(candidate_cards),
-            reason=f"후보 {len(candidate_cards)}건, Authority 미정(stage-2 미통합)",
+            reason=f"후보 {len(candidate_cards)}건, stage-2 격차 부족(top={top.confidence:.3f}, second={second.confidence:.3f})",
             intent=representative_intent,
         )

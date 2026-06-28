@@ -30,9 +30,10 @@ def _make_concept(
     concept_id: str = "c1",
     label: str = "입력 폼",
     core_question: str = "어떤 컴포넌트가 사용자 입력값을 캡처하나?",
+    domain: str = "ui",
     type_: str | None = None,
 ) -> Concept:
-    return Concept(id=concept_id, label=label, core_question=core_question, type=type_)
+    return Concept(id=concept_id, label=label, core_question=core_question, domain=domain, type=type_)
 
 
 def _make_index(
@@ -96,6 +97,18 @@ class TestConcept:
     def test_공백만_core_question_거부(self) -> None:
         with pytest.raises(ValidationError):
             _make_concept(core_question="   ")
+
+    def test_domain_필드_보존(self) -> None:
+        c = _make_concept(domain="환불")
+        assert c.domain == "환불"
+
+    def test_빈_domain_거부(self) -> None:
+        with pytest.raises(ValidationError):
+            _make_concept(domain="")
+
+    def test_공백만_domain_거부(self) -> None:
+        with pytest.raises(ValidationError):
+            _make_concept(domain="   ")
 
 
 # ════════════════════════════════════════════════════════════════════════════

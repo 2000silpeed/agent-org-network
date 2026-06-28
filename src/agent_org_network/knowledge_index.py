@@ -21,11 +21,18 @@ class Concept(BaseModel, frozen=True):
 
     core_question이 라우팅 키다: "이 개념이 어떤 질문에 답하는가"를 담아
     stage-1 개념 오버랩 매칭에 쓰인다.
+
+    domain: 이 개념이 속한 owner의 owned domain(권한 술어·intent 매핑의 링크).
+      - T10.3a admission 재검증에서 `concept.domain in card.domains` 로 over-claim 차단.
+      - `RoutingDecision.intent = concept.domain`(결정 E·ADR 0015 정합).
+      - 값 자체의 카드 owned-domains 일치 검증은 라우팅·publish 수용 시에 함 —
+        Concept 생성(값 객체)에서는 형식 검증(빈/공백 거부)만 한다.
     """
 
     id: str
     label: str
     core_question: str
+    domain: str
     type: str | None = None
 
     @field_validator("id")
@@ -40,6 +47,13 @@ class Concept(BaseModel, frozen=True):
     def _validate_core_question(cls, value: str) -> str:
         if not value or not value.strip():
             raise ValueError("Concept.core_question은 빈 문자열/공백이 될 수 없습니다.")
+        return value
+
+    @field_validator("domain")
+    @classmethod
+    def _validate_domain(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("Concept.domain은 빈 문자열/공백이 될 수 없습니다.")
         return value
 
 

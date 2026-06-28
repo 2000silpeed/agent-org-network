@@ -35,9 +35,10 @@ def _concept(
     cid: str,
     label: str,
     core_question: str,
+    domain: str = "general",
     type_: str | None = None,
 ) -> Concept:
-    return Concept(id=cid, label=label, core_question=core_question, type=type_)
+    return Concept(id=cid, label=label, core_question=core_question, domain=domain, type=type_)
 
 
 def _index(agent_id: str, *concepts: Concept) -> KnowledgeIndex:
@@ -51,10 +52,10 @@ def _index(agent_id: str, *concepts: Concept) -> KnowledgeIndex:
 
 # ── 공용 개념 픽스처 ─────────────────────────────────────────────────────────
 
-_C_PRICE = _concept("c_price", "가격", "상품 가격이 얼마인가?", type_="pricing")
-_C_REFUND = _concept("c_refund", "환불", "환불 정책이 어떻게 되나?", type_="policy")
-_C_DELIVERY = _concept("c_delivery", "배송", "배송 기간이 얼마나 걸리나?", type_="logistics")
-_C_UNRELATED = _concept("c_x", "기타", "전혀 관계없는 매우 특이한 주제다", type_=None)
+_C_PRICE = _concept("c_price", "가격", "상품 가격이 얼마인가?", domain="가격", type_="pricing")
+_C_REFUND = _concept("c_refund", "환불", "환불 정책이 어떻게 되나?", domain="환불", type_="policy")
+_C_DELIVERY = _concept("c_delivery", "배송", "배송 기간이 얼마나 걸리나?", domain="배송", type_="logistics")
+_C_UNRELATED = _concept("c_x", "기타", "전혀 관계없는 매우 특이한 주제다", domain="기타", type_=None)
 
 
 # ════════════════════════════════════════════════════════════════════════════

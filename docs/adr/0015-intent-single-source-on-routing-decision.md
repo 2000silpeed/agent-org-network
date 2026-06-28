@@ -1,6 +1,6 @@
 # intent를 RoutingDecision에 실어 단일 출처화한다 — 두 분류 호출 divergence 차단
 
-상태: accepted (2026-06-21) · T6.2 선행 리팩터(LlmClassifier 도입 전) · **ADR 0028 정합(refine·무변경)**: 스케일 라우팅이 `intent` 1라벨 매칭을 `KnowledgeIndexMatcher` 개념 오버랩(다개념)으로 정밀화해도 `RoutingDecision`에 실리는 *단일 라우팅 키*는 그대로 하나다 — 매처가 고른 대표 개념(`matched_concept_id`)을 `intent` 자리에 실어 Precedent·ConflictCase·audit 색인을 보존(대표 키 선정 규칙은 ADR 0028 Open Questions·후속 정밀화).
+상태: accepted (2026-06-21) · T6.2 선행 리팩터(LlmClassifier 도입 전) · **ADR 0028 정합(refine·무변경)**: 스케일 라우팅이 `intent` 1라벨 매칭을 `KnowledgeIndexMatcher` 개념 오버랩(다개념)으로 정밀화해도 `RoutingDecision`에 실리는 *단일 라우팅 키*는 그대로 하나다 — `TwoStageRouter`가 매칭된 **`concept.domain`**(개념이 속한 owned domain)을 `intent` 자리에 실어 Precedent·ConflictCase·audit 색인을 *현 domain 입도 그대로* 보존(ADR 0028 결정 13 §E 확정 — `matched_concept_id`는 개념 단위라 너무 granular해 precedent 재사용·gate 매칭이 깨지므로 *기각*, 대표 키는 `concept.domain`).
 
 ## 맥락
 

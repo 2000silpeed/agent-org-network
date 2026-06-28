@@ -270,11 +270,100 @@ else:  # ≥2 모호 -> stage-2
 
 ---
 
+## 13. T10.3 통합 shape (domain-architect 확정 2026-06-27 — 결정 A~E)
+
+> §6·§포트 shape가 *의사코드*로 열어둔 2개 도메인 결정(라우터 통합 전략·`authorized()` 권한 술어)을 닫는다. **구현 아님** — tdd-engineer 넘김용 *모양*. T10.2까지 green(게이트 1297 passed)인 코드를 읽고 확정. 핵심 사실: 현 코드에 `routing_rules.yaml` Authority 레이어는 *아직 없고*, 후보 게이트의 실질 권위는 admission 카드의 **`card.domains`**다(`router.route`가 `intent in c.domains and intent not in c.cannot_answer`로 후보 산출). 따라서 §5 "owned domains(중앙 선언) 안의 것만 수용"의 *현 구현체*는 `card.domains`다(ADR 0004상 `domains`는 under-claim 자기보고 — over-claim 차단 게이트로만 작동, 권한을 *넓힐* 수 없음).
+
+### 결정 A — 새 `TwoStageRouter`를 기존 `Router`와 **공존**시킨다 (수정 아님)
+
+기존 `Router`를 *수정하지 않고* 새 `TwoStageRouter`를 신설해 **공존**시킨다. 근거:
+
+- **"refine(대체 아님)" 정합**(헤더·§어느 ADR refine/supersede). 기존 `Router.route`(classify→`intent in c.domains` 정확매칭→0/1/≥2)는 그대로 살아 있고, 인덱스 경로는 *별도 라우터*로 선택된다. 와이어 지점(`AskOrg`/`SessionAskOrg`)이 둘 중 하나를 주입받는다 — 어느 경로를 쓸지는 와이어 결정이지 라우터 내부 분기가 아니다.
+- **기존 라우팅 테스트 무회귀가 제약**(불변식). `Router`를 *건드리지 않으면* 기존 테스트가 정의상 안 깨진다 — 가장 보수적. `Router`에 인덱스 분기를 끼워 넣으면 classify 경로·precedent 단축·`_attach_gates`가 모두 한 메서드에서 두 모드를 타게 돼 회귀 표면이 넓어진다.
+- **재사용은 *위임*으로**. `TwoStageRouter`는 `RoutingDecision` sealed sum·`Unowned`/`Routed`/`Contested`·`Precedent` 단축경로·`_attach_gates`(approval_when/collaborate_when)를 **그대로 재사용**한다. `_attach_gates`·`_collaborators_for`는 현재 `Router`의 *private 메서드*라 — 두 라우터가 공유하려면 **모듈 수준 순수 함수로 추출**(`router.py` 내 `attach_gates(routed, intent, registry) -> Routed`)하고 `Router`는 그 함수에 위임한다. 이 추출은 `Router`의 *동작 무변경 리팩터*(같은 입력→같은 출력·기존 테스트 green 유지)다. 추출이 부담이면 대안으로 `TwoStageRouter`가 내부에 `Router` 인스턴스를 들고 게이트 부착만 위임받는다(둘 다 허용 — tdd-engineer가 red→green에서 더 작은 쪽 선택).
+- **precedent 단축경로도 재사용**. `TwoStageRouter`도 `intent`(=대표 `concept.domain`, 결정 B/E)로 precedent를 lookup해 단축한다 — *단, intent는 stage-1 매칭 후에야 정해지므로* 순서가 다르다(현 `Router`는 classify→precedent, `TwoStageRouter`는 stage-1 매칭→대표 domain→precedent). precedent 단축은 stage-1 후보가 1+일 때만 의미 있다(0이면 Unowned 직행). MVP는 precedent 단축을 **stage-1 뒤·자동해소 앞**에 둔다(아래 의사코드).
+  - **precedent primary도 `authorized()` 재검증 통과 필수 (code-review 보강·확정 2026-06-28).** 초기 구현은 `p.resolution.primary`를 권한 재검증 없이 곧장 Routed로 냈는데(레거시 `Router` 동작 상속), 이는 인덱스 경로의 "card.domains=권위·over-claim 차단" 명제를 precedent가 *우회*하게 한다(권한 박탈/over-claim 카드로 라우팅 가능). **확정**: 인덱스 경로에서 precedent 단축은 `대표 intent(concept.domain) ∈ primary_card.domains and ∉ cannot_answer`를 통과할 때만 발동하고, 미통과(또는 미등록)면 **단축을 건너뛰고 stage-1 권한통과 후보 투영으로 폴백**한다(미아 없음 보존 — authorized는 이미 1+). precedent 무효화(ADR 0019)는 *별개* 메커니즘이고, 권한 재검증은 그와 직교한 over-claim 차단이다. 레거시 `Router`는 이 강화를 *안* 받는다(별 경로·무수정) — over-claim 일관성은 인덱스 경로의 속성이다.
+
+### 결정 B — `authorized()` = `concept.domain ∈ card.domains`, **`Concept.domain` 필드 추가**
+
+§5 admission 재검증(over-claim 차단)을 구현하려면 *개념 → owned domains* 링크가 필요한데 현 `Concept`엔 domain 필드가 없다. **`Concept`에 `domain: str` 필드를 추가**한다(T10.1 소폭 수정). 권한 술어:
+
+```
+authorized(agent_id, concept) :=
+    card = registry.get(agent_id)            # 미등록이면 제외(등록 무결성)
+    concept.domain in card.domains           # over-claim 차단(권한 밖 개념 제외)
+    and concept.domain not in card.cannot_answer   # 현 라우터 cannot_answer 정합
+```
+
+근거 — **`Concept.domain` 추가가 권한 술어와 intent 매핑을 *동시에* 푼다**:
+
+- **권한(over-claim 차단)**: `concept.domain in card.domains`는 현 라우터의 `intent in c.domains` 권위 모델을 *그대로* 재사용한다. IT 에이전트가 "환불" 개념을 publish해도 `"환불" ∉ IT.domains`면 후보에서 빠진다 — 자기보고가 권한을 넓힐 수 없다(ADR 0004·§5 admission 재검증). `cannot_answer`도 현 라우터처럼 반영(`concept.domain in card.cannot_answer`면 제외).
+- **intent 단일 출처(결정 E·ADR 0015)**: `RoutingDecision.intent = 매칭된 concept.domain`. precedent lookup(`intent → primary`)·`_attach_gates`(approval_when/collaborate_when가 *domain 단위*)·`ConflictCase.intent`·audit 색인이 *전부 domain 입도*라 그대로 동작한다. `matched_concept_id`는 인덱스마다 다르고 개념 단위라 너무 granular — precedent가 거의 재사용 안 되고 gate 매칭이 깨진다.
+- **MVP-단순·정확**: 더 가벼운 매핑(개념 태그↔domains 오버랩·라벨 휴리스틱)은 *부정확*하다 — 어떤 태그가 어떤 domain에 속하는지 또 추론해야 하고 비결정 표면이 생긴다. `concept.domain`은 owner가 distill 시 **명시 선언**(개념을 어느 owned domain 아래 둘지)이라 결정론·정확하고, admission 재검증이 단순 집합 멤버십(`in`)으로 닫힌다. 추가 비용은 frozen 값객체 필드 1개(T10.1)뿐.
+
+**`Concept.domain` 검증**: 빈 문자열/공백 거부(`id`·`core_question`과 동일 정신). domain 값 자체의 카드 owned-domains 일치 검증은 *publish 수용 시*(T10.4 권한 대조)·*라우팅 시*(T10.3 authorized)에 하지 admission(Concept 생성)에선 안 한다 — Concept은 카드를 모른다(값 객체 독립성).
+
+### 결정 C — `PublishedIndexStore` 포트 (`all_indexes()`)
+
+2단 라우터가 인덱스를 받는 출처는 `PublishedIndexStore` 포트다 — `PrecedentStore`·`SessionStore` 패턴 N번째(Protocol + InMemory).
+
+```
+class PublishedIndexStore(Protocol):
+    def all_indexes(self) -> Sequence[KnowledgeIndex]: ...   # 에이전트별 최신 인덱스 합집합(stage-1 입력)
+    def get(self, agent_id: str) -> KnowledgeIndex | None: ...  # 단건 조회(운영면·옵션)
+    def put(self, index: KnowledgeIndex) -> None: ...           # 최신 수용(version/generated_at staleness — T10.4)
+```
+
+- T10.3은 `all_indexes()`만 *읽어* stage-1 매처에 먹인다(주입받음·구현 미가정). 실 InMemory 구현·`put` staleness 수용·권한 대조는 **T10.4** 책임(이 ADR §인덱스 갱신·배포). T10.3a는 포트의 `all_indexes()` 계약에만 의존하고 `FakePublishedIndexStore`(고정 인덱스 반환) 또는 인덱스 시퀀스 직접 주입으로 결정론 단언한다.
+- `put`은 T10.3 미사용(read-only 경로)이지만 포트 shape를 한 번에 박아 T10.4가 같은 Protocol을 채우게 한다 — `PrecedentStore`가 record/lookup/invalidate를 한 Protocol에 둔 정신.
+
+### 결정 D — stage-2 plug: `ConfidenceAssessor` 포트 + clear-winner 임계 *주입*
+
+≥2 모호 후보 → stage-2 자동해소. 포트·값객체:
+
+```
+class GroundedConfidence(BaseModel, frozen=True):
+    agent_id: str
+    confidence: float            # owner RAG로 접지(자유 자기주장 아님)
+    grounding: str = ""          # 근거 메모(노출 불변식상 사용자 미노출)
+
+class ConfidenceAssessor(Protocol):    # owner측 — AgentRuntime 정신
+    def assess(self, question: str, card: AgentCard) -> GroundedConfidence: ...
+
+class FakeAssessor:                     # 테스트 더블 — agent_id→고정 confidence 주입
+    ...
+```
+
+- **슬롯 위치**: stage-1이 ≥2 권한 통과 후보를 낸 *그 자리*(현 `Router`가 Contested를 직행하던 자리). T10.3a는 그 자리에서 곧장 Contested로 떨어뜨리고(자동해소 없음), T10.3b가 그 사이에 stage-2 자동해소를 *끼운다* — `TwoStageRouter`가 `assessor: ConfidenceAssessor | None = None`을 **옵셔널 주입**받아, None이면 T10.3a 동작(≥2→Contested), 주입되면 자동해소 시도. `precedents` 옵셔널 주입 정신 그대로(현 `Router.__init__`).
+- **clear-winner 임계 주입**: 자동해소 vs Contested 폴백을 가르는 정책값은 `TwoStageRouter` 생성자에 **주입**(`clear_winner_margin: float` 또는 정책 함수). 카드/인덱스 자기보고가 아니라 중앙 라우터의 정책값(`DelegationSnapshot` staleness 임계 주입 정신). 게이트 내 결정론 단언은 임계를 주입해 검증(실 정책값은 ADR OQ ②·결정 대기).
+- **자동해소 규칙(결정론)**: 후보들의 `assess` 결과 중 최고 confidence가 차순위와 `clear_winner_margin` *이상* 격차면 그 후보로 `Routed`(자동해소). 동률(격차 < margin)·전부 저신뢰(최고 confidence < 최소 임계 — 옵션 주입)면 기존 `Contested`. clear-winner 동률 tie-break는 `_collaborators_for` 정신(agent_id 오름차순)으로 결정론 고정.
+- **불변식**: stage-2는 *권한 통과 후보 사이 tie-break*일 뿐 권한 생성 아님(§6). 신뢰도·grounding은 조직 내부값(노출 불변식). 중앙 토큰 0 — `assess`는 owner측(`FakeAssessor`는 게이트 내, 실 RAG는 T10.5 게이트 밖).
+
+### 결정 E — `intent = 대표 concept.domain` (ADR 0015 정합 + 본문 정정)
+
+`RoutingDecision.intent`에 싣는 대표 키는 **매칭된 `concept.domain`**이다(결정 B). ADR 0015 정합·정정:
+
+- **정합**: ADR 0015가 보존하려던 *목적*은 "Precedent·ConflictCase·audit 색인이 그대로 동작"이다. `concept.domain`은 현 `intent`와 *같은 domain 입도*라 precedent lookup·`_attach_gates`·`ConflictCase`·audit이 무변경으로 돈다. `RoutingDecision`에 실리는 *단일 라우팅 키는 여전히 하나*(ADR 0015 핵심 명제)다.
+- **본문 정정**: ADR 0015 본문/헤더가 예시로 든 "매처가 고른 대표 개념(`matched_concept_id`)을 `intent` 자리에"는 *후속 정밀화*로 열어둔 자리였다(ADR 0028 OQ ③ "대표 키 선정 규칙·MVP는 대표 1개·정밀화 후속"). T10.3에서 그 대표 키를 **`concept.domain`으로 확정**한다 — `matched_concept_id`보다 정합하다(domain 입도라 precedent 재사용·gate 매칭 보존). ADR 0015 헤더의 ADR 0028 정합 주석을 이 확정으로 갱신.
+- **대표 선정 규칙**(다개념·다후보): stage-1이 후보당 1 `IndexMatch`(최고 점수 개념·T10.2 확정)를 내므로, *최종 처분 후보의* `matched_concept_id` → 그 concept의 `domain`이 대표 intent다. Routed면 primary 후보의 domain, Contested면 후보들의 대표(MVP: 최고 점수 후보의 domain·OQ ③ 후속 정밀화). precedent 단축경로는 stage-1 직후 대표 domain이 정해지면 그 domain으로 lookup.
+
+### 불변식 보존 자체점검 (결정 A~E)
+
+- **미아 없음**: stage-1 권한 통과 0 후보 → `Unowned(escalated_to=root)`. 자동해소 실패(동률·저신뢰)·assessor 미주입 ≥2 → `Contested`. 모든 경로가 Routed·Unowned·Contested 종착(기존 `Router` 종착 보존).
+- **Authority 중앙**: 인덱스=신호(매처는 제안만)·권위는 `card.domains`(over-claim 차단)·stage-2는 tie-break(권한 생성 아님). 기존 `Router` 무수정이라 권위 모델 무변경.
+- **중앙 토큰 0**: stage-1 결정론(`ConceptOverlapMatcher` 토큰 0)·stage-2는 owner측(`assess`). 라우터는 수치만 받음.
+- **전이 ≠ 기록**: `TwoStageRouter`는 `RoutingDecision`(전이) 생성만·기록은 audit(ask_org). `PublishedIndexStore`는 최신 보관(전이≠기록).
+- **노출 불변식**: `IndexMatch.score`·`matched_concept_id`·`GroundedConfidence.confidence`·`grounding`은 조직 내부값(사용자向 OrgReply 미노출). `RoutingDecision.intent`(=concept.domain)도 현 정신대로 미노출.
+- **등록 무결성**: `authorized()`가 미등록 agent_id(`registry.get` KeyError) 제외·권한 밖 개념(`domain ∉ card.domains`) 제외. "유효하지 않은 인덱스는 라우팅에 안 든다".
+- **기존 `Router` 무회귀**: `Router` 무수정(결정 A) — 기존 라우팅 테스트가 정의상 green. `_attach_gates` 추출은 동작 무변경 리팩터.
+
+---
+
 ## Open Questions / 게이트 밖
 
 - **`core_question` distill의 품질** — semantic-os 개념 노드 → `core_question` 도출이 라우팅 정밀도를 좌우한다. 골든셋 eval(ADR 0003)로 검증·게이트 밖(실 LLM/실 온톨로지).
-- **`intent` 단일 출처와 다개념 매칭의 정합(ADR 0015)** — stage-1이 여러 개념을 매칭할 때 `RoutingDecision.intent`에 실을 *대표 키* 선정 규칙(최고 score 개념? matched_concept_id?). MVP는 대표 1개를 싣되 정밀화는 후속.
-- **stage-2 "clear winner" 임계** — 자동해소 vs Contested 폴백을 가르는 신뢰도 격차 임계(`DelegationSnapshot` staleness 임계 주입 정신 — 정책값 주입). 게이트 내 결정론 단언은 임계를 주입해 검증.
+- **`intent` 단일 출처와 다개념 매칭의 정합(ADR 0015)** — ~~대표 키 선정 규칙~~ **결정 13 §E에서 `concept.domain`으로 확정**. 다후보 Contested 시 대표 domain 선정(최고 점수 후보)의 정밀화만 후속.
+- **stage-2 "clear winner" 임계** — 자동해소 vs Contested 폴백을 가르는 신뢰도 격차 임계(`DelegationSnapshot` staleness 임계 주입 정신 — 정책값 주입). 게이트 내 결정론 단언은 임계를 주입해 검증(결정 13 §D — `clear_winner_margin` 주입 확정·실 정책값은 결정 대기).
 - **인덱스 staleness 전파** — OKF 변경 시 인덱스 재배포와 *그 인덱스에 기댄 과거 판례* staleness(ADR 0019)의 짝. MVP는 인덱스 재배포만·판례 재검토 정밀화는 후속.
 - **이름 충돌**(CONTEXT 명문화) — semantic-os의 "card/node"는 우리 "Agent Card"(권한·라우팅 메타)와 *다르다*. "OKF"=지식 내용, "KnowledgeIndex"=OKF/온톨로지에서 도출한 *목차*.
 - **fan-out과의 관계** — stage-2의 ≥2 후보 평가는 *tie-break*(담당 1명)이지 fan-out(여러 담당 동시 답)이 아니다. fan-out은 Phase 9에서 명시 연기됨(`Routed.collaborators` 씨앗) — 이 ADR도 메시지당 담당 1명을 유지한다.

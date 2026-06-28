@@ -135,7 +135,7 @@ _Avoid_: Broker, Dispatcher, 중앙 서버
 _Avoid_: RAG index(이건 답변 경로 인프라·금지 — KnowledgeIndex는 목차·내용 0), Vector store(단독), card/node(semantic-os 용어 — Agent Card와 혼동), Manifest
 
 **Concept (개념 — 인덱스 노드)**:
-KnowledgeIndex의 한 항목 — `id` · `label` · **`core_question`**(라우팅 키 — "이 개념이 *어떤 질문에 답하나*", 예: `"어떤 컴포넌트가 사용자 입력값을 캡처하나?"`) · `type?`. semantic-os 개념 노드의 `core_question` 필드가 출처다. `domains` 라벨이 *주제*를 가리켰다면 `core_question`은 *답가능성*을 가리킨다(지식 깊이↑일 때 라벨이 세부 답가능성을 표현 못 하던 결함 해소). **내용 0·목차만** — 각 Concept은 "이런 질문에 답함" 한 줄이지 그 답의 본문이 아니다(중앙 내용 0 보존). 중앙 stage-1 라우팅 = 질문 ↔ 전 에이전트 `core_question` 합집합 매칭. (ADR 0028)
+KnowledgeIndex의 한 항목 — `id` · `label` · **`core_question`**(라우팅 키 — "이 개념이 *어떤 질문에 답하나*", 예: `"어떤 컴포넌트가 사용자 입력값을 캡처하나?"`) · **`domain`**(이 개념이 속한 owned domain — 권한 술어·intent 단일 출처 링크, ADR 0028 결정 13 §B/§E) · `type?`. semantic-os 개념 노드의 `core_question` 필드가 출처다. `domains` 라벨이 *주제*를 가리켰다면 `core_question`은 *답가능성*을 가리킨다(지식 깊이↑일 때 라벨이 세부 답가능성을 표현 못 하던 결함 해소). **`domain` 필드의 역할**: ① 권한 재검증 — `TwoStageRouter`가 `concept.domain in card.domains`로 over-claim 차단(IT 에이전트가 "환불" 개념 publish해도 환불∉IT.domains면 후보 제외·ADR 0004 under-claim 정합) · ② intent 단일 출처(ADR 0015) — 매칭된 `concept.domain`이 `RoutingDecision.intent` 자리에 실려 precedent·gates·ConflictCase·audit가 *domain 입도 그대로* 동작(`matched_concept_id`는 개념 단위라 너무 granular해 *기각*). 검증: 빈 문자열/공백 거부(`id`·`core_question` 정신). domain↔카드 owned-domains 일치 검증은 publish 수용(T10.4)·라우팅(T10.3)에서 하지 Concept 생성에선 안 함(값 객체는 카드를 모름). **내용 0·목차만** — 각 Concept은 "이런 질문에 답함" 한 줄이지 그 답의 본문이 아니다(중앙 내용 0 보존). 중앙 stage-1 라우팅 = 질문 ↔ 전 에이전트 `core_question` 합집합 매칭. (ADR 0028)
 _Avoid_: Topic(이건 Intent 결·Concept은 더 세밀), Node(단독 — semantic-os node와 혼동), Entry
 
 **KnowledgeIndexMatcher (인덱스 매처)**:
@@ -143,12 +143,24 @@ _Avoid_: Topic(이건 Intent 결·Concept은 더 세밀), Node(단독 — semant
 _Avoid_: Classifier(이건 intent 1라벨 — 매처는 다개념 오버랩·후보 다수), Search(단독), Ranker(단독)
 
 **Published index (배포된 인덱스)**:
-owner 환경에서 도출돼 중앙에 배포된 KnowledgeIndex가 중앙 published-index 스토어에 *에이전트별 최신*으로 보관된 상태 — *지식 커버리지 신호*지 *권한 선언이 아니다*(ADR 0004 화해). 인덱스 매칭은 후보를 *제안*만 하고, Authority(`routing_rules`)·Contested·Precedent가 게이트. 스토어는 `agent_id → 최신 KnowledgeIndex`(`PrecedentStore`·`SessionStore` 포트 패턴 N번째·전이≠기록 — 최신 보관이지 절차 로그 아님). publish 수용 시 개념을 owned domains(중앙 선언)와 대조 검증(admission-유사 — "유효하지 않은 인덱스는 라우팅에 안 든다"가 "유효하지 않은 카드는 등록 안 된다"의 짝). (ADR 0028)
+owner 환경에서 도출돼 중앙에 배포된 KnowledgeIndex가 중앙 published-index 스토어(`PublishedIndexStore`)에 *에이전트별 최신*으로 보관된 상태 — *지식 커버리지 신호*지 *권한 선언이 아니다*(ADR 0004 화해). 인덱스 매칭은 후보를 *제안*만 하고, Authority·Contested·Precedent가 게이트. **권위 출처(현 구현)**: 현 코드에 별도 `routing_rules.yaml` Authority 레이어는 *아직 없고*, 후보 게이트의 실질 권위는 admission 카드의 **`card.domains`**다(`router.route`의 `intent in c.domains`·`TwoStageRouter`의 `concept.domain in card.domains`). ADR 0004상 `domains`는 under-claim 자기보고라 over-claim 차단 게이트로만 작동(권한을 *넓힐* 수 없음). 스토어는 `agent_id → 최신 KnowledgeIndex`(`PrecedentStore`·`SessionStore` 포트 패턴 N번째·전이≠기록 — 최신 보관이지 절차 로그 아님). publish 수용 시 개념의 `concept.domain`을 `card.domains`(owned domains)와 대조 검증(admission-유사 — "유효하지 않은 인덱스는 라우팅에 안 든다"가 "유효하지 않은 카드는 등록 안 된다"의 짝). (ADR 0028)
 _Avoid_: Authority(권한 선언과 혼동 — 인덱스는 신호일 뿐), Registration(카드 admission과 혼동)
 
 **Stage-1 / stage-2 routing (2단 라우팅)**:
 **stage-1**(중앙·인덱스 매칭) = 질문 → KnowledgeIndexMatcher 후보. **1→Routed · 0→Unowned/escalation(루트 User·미아 없음) · ≥2→모호→stage-2**. **stage-2**(owner측 깊은 RAG·*모호한 ≥2 후보에게만*) = 각 후보가 *접지된 신뢰도*(RAG 검색 점수 등으로 접지·자유 자기주장 아님)로 self-assess → 중앙이 최고 신뢰도로 **자동 라우팅**. 그래도 동률·전부 낮음 → 기존 **Contested(사람 1인칭 합의)+Precedent** 폴백(미아 없음·기존 종착 보존). **stage-2는 *권한 있는 후보들 사이 tie-break*일 뿐**(권한 생성 아님 — stage-1 admission 재검증 통과 후보만 진입)이며, ADR 0017 결정 3② 비전 *"실시간 충돌 자동해소"*의 실체다(Contested를 *항상* 사람에게 올리던 것을 접지 신뢰도로 먼저 자동해소). stage-2 fan-out은 *전 owner가 아니라 ≥2 모호 후보에게만*(O(모호 후보 수))이라 결정 ①의 "매 질문 fan-out 불요"와 정합. 깊은 RAG·신뢰도는 owner OAuth 멀티-LLM 워커(ADR 0027)가 자기 환경에서 수행(중앙 토큰 0 보존). 신뢰도·후보·근거는 *조직 내부값*이라 사용자向 OrgReply에 미노출(노출 불변식). (ADR 0028)
 _Avoid_: Contested(stage-2는 그 *전* 자동해소 — Contested는 stage-2 실패 폴백), Fan-out(stage-2는 tie-break·담당 1명이지 다중 답 fan-out 아님 — fan-out은 Phase 9 연기)
+
+**TwoStageRouter (2단 라우터)**:
+인덱스 기반 2단 라우팅을 수행하는 라우터 — 기존 `Router`(classify→`intent in c.domains` 정확매칭)와 **공존**(대체 아님·ADR 0028 결정 13 §A). 어느 경로를 쓸지는 와이어 지점(`AskOrg`/`SessionAskOrg`)의 주입 결정이지 라우터 내부 분기가 아니다. 흐름: `matcher.match(question, store.all_indexes())`(stage-1) → `authorized()`로 권한 재검증(`concept.domain in card.domains` — over-claim 차단·미등록 제외) → 0→`Unowned`·1→`Routed`·≥2→stage-2(자동해소·assessor 주입 시)/`Contested`. `RoutingDecision` sealed sum·`Unowned`/`Routed`/`Contested`·`Precedent` 단축·`attach_gates`(approval_when/collaborate_when)를 **그대로 재사용**한다(게이트 부착은 `Router`와 공유하는 모듈 함수로 추출). `precedents`·`assessor`·`clear_winner_margin`은 옵셔널 주입(현 `Router.__init__` 정신). 기존 `Router`는 *무수정* — 기존 라우팅 테스트 무회귀가 제약. (ADR 0028 결정 13)
+_Avoid_: Router(이건 기존 intent 정확매칭 라우터 — 공존하지 대체 아님), Dispatcher(이건 워커 실행 — 라우팅 아님)
+
+**PublishedIndexStore (배포 인덱스 스토어)**:
+중앙이 에이전트별 최신 KnowledgeIndex를 보관하는 포트 — `PrecedentStore`·`SessionStore` 패턴 N번째(Protocol + InMemory). `all_indexes() -> Sequence[KnowledgeIndex]`(stage-1 매처 입력·합집합)·`get(agent_id)`(단건)·`put(index)`(version/generated_at staleness 수용). `TwoStageRouter`는 `all_indexes()`만 *읽고*(read-only), 실 수용·권한 대조·staleness는 T10.4 책임. 전이≠기록 — *최신 보관*이지 절차 로그 아님(audit 아님). (ADR 0028 결정 13 §C)
+_Avoid_: Registry(이건 카드/유저 admission — 인덱스 스토어는 별개), AuditLog(전이≠기록 — 스토어는 최신 보관)
+
+**ConfidenceAssessor (신뢰도 평가자)**:
+stage-2에서 각 후보 owner가 *접지된 신뢰도*를 자기평가하는 포트 — `assess(question, card) -> GroundedConfidence{agent_id·confidence·grounding}`. owner측에서 수행(`AgentRuntime` 정신·owner OAuth 멀티-LLM 워커·ADR 0027)이라 **중앙 토큰 0**(중앙은 수치만 받음). `confidence`는 owner RAG로 접지(자유 자기주장 아님)·`grounding`은 근거 메모. `TwoStageRouter`가 옵셔널 주입받아 ≥2 모호 후보를 자동해소 — 최고 confidence가 차순위와 `clear_winner_margin` 이상 격차면 `Routed`(자동해소), 동률·저신뢰면 `Contested` 폴백. `FakeAssessor`(고정 신뢰도 주입)로 게이트 내 결정론 단언·실 RAG는 T10.5 게이트 밖. **노출 불변식**: `confidence`·`grounding`은 조직 내부값(사용자向 OrgReply 미노출). (ADR 0028 결정 13 §D)
+_Avoid_: Classifier(이건 intent 1라벨·중앙 — assessor는 owner측 신뢰도), Confidence(단독 — Routed.confidence와 혼동)
 
 ### Routing outcomes
 

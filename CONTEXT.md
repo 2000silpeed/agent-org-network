@@ -62,6 +62,14 @@ _Avoid_: Generator(단독), Extractor(단독 — 포트 추상이지 한 단계 
 인제스천(1·raw 정규화)→개념 분할(2·`OkfDocumentDraft` 초안)→`core_question` 도출(3·라우팅 키)→연결(4·edges·전용 단계)→인덱싱(5·`build_knowledge_index_from_okf` 재사용)의 단계별 파이프라인(ADR 0029 결정 3·semantic-os scout/smith/engineer 패턴). **one-shot 기각**(컨텍스트 한계·단계별 검증 불가·다개념 edges 오류 — 개념이 다 선 *뒤* edges여야 *없는 개념 가리키는 edge* 방지). 단계별 owner 검토가 핵심 이득 — owner가 ②③④ 각 단계 산출을 diff로 따로 검토·수정·승인한다(staged→approved/edited/rejected 상태기계·승인분만 다음 단계·rejected는 소비 경로에 안 닿음). 5단계는 ADR 0028 okf_index 재사용(새 인덱싱 0). (ADR 0029)
 _Avoid_: 변환 파이프라인(단독·모호), ETL(데이터 적재 연상·틀림), one-shot 변환(명시 기각된 대안)
 
+**처분 상태기계 (Stage Disposition · staged→approved/edited/rejected)**:
+staged 단계 산출(②③④)에 owner가 부여하는 처분 — `StageDisposition` sealed sum(`Approved`[원 산출 그대로]·`Edited`[교체본 동반 — `documents`/`edges`]·`Rejected`[사유·종착])·`StageReview`(단계 산출 + `disposition=None`이면 staged·미검토)가 한 쌍. `set_disposition`이 함수형 전이(frozen→새 값·재처분 거부·단계×payload 불일치 거부[split/derive=documents 필수·edges 금지, link=edges 필수·documents 금지]). **승인분만 다음 단계**(Approved=원 산출·Edited=교체본·Rejected/staged 제외)·rejected는 최종 번들에서 빠져 commit/index/라우팅 미도달(소비 경로 미도달의 기계적 보장). **ADR 0025(HITL) 정신 차용**(자동 산출=초안·검토를 거쳐 확정)하되 답 `mode` 토글과 다른 축이라 *상태기계 패턴만* 본뜸. **전이≠기록**(처분 전이=도메인·커밋 사실=git 기록). (ADR 0029·T11.3)
+_Avoid_: Approval(답 게이트와 혼동 — 처분은 *저작* 검토지 답 승인 아님), 상태 enum(Edited가 payload 동반이라 sealed sum)
+
+**OKF admission · 직렬화 (admit_okf · render_okf_markdown · AdmissionResult)**:
+최종 승인 번들이 publish 가능한지 보는 순수 검증 — `admit_okf(draft, card)→AdmissionResult`(①권한 필터[`domain_authorized` 거짓 concept를 `dropped_concepts`로 *제거*·전체 거부 아님·ADR 0028 §14 결정 D]→②그 탓 dangling edge를 `dropped_edges`로 제거→③잔여 dangling은 `violations`[진짜 결함]). **실패는 예외 아닌 값 객체**(`AdmissionResult`·`violations` 비면 publish 가능). over-claim은 owner가 approve해도 필터(자동화·검토 어느 것도 권한 못 넓힘·Authority 중앙). `render_okf_markdown`은 초안→OKF 마크다운 순수 직렬화(`yaml.safe_dump` 프론트매터·**domain→tags**[okf_index가 tags에서 domain 도출]·core_question→description·okf_index round-trip 정합·T11.4 재사용). `prepare_commit_request`는 승인 번들→`BuilderCommitRequest` seam(실 `commit_okf_bundle`·gateway는 T11.7). (ADR 0029·T11.3)
+_Avoid_: 검증 실패=거부(over-claim/dangling은 *필터*·잔여 dangling만 violations), domain을 프론트매터 domain 키로(okf_index는 tags에서 도출 — 비대칭 함정)
+
 **증분 재인덱싱 (Incremental Reindexing)**:
 자료 추가/변경 시 *그 부분만* 2~5단계를 재처리하는 메커니즘(ADR 0029 결정 4·full 재빌드는 옵션 트리거). 변경 감지(어느 raw가 바뀌었나·`OkfChangeEvent.changed_paths` 정신·거친 매칭[ADR 0019 "놓침 0 > 과검출 0"])→영향 개념만 재분할/재도출(2~3)→edges 재연결(4·나머지 보존)→재인덱싱(5·`generated_at` 갱신→`PublishIndex` 재배포). ADR 0028 §14 staleness가 더 새 인덱스만 수용·동률/역행 멱등 거부로 중복 흡수. **ADR 0019 변경 전파와 짝** — OKF 커밋(=`OkfChangeEvent`)이 ① 증분 재인덱싱(이 ADR·*미래* 인덱스 갱신)과 ② 그 지식에 기댄 *과거* 판례·답 재검토(ADR 0019)를 동시에 트리거. (ADR 0029)
 _Avoid_: full 재빌드(이건 옵션·증분이 기본), 재동기화(중앙 저장 함의·틀림)

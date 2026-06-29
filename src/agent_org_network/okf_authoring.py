@@ -1,5 +1,6 @@
 """OKF Authoring 값 객체 — T11.1 (ADR 0029 S1·경로 위생은 ADR 0028 §15).
 T11.2 — OkfAuthor 포트·FakeAuthor·staged 오케스트레이터·실 어댑터는 T11.7 게이트 밖.
+T11.3 — HITL 상태기계·OKF admission 검증·마크다운 직렬화·commit seam.
 
 owner가 OKF 초안을 작성할 때 쓰는 frozen pydantic v2 값 객체.
 SDK 0·IO 0·결정론. 권한(domain∈card.domains) 검증은 하지 않는다(ADR 0004·형식만).
@@ -15,13 +16,23 @@ superset*이다 — okf_index는 파일시스템이 stem을 보증해 별도 거
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from collections.abc import Sequence
-from typing import Protocol
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Protocol
 
+import yaml
 from pydantic import BaseModel, field_validator, model_validator
 
 from agent_org_network.agent_card import validate_agent_id_format, validate_safe_path_component
+from agent_org_network.git_gateway import BuilderCommitRequest, OkfFile
 from agent_org_network.knowledge_index import ConceptEdge
+
+if TYPE_CHECKING:
+    from agent_org_network.agent_card import AgentCard
+    from agent_org_network.knowledge_index import KnowledgeIndex
+    from agent_org_network.transport import PublishIndex
 
 
 class RawSource(BaseModel, frozen=True):
@@ -222,3 +233,283 @@ def run_authoring_pipeline(
     edges = author.link(derived)                    # 4단계: edges 도출
     draft = OkfDraft(agent_id=agent_id, documents=derived, edges=edges)
     return AuthoredOkf(draft=draft, sources=tuple(sources))
+
+
+# ── T11.3: HITL 상태기계 + OKF admission 검증 ────────────────────────────────
+
+
+# 처분 sealed sum (decision.py 패턴)
+@dataclass(frozen=True)
+class Approved:
+    """owner 검토 결과 — 원 산출 그대로 승인."""
+
+
+@dataclass(frozen=True)
+class Edited:
+    """owner 수정 — 교체본. 단계 산출을 교체한다.
+
+    split/derive 단계 교체본은 documents에, link 단계 교체본은 edges에 넣는다.
+    교체본도 OkfDocumentDraft/ConceptEdge 값 객체 검증을 그대로 받는다.
+    """
+
+    documents: tuple[OkfDocumentDraft, ...] = ()
+    edges: tuple[ConceptEdge, ...] = ()
+
+
+@dataclass(frozen=True)
+class Rejected:
+    """owner 검토 결과 — 거부 종착. 다음 단계 입력 제외."""
+
+    reason: str = ""
+
+
+StageDisposition = Approved | Edited | Rejected
+
+
+@dataclass(frozen=True)
+class StageReview:
+    """단계 검토 래퍼(frozen) — 단계 산출과 owner 처분을 묶는다.
+
+    stage: 검토 대상 단계("split" | "derive" | "link").
+    documents: ②split·③derive 단계 산출(④link이면 ()).
+    edges: ④link 단계 산출(②③이면 ()).
+    disposition: None=staged(미검토), Approved/Edited/Rejected=처분 완료.
+
+    processed disposition은 단조(되돌리기 없음) — 이미 처분된 것을 재처분하면 ValueError.
+    단계×payload 불일치(split 단계인데 Edited.edges만 채움 등)는 ValueError.
+    """
+
+    stage: Literal["split", "derive", "link"]
+    documents: tuple[OkfDocumentDraft, ...] = ()
+    edges: tuple[ConceptEdge, ...] = ()
+    disposition: StageDisposition | None = None
+
+
+def set_disposition(review: StageReview, disposition: StageDisposition) -> StageReview:
+    """처분 부여 — 함수형 전이(frozen→새 StageReview).
+
+    이미 처분된 StageReview 재처분 거부(단조·되돌리기 없음).
+    단계×payload 불일치 거부 — 단계가 요구하는 필드는 필수·금지 필드는 거부:
+      - "split"/"derive": documents 교체본 필수(비면 거부)·edges 금지(차면 거부)
+      - "link": edges 교체본 필수(비면 거부)·documents 금지(차면 거부)
+    빈 Edited()·혼합 Edited(documents+edges) 모두 거부된다.
+    """
+    if review.disposition is not None:
+        raise ValueError(
+            f"이미 처분된 StageReview를 재처분할 수 없습니다: {review.disposition!r}"
+        )
+    if isinstance(disposition, Edited):
+        if review.stage in ("split", "derive"):
+            if not disposition.documents:
+                raise ValueError(
+                    f"단계×payload 불일치: {review.stage!r} 단계 Edited는 "
+                    f"documents 교체본이 필요합니다(비어 있음)."
+                )
+            if disposition.edges:
+                raise ValueError(
+                    f"단계×payload 불일치: {review.stage!r} 단계 Edited에 "
+                    f"edges가 들어갈 수 없습니다(documents 교체)."
+                )
+        elif review.stage == "link":
+            if not disposition.edges:
+                raise ValueError(
+                    "단계×payload 불일치: link 단계 Edited는 "
+                    "edges 교체본이 필요합니다(비어 있음)."
+                )
+            if disposition.documents:
+                raise ValueError(
+                    "단계×payload 불일치: link 단계 Edited에 "
+                    "documents가 들어갈 수 없습니다(edges 교체)."
+                )
+    return StageReview(
+        stage=review.stage,
+        documents=review.documents,
+        edges=review.edges,
+        disposition=disposition,
+    )
+
+
+# admission 검증 결과
+@dataclass(frozen=True)
+class AdmissionResult:
+    """OKF admission 검증 결과(순수·IO 0).
+
+    admitted: 권한·닫힘 통과 후 publish 가능한 OkfDraft.
+    dropped_concepts: over-claim 필터(domain_authorized 거짓 concept — 전체 거부 아님).
+    dropped_edges: 떨군 개념 탓 dangling으로 제거된 edge.
+    violations: 필터로 못 흡수한 잔여 dangling(있으면 publish 불가).
+    """
+
+    admitted: OkfDraft
+    dropped_concepts: tuple[str, ...] = ()
+    dropped_edges: tuple[ConceptEdge, ...] = ()
+    violations: tuple[str, ...] = ()
+
+
+def admit_okf(draft: OkfDraft, card: "AgentCard") -> AdmissionResult:
+    """OKF admission 순수 함수 — 권한 필터 → dangling 제거 → 잔여 violations.
+
+    검증 순서:
+      ① 권한 필터: domain_authorized 거짓 concept를 dropped_concepts로 제거(전체 거부 아님).
+      ② 제거로 dangling된 edge를 dropped_edges로 제거.
+      ③ 잔여 dangling edge(documents에 없는 concept 가리킴)는 violations(진짜 결함).
+
+    admission 실패는 예외 아님 — AdmissionResult(violations 채워짐) 반환.
+    """
+    from agent_org_network.agent_card import domain_authorized
+
+    # ① 권한 필터
+    kept_docs: list[OkfDocumentDraft] = []
+    dropped: list[str] = []
+    for doc in draft.documents:
+        if domain_authorized(doc.domain, card):
+            kept_docs.append(doc)
+        else:
+            dropped.append(doc.concept_id)
+
+    kept_ids = {doc.concept_id for doc in kept_docs}
+
+    # ② 제거 탓 dangling edge → dropped_edges
+    kept_edges: list[ConceptEdge] = []
+    dropped_edges: list[ConceptEdge] = []
+    for edge in draft.edges:
+        if edge.from_id in dropped or edge.to_id in dropped:
+            dropped_edges.append(edge)
+        else:
+            kept_edges.append(edge)
+
+    # ③ 잔여 dangling edge(kept_ids에 없는 concept 가리킴) → violations
+    violations: list[str] = []
+    for edge in kept_edges:
+        if edge.from_id not in kept_ids or edge.to_id not in kept_ids:
+            violations.append(
+                f"dangling edge: {edge.from_id!r} → {edge.to_id!r} "
+                f"(참조하는 concept가 번들에 없습니다)"
+            )
+
+    admitted_draft = OkfDraft(
+        agent_id=draft.agent_id,
+        documents=tuple(kept_docs),
+        edges=tuple(kept_edges),
+    )
+    return AdmissionResult(
+        admitted=admitted_draft,
+        dropped_concepts=tuple(dropped),
+        dropped_edges=tuple(dropped_edges),
+        violations=tuple(violations),
+    )
+
+
+def render_okf_markdown(doc: OkfDocumentDraft) -> str:
+    """OkfDocumentDraft → 마크다운 직렬화(순수·IO 0).
+
+    프론트매터 + 본문. okf_index 도출 정합(round-trip):
+      - concept_id → 파일 stem(호출부 책임)
+      - title → frontmatter title
+      - core_question → frontmatter description (okf_index가 description에서 재도출)
+      - domain → frontmatter tags 리스트에 실음 (okf_index가 tags에서 domain 도출)
+      - type → frontmatter type (있을 때만)
+      - body → 본문
+
+    T11.4가 이 렌더러를 재사용(중복 금지).
+
+    프론트매터는 yaml.safe_dump으로 직렬화한다 — 값에 콜론·`#` 등 YAML 특수문자가 있어도
+    안전하게 인용돼 okf_index._parse_frontmatter(yaml.safe_load) round-trip이 깨지지 않는다.
+    """
+    front: dict[str, object] = {
+        "title": doc.title,
+        "description": doc.core_question,
+        "tags": [doc.domain],
+    }
+    if doc.type is not None:
+        front["type"] = doc.type
+    block = yaml.safe_dump(front, allow_unicode=True, sort_keys=False)
+    return f"---\n{block}---\n\n{doc.body}"
+
+
+def build_index_from_admitted(
+    admitted: OkfDraft,
+    card: "AgentCard",
+    okf_root: Path,
+    *,
+    generated_at: datetime,
+    version: str = "okf-1",
+) -> "KnowledgeIndex":
+    """승인된 OkfDraft → KnowledgeIndex(목차) 생성 합류(T11.4).
+
+    각 doc을 render_okf_markdown으로 직렬화해 okf_root/{agent_id}/{concept_id}.md에 쓴 뒤,
+    build_knowledge_index_from_okf(도출 단일 권위)를 그대로 호출해 반환한다.
+    새 도출 규칙 0 — render(직렬화)+build(도출) 두 기존 함수만 조립.
+    빈 admitted.documents → 파일 0개 → 빈 인덱스(concepts=()) 정상 반환.
+
+    **호출자는 임시/격리 디렉터리를 okf_root로 줘야 한다** — 이 함수는
+    okf_root/{agent_id}/{concept_id}.md를 무조건 덮어쓴다(mkdir exist_ok·write_text).
+    실 OKF 본체 디렉터리를 주면 owner 지식을 덮어쓴다(경로는 sanitize됐으나 덮어쓰기는 막지
+    않음). 실 OKF 디렉터리 커밋은 prepare_commit_request → commit_okf_bundle 경로(T11.7).
+    """
+    from agent_org_network.okf_index import build_knowledge_index_from_okf
+
+    agent_dir = okf_root / admitted.agent_id
+    agent_dir.mkdir(parents=True, exist_ok=True)
+
+    for doc in admitted.documents:
+        content = render_okf_markdown(doc)
+        (agent_dir / f"{doc.concept_id}.md").write_text(content, encoding="utf-8")
+
+    return build_knowledge_index_from_okf(
+        card, okf_root, generated_at=generated_at, version=version
+    )
+
+
+def to_publish_index(index: "KnowledgeIndex") -> "PublishIndex":
+    """KnowledgeIndex → PublishIndex 프레임 변환(T11.4).
+
+    기존 PublishIndex 프레임 구성(transport.py). index.agent_id 보존.
+    """
+    from agent_org_network.transport import PublishIndex
+
+    return PublishIndex(index=index)
+
+
+def publish_index_from_admission(
+    result: AdmissionResult,
+    card: "AgentCard",
+    okf_root: Path,
+    *,
+    generated_at: datetime,
+    version: str = "okf-1",
+) -> "PublishIndex | None":
+    """AdmissionResult에서 PublishIndex를 구성하는 얇은 헬퍼(T11.4 violations 가드).
+
+    violations가 비어있지 않으면 None(publish 안 함).
+    violations가 없으면 build_index_from_admitted → to_publish_index 순으로 구성해 반환.
+    """
+    if result.violations:
+        return None
+    index = build_index_from_admitted(
+        result.admitted, card, okf_root, generated_at=generated_at, version=version
+    )
+    return to_publish_index(index)
+
+
+def prepare_commit_request(admitted: OkfDraft, *, owner: str) -> BuilderCommitRequest:
+    """승인된 OkfDraft를 BuilderCommitRequest seam으로 변환(순수·IO 0).
+
+    각 doc을 OkfFile(path="{concept_id}.md", content=render_okf_markdown(doc))로 매핑.
+    author=owner, agent_id=draft.agent_id(ADR 0018).
+
+    실 commit_okf_bundle 호출·gateway 주입·propagator는 안 함(mcp-runtime T11.7 seam).
+    """
+    files = tuple(
+        OkfFile(
+            path=f"{doc.concept_id}.md",
+            content=render_okf_markdown(doc),
+        )
+        for doc in admitted.documents
+    )
+    return BuilderCommitRequest(
+        agent_id=admitted.agent_id,
+        owner=owner,
+        files=files,
+        message=f"OKF 번들 업데이트: {admitted.agent_id}",
+    )

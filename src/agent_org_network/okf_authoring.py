@@ -492,6 +492,121 @@ def publish_index_from_admission(
     return to_publish_index(index)
 
 
+# ── T11.5: 증분 diff 로직 ─────────────────────────────────────────────────────
+
+
+class ReindexRequest(BaseModel, frozen=True):
+    """증분 재인덱싱 요청 — 거친 매칭 키·변경 소스·직전 산출·staleness 키.
+
+    agent_id: 거친 매칭 키(prior.draft.agent_id와 반드시 일치해야 함).
+    changed_sources: 이번에 바뀐 raw 소스(빈 튜플 허용 → no-op).
+    prior: 직전 AuthoredOkf 산출(보존 원천).
+    generated_at: 재인덱싱 staleness 키(호출자가 build_index_from_admitted에 전달).
+    """
+
+    agent_id: str
+    changed_sources: tuple[RawSource, ...]
+    prior: AuthoredOkf
+    generated_at: datetime
+
+    @field_validator("agent_id")
+    @classmethod
+    def _validate_agent_id(cls, value: str) -> str:
+        return validate_agent_id_format(value)
+
+
+class ReindexResult(BaseModel, frozen=True):
+    """증분 재인덱싱 결과.
+
+    reauthored: 재처리 후 합친 전체 AuthoredOkf.
+    reprocessed_concept_ids: 이번 changed_sources에서 새로 도출된 concept_id 집합(정렬).
+    preserved_concept_ids: prior에서 그대로 보존된 concept_id 집합.
+    relinked: link 전체 재호출 여부(no-op이면 False).
+    """
+
+    reauthored: AuthoredOkf
+    reprocessed_concept_ids: tuple[str, ...]
+    preserved_concept_ids: tuple[str, ...]
+    relinked: bool
+
+
+def reindex_incrementally(req: ReindexRequest, author: OkfAuthor) -> ReindexResult:
+    """증분 재인덱싱 순수 함수 — changed_sources에 영향받은 concept만 재처리·나머지 보존.
+
+    흐름:
+      정합 검증: agent_id != prior.draft.agent_id → ValueError(changed 유무 무관).
+      no-op: changed_sources가 비면 prior 그대로 반환(relinked=False).
+      ② 영향 재처리: changed_sources만 split → derive_core_questions.
+      ③ 합치기: 재도출분이 충돌 concept_id에서 승(prior에서 제외·merged 병합).
+      ④ link 전체 재호출: merged_docs 전체 → dangling 구조적 방지.
+      sources 갱신: source_id 기준 changed_sources 덮어쓰기·신규 추가.
+
+    재인덱싱(5단계)·리스너·ReindexMode은 여기서 안 한다(T11.4/T11.7 이월).
+    """
+    prior = req.prior
+
+    # 정합 검증 — changed 유무 무관하게 bundle 키 어긋남 거부(no-op보다 앞)
+    if req.agent_id != prior.draft.agent_id:
+        raise ValueError(
+            f"agent_id 불일치: ReindexRequest.agent_id={req.agent_id!r}이지만 "
+            f"prior.draft.agent_id={prior.draft.agent_id!r}입니다. "
+            "bundle 거친 매칭 키가 어긋납니다."
+        )
+
+    # no-op: changed_sources 비면 prior 그대로
+    if not req.changed_sources:
+        preserved_ids = tuple(sorted(d.concept_id for d in prior.draft.documents))
+        return ReindexResult(
+            reauthored=prior,
+            reprocessed_concept_ids=(),
+            preserved_concept_ids=preserved_ids,
+            relinked=False,
+        )
+
+    # ② 영향 재처리: changed_sources만 split
+    split_drafts = author.split(req.changed_sources)
+    reprocessed = author.derive_core_questions(split_drafts)
+
+    # ③ 합치기: 재도출분이 충돌 concept_id에서 승
+    reprocessed_ids = {d.concept_id for d in reprocessed}
+    preserved = [d for d in prior.draft.documents if d.concept_id not in reprocessed_ids]
+    merged_docs = tuple(reprocessed) + tuple(preserved)
+
+    # ④ link 전체 재호출(부분 패치 아님·전체 집합 → dangling 구조적 방지)
+    edges = author.link(merged_docs)
+
+    # sources 갱신: source_id별 changed 승·신규 source 추가
+    changed_map = {s.source_id: s for s in req.changed_sources}
+    updated_sources_list: list[RawSource] = []
+    for src in prior.sources:
+        if src.source_id in changed_map:
+            updated_sources_list.append(changed_map[src.source_id])
+        else:
+            updated_sources_list.append(src)
+    # 신규 source(prior에 없던 것) 추가
+    prior_source_ids = {s.source_id for s in prior.sources}
+    for src in req.changed_sources:
+        if src.source_id not in prior_source_ids:
+            updated_sources_list.append(src)
+    updated_sources = tuple(updated_sources_list)
+
+    reauthored = AuthoredOkf(
+        draft=OkfDraft(
+            agent_id=req.agent_id,
+            documents=merged_docs,
+            edges=edges,
+        ),
+        sources=updated_sources,
+    )
+
+    return ReindexResult(
+        reauthored=reauthored,
+        reprocessed_concept_ids=tuple(sorted(reprocessed_ids)),
+        preserved_concept_ids=tuple(sorted(d.concept_id for d in preserved)),
+        relinked=True,
+    )
+
+
 def prepare_commit_request(admitted: OkfDraft, *, owner: str) -> BuilderCommitRequest:
     """승인된 OkfDraft를 BuilderCommitRequest seam으로 변환(순수·IO 0).
 
@@ -513,3 +628,35 @@ def prepare_commit_request(admitted: OkfDraft, *, owner: str) -> BuilderCommitRe
         files=files,
         message=f"OKF 번들 업데이트: {admitted.agent_id}",
     )
+
+
+# ── T11.6: Ingestor 포트 + 텍스트 어댑터(MVP) ────────────────────────────────
+
+
+class Ingestor(Protocol):
+    """인제스트 포트 — N 입력 → N RawSource(1:1·분할 안 함).
+
+    각 원소 = (source_id, raw_text). 분할은 OkfAuthor.split 책임.
+    구현: TextIngestor(MVP·IO 0)·실 PDF/위키 어댑터는 T11.7.
+    """
+
+    def ingest(self, items: Sequence[tuple[str, str]]) -> tuple[RawSource, ...]:
+        """(source_id, raw_text) 시퀀스 → RawSource 튜플(순서 보존)."""
+        ...
+
+
+class TextIngestor:
+    """Ingestor MVP 어댑터 — 순수 결정론·IO 0.
+
+    각 (source_id, content) → RawSource(source_id=source_id.strip(), content=content.strip()).
+    content 앞뒤 공백만 trim — 내부 개행/공백 보존(마크다운 구조).
+    빈/공백 거부는 RawSource 검증에 위임(별도 로직 없음).
+    중복 source_id 거부 안 함(MVP). content 해시·source_id 생성 안 함.
+    """
+
+    def ingest(self, items: Sequence[tuple[str, str]]) -> tuple[RawSource, ...]:
+        """(source_id, raw_text) 시퀀스 → RawSource 튜플(순서 보존)."""
+        return tuple(
+            RawSource(source_id=source_id.strip(), content=content.strip())
+            for source_id, content in items
+        )

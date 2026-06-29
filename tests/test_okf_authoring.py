@@ -25,10 +25,13 @@ from agent_org_network.okf_authoring import (
     OkfDocumentDraft,
     OkfDraft,
     Rejected,
+    ReindexRequest,
+    ReindexResult,
     StageReview,
     RawSource,
     admit_okf,
     prepare_commit_request,
+    reindex_incrementally,
     render_okf_markdown,
     run_authoring_pipeline,
     set_disposition,
@@ -1576,3 +1579,551 @@ def test_T11_4_M2_to_publish_index_agent_id_보존_단위():
     assert isinstance(frame, PublishIndex)
     assert frame.index is idx
     assert frame.index.agent_id == "cs-ops"
+
+
+# ── T11.5 증분 diff 로직 ──────────────────────────────────────────────────────
+
+
+def _make_authored_okf(
+    agent_id: str = "cs-ops",
+    concept_ids: tuple[str, ...] = ("refund-policy", "pricing-v2"),
+    source_ids: tuple[str, ...] = ("src-001", "src-002"),
+) -> AuthoredOkf:
+    """테스트용 AuthoredOkf 생성 헬퍼."""
+    docs = tuple(
+        OkfDocumentDraft(
+            concept_id=cid,
+            title=f"제목-{cid}",
+            body="본문 내용.",
+            core_question=f"{cid} 핵심 질문?",
+            domain="환불",
+        )
+        for cid in concept_ids
+    )
+    sources = tuple(
+        RawSource(source_id=sid, content=f"{sid} 내용입니다.")
+        for sid in source_ids
+    )
+    edge = ConceptEdge(from_id=concept_ids[0], to_id=concept_ids[-1], relation="related") if len(concept_ids) >= 2 else None
+    draft = OkfDraft(
+        agent_id=agent_id,
+        documents=docs,
+        edges=(edge,) if edge else (),
+    )
+    return AuthoredOkf(draft=draft, sources=sources)
+
+
+def _make_reindex_fake_author(
+    *,
+    split_result: tuple[OkfDocumentDraft, ...] | None = None,
+    derive_result: tuple[OkfDocumentDraft, ...] | None = None,
+    link_result: tuple[ConceptEdge, ...] | None = None,
+) -> FakeAuthor:
+    """증분 재인덱싱용 FakeAuthor 헬퍼."""
+    _split = split_result or (_make_doc("refund-policy"),)
+    _derive = derive_result or _split
+    _link = link_result or ()
+    return FakeAuthor(
+        split_result=_split,
+        derive_result=_derive,
+        link_result=_link,
+    )
+
+
+# ── (T11.5-1) 변경 감지: 빈 changed_sources → no-op ──────────────────────────
+
+
+def test_T11_5_빈_changed_sources_no_op():
+    """빈 changed_sources → reauthored=prior 그대로·reprocessed_concept_ids=()·relinked=False."""
+    prior = _make_authored_okf()
+    fake = _make_reindex_fake_author()
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=(),
+        prior=prior,
+        generated_at=_dt(),
+    )
+    result = reindex_incrementally(req, fake)
+
+    assert isinstance(result, ReindexResult)
+    assert result.reauthored is prior
+    assert result.reprocessed_concept_ids == ()
+    assert result.preserved_concept_ids == tuple(
+        sorted(d.concept_id for d in prior.draft.documents)
+    )
+    assert result.relinked is False
+
+
+# ── (T11.5-2) 변경 감지: agent_id 불일치 → ValueError ───────────────────────
+
+
+def test_T11_5_agent_id_불일치_ValueError():
+    """agent_id != prior.draft.agent_id → ValueError(bundle 거친 매칭 키 어긋남)."""
+    prior = _make_authored_okf(agent_id="cs-ops")
+    fake = _make_reindex_fake_author()
+    req = ReindexRequest(
+        agent_id="other-agent",  # 불일치
+        changed_sources=(RawSource(source_id="src-001", content="내용"),),
+        prior=prior,
+        generated_at=_dt(),
+    )
+    with pytest.raises(ValueError, match="agent_id|bundle|매칭"):
+        reindex_incrementally(req, fake)
+
+
+# ── (T11.5-3) 영향 재처리: split은 changed_sources만 ────────────────────────
+
+
+def test_T11_5_split은_changed_sources만_받음():
+    """split이 전체 sources가 아닌 changed_sources만 받는다."""
+    changed = (RawSource(source_id="src-001", content="변경된 내용"),)
+    prior = _make_authored_okf()
+    derive_doc = _make_doc("refund-policy")
+    fake = _make_reindex_fake_author(
+        split_result=(derive_doc,),
+        derive_result=(derive_doc,),
+        link_result=(),
+    )
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=_dt(),
+    )
+    reindex_incrementally(req, fake)
+
+    assert fake.split_seen == changed
+
+
+# ── (T11.5-4) 보존: 무관 concept가 reauthored.documents에 남음 ─────────────
+
+
+def test_T11_5_무관_concept_보존():
+    """변경되지 않은 concept이 reauthored.documents에 보존된다."""
+    # prior에 두 concept: refund-policy, pricing-v2
+    # changed_sources → 재처리 후 refund-policy만 나옴(pricing-v2는 무관·보존)
+    prior = _make_authored_okf(
+        concept_ids=("refund-policy", "pricing-v2"),
+    )
+    reprocessed_doc = _make_doc("refund-policy")
+    fake = _make_reindex_fake_author(
+        split_result=(reprocessed_doc,),
+        derive_result=(reprocessed_doc,),
+        link_result=(),
+    )
+    changed = (RawSource(source_id="src-001", content="변경된 환불 내용"),)
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=_dt(),
+    )
+    result = reindex_incrementally(req, fake)
+
+    concept_ids_in_result = {d.concept_id for d in result.reauthored.draft.documents}
+    assert "pricing-v2" in concept_ids_in_result  # 무관 concept 보존
+    assert "refund-policy" in concept_ids_in_result  # 재처리 concept 포함
+    assert "pricing-v2" in result.preserved_concept_ids
+
+
+# ── (T11.5-5) 충돌: 재도출분이 concept_id 충돌 시 승 ─────────────────────────
+
+
+def test_T11_5_concept_id_충돌_재도출_승():
+    """재도출분이 prior의 같은 concept_id를 이긴다(중복 0·갱신)."""
+    prior = _make_authored_okf(concept_ids=("refund-policy", "pricing-v2"))
+    # 재처리 결과: refund-policy 갱신(다른 body로 교체)
+    updated_doc = OkfDocumentDraft(
+        concept_id="refund-policy",
+        title="환불 정책(갱신)",
+        body="갱신된 본문.",
+        core_question="환불 정책이 바뀌었나요?",
+        domain="환불",
+    )
+    fake = _make_reindex_fake_author(
+        split_result=(updated_doc,),
+        derive_result=(updated_doc,),
+        link_result=(),
+    )
+    changed = (RawSource(source_id="src-001", content="갱신 내용"),)
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=_dt(),
+    )
+    result = reindex_incrementally(req, fake)
+
+    # 중복이 없어야 함
+    all_ids = [d.concept_id for d in result.reauthored.draft.documents]
+    assert len(all_ids) == len(set(all_ids)), "concept_id 중복이 있어서는 안 됨"
+    # 갱신된 문서가 사용됨
+    refund_doc = next(d for d in result.reauthored.draft.documents if d.concept_id == "refund-policy")
+    assert refund_doc.title == "환불 정책(갱신)"
+
+
+# ── (T11.5-6) edges: link 전체 재호출(merged_docs 전체) ─────────────────────
+
+
+def test_T11_5_link_전체_재호출():
+    """link는 merged_docs 전체를 받는다(부분 패치 아님)."""
+    prior = _make_authored_okf(concept_ids=("refund-policy", "pricing-v2"))
+    reprocessed_doc = _make_doc("refund-policy")
+    fake = _make_reindex_fake_author(
+        split_result=(reprocessed_doc,),
+        derive_result=(reprocessed_doc,),
+        link_result=(),
+    )
+    changed = (RawSource(source_id="src-001", content="변경"),)
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=_dt(),
+    )
+    reindex_incrementally(req, fake)
+
+    # link_seen은 merged_docs 전체(재처리분 + 보존분)
+    assert fake.link_seen is not None
+    link_seen_ids = {d.concept_id for d in fake.link_seen}
+    assert "refund-policy" in link_seen_ids  # 재처리분
+    assert "pricing-v2" in link_seen_ids     # 보존분
+
+
+# ── (T11.5-7) edges: 보존 edge가 전체 재호출로 자연 포함 ─────────────────────
+
+
+def test_T11_5_보존_edge_전체_재호출로_포함():
+    """전체 link 재호출이라 무관 edge가 자연스럽게 포함된다(relinked=True)."""
+    prior = _make_authored_okf(concept_ids=("refund-policy", "pricing-v2"))
+    edge = ConceptEdge(from_id="refund-policy", to_id="pricing-v2", relation="related")
+    reprocessed_doc = _make_doc("refund-policy")
+    fake = _make_reindex_fake_author(
+        split_result=(reprocessed_doc,),
+        derive_result=(reprocessed_doc,),
+        link_result=(edge,),
+    )
+    changed = (RawSource(source_id="src-001", content="변경"),)
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=_dt(),
+    )
+    result = reindex_incrementally(req, fake)
+
+    assert result.relinked is True
+    assert edge in result.reauthored.draft.edges
+
+
+# ── (T11.5-8) edges: 사라진 concept → link 재호출이 edge 안 만듦 ─────────────
+
+
+def test_T11_5_사라진_concept_edge_미생성():
+    """사라진 concept에 대한 edge는 link 재호출이 만들지 않는다(FakeAuthor 제어)."""
+    prior = _make_authored_okf(concept_ids=("refund-policy", "pricing-v2"))
+    # 재처리 후 refund-policy만 남음(pricing-v2는 changed_sources에서 안 나옴)
+    # pricing-v2는 prior에도 있어서 보존되지만, link는 새로 호출됨
+    # FakeAuthor가 edge 없이 반환 → 사라진 edge 없음
+    reprocessed_doc = _make_doc("refund-policy")
+    fake = _make_reindex_fake_author(
+        split_result=(reprocessed_doc,),
+        derive_result=(reprocessed_doc,),
+        link_result=(),  # edge 없음
+    )
+    changed = (RawSource(source_id="src-001", content="변경"),)
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=_dt(),
+    )
+    result = reindex_incrementally(req, fake)
+
+    assert result.reauthored.draft.edges == ()
+
+
+# ── (T11.5-9) 합류·멱등: reauthored.draft → admit_okf → build_index_from_admitted ─
+
+
+def test_T11_5_합류_admit_okf_build_index_generated_at_일치(tmp_path: Path):
+    """reauthored.draft → admit_okf → build_index_from_admitted(generated_at=req.generated_at) → 인덱스 generated_at 일치."""
+    from agent_org_network.okf_authoring import build_index_from_admitted
+
+    prior = _make_authored_okf(concept_ids=("refund-policy",), source_ids=("src-001",))
+    reprocessed_doc = _make_doc("refund-policy")
+    fake = _make_reindex_fake_author(
+        split_result=(reprocessed_doc,),
+        derive_result=(reprocessed_doc,),
+        link_result=(),
+    )
+    ts = _dt(5)
+    changed = (RawSource(source_id="src-001", content="변경된 내용"),)
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=ts,
+    )
+    result = reindex_incrementally(req, fake)
+
+    card = _make_card(agent_id="cs-ops", domains=["환불"])
+    admission = admit_okf(result.reauthored.draft, card)
+    idx = build_index_from_admitted(
+        admission.admitted, card, tmp_path, generated_at=req.generated_at
+    )
+    assert idx.generated_at == ts
+
+
+# ── (T11.5-10) 합류: over-claim → publish_index_from_admission None ──────────
+
+
+def test_T11_5_over_claim_dangling_publish_None(tmp_path: Path):
+    """over-claim+dangling이면 publish_index_from_admission → None."""
+    from agent_org_network.okf_authoring import publish_index_from_admission
+
+    prior = _make_authored_okf(concept_ids=("refund-policy",), source_ids=("src-001",))
+    # 재처리 결과가 over-claim domain + dangling edge
+    over_doc = OkfDocumentDraft(
+        concept_id="tax-policy",
+        title="세무 정책",
+        body="세무 내용.",
+        core_question="세무는?",
+        domain="세무",  # over-claim
+    )
+    dangling_edge = ConceptEdge(from_id="refund-policy", to_id="nonexistent", relation="related")
+    fake = _make_reindex_fake_author(
+        split_result=(over_doc,),
+        derive_result=(over_doc,),
+        link_result=(dangling_edge,),
+    )
+    changed = (RawSource(source_id="src-001", content="변경"),)
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=_dt(),
+    )
+    result = reindex_incrementally(req, fake)
+
+    card = _make_card(agent_id="cs-ops", domains=["환불"])  # "세무" 없음
+    admission = admit_okf(result.reauthored.draft, card)
+    frame = publish_index_from_admission(admission, card, tmp_path, generated_at=_dt())
+    # over-claim "세무" 필터 후 refund-policy→nonexistent가 잔여 dangling → violations 채워짐
+    assert admission.violations
+    assert frame is None
+
+
+# ── (T11.5-11) 순수 멱등: 같은 ReindexRequest 재호출 → 같은 ReindexResult ─────
+
+
+def test_T11_5_순수_멱등():
+    """같은 ReindexRequest 두 번 호출 → 같은 ReindexResult(순수 함수 멱등)."""
+    prior = _make_authored_okf()
+    reprocessed_doc = _make_doc("refund-policy")
+    changed = (RawSource(source_id="src-001", content="변경된 내용"),)
+
+    def _make_fresh_fake() -> FakeAuthor:
+        return _make_reindex_fake_author(
+            split_result=(reprocessed_doc,),
+            derive_result=(reprocessed_doc,),
+            link_result=(),
+        )
+
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=_dt(),
+    )
+
+    r1 = reindex_incrementally(req, _make_fresh_fake())
+    r2 = reindex_incrementally(req, _make_fresh_fake())
+
+    assert r1.reprocessed_concept_ids == r2.reprocessed_concept_ids
+    assert r1.preserved_concept_ids == r2.preserved_concept_ids
+    assert r1.relinked == r2.relinked
+    assert r1.reauthored.draft.agent_id == r2.reauthored.draft.agent_id
+    assert {d.concept_id for d in r1.reauthored.draft.documents} == {
+        d.concept_id for d in r2.reauthored.draft.documents
+    }
+
+
+# ── (T11.5-12) sources 갱신: changed_sources로 prior.sources 갱신 ────────────
+
+
+def test_T11_5_sources_갱신():
+    """changed_sources로 prior.sources가 갱신된다(source_id 기준 덮어쓰기·신규 추가)."""
+    prior = _make_authored_okf(
+        source_ids=("src-001", "src-002"),
+    )
+    # src-001은 변경·src-003은 신규 추가
+    changed = (
+        RawSource(source_id="src-001", content="갱신된 src-001 내용"),
+        RawSource(source_id="src-003", content="신규 src-003 내용"),
+    )
+    reprocessed_doc = _make_doc("refund-policy")
+    fake = _make_reindex_fake_author(
+        split_result=(reprocessed_doc,),
+        derive_result=(reprocessed_doc,),
+        link_result=(),
+    )
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=_dt(),
+    )
+    result = reindex_incrementally(req, fake)
+
+    source_map = {s.source_id: s for s in result.reauthored.sources}
+    # src-001 갱신됨
+    assert source_map["src-001"].content == "갱신된 src-001 내용"
+    # src-002 보존됨
+    assert "src-002" in source_map
+    # src-003 신규 추가됨
+    assert "src-003" in source_map
+
+
+# ── (T11.5-13) seam 미선취 가드: on_okf_committed·ReindexMode·StageDisposition match 부재 ─
+
+
+def test_T11_5_seam_미선취_가드():
+    """T11.5에 on_okf_committed 류 리스너·ReindexMode·StageDisposition assert_never 부재 확인."""
+    import agent_org_network.okf_authoring as mod
+
+    # on_okf_committed 류 리스너 없음(T11.7 배선 미선취)
+    assert not hasattr(mod, "on_okf_committed"), "on_okf_committed은 T11.7 배선"
+    assert not hasattr(mod, "OkfChangeEvent"), "OkfChangeEvent는 T11.7 배선"
+    # ReindexMode sum 없음(full=기존 run_authoring_pipeline 재호출 m1 회피)
+    assert not hasattr(mod, "ReindexMode"), "ReindexMode는 T11.5 미선취"
+
+
+# ── T11.6: Ingestor 포트 + TextIngestor 텍스트 어댑터(MVP) ──────────────────
+
+
+from agent_org_network.okf_authoring import (  # noqa: E402
+    Ingestor,
+    TextIngestor,
+)
+
+
+# ── (T11.6-1) 단일 아이템 → RawSource 1:1 보존 ────────────────────────────────
+
+
+def test_T11_6_단일_아이템_RawSource_보존():
+    """단일 [("doc-a","hello")] → (RawSource("doc-a","hello"),) 보존."""
+    ingestor = TextIngestor()
+    result = ingestor.ingest([("doc-a", "hello")])
+    assert len(result) == 1
+    assert result[0].source_id == "doc-a"
+    assert result[0].content == "hello"
+
+
+# ── (T11.6-2) content 앞뒤 공백 trim·내부 개행 보존 ─────────────────────────
+
+
+def test_T11_6_content_trim_내부_개행_보존():
+    """content 앞뒤 공백 trim·내부 개행은 보존(마크다운 구조 유지)."""
+    ingestor = TextIngestor()
+    result = ingestor.ingest([("doc-a", "  hello\n\n  ")])
+    assert result[0].content == "hello"
+
+    result2 = ingestor.ingest([("doc-b", "a\n\nb")])
+    assert result2[0].content == "a\n\nb"
+
+    # 내부 스페이스·마크다운 구조도 보존(앞뒤만 trim·내부 정규화 금지)
+    result3 = ingestor.ingest([("doc-c", "  # 제목\n-  항목  ")])
+    assert result3[0].content == "# 제목\n-  항목"
+
+
+# ── (T11.6-3) 빈/공백 content → ValidationError(RawSource 위임) ──────────────
+
+
+def test_T11_6_빈_공백_content_거부():
+    """빈/공백 content는 RawSource ValidationError로 자연 발생."""
+    ingestor = TextIngestor()
+    with pytest.raises(Exception):
+        ingestor.ingest([("doc-a", "   ")])
+
+
+# ── (T11.6-4) 빈/공백 source_id → ValidationError(RawSource 위임) ─────────────
+
+
+def test_T11_6_빈_공백_source_id_거부():
+    """빈/공백 source_id는 RawSource ValidationError로 자연 발생."""
+    ingestor = TextIngestor()
+    with pytest.raises(Exception):
+        ingestor.ingest([("  ", "hello")])
+
+
+# ── (T11.6-5) source_id 안정성: 같은 입력 두 번 → source_id 동일·RawSource == ─
+
+
+def test_T11_6_source_id_안정성_trim_동일():
+    """같은 입력 두 번 → source_id 동일·RawSource ==(frozen).
+    trim으로 같아지는 두 입력("x"·"  x  ") → 같은 RawSource(증분 매칭 키 안정).
+    """
+    ingestor = TextIngestor()
+    r1 = ingestor.ingest([("x", "hello")])
+    r2 = ingestor.ingest([("x", "hello")])
+    assert r1[0] == r2[0]
+    assert r1[0].source_id == r2[0].source_id
+
+    # trim으로 같아지는 경우
+    r3 = ingestor.ingest([("  x  ", "hello")])
+    assert r3[0].source_id == "x"
+    assert r1[0] == r3[0]
+
+
+# ── (T11.6-6) 다중 1:1·순서 보존 ─────────────────────────────────────────────
+
+
+def test_T11_6_다중_순서_보존():
+    """[("a",..), ("b",..), ("c",.)] → 길이 3·순서 보존."""
+    ingestor = TextIngestor()
+    items = [("a", "내용a"), ("b", "내용b"), ("c", "내용c")]
+    result = ingestor.ingest(items)
+    assert len(result) == 3
+    assert result[0].source_id == "a"
+    assert result[1].source_id == "b"
+    assert result[2].source_id == "c"
+
+
+# ── (T11.6-7) 포트 준수: _i: Ingestor = TextIngestor() 타입 통과 ─────────────
+
+
+def test_T11_6_포트_준수_Ingestor_Protocol():
+    """TextIngestor가 Ingestor Protocol을 구조적으로 만족한다."""
+
+    def _accept_ingestor(i: Ingestor) -> None:
+        pass
+
+    _accept_ingestor(TextIngestor())
+
+
+# ── (T11.6-8) 빈 입력 → 빈 tuple ─────────────────────────────────────────────
+
+
+def test_T11_6_빈_입력_빈_tuple():
+    """ingest([]) → ()."""
+    ingestor = TextIngestor()
+    result = ingestor.ingest([])
+    assert result == ()
+
+
+# ── (T11.6-9) seam 가드: pipeline 시그니처에 Ingestor 인자 없음 ──────────────
+
+
+def test_T11_6_seam_가드_pipeline_시그니처_Ingestor_없음():
+    """run_authoring_pipeline·reindex_incrementally 시그니처에 Ingestor 인자 없음."""
+    import inspect
+
+    sig_pipeline = inspect.signature(run_authoring_pipeline)
+    sig_reindex = inspect.signature(reindex_incrementally)
+
+    pipeline_params = list(sig_pipeline.parameters.keys())
+    reindex_params = list(sig_reindex.parameters.keys())
+
+    assert "ingestor" not in pipeline_params
+    assert "ingestor" not in reindex_params

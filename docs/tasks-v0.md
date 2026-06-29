@@ -458,13 +458,13 @@
   - **외부 결정·결정 대기**: 없음(게이트 내·기존 인덱싱 재사용).
   - **넘김**: 합류 로직 → **tdd-engineer**(저작 OKF→okf_index→PublishIndex 결정론). 실 크로스머신 publish는 T11.7 게이트 밖.
 
-- [ ] **T11.5** 증분 diff 로직 [게이트 내·결정론] (ADR 0029 S5·결정 4·슬라이스 5)
+- [x] **T11.5** 증분 diff 로직 [게이트 내·결정론] (ADR 0029 S5·결정 4·슬라이스 5) — **완료(2026-06-30)**: `src/agent_org_network/okf_authoring.py`에 합류. `ReindexRequest`(frozen pydantic v2·agent_id/changed_sources/prior/generated_at)·`ReindexResult`(frozen pydantic v2·reauthored/reprocessed_concept_ids/preserved_concept_ids/relinked)·`reindex_incrementally` 순수 함수(no-op/정합검증/②영향재처리/③합치기/④link전체재호출/sources갱신). **핵심 불변식**: changed_sources만 split(전체 아님)·재도출분이 concept_id 충돌 시 승·link 전체 재호출(dangling 구조적 방지)·source_id 기준 덮어쓰기+신규 추가·멱등(순수 함수). **세 gates green**: pytest 1568 passed·pyright 0·ruff 0·직접 재확인. **seam 미선취 가드**: on_okf_committed·OkfChangeEvent·ReindexMode 없음(T11.7 배선 이월·발화 단일성 ADR 0019 결정 1 보존)·`StageDisposition` match 없음(m1 미발생). **bundle 거친 매칭**(raw→concept 정밀 매핑 미도입·`OkfAuthor` 포트 무변경·정밀화는 후속 결정). 재인덱싱(5단계)은 T11.4 `build_index_from_admitted` 재사용(새 인덱싱 0). **code-reviewer 승인(Blocker/Major 0)**·Minor 3건 반영: Minor1(over-claim+dangling 테스트의 조건부 assert→무조건 `assert violations`)·Minor2(agent_id 정합 검증을 no-op 앞으로 — changed 유무 무관 키 어긋남 거부)·Minor3(`preserved_concept_ids` 일반 경로도 정렬 통일). 신규 테스트 13개(전체 98·**1568 passed**·pyright 0·ruff 0·직접 재확인).
   - **배경·근거**: 자료 추가/변경 시 *그 부분만* 2~5단계 재처리(full 재빌드는 옵션). 변경 감지(어느 raw가 바뀌었나·거친 매칭·ADR 0019 "놓침 0 > 과검출 0")→영향 개념만 재분할/재도출(2~3)→edges 재연결(4·나머지 보존)→재인덱싱(5·`generated_at` 갱신·ADR 0028 §14 staleness 멱등 흡수). **ADR 0019 변경 전파와 짝**(OKF 커밋=`OkfChangeEvent`가 미래 인덱스 갱신[이 ADR]과 과거 판례 재검토[0019] 동시 트리거). **불변식**: 멱등(같은 변경 재처리 흡수)·전이≠기록.
   - **의존성·우선순위**: T11.2·T11.4 위·ADR 0019 정합.
   - **외부 결정·결정 대기**: 증분 변경 감지 정밀도(MVP 거친 매칭·정밀화 후속).
   - **넘김**: 증분 diff 로직 → **domain-architect**(shape — 영향 식별 입도) → red→green → **tdd-engineer**.
 
-- [ ] **T11.6** `Ingestor` 포트 + 텍스트 어댑터(MVP) [게이트 내·결정론·텍스트 한정] (ADR 0029 S4·슬라이스 6)
+- [x] **T11.6** `Ingestor` 포트 + 텍스트 어댑터(MVP) [게이트 내·결정론·텍스트 한정] (ADR 0029 S4·슬라이스 6) — **완료(2026-06-30)**: `okf_authoring.py` 끝 T11.6 섹션에 합류 — `Ingestor` Protocol(`ingest` 단일 메서드·N입력→N `RawSource` 1:1)·`TextIngestor`(순수·IO 0·앞뒤 공백 trim·내부 개행 보존·빈값 거부는 `RawSource` 검증 위임·중복 source_id 거부 안 함·MVP). `FakeIngestor` 불요(`TextIngestor`가 이미 결정론). **source_id 호출자 제공**(어댑터 생성/해시 안 함 — T11.5 증분 거친 매칭 키 안정성: content 해시면 "1글자 바뀐 같은 문서"가 다른 id 되어 매칭 깨짐). **`OkfAuthor` vs `Ingestor` 경계 = 별 포트 확정**(ADR 0029 Open Question 해소·인제스트≠변환·형식 추가가 어댑터 추가). pipeline 자동 연결 안 함(호출자 조립 seam). 테스트 9개(107·**1577 passed**·pyright 0·ruff 0·직접 재확인). seam 가드: `run_authoring_pipeline`·`reindex_incrementally` 시그니처 무변경. code-reviewer 승인(Blocker/Major 0·Minor1[내부 스페이스 보존 가드 1줄] 반영).
   - **배경·근거**: 인제스천(1단계) 형식 — MVP는 마크다운/텍스트/붙여넣기 먼저(raw 텍스트→`RawSource` 정규화). PDF/docx/Confluence·Notion 위키는 *별도 인제스트 어댑터*(`Ingestor` 포트 추가 구현)로 후속(`NotificationChannel` 채널 중립 정신 — 형식 추가가 어댑터 추가). **불변식**: 중앙 토큰 0(인제스트는 owner측·raw는 중앙 미도달).
   - **의존성·우선순위**: T11.1 위.
   - **외부 결정·결정 대기**: 인제스트 형식 확장(PDF/위키 — 후속 어댑터). `OkfAuthor` vs `Ingestor` 경계(MVP 별 포트).

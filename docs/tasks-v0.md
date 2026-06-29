@@ -425,3 +425,58 @@
   - **의존성·우선순위**: T10.2(매처 포트)·T10.3(2단 라우팅)·T10.4(프레임·스토어) 위. **거의 마지막**(게이트 내가 다 그린이어야 실 어댑터가 그 계약을 채움).
   - **외부 결정·결정 대기**: **임베딩 모델 선택**(결정 대기·새 의존성) · semantic-os vs OKF 태그 어댑터 선택(owner별 — 레퍼런스는 semantic-os) · `core_question` distill 품질(eval·후속) · 실 RAG 신뢰도 접지 방식.
   - **넘김**: (a) `EmbeddingAnnMatcher` 실 어댑터·임베딩 인프라 → **mcp-runtime-engineer**(외부 결정[임베딩 모델·새 의존성] 후·ADR 갱신). (b) 실 distill 어댑터 → **mcp-runtime-engineer**(semantic-os/OKF 어댑터·외부 결정 후) + eval은 **수동/골든셋**. (c) 실 `ConfidenceAssessor` → **mcp-runtime-engineer**(owner 워커·게이트 밖). (d) 실 크로스머신 배포 end-to-end → **수동 시연**.
+
+## Phase 11 — OKF 자동 저작 ("LLM wiki" — owner raw 자료 → OKF 자동 변환·연결·인덱싱)
+
+> **OKF 자동 저작 = 소비 경로의 *앞단*(생성).** Phase 1~10은 owner OKF/`KnowledgeIndex`를 *소비*한다 — 답변(`ClaudeApiRuntime` OKF cwd 읽기·ADR 0013/0027)·라우팅(`build_knowledge_index_from_okf`→`PublishIndex`·ADR 0028 §14)·fetch(인박스 클릭→OKF 본문·ADR 0028 §15). 세 경로 모두 *이미 잘 구조화된 OKF*를 전제하는데, 그 OKF를 **어떻게 만드나**가 비어 있었다(ADR 0018 빌더는 owner가 손으로 쓰는 경로만). Phase 11은 owner가 자기 *기존 자료*(문서·노트·위키)를 넣으면 **(1) LLM이 개념 분할·`core_question` 도출·edges 연결·인덱싱을 staged로 자동 수행해 OKF 번들 초안 + `KnowledgeIndex`를 생성하고 (2) owner가 단계별 diff로 검토·수정·승인하며 (3) 승인분만 commit(ADR 0018)·publish(ADR 0028 §14)**하는 저작 앞단을 더한다. **핵심: 소비 경로(답변·라우팅·fetch) 무변경·기존 인덱싱/커밋 메커니즘 재사용(새 인덱싱·새 커밋 0)**하고 *저작 단계*만 더한다 — ADR 0028 okf_index·ADR 0018 `commit_okf_bundle`·ADR 0027 owner OAuth를 그대로 쓴다. **출처: ADR 0029**(사용자 grill 확정 4개 결정, 2026-06-29 · domain-architect ADR·CONTEXT 확정). **게이트 내/밖 본질**: `OkfDraft`·`OkfDocumentDraft`·`RawSource` 값 객체(frozen pydantic·OKF admission 검증)·`OkfAuthor` 포트+`FakeAuthor`·staged 오케스트레이션(1~5단계·`FakeAuthor` 주입)·HITL 상태기계(staged→approved/edited/rejected)·OKF admission 검증·KnowledgeIndex 생성(okf_index 재사용)·증분 diff 로직은 **게이트 내(결정론)**. 실 LLM 추출(`LlmAuthor`/`SemanticOsAuthor` 실 owner OAuth·골든셋 eval)·실 semantic-os 빌드·실 raw 자료·owner 검토 UI(빌더 자동 초안 면)·실 크로스머신 publish는 **게이트 밖(수동·실 인프라·비결정)**. **과도 엔지니어링 경고**: PDF/docx/위키 인제스트·RDF/SPARQL 영속화·정밀 증분 변경 감지·다개념 edges 정밀화는 *후속으로 명시 연기*하고, **증분**(마크다운/텍스트 인제스트 먼저·OKF 마크다운+인덱스 산출·거친 증분 매칭·`FakeAuthor` 결정론)부터 닫는다. 핵심 불변식(미아 없음[무관]·Authority 중앙·중앙 토큰 0/비소유·노출 불변식·등록 무결성[유효하지 않은 OKF는 publish 안 됨])은 저작 층이 *닿지 않게* 유지한다.
+
+> **규칙 1 충돌 검토(완료 — 충돌 없음·확장).** ADR 0029가 SSOT 화해를 *이미* 했다(§SSOT 화해 a~e). **저작 쪽 확장이지 충돌 아님** — ① 새 산출물(OKF 자동 저작)은 소비 경로의 *입력을 만드는* 것이지 소비 경로를 바꾸지 않음 · ② 비소유·중앙 토큰 0 *보존·강화*(저작 전체가 owner측) · ③ Authority 중앙 무변경(자동 OKF도 under-claim·권한은 중앙) · ④ 기존 ADR(0013/0018/0025/0027/0028)을 *supersede 하지 않음*(저작 앞단을 더하는 확장·헤더 supersede 미표기). **갱신 대상(구현 착지 시 — 규칙 2)**: CONTEXT 신규 용어(OKF 자동 저작·`OkfAuthor`·staged 변환·증분 재인덱싱)는 domain-architect가 *이미* 추가함(§OKF 자동 저작) → 구현으로 shape 바뀌면 갱신 · **PRD §3**("자기 지식으로 답"의 지식 *생성* 측 — 저작 앞단 추가) → 착지 시 갱신 · **TRD §4**(OKF·`GitGateway`·okf_index 절에 저작 포트 추가) → 착지 시 갱신 표시. 각 슬라이스 SSOT 영향은 항목별 명시.
+
+> **외부 결정·결정 대기(ADR 0029 Open Questions 연결).** 게이트 내 슬라이스(T11.1~T11.5)는 *외부 결정 없이 진행 가능*(전부 Fake/주입 결정론)하나, 다음 품질·형식은 게이트 밖 또는 후속 결정이다 — ① **개념 분할 품질**(LLM이 raw를 어떤 입도로 쪼개나 — 골든셋 eval[ADR 0003]·게이트 밖) · ② **`core_question` 도출 정확도**(3단계 산출이 ADR 0028 라우팅 정밀도의 핵심 — 거기선 *소비*·여기선 *생성*) · ③ **edges 추출 정확도**(*없는 개념 가리키는 edge*·과/소 연결 위험 — semantic-os ontology-engineer 검증 패턴·owner 검토 폴백) · ④ **증분 변경 감지 정밀도**(MVP 거친 매칭·ADR 0019 "놓침 0 > 과검출 0"·정밀화 후속) · ⑤ **인제스트 형식 확장**(PDF/docx/Confluence·Notion 위키 — MVP는 텍스트·`Ingestor` 포트로 후속 어댑터) · ⑥ **`OkfAuthor` vs `Ingestor` 경계**(인제스천을 `OkfAuthor`에 흡수 vs 별 포트 — MVP는 별 포트) · ⑦ **저작 HITL 상태 영속**(in-memory vs store 승격 — ADR 0025 정신·요구 관측 시 후속).
+
+- [ ] **T11.1** `OkfDraft`·`OkfDocumentDraft`·`RawSource` 값 객체 [게이트 내·결정론] (ADR 0029 S1·슬라이스 1)
+  - **배경·근거**: self-contained 첫 진입(다른 모든 슬라이스의 기반). `OkfDocumentDraft`(concept_id=OKF 파일 stem·title·body·`core_question`·`domain`·`type?`)는 ADR 0028 `Concept`·okf_index 도출 규칙(파일 stem=concept.id)과 *정합*해야 한다 — 저작 산출이 그 규칙을 따르는 OKF를 만든다. `OkfDraft`(agent_id·`OkfDocumentDraft` 묶음·`ConceptEdge`[ADR 0028 재사용]). **OKF admission 검증**: concept_id가 파일 stem 규칙·경로 sanitization(ADR 0028 §15 `_is_safe_path_component` 정신·구분자·`..`·절대경로 거부) 통과·`core_question`/`domain` 빈/공백 거부(`Concept` 검증 정신). **불변식**: 등록 무결성(유효하지 않은 OKF 초안 구성 거부 = "유효하지 않은 OKF는 publish 안 됨"의 admission 짝)·중앙 토큰 0(초안은 owner측 값 객체·SDK/IO 0).
+  - **의존성·우선순위**: ADR 0028 `Concept`·`ConceptEdge` 위(정합 검증). **최우선 진입**.
+  - **외부 결정·결정 대기**: 없음(게이트 내·실 값 객체 결정론). `RawSource` 최소 모양·인제스천을 `OkfAuthor` 흡수 vs 별 포트는 *shape 판단*(domain-architect).
+  - **넘김**: 값 객체 shape 확정(`OkfDocumentDraft` 필드·concept_id admission 재사용 범위·`RawSource` 최소 모양) → **domain-architect**(shape) → 결정론 red→green → **tdd-engineer**.
+
+- [ ] **T11.2** `OkfAuthor` 포트 + `FakeAuthor` + staged 오케스트레이션(1~5단계) [게이트 내·결정론] (ADR 0029 S1·결정 3·슬라이스 2)
+  - **배경·근거**: 변환 엔진을 `AgentRuntime`·`Classifier`·`KnowledgeIndexMatcher`와 *같은 포트+어댑터 패턴*으로(코어는 LLM·semantic-os·RDF 결합 안 함·포트 뒤). 단계가 메서드로 분리(`split`[2]·`derive_core_questions`[3]·`link`[4]) — one-shot 기각(단계 검토 불가). staged 오케스트레이션이 1(인제스트)→2→3→4→5(인덱싱·okf_index 재사용) 순차 수행, 단계별 산출. **`FakeAuthor` 주입 결정론**(고정 raw→고정 초안 매핑·`FakeClassifier`·`StubRuntime`·`FakeGitGateway` 정신). **불변식**: 중앙 토큰 0(추출은 owner측·`FakeAuthor`는 게이트 내·실 LLM은 게이트 밖).
+  - **의존성·우선순위**: T11.1 위.
+  - **외부 결정·결정 대기**: 없음(게이트 내·`FakeAuthor` 결정론). 실 추출(`LlmAuthor`/`SemanticOsAuthor`)은 T11.7 게이트 밖.
+  - **넘김**: 포트 shape·단계 분리·오케스트레이션 → **domain-architect**(shape) → red→green → **tdd-engineer**(포트·`FakeAuthor`·staged 결정론).
+
+- [ ] **T11.3** HITL 상태기계 + OKF admission 검증 [게이트 내·결정론] (ADR 0029 S3·결정 2·슬라이스 3)
+  - **배경·근거**: 변환 자동·publish 승인 게이트(결정 2). 각 단계 초안 `staged`(미검토)→owner 처분(`approved`/`edited`/`rejected`)·승인분만 다음 단계·최종 승인분만 `commit_okf_bundle`(ADR 0018 재사용)로 커밋·`rejected`는 버려져 소비 경로에 안 닿음. **ADR 0025(HITL) 정신 재사용**(자동 산출=초안·owner 검토를 거쳐 확정·새 도메인 기계 최소). 자동 산출 OKF가 okf_index 도출 규칙·publish 권한 검증(`concept.domain ∈ card.domains`·ADR 0028 §14 결정 D) 통과 검증. **불변식**: 등록 무결성("유효하지 않은 OKF는 publish 안 됨"·미승인 staged는 소비 경로 미도달)·전이≠기록(staged→처분은 도메인 전이·커밋 사실은 git 기록·ADR 0018).
+  - **의존성·우선순위**: T11.1·T11.2 위·ADR 0018 `commit_okf_bundle`·ADR 0025 재사용.
+  - **외부 결정·결정 대기**: 저작 HITL 상태 영속(in-memory vs store — ADR 0025 정신·요구 관측 시 후속). owner 검토 UI 조작은 T11.7 게이트 밖.
+  - **넘김**: 상태기계·admission 검증 → **domain-architect**(shape) → red→green → **tdd-engineer**. 커밋 경로 와이어 → **mcp-runtime-engineer**(ADR 0018 재사용).
+
+- [ ] **T11.4** KnowledgeIndex 생성 합류 [게이트 내·결정론] (ADR 0029 결정 3 5단계·슬라이스 4)
+  - **배경·근거**: 저작 산출 OKF → `build_knowledge_index_from_okf`(ADR 0028 T10.1 재사용·새 인덱싱 0) → 승인분 `PublishIndex`(ADR 0028 §14) 경로. 저작이 만든 OKF가 기존 distill 입력으로 *그대로* 흐르는지 합류 검증(저작↔소비 경계). **불변식**: 중앙 토큰 0(중앙은 목차만)·비소유(승인·publish된 인덱스만 중앙 도달).
+  - **의존성·우선순위**: T11.2·T11.3 위·ADR 0028 okf_index·`PublishIndex` 재사용.
+  - **외부 결정·결정 대기**: 없음(게이트 내·기존 인덱싱 재사용).
+  - **넘김**: 합류 로직 → **tdd-engineer**(저작 OKF→okf_index→PublishIndex 결정론). 실 크로스머신 publish는 T11.7 게이트 밖.
+
+- [ ] **T11.5** 증분 diff 로직 [게이트 내·결정론] (ADR 0029 S5·결정 4·슬라이스 5)
+  - **배경·근거**: 자료 추가/변경 시 *그 부분만* 2~5단계 재처리(full 재빌드는 옵션). 변경 감지(어느 raw가 바뀌었나·거친 매칭·ADR 0019 "놓침 0 > 과검출 0")→영향 개념만 재분할/재도출(2~3)→edges 재연결(4·나머지 보존)→재인덱싱(5·`generated_at` 갱신·ADR 0028 §14 staleness 멱등 흡수). **ADR 0019 변경 전파와 짝**(OKF 커밋=`OkfChangeEvent`가 미래 인덱스 갱신[이 ADR]과 과거 판례 재검토[0019] 동시 트리거). **불변식**: 멱등(같은 변경 재처리 흡수)·전이≠기록.
+  - **의존성·우선순위**: T11.2·T11.4 위·ADR 0019 정합.
+  - **외부 결정·결정 대기**: 증분 변경 감지 정밀도(MVP 거친 매칭·정밀화 후속).
+  - **넘김**: 증분 diff 로직 → **domain-architect**(shape — 영향 식별 입도) → red→green → **tdd-engineer**.
+
+- [ ] **T11.6** `Ingestor` 포트 + 텍스트 어댑터(MVP) [게이트 내·결정론·텍스트 한정] (ADR 0029 S4·슬라이스 6)
+  - **배경·근거**: 인제스천(1단계) 형식 — MVP는 마크다운/텍스트/붙여넣기 먼저(raw 텍스트→`RawSource` 정규화). PDF/docx/Confluence·Notion 위키는 *별도 인제스트 어댑터*(`Ingestor` 포트 추가 구현)로 후속(`NotificationChannel` 채널 중립 정신 — 형식 추가가 어댑터 추가). **불변식**: 중앙 토큰 0(인제스트는 owner측·raw는 중앙 미도달).
+  - **의존성·우선순위**: T11.1 위.
+  - **외부 결정·결정 대기**: 인제스트 형식 확장(PDF/위키 — 후속 어댑터). `OkfAuthor` vs `Ingestor` 경계(MVP 별 포트).
+  - **넘김**: 포트·텍스트 어댑터 → **tdd-engineer**(결정론). PDF/위키 추출 어댑터 → **mcp-runtime-engineer**(게이트 밖·후속).
+
+- [ ] **T11.7** 게이트 밖 — 실 LLM 추출 · 실 semantic-os 빌드 · 실 인제스트 · owner 검토 UI · 실 publish [게이트 밖·수동·실 인프라] (ADR 0029 §게이트 경계·슬라이스 7)
+  - **배경·근거**: 마지막(리스크 최상·게이트 밖). 게이트 내(T11.1~T11.6)가 *계약*을 잠근 뒤 실 어댑터가 채운다(`SubprocessGitGateway`·`HttpOidcProvider`·`ClaudeApiRuntime` 정신).
+  - **슬라이스 분해**:
+    - **(a) `LlmAuthor`/`SemanticOsAuthor` 실 추출 [게이트 밖·실 owner OAuth·비결정]** — `OkfAuthor` 포트의 실 구현. `LlmAuthor`=owner OAuth 멀티-LLM 직접 추출(ADR 0027 *저작* 새 사용)·`SemanticOsAuthor`=RDF/OWL 온톨로지 빌드(seed_nodes/seed_edges·옵션 백엔드). 추출 품질(개념 분할·core_question·edges)은 골든셋 eval(ADR 0003). **불변식**: 중앙 토큰 0(owner OAuth·owner 환경).
+    - **(b) 실 인제스트 어댑터(PDF/docx/위키) [게이트 밖·후속]** — `Ingestor` 포트 추가 구현(MVP 텍스트 외).
+    - **(c) owner 검토 UI(빌더 자동 초안 채우기 면) [게이트 밖 수동]** — ADR 0018 빌더 OKF 편집 면에 "자동 초안 채우기" 진입·단계별 diff 검토 조작(빌더 UI가 게이트 밖인 정신·author=owner·스코프 card.owner 보존).
+    - **(d) 실 크로스머신 publish end-to-end [게이트 밖 수동]** — 저작→커밋→`PublishIndex` 실 WS(ADR 0028 §14 게이트 밖 정신).
+  - **의존성·우선순위**: T11.2~T11.6 위. **마지막**(게이트 내가 다 그린이어야 실 어댑터가 계약 채움).
+  - **외부 결정·결정 대기**: semantic-os vs LLM 직접 추출 선택(owner별·레퍼런스 semantic-os) · 추출 품질(eval·후속) · 인제스트 형식 확장.
+  - **넘김**: (a) 실 `OkfAuthor` → **mcp-runtime-engineer**(owner OAuth·게이트 밖) + eval **수동/골든셋**. (b) 실 인제스트 → **mcp-runtime-engineer**(후속). (c) 빌더 UI 자동 초안 면 → **mcp-runtime-engineer**(게이트 밖 수동). (d) 실 크로스머신 publish → **수동 시연**.

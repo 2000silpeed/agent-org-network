@@ -1,6 +1,6 @@
 # owner 지식 구성 공통 기준은 OKF(Open Knowledge Format) — owner 환경의 마크다운+프론트매터 번들을 워커가 cwd로 소비
 
-상태: accepted (2026-06-21) · ADR 0010("답변 주체 = owner Claude Code", `knowledge_sources`는 출처 레이블·RAG 후속)의 *지식 소비 방식* 보강 · ADR 0006(중앙 무지식)·0004(카드 자기보고 보수성)·0012(DelegationSnapshot·staleness)와 정합 · **실 구현 완료(T6.7, mcp-runtime-engineer, 2026-06-21)**: ClaudeCodeRuntime OKF cwd 소비 + 샘플 번들 + 결정론 테스트(아래 "구현 분담" 참조). 번들 경로 규약은 안 B의 `okf_root/{agent_id}`로 확정(레이블 아닌 agent_id가 경로를 진다·카드 스키마 무변경), `okf_root=None` 기본은 번들 해석 안 함(중앙 무지식·하위호환).
+상태: accepted (2026-06-21) · ADR 0010("답변 주체 = owner Claude Code", `knowledge_sources`는 출처 레이블·RAG 후속)의 *지식 소비 방식* 보강 · ADR 0006(중앙 무지식)·0004(카드 자기보고 보수성)·0012(DelegationSnapshot·staleness)와 정합 · **실 구현 완료(T6.7, mcp-runtime-engineer, 2026-06-21)**: ClaudeCodeRuntime OKF cwd 소비 + 샘플 번들 + 결정론 테스트(아래 "구현 분담" 참조). 번들 경로 규약은 안 B의 `okf_root/{agent_id}`로 확정(레이블 아닌 agent_id가 경로를 진다·카드 스키마 무변경), `okf_root=None` 기본은 번들 해석 안 함(중앙 무지식·하위호환). · **ADR 0029(OKF 자동 저작) 확장**: 손으로 쓰던 OKF 번들을 LLM이 staged 초안으로 자동 생성하는 저작 앞단 추가(카드/번들 분리·`type` 어휘 미강제·번들 owner 환경 보존·산출은 여전히 OKF 마크다운).
 
 ## 맥락
 

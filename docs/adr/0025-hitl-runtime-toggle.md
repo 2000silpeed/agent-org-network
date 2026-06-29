@@ -1,6 +1,6 @@
 # HITL 런타임 토글 — LLM 초안→owner 검토·전송은 *기존 draft_only/Approval 재사용*이다(새 기계 아님)
 
-상태: accepted (2026-06-26) · **Phase 9의 ADR-B** · ADR 0012 결정 4(`Answer.mode` 신뢰 상태)·T2.5(`Routed.requires_approval`→`AskOrg._apply_approval_gate`→`mode="draft_only"`)의 *런타임 토글 확장* — 새 도메인 기계 0 · ADR 0014 결정 4(Approval은 게이트지 escalation 아님)와 정합 · CONTEXT(Approval·Answer 절에 런타임 토글 추가)·PRD §3·§5·TRD §4·§6 갱신
+상태: accepted (2026-06-26) · **Phase 9의 ADR-B** · ADR 0012 결정 4(`Answer.mode` 신뢰 상태)·T2.5(`Routed.requires_approval`→`AskOrg._apply_approval_gate`→`mode="draft_only"`)의 *런타임 토글 확장* — 새 도메인 기계 0 · ADR 0014 결정 4(Approval은 게이트지 escalation 아님)와 정합 · CONTEXT(Approval·Answer 절에 런타임 토글 추가)·PRD §3·§5·TRD §4·§6 갱신 · **ADR 0029(OKF 자동 저작)가 정신 재사용**: 이 ADR의 "LLM 초안→owner 검토→확정"을 *지식 저작*에 본뜸(자동 산출=초안·owner 검토 거쳐 commit/publish — 단 저작은 답 mode 토글과 다른 축이라 `hitl_to_mode` 그대로 안 쓰고 staged 상태기계 패턴만 본뜸).
 
 ## 맥락 — 새 기계가 아니라 기존 게이트의 런타임 토글
 

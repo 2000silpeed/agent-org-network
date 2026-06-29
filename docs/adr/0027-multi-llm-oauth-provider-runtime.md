@@ -1,6 +1,6 @@
 # 멀티-LLM OAuth 공급자 API 런타임 — 답 실행을 owner OAuth 인프로세스 스트리밍으로 되돌린다(0010 supersede·0017 결정 2 재정의)
 
-상태: accepted (2026-06-26) · **Phase 9의 ADR-D — 0010 supersede·0017 결정 2 재정의의 본체** · **ADR 0010 supersede**(0010이 0017로 한 번 재정의된 것을 *다시* 재정의 — 헤더에 포인터) · **ADR 0017 결정 2 재정의**(owner측 실행 부활 — 결정 2에 인라인 주석) · ADR 0011·0012 WS 전송을 *기본 대화 경로*로 재부상(0017이 "사설 데이터 옵션"으로 강등한 것을 1급으로) · ADR 0007(AgentRuntime 포트)·ADR 0013(OKF 지식 출처)와 정합 · CONTEXT(Agent Runtime 절 재정의·신규 Provider Runtime 용어)·PRD §3·§5·§6·TRD §2·§4 갱신
+상태: accepted (2026-06-26) · **Phase 9의 ADR-D — 0010 supersede·0017 결정 2 재정의의 본체** · **ADR 0010 supersede**(0010이 0017로 한 번 재정의된 것을 *다시* 재정의 — 헤더에 포인터) · **ADR 0017 결정 2 재정의**(owner측 실행 부활 — 결정 2에 인라인 주석) · ADR 0011·0012 WS 전송을 *기본 대화 경로*로 재부상(0017이 "사설 데이터 옵션"으로 강등한 것을 1급으로) · ADR 0007(AgentRuntime 포트)·ADR 0013(OKF 지식 출처)와 정합 · CONTEXT(Agent Runtime 절 재정의·신규 Provider Runtime 용어)·PRD §3·§5·§6·TRD §2·§4 갱신 · **ADR 0029(OKF 자동 저작)가 새 사용**: 이 ADR의 owner OAuth 멀티-LLM은 *답변* 경로였고, 0029는 *같은 owner OAuth 인프라를 OKF 저작*(raw→OKF 초안 추출)에 씀(자격증명 owner측·중앙 토큰 0 보존·강화·포트는 분리 `OkfAuthor` ≠ `AgentRuntime`).
 
 ## 맥락 — 답 실행 위치를 정직하게 다시 뒤집는다
 

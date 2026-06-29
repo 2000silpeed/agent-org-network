@@ -1,5 +1,7 @@
+import os
 import re
 from datetime import date
+from pathlib import Path
 from typing import Final
 
 from pydantic import BaseModel, field_validator
@@ -16,6 +18,55 @@ AGENT_ID_MAX_LENGTH: Final[int] = 64
 # 문자열의 절대 끝만 매칭하므로 후행 개행을 구조적으로 차단한다(ADR 0023).
 AGENT_ID_PATTERN: Final[str] = r"^[A-Za-z0-9][A-Za-z0-9_-]*\Z"
 _AGENT_ID_RE: Final[re.Pattern[str]] = re.compile(AGENT_ID_PATTERN)
+
+
+def is_safe_path_component(value: str) -> bool:
+    """단일 파일명 컴포넌트(구분자·상대경로·절대경로 0)인지 확인하는 bool 술어.
+
+    다음을 거부한다:
+      - 빈 문자열
+      - 예약 stem: "." ".."
+      - os.sep·'/'·'\\' 포함 — 구분자가 있으면 다단계 경로
+      - 절대경로(os.path.isabs)
+      - Path(value).name != value — 상위 경로 성분이 숨어 있음
+
+    순수 파일 stem("refund-policy", "pricing_v2") 등만 True를 반환한다.
+    단일 권위: worker.py·okf_authoring.py 모두 이 함수로 위임한다(ADR 0028 §15·ADR 0023).
+    """
+    if not value:
+        return False
+    if value in (".", ".."):
+        return False
+    if os.sep in value or "/" in value or "\\" in value:
+        return False
+    if os.path.isabs(value):
+        return False
+    if Path(value).name != value:
+        return False
+    return True
+
+
+def validate_safe_path_component(value: str) -> str:
+    """단일 파일명 컴포넌트 검증기 — 통과 시 value 반환, 실패 시 ValueError.
+
+    pydantic field_validator에서 바로 호출할 수 있도록 값을 반환하는 스타일
+    (validate_agent_id_format 선례·ADR 0023). 다음을 거부한다:
+      - 빈/공백 문자열
+      - '..'·'.'(예약 stem)
+      - 구분자('/'·'\\'·os.sep) 포함
+      - 절대경로
+      - Path(value).name != value
+    """
+    if not value or not value.strip():
+        raise ValueError(
+            f"path component는 빈 문자열/공백이 될 수 없습니다: {value!r}"
+        )
+    if not is_safe_path_component(value):
+        raise ValueError(
+            f"path component가 올바르지 않습니다(빈 문자열·'..'·'.'·구분자·절대경로 금지): "
+            f"{value!r}"
+        )
+    return value
 
 
 def domain_authorized(domain: str, card: "AgentCard") -> bool:

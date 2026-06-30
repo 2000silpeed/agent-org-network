@@ -15,15 +15,18 @@ import {
   Inbox as InboxIcon,
   Quote,
 } from "lucide-react";
-import { reevaluationCases } from "@/lib/mock-data";
 import {
   getInboxCases,
   getBackupReviews,
+  getReeval,
   postConcur,
+  postReevalReview,
   fetchCaseDocument,
   InboxError,
   type ConflictCase,
   type BackupReviewItem,
+  type ReevalItem,
+  type ReevalOutcomeKind,
   type ConsensusOutcome,
   type FetchDocumentResult,
 } from "@/lib/inbox-api";
@@ -31,7 +34,6 @@ import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/card";
 import { Tag } from "@/components/ui/tag";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
-import { MockMarker } from "@/components/session/mock-marker";
 import { useSession } from "@/components/session/session-context";
 import { cn } from "@/lib/utils";
 
@@ -44,6 +46,7 @@ export function InboxTabs() {
   // Real data — refetched whenever the session identity changes.
   const [cases, setCases] = useState<ConflictCase[]>([]);
   const [reviews, setReviews] = useState<BackupReviewItem[]>([]);
+  const [reevals, setReevals] = useState<ReevalItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,16 +54,19 @@ export function InboxTabs() {
     setLoading(true);
     setError(null);
     try {
-      const [c, r] = await Promise.all([
+      const [c, r, rv] = await Promise.all([
         getInboxCases(),
         getBackupReviews().catch(() => [] as BackupReviewItem[]),
+        getReeval().catch(() => [] as ReevalItem[]),
       ]);
       setCases(c);
       setReviews(r);
+      setReevals(rv);
     } catch (e) {
       setError(e instanceof Error ? e.message : "처리함을 불러오지 못했습니다.");
       setCases([]);
       setReviews([]);
+      setReevals([]);
     } finally {
       setLoading(false);
     }
@@ -73,7 +79,7 @@ export function InboxTabs() {
   const tabs: { id: TabId; label: string; icon: typeof GitMerge; count: number }[] = [
     { id: "contested", label: "다툼", icon: GitMerge, count: cases.length },
     { id: "backup", label: "백업 답", icon: UserCheck, count: reviews.length },
-    { id: "reeval", label: "재평가", icon: RefreshCw, count: reevaluationCases.length },
+    { id: "reeval", label: "재평가", icon: RefreshCw, count: reevals.length },
   ];
 
   return (
@@ -133,7 +139,9 @@ export function InboxTabs() {
         <ContestedPanel cases={cases} loading={loading} onConcurDone={() => void refresh()} />
       )}
       {active === "backup" && <BackupPanel reviews={reviews} loading={loading} />}
-      {active === "reeval" && <ReevalPanel />}
+      {active === "reeval" && (
+        <ReevalPanel reevals={reevals} loading={loading} onReviewDone={() => void refresh()} />
+      )}
     </div>
   );
 }
@@ -422,44 +430,115 @@ function BackupPanel({
   );
 }
 
-/* --------------------------- 재평가 (mock) ----------------------------- */
+/* --------------------------- 재평가 (real) ----------------------------- */
 
-function ReevalPanel() {
+function fmtReevalTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString("ko-KR", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function ReevalPanel({
+  reevals,
+  loading,
+  onReviewDone,
+}: {
+  reevals: ReevalItem[];
+  loading: boolean;
+  onReviewDone: () => void;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actError, setActError] = useState<string | null>(null);
+
+  async function act(itemId: string, kind: ReevalOutcomeKind) {
+    setBusyId(itemId);
+    setActError(null);
+    try {
+      await postReevalReview(itemId, kind);
+      onReviewDone();
+    } catch (e) {
+      setActError(e instanceof InboxError ? e.message : "재평가 처분에 실패했습니다.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  if (loading && reevals.length === 0) return <PanelSkeleton label="재평가 항목" />;
+  if (reevals.length === 0)
+    return <EmptyState label="지식 변경으로 stale된 과거 판례·답이 없습니다." />;
+
   return (
     <div role="tabpanel" className="flex flex-col gap-ds-12" aria-label="재평가 케이스">
-      <MockMarker note="재평가 라우트가 백엔드에 아직 없습니다 (재평가 라우트 미구현)." />
-      {reevaluationCases.map((r) => (
-        <Card key={r.id} elevated>
-          <CardHeader>
-            <div className="flex flex-wrap items-center gap-ds-8">
-              <StatusBadge tone="warning" label="stale · 재평가 필요" />
-              <span className="text-xs text-[var(--ds-color-ink-subtle)]">{r.pastAnsweredAt}</span>
-            </div>
-            <p className="text-md font-medium text-[var(--ds-color-ink)]">{r.question}</p>
-          </CardHeader>
-          <CardBody className="flex flex-col gap-ds-8">
-            <div className="flex flex-wrap items-center gap-ds-4 text-xs text-[var(--ds-color-ink-muted)]">
-              <span>변경 개념:</span>
-              <Tag tone="neutral">{r.changedConcept}</Tag>
-            </div>
-            <p className="text-sm text-[var(--ds-color-ink-muted)]">{r.reason}</p>
-          </CardBody>
-          <CardFooter>
-            <Button size="sm" variant="secondary" disabled>
-              <Check aria-hidden className="h-4 w-4" />
-              유지
-            </Button>
-            <Button size="sm" variant="primary" disabled>
-              <RefreshCw aria-hidden className="h-4 w-4" />
-              재답변
-            </Button>
-            <Button size="sm" variant="danger" disabled>
-              <X aria-hidden className="h-4 w-4" />
-              무효화
-            </Button>
-          </CardFooter>
-        </Card>
-      ))}
+      {actError && (
+        <div
+          role="alert"
+          className="flex items-center gap-ds-8 rounded-md border border-[var(--ds-color-danger)] bg-[color-mix(in_srgb,var(--ds-color-danger)_8%,transparent)] px-ds-12 py-ds-8 text-sm text-[var(--ds-color-ink)]"
+        >
+          <AlertTriangle aria-hidden className="h-4 w-4 shrink-0 text-[var(--ds-color-danger)]" />
+          {actError}
+        </div>
+      )}
+      {reevals.map((r) => {
+        const busy = busyId === r.item_id;
+        return (
+          <Card key={r.item_id} elevated>
+            <CardHeader>
+              <div className="flex flex-wrap items-center gap-ds-8">
+                <StatusBadge tone="warning" label="stale · 재평가 필요" />
+                <Tag tone="neutral">{r.subject_kind === "precedent" ? "판례" : "과거 답"}</Tag>
+                <span className="text-xs text-[var(--ds-color-ink-subtle)]">
+                  {fmtReevalTime(r.flagged_at)}
+                </span>
+              </div>
+              <p className="text-md font-medium text-[var(--ds-color-ink)]">{r.question}</p>
+            </CardHeader>
+            <CardBody className="flex flex-col gap-ds-8">
+              <div className="flex flex-wrap items-center gap-ds-4 text-xs text-[var(--ds-color-ink-muted)]">
+                <span>변경 번들:</span>
+                <Tag tone="neutral">{r.agent_id}</Tag>
+                <span className="font-mono text-[var(--ds-color-ink-subtle)]">{r.trigger_sha}</span>
+              </div>
+              <p className="text-sm text-[var(--ds-color-ink-muted)]">{r.reason}</p>
+            </CardBody>
+            <CardFooter>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={busy}
+                onClick={() => void act(r.item_id, "keep")}
+              >
+                <Check aria-hidden className="h-4 w-4" />
+                유지
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={busy}
+                onClick={() => void act(r.item_id, "reanswer")}
+              >
+                <RefreshCw aria-hidden className="h-4 w-4" />
+                재답변
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                disabled={busy}
+                onClick={() => void act(r.item_id, "invalidate")}
+              >
+                <X aria-hidden className="h-4 w-4" />
+                무효화
+              </Button>
+            </CardFooter>
+          </Card>
+        );
+      })}
     </div>
   );
 }

@@ -33,6 +33,14 @@ from agent_org_network.dispatch import (
 )
 from agent_org_network.index_matcher import ConceptOverlapMatcher
 from agent_org_network.okf_index import build_knowledge_index_from_okf
+from agent_org_network.reeval import (
+    Clock,
+    InMemoryReevalStore,
+    PrecedentSubject,
+    ReevalItem,
+    ReevalService,
+    ReevalStore,
+)
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router, RouterPort
 from agent_org_network.runtime import AgentRuntime, ClaudeCodeRuntime
@@ -166,6 +174,13 @@ class DemoBundle:
     `create_central_app`이 이 인스턴스를 `WebSocketDispatcher`에도 같이 주입해야 워커
     publish(`accept_index`→`put`)가 라우터가 보는 store에 도달한다(라우터↔디스패처 공유).
     index 모드가 아니면 None(기본 Router는 인덱스 라우팅을 안 봄).
+
+    `reeval_store`·`reeval_service`(ADR 0019 결정 5 — Owner 처리함 세 번째 탭): stale 재평가
+    항목 보관/처분 포트. `review_store`(둘째 탭)와 동형으로 web 라우트(GET `/inbox/reeval`·
+    POST `/reeval/{item_id}/review`)가 이 bundle에서 꺼내 쓴다. `build_demo`가 항상
+    `InMemoryReevalStore`+`ReevalService`를 구성해 담는다(둘째 탭은 워커 답 흐름으로 채워지지만
+    reeval 자동 적재[StalenessPropagator]는 데모 흐름에 없어 시드가 가시성을 댄다 —
+    `seed_demo_reeval_items`·`create_central_app`).
     """
 
     ask: AskOrg
@@ -176,6 +191,8 @@ class DemoBundle:
     review_store: "BackupReviewStore | None" = None
     audit_reader: AuditReader | None = None
     published_index_store: InMemoryPublishedIndexStore | None = None
+    reeval_store: ReevalStore | None = None
+    reeval_service: ReevalService | None = None
 
 
 # 데모 인덱스 라우팅 시드의 고정 generated_at — OKF→인덱스 도출이 결정론이 되도록
@@ -341,6 +358,13 @@ def build_demo(
         manager_root=ROOT_USER,
     )
     consensus = ConsensusService(case_store=case_store, precedents=precedents)
+    # 재평가(세 번째 탭) store/service — review_store(둘째 탭)와 동형으로 항상 구성해
+    # 번들에 담는다(web 라우트가 꺼내 씀). 자동 적재(StalenessPropagator)는 데모 흐름에
+    # 없으므로 가시성은 시드(create_central_app→seed_demo_reeval_items)가 댄다.
+    # `precedents`를 ReevalService에 주입해 InvalidatePrecedent 실 제외가 같은 store에
+    # 닿게 한다(ADR 0019 결정 6·T8.4(d) — ConsensusService가 같은 precedents를 보는 정신).
+    reeval_store: ReevalStore = InMemoryReevalStore()
+    reeval_service = ReevalService(reeval_store, precedents=precedents)
     return DemoBundle(
         ask=ask,
         case_store=case_store,
@@ -350,6 +374,8 @@ def build_demo(
         review_store=review_store,
         audit_reader=audit_impl,
         published_index_store=published_index_store,
+        reeval_store=reeval_store,
+        reeval_service=reeval_service,
     )
 
 
@@ -383,6 +409,41 @@ def cards_for_owner(owner_id: str) -> dict[str, AgentCard]:
     `_CARDS`가 출처지만, 실제로는 각 owner PC가 자기 카드 YAML을 들 자리(T1.3·T6.5).
     """
     return {card.agent_id: card for card in _CARDS if card.owner == owner_id}
+
+
+# 데모 reeval 시드의 고정 flagged_at·trigger_sha — 결정론(now() 회피).
+_REEVAL_SEED_AT = datetime(2026, 6, 28, 9, 0, 0, tzinfo=timezone.utc)
+_REEVAL_SEED_SHA = "demo-okf-commit-abc123def456"
+
+
+def seed_demo_reeval_items(
+    store: ReevalStore,
+    clock: Clock | None = None,
+) -> None:
+    """데모 owner 처리함 재평가 탭(세 번째 탭)에 시드 항목을 적재한다(ADR 0019 결정 5).
+
+    다툼 케이스가 데모에서 *질문 흐름*으로 자동 생기듯, reeval은 자동 적재 경로
+    (StalenessPropagator·실 OKF 커밋→StalenessPropagator→reeval)가 데모 흐름에 없으므로
+    명시 시드한다 — propagator가 만들 항목과 *같은 shape*(`PrecedentSubject(intent)`·owner_id·
+    agent_id·trigger_sha·flagged_at·pending_review). owner-스코프라 cs_lead 로그인 시만 보인다.
+
+    데모 owner `cs_lead`(카드 `cs_ops`)가 자기 재평가 탭에서 볼 항목 1건:
+      - `PrecedentSubject(intent="환불")` — `cs_ops` OKF 변경이 '환불' 판례를 stale 표식한 대상.
+
+    `clock` 주입 시 그 시각을 flagged_at으로(결정론 테스트). 미주입이면 고정 `_REEVAL_SEED_AT`.
+    실 자동 적재 경로(`git_gateway.py`/`two_stage_router.py` `on_okf_committed` 발화)는 이미
+    설계됨 — 데모 가시성은 시드로 충분(propagator를 데모 변경이벤트 흐름에 새로 엮는 건 범위 밖).
+    """
+    flagged_at = clock() if clock is not None else _REEVAL_SEED_AT
+    store.add(
+        ReevalItem(
+            subject=PrecedentSubject(intent="환불"),
+            owner_id="cs_lead",
+            agent_id="cs_ops",
+            trigger_sha=_REEVAL_SEED_SHA,
+            flagged_at=flagged_at,
+        )
+    )
 
 
 def demo_delegations(

@@ -27,7 +27,7 @@ import os
 import secrets
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal, assert_never
+from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
@@ -43,6 +43,9 @@ from agent_org_network.ask_org import (
     serialize_sse_event,
 )
 from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog
+
+if TYPE_CHECKING:
+    from agent_org_network.audit import AuditReader
 from agent_org_network.conflict import (
     Agreed,
     ConcurOnPrimary,
@@ -51,7 +54,7 @@ from agent_org_network.conflict import (
     Deadlocked,
     StillOpen,
 )
-from agent_org_network.demo import build_demo
+from agent_org_network.demo import build_demo, seed_demo_reeval_items
 from agent_org_network.dispatch import RuntimeDispatcher
 from agent_org_network.git_gateway import (
     BuilderCommitRequest,
@@ -83,6 +86,20 @@ from agent_org_network.review import (
     BackupReviewStore,
     CorrectBackup,
     DismissBackup,
+)
+from agent_org_network.reeval import (
+    AcknowledgeAnswer,
+    AnswerSubject,
+    InMemoryReevalStore,
+    InvalidatePrecedent,
+    KeepPrecedent,
+    PrecedentSubject,
+    ReAnswer,
+    ReevalItem,
+    ReevalOutcome,
+    ReevalService,
+    ReevalStore,
+    SupersedePrecedent,
 )
 from agent_org_network.index_matcher import relevant_concepts
 from agent_org_network.registry import Registry
@@ -314,6 +331,102 @@ def _serialize_backup_review(review: BackupReview) -> dict[str, Any]:
             }
         case DismissBackup():
             return {"type": "dismiss", "by_owner": review.by_owner, "rationale": review.rationale}
+        case _ as never:
+            assert_never(never)
+
+
+def serialize_reeval_item(
+    item: ReevalItem,
+    registry: Registry,
+    audit_reader: "AuditReader | None",
+) -> dict[str, Any]:
+    """ReevalItem을 처리함 재평가 탭(세 번째 탭) 운영 화면向 dict로 변환한다.
+
+    `serialize_review_item`(둘째 탭) 미러. ReevalItem은 질문 텍스트를 직접 안 들고
+    subject(intent 또는 audit_index)만 들므로 표시용 `question`·`reason`을 파생한다.
+    `match item.subject`(PrecedentSubject | AnswerSubject) + assert_never로 두 대상 망라
+    (sealed sum 정신). audit_reader가 None이거나 인덱스 범위 밖이면 안전 폴백 라벨.
+
+    노출(운영 면): owner 자기 처리함 데이터라 owner/agent_id/intent 표시 OK(라우팅 점수·
+    후보 아님). trigger_sha는 짧게(앞 12자) — 감사 표식 용도.
+    """
+    subject = item.subject
+    subject_kind: Literal["precedent", "answer"]
+    subject_ref: str
+    question: str
+    target_label: str
+    match subject:
+        case PrecedentSubject():
+            subject_kind = "precedent"
+            subject_ref = subject.intent
+            question = f"'{subject.intent}' 판례"
+            target_label = "판례"
+        case AnswerSubject():
+            subject_kind = "answer"
+            subject_ref = str(subject.audit_index)
+            question = _reeval_answer_question(subject.audit_index, audit_reader)
+            target_label = "답"
+        case _ as never:
+            assert_never(never)
+
+    reason = f"'{item.agent_id}' 지식이 바뀌어 이 {target_label}이 stale 표식됨"
+
+    d: dict[str, Any] = {
+        "item_id": item.item_id,
+        "owner_id": item.owner_id,
+        "agent_id": item.agent_id,
+        "subject_kind": subject_kind,
+        "subject_ref": subject_ref,
+        "trigger_sha": item.trigger_sha[:12],
+        "flagged_at": item.flagged_at.isoformat(),
+        "status": item.status,
+        "question": question,
+        "reason": reason,
+        "review": _serialize_reeval_outcome(item.review) if item.review is not None else None,
+    }
+    return d
+
+
+def _reeval_answer_question(audit_index: int, audit_reader: "AuditReader | None") -> str:
+    """AnswerSubject의 표시용 question을 audit 기록에서 파생한다(안전 폴백 포함).
+
+    audit_reader가 None이거나 인덱스 범위 밖이거나 question 키가 없으면 폴백 라벨.
+    """
+    if audit_reader is not None:
+        record = audit_reader.record_at(audit_index)
+        if record is not None:
+            q = record.get("question")
+            if isinstance(q, str) and q:
+                return q
+    return f"과거 답 #{audit_index}"
+
+
+def _serialize_reeval_outcome(review: ReevalOutcome) -> dict[str, Any]:
+    """ReevalOutcome(sealed sum 5-arm)을 처리함向 dict로 변환한다(match + assert_never)."""
+    match review:
+        case KeepPrecedent():
+            return {"kind": "keep", "by_owner": review.by_owner, "rationale": review.rationale}
+        case InvalidatePrecedent():
+            return {
+                "kind": "invalidate",
+                "by_owner": review.by_owner,
+                "rationale": review.rationale,
+            }
+        case SupersedePrecedent():
+            return {
+                "kind": "supersede",
+                "by_owner": review.by_owner,
+                "new_primary": review.new_primary,
+                "rationale": review.rationale,
+            }
+        case AcknowledgeAnswer():
+            return {
+                "kind": "acknowledge",
+                "by_owner": review.by_owner,
+                "rationale": review.rationale,
+            }
+        case ReAnswer():
+            return {"kind": "reanswer", "by_owner": review.by_owner, "rationale": review.rationale}
         case _ as never:
             assert_never(never)
 
@@ -658,11 +771,50 @@ def _parse_backup_review(req: BackupReviewRequest, by_owner: str) -> BackupRevie
         return DismissBackup(by_owner=by_owner, rationale=req.rationale)
 
 
+class ReevalReviewRequest(BaseModel):
+    """POST /reeval/{item_id}/review 요청 바디 — 처리함 세 번째 탭 처분(BackupReviewRequest 미러).
+
+    `kind`가 ReevalOutcome 5-arm을 고른다: keep|invalidate|supersede(Precedent 축) /
+    acknowledge|reanswer(Answer 축). `supersede`는 `new_primary` 필수. 인증 활성 시
+    by_owner는 세션에서 채워진다(body 값 없음 — 위조 차단·ADR 0016). 미인증이면 body의
+    by_owner를 읽는다(하위호환).
+    """
+
+    kind: Literal["keep", "invalidate", "supersede", "acknowledge", "reanswer"]
+    by_owner: str = ""  # 하위호환 — 인증 활성 시 무시, 미활성 시 body에서 읽음
+    new_primary: str = ""
+    rationale: str = ""
+
+
+def _parse_reeval_outcome(req: ReevalReviewRequest, by_owner: str) -> ReevalOutcome:
+    """ReevalReviewRequest를 ReevalOutcome으로 빌드한다(_parse_backup_review 미러).
+
+    `supersede`는 `new_primary`가 비면 ValueError(라우트가 400으로 매핑) — 새 결론으로
+    갈음하려면 새 primary가 있어야 한다(SupersedePrecedent 계약).
+    """
+    if req.kind == "keep":
+        return KeepPrecedent(by_owner=by_owner, rationale=req.rationale)
+    elif req.kind == "invalidate":
+        return InvalidatePrecedent(by_owner=by_owner, rationale=req.rationale)
+    elif req.kind == "supersede":
+        if not req.new_primary:
+            raise ValueError("supersede는 new_primary가 필요합니다.")
+        return SupersedePrecedent(
+            by_owner=by_owner, new_primary=req.new_primary, rationale=req.rationale
+        )
+    elif req.kind == "acknowledge":
+        return AcknowledgeAnswer(by_owner=by_owner, rationale=req.rationale)
+    else:
+        return ReAnswer(by_owner=by_owner, rationale=req.rationale)
+
+
 def create_app(
     runtime: AgentRuntime | None = None,
     dispatcher: RuntimeDispatcher | None = None,
     review_store: BackupReviewStore | None = None,
     review_service: BackupReviewService | None = None,
+    reeval_store: ReevalStore | None = None,
+    reeval_service: ReevalService | None = None,
     manager_queue_store: ManagerQueueStore | None = None,
     audit_log: JsonlAuditLog | InMemoryAuditLog | None = None,
     session_secret: str | None = None,
@@ -721,6 +873,8 @@ def create_app(
     _session_ask = SessionAskOrg(ask=bundle.ask, session_store=_session_store)
     _review_store = review_store
     _review_service = review_service
+    _reeval_store = reeval_store
+    _reeval_service = reeval_service
     _manager_queue_store = manager_queue_store
     _git_gateway: GitGateway = git_gateway if git_gateway is not None else FakeGitGateway()
     # SSO 모드(T7.1·ADR 0021 결정 4) — oidc_provider 주입 시 SSO 모드(POST /login/sso 활성·
@@ -903,6 +1057,23 @@ def create_app(
         items = _review_store.pending_for_owner(owner_id)
         return [serialize_review_item(it) for it in items]
 
+    @app.get("/inbox/reeval")
+    def inbox_reeval(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+        """세션 owner의 재평가 탭(세 번째 탭) 조회 (ADR 0019 결정 5·둘째 탭 GET 미러).
+
+        path param 제거 — 세션 신원으로 자기 재평가 탭만. store 미주입이면 빈 목록
+        (`/inbox/backup-reviews` review_store None 미러). question·reason은 serialize가
+        subject에서 파생한다(audit_reader로 Answer 축 question 보강·없으면 폴백).
+        """
+        owner_id = _session_identity(request)
+        if _reeval_store is None:
+            return []
+        items = _reeval_store.pending_for_owner(owner_id)
+        return [
+            serialize_reeval_item(it, bundle.registry, bundle.audit_reader)
+            for it in items
+        ]
+
     @app.post("/cases/{case_id}/concur")
     def concur(case_id: str, req: ConcurRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """1인칭 합의 표 — 인증 활성 시 by_owner를 세션에서, 미활성 시 body에서.
@@ -1045,6 +1216,37 @@ def create_app(
             raise HTTPException(status_code=400, detail=msg) from exc
         return serialize_review_item(reviewed)
 
+    @app.post("/reeval/{item_id}/review")
+    def review_reeval(item_id: str, req: ReevalReviewRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """재평가 처분(세 번째 탭) — 인증 활성 시 by_owner를 세션에서, 미활성 시 body에서.
+
+        둘째 탭 `review_backup` 미러. `kind`→ReevalOutcome 빌드(keep|invalidate|supersede|
+        acknowledge|reanswer·supersede는 new_primary 필수→없으면 400). `ReevalService.review`
+        가 1인칭 강제(item.owner_id != by_owner면 ValueError→403)·미존재 item_id→ValueError→404.
+        store/service 미주입이면 404(둘째 탭 None 미러). 전이≠기록 — 재검토 행위 audit은 호출자
+        책임이나 여긴 둘째 탭과 동형으로 service 전이만(이번 범위).
+        """
+        if _auth_enabled:
+            by_owner = _session_identity(request)
+        else:
+            by_owner = req.by_owner
+        if _reeval_store is None or _reeval_service is None:
+            raise HTTPException(status_code=404, detail="재평가 기능이 비활성화되어 있습니다.")
+        try:
+            outcome = _parse_reeval_outcome(req, by_owner)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            reviewed = _reeval_service.review(item_id, outcome)
+        except ValueError as exc:
+            msg = str(exc)
+            if "미존재" in msg:
+                raise HTTPException(status_code=404, detail=msg) from exc
+            if "1인칭 위반" in msg:
+                raise HTTPException(status_code=403, detail=msg) from exc
+            raise HTTPException(status_code=400, detail=msg) from exc
+        return serialize_reeval_item(reviewed, bundle.registry, bundle.audit_reader)
+
     @app.get("/monitor")
     def monitor_logs(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
         """운영 모니터링 — 인증 활성 시 로그인 필요(ADR 0016 결정 5: 인증만)."""
@@ -1178,6 +1380,17 @@ def create_app(
             items = _review_store.pending_for_owner(owner_id)
             return [serialize_review_item(it) for it in items]
 
+        @app.get("/inbox/{owner_id}/reeval")
+        def inbox_reeval_legacy(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+            """하위호환(인증 OFF 전용): path param으로 owner 지정(둘째 탭 레거시 미러)."""
+            if _reeval_store is None:
+                return []
+            items = _reeval_store.pending_for_owner(owner_id)
+            return [
+                serialize_reeval_item(it, bundle.registry, bundle.audit_reader)
+                for it in items
+            ]
+
         @app.get("/inbox/{owner_id}")
         def inbox_cases_legacy(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
             """하위호환(인증 OFF 전용): path param으로 owner 지정."""
@@ -1200,4 +1413,15 @@ def create_app(
 
 # OPERATOR_SESSION_SECRET env 설정 시 인증 ON(프로덕션), 미설정 시 인증 OFF(데모).
 # 프로덕션에서는 반드시 OPERATOR_SESSION_SECRET 환경변수를 설정할 것. 하드코딩 금지.
-app = create_app(session_secret=os.environ.get("OPERATOR_SESSION_SECRET"))
+#
+# 재평가(처리함 세 번째 탭) store·service 구성 + 데모 시드 — create_central_app과 동형
+# (둘째 탭 미러). 인프로세스 데모 앱(web:app)도 스트리밍 /ask·다툼·백업과 함께 재평가
+# 탭을 한 백엔드에서 보이게 한다. 실 OKF 커밋→StalenessPropagator 자동 적재는 후속.
+_demo_reeval_store = InMemoryReevalStore()
+_demo_reeval_service = ReevalService(_demo_reeval_store)
+seed_demo_reeval_items(_demo_reeval_store)
+app = create_app(
+    session_secret=os.environ.get("OPERATOR_SESSION_SECRET"),
+    reeval_store=_demo_reeval_store,
+    reeval_service=_demo_reeval_service,
+)

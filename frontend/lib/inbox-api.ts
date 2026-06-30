@@ -146,3 +146,69 @@ export async function fetchCaseDocument(
   if (!res.ok) throw new InboxError(`문서 fetch 실패 (HTTP ${res.status}).`, res.status);
   return (await res.json()) as FetchDocumentResult;
 }
+
+/* ---- 재평가 (reeval) — 처리함 세 번째 탭 · serialize_reeval_item (web.py) ---- */
+
+export type ReevalSubjectKind = "precedent" | "answer";
+export type ReevalStatus = "pending_review" | "reviewed";
+// owner 처분 — KeepPrecedent·InvalidatePrecedent·SupersedePrecedent·AcknowledgeAnswer·ReAnswer
+export type ReevalOutcomeKind =
+  | "keep"
+  | "invalidate"
+  | "supersede"
+  | "acknowledge"
+  | "reanswer";
+
+export interface ReevalReview {
+  kind: ReevalOutcomeKind;
+  by_owner: string;
+  rationale: string;
+  new_primary?: string;
+}
+
+export interface ReevalItem {
+  item_id: string;
+  owner_id: string;
+  agent_id: string;
+  subject_kind: ReevalSubjectKind;
+  subject_ref: string;
+  trigger_sha: string;
+  flagged_at: string;
+  status: ReevalStatus;
+  question: string;
+  reason: string;
+  review: ReevalReview | null;
+}
+
+/** GET /api/inbox/reeval — stale 판례·답 재평가 항목(세션 owner). */
+export function getReeval(): Promise<ReevalItem[]> {
+  return getJson<ReevalItem[]>("/api/inbox/reeval");
+}
+
+/** POST /api/reeval/{id}/review — owner 재평가 처분(유지/재답변/무효화 등). */
+export async function postReevalReview(
+  itemId: string,
+  kind: ReevalOutcomeKind,
+  opts: { rationale?: string; newPrimary?: string } = {},
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/reeval/${encodeURIComponent(itemId)}/review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind,
+        rationale: opts.rationale ?? "",
+        new_primary: opts.newPrimary,
+      }),
+    });
+  } catch {
+    throw new InboxError("네트워크 오류 — 재평가 처분 전송에 실패했습니다.");
+  }
+  if (res.status === 401) throw new InboxError("로그인이 필요합니다.", 401);
+  if (res.status === 403) {
+    throw new InboxError("자기 재평가 항목만 처분할 수 있습니다.", 403);
+  }
+  if (res.status === 404) throw new InboxError("재평가 항목을 찾을 수 없습니다.", 404);
+  if (!res.ok) throw new InboxError(`재평가 처분 실패 (HTTP ${res.status}).`, res.status);
+}

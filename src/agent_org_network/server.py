@@ -252,7 +252,8 @@ def create_central_app(
     # 있어 순환 위험). 통합 진입점에서만 web을 끌어와 단방향으로 합친다.
     from datetime import timedelta
 
-    from agent_org_network.demo import demo_delegations
+    from agent_org_network.demo import demo_delegations, seed_demo_reeval_items
+    from agent_org_network.reeval import InMemoryReevalStore, ReevalService
     from agent_org_network.review import BackupReviewService, InMemoryBackupReviewStore
     from agent_org_network.web import create_app
 
@@ -260,6 +261,14 @@ def create_central_app(
     # 같은 인스턴스를 봐야 검토 루프가 end-to-end로 닫힌다(결정 7).
     review_store = InMemoryBackupReviewStore()
     review_service = BackupReviewService(review_store)
+
+    # 재평가(세 번째 탭·ADR 0019 결정 5) store·service 하나씩 — web(GET `/inbox/reeval`·
+    # POST `/reeval/{item_id}/review`)이 같은 인스턴스를 본다. 둘째 탭과 동형. 데모 가시성은
+    # 시드(`seed_demo_reeval_items`)가 댄다 — 실 OKF 커밋→StalenessPropagator 자동 적재는
+    # 이미 설계됐고(게이트 밖), 여긴 owner가 처리함 세 번째 탭에서 볼 항목을 미리 둔다.
+    reeval_store = InMemoryReevalStore()
+    reeval_service = ReevalService(reeval_store)
+    seed_demo_reeval_items(reeval_store)
 
     # staleness 임계 — 데모는 넉넉히(30일). 위임 스냅샷이 이 임계 내 fresh여야 backup이
     # 그 영역을 답한다(결정 9). 데모 스냅샷은 fresh로 등록하므로 backup push가 허용된다.
@@ -277,6 +286,8 @@ def create_central_app(
         dispatcher=dispatcher,
         review_store=review_store,
         review_service=review_service,
+        reeval_store=reeval_store,
+        reeval_service=reeval_service,
         session_secret=session_secret,
         oidc_provider=oidc_provider,
     )

@@ -54,7 +54,7 @@ from agent_org_network.conflict import (
     Deadlocked,
     StillOpen,
 )
-from agent_org_network.demo import build_demo, seed_demo_reeval_items
+from agent_org_network.demo import DEMO_OKF_ROOT, build_demo, seed_demo_reeval_items
 from agent_org_network.dispatch import RuntimeDispatcher
 from agent_org_network.git_gateway import (
     BuilderCommitRequest,
@@ -104,6 +104,7 @@ from agent_org_network.reeval import (
 from agent_org_network.index_matcher import relevant_concepts
 from agent_org_network.registry import Registry
 from agent_org_network.runtime import AgentRuntime
+from agent_org_network.runtime_select import select_runtime
 from agent_org_network.two_stage_router import PublishedIndexStore
 from agent_org_network.session import InMemorySessionStore, SessionAskOrg, SessionStore
 from agent_org_network.user import User
@@ -1420,7 +1421,11 @@ def create_app(
 _demo_reeval_store = InMemoryReevalStore()
 _demo_reeval_service = ReevalService(_demo_reeval_store)
 seed_demo_reeval_items(_demo_reeval_store)
+# 답 생성 런타임을 owner `AON_PROVIDER`로 고른다(worker와 공유 `select_runtime`). 미설정이면
+# `ClaudeCodeRuntime`(기존 build_demo 기본·게이트·데모 행위 불변·무회귀). `AON_PROVIDER=claude-api`면
+# owner OAuth 인프로세스 anthropic SDK 스트리밍 — `/ask/stream`에 실 토큰 델타가 흐른다(중앙 토큰 0).
 app = create_app(
+    runtime=select_runtime(DEMO_OKF_ROOT),
     session_secret=os.environ.get("OPERATOR_SESSION_SECRET"),
     reeval_store=_demo_reeval_store,
     reeval_service=_demo_reeval_service,

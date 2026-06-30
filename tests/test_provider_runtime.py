@@ -28,7 +28,7 @@ from agent_org_network.provider_runtime import (
     build_provider_request,
     map_response_to_answer,
 )
-from agent_org_network.runtime import Answer
+from agent_org_network.runtime import Answer, AnswerChunk, StreamingRuntime
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +192,64 @@ class TestClaudeApiRuntime:
         runtime: AgentRuntime = ClaudeApiRuntime(transport=transport)
         answer = runtime.answer("질문", card)
         assert isinstance(answer, Answer)
+
+
+# ---------------------------------------------------------------------------
+# answer_stream — ProviderApiRuntime 스트리밍 형제 (ADR 0031) [게이트 내·결정론]
+# ---------------------------------------------------------------------------
+
+
+class TestProviderAnswerStream:
+    def test_ClaudeApiRuntime은_StreamingRuntime을_만족한다(self) -> None:
+        transport = StubProviderTransport(chunks=["환", "불 ", "규정"])
+        runtime = ClaudeApiRuntime(transport=transport)
+        assert isinstance(runtime, StreamingRuntime)
+
+    def test_CodexApiRuntime도_StreamingRuntime을_만족한다(self) -> None:
+        transport = StubProviderTransport(chunks=["답"])
+        runtime = CodexApiRuntime(transport=transport)
+        assert isinstance(runtime, StreamingRuntime)
+
+    def test_answer_stream은_청크마다_AnswerChunk를_흘린다(self, card: AgentCard) -> None:
+        transport = StubProviderTransport(chunks=["환", "불 ", "규정"])
+        runtime = ClaudeApiRuntime(transport=transport)
+        chunks = list(runtime.answer_stream("환불 규정?", card))
+        assert chunks == [
+            AnswerChunk(text_delta="환"),
+            AnswerChunk(text_delta="불 "),
+            AnswerChunk(text_delta="규정"),
+        ]
+
+    def test_answer_stream은_여러_델타를_낸다_폴백_아님(self, card: AgentCard) -> None:
+        transport = StubProviderTransport(chunks=["환", "불 ", "규정"])
+        runtime = ClaudeApiRuntime(transport=transport)
+        chunks = list(runtime.answer_stream("환불 규정?", card))
+        assert len(chunks) == 3  # 블로킹 1델타 폴백이 아니라 실제 다중 델타
+
+    def test_answer_stream은_빈_청크를_스킵한다(self, card: AgentCard) -> None:
+        transport = StubProviderTransport(chunks=["환", "", "불"])
+        runtime = ClaudeApiRuntime(transport=transport)
+        chunks = list(runtime.answer_stream("질문", card))
+        assert chunks == [AnswerChunk(text_delta="환"), AnswerChunk(text_delta="불")]
+
+    def test_answer_stream_델타_조립은_answer_text와_같다(self, card: AgentCard) -> None:
+        transport = StubProviderTransport(chunks=["환", "불 ", "규정"])
+        runtime = ClaudeApiRuntime(transport=transport)
+        streamed_text = "".join(c.text_delta for c in runtime.answer_stream("환불 규정?", card))
+        blocking_text = runtime.answer("환불 규정?", card).text
+        assert streamed_text == blocking_text == "환불 규정"
+
+    def test_LocalStreamingDispatcher가_다중_델타를_흘린다(self, card: AgentCard) -> None:
+        from agent_org_network.dispatch import LocalStreamingDispatcher
+
+        transport = StubProviderTransport(chunks=["환", "불 ", "규정"])
+        runtime = ClaudeApiRuntime(transport=transport)
+        dispatcher = LocalStreamingDispatcher(runtime)
+        streamed = dispatcher.dispatch_stream("환불 규정?", card)
+        deltas = [chunk.text_delta for chunk in streamed]
+        assert deltas == ["환", "불 ", "규정"]  # 다중 델타(폴백 1델타 아님)
+        assert streamed.completed.text == "환불 규정"
+        assert streamed.completed.sources == tuple(card.knowledge_sources)
 
 
 # ---------------------------------------------------------------------------

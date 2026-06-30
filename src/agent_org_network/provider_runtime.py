@@ -16,14 +16,14 @@ A(ii) OKF 접지: read_okf_bundle(순수 헬퍼, stdlib·pathlib만, SDK 0) +
 분류기·배치 경로의 claude -p는 잔존 (ADR 0027 결정 3 — 대화 경로만 교체)
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel
 
 from agent_org_network.agent_card import AgentCard
-from agent_org_network.runtime import Answer
+from agent_org_network.runtime import Answer, AnswerChunk
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +230,23 @@ class ProviderApiRuntime:
         chunks = self._transport(request)
         text = assemble_stream(chunks)
         return map_response_to_answer(text, card)
+
+    def answer_stream(
+        self, question: str, card: AgentCard, context: str | None = None
+    ) -> Iterator[AnswerChunk]:
+        """`answer`의 스트리밍 형제 — 청크를 *모으지 않고* `AnswerChunk` 델타로 흘린다 (ADR 0031).
+
+        `answer`와 같은 파이프라인(read_okf_bundle → build_provider_request → transport)이되
+        `assemble_stream`으로 합치는 대신 transport 청크를 그대로 yield한다. 이로써
+        `ProviderApiRuntime`(따라서 `ClaudeApiRuntime`·`CodexApiRuntime`)이 `StreamingRuntime`을
+        만족 → `dispatch_stream`이 실 SDK 토큰 델타를 점진 전달한다(블로킹 1델타 폴백 탈출).
+        빈 청크("")는 스킵한다(assemble_stream 정신·빈 TokenEvent 방지). 코어 `answer` 무변경.
+        """
+        okf = read_okf_bundle(self._okf_root, card.agent_id)
+        request = build_provider_request(question, card, context=context, model=self._model, okf=okf)
+        for chunk in self._transport(request):
+            if chunk:
+                yield AnswerChunk(text_delta=chunk)
 
 
 # ---------------------------------------------------------------------------

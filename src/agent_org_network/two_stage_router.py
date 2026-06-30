@@ -18,7 +18,10 @@ stage-2(T10.3b): ≥2 모호 후보 → assessor.assess() → clear winner? → 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from agent_org_network.git_gateway import ChangeEventListener
 
 from pydantic import BaseModel
 
@@ -91,8 +94,11 @@ class PublishedIndexStore(Protocol):
         """단건 조회(운영면·옵션 — T10.4)."""
         ...
 
-    def put(self, index: KnowledgeIndex) -> None:
-        """최신 수용(version/generated_at staleness 대조 — T10.4)."""
+    def put(self, index: KnowledgeIndex) -> bool:
+        """최신 수용(version/generated_at staleness 대조 — T10.4).
+
+        더 새 것을 수용했으면 True·동률/역행 거부면 False.
+        """
         ...
 
 
@@ -115,7 +121,7 @@ class InMemoryPublishedIndexStore:
     def get(self, agent_id: str) -> KnowledgeIndex | None:
         return self._store.get(agent_id)
 
-    def put(self, index: KnowledgeIndex) -> None:
+    def put(self, index: KnowledgeIndex) -> bool:
         """더 새 인덱스만 수용한다(ADR 0028 §14 결정 C — generated_at staleness).
 
         첫 인덱스는 무조건 수용·`generated_at`이 더 새면 교체·동률/역행(`<=`)은 거부(no-op).
@@ -123,13 +129,17 @@ class InMemoryPublishedIndexStore:
         거부(멱등): 같은 인덱스 재도착을 흡수한다(`SubmitAnswer` ticket_id 멱등 정신).
         결정론 `build_knowledge_index_from_okf`가 같은 OKF·같은 generated_at→같은 인덱스를
         보장하므로 동률 교체는 무의미하다. per-agent 격리: 한 agent 갱신이 다른 agent 무영향.
+        반환: 더 새 것을 수용했으면 True·동률/역행 거부면 False(T11.7a ADR 0030 S4).
         """
         existing = self._store.get(index.agent_id)
         if existing is None:
             self._store[index.agent_id] = index
+            return True
         elif index.generated_at > existing.generated_at:
             self._store[index.agent_id] = index
+            return True
         # else: 동률·역행 → 거부(no-op·기존 보존)
+        return False
 
 
 # ── PublishIndex 수용 경로(중앙 핸들러 처리 로직, ADR 0028 §14 결정 B·D·F) ─────
@@ -182,6 +192,7 @@ def accept_published_index(
     index: KnowledgeIndex,
     registry: Registry,
     store: PublishedIndexStore,
+    propagator: "ChangeEventListener | None" = None,
 ) -> bool:
     """중앙이 PublishIndex 한 건을 수용 처리한다 — 스코핑→필터→put(결정 F 통합).
 
@@ -190,12 +201,30 @@ def accept_published_index(
     ③ `store.put`(staleness, 결정 C) — 더 새 것만 수용(동률/역행 거부). 이 *처리 로직*은
     결정론(실 WS 수신 루프 연결만 게이트 밖). 반환: 스코핑 통과로 store.put까지 갔으면
     True(staleness로 put이 no-op이어도 스코핑 자체는 통과했으므로 True)·스코핑 거부면 False.
+    ④ `propagator`(옵션): put이 더 새 것을 수용했을 때 OkfChangeEvent를 1회 발화한다
+    (ADR 0030 S4 — 인덱스 수용 훅·발화 지점을 commit→index 수용으로 이동·머신별 단일 발화).
+    propagator=None이면 기존 동작 그대로(발화 0·하위호환).
     """
     if not publishable(session_owner_id, index, registry):
         return False
     card = registry.get(index.agent_id)  # publishable 통과 → 존재 보장
     filtered = filter_authorized_concepts(index, card)
-    store.put(filtered)
+    accepted_newer = store.put(filtered)
+    if propagator is not None and accepted_newer:
+        from agent_org_network.git_gateway import OkfChangeEvent
+
+        event = OkfChangeEvent(
+            agent_id=filtered.agent_id,
+            # 중앙은 owner git SHA를 모른다 — 합성 토큰으로 (1) 실 답 snapshot_sha(git SHA/None)와
+            # 안 겹쳐 Answer 축이 그 agent 답을 전부 보수적 재적재(과검출=놓침 0·올바른 동작)
+            # (2) trigger_sha 감사에 "인덱스 수용발 reeval"임을 드러냄(ADR 0030 S4 M1).
+            new_sha=f"index@{filtered.generated_at.isoformat()}",
+            parent_sha=None,
+            changed_paths=(),
+            author="",  # 중앙 수용 지점 — 커밋 author 없음
+            committed_at=filtered.generated_at,
+        )
+        propagator.on_okf_committed(event)
     return True
 
 

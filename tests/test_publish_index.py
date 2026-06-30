@@ -482,3 +482,308 @@ def test_domain_authorized_술어_규칙() -> None:
     assert domain_authorized("환불", card) is True
     assert domain_authorized("보상", card) is False  # cannot_answer
     assert domain_authorized("보안", card) is False  # ∉ domains
+
+
+# ── 9. T11.7a — reeval 인덱스-수용 훅(ADR 0030 S4) ─────────────────────────
+
+
+class FakeStalenessPropagator:
+    """on_okf_committed 호출 기록 spy — ChangeEventListener duck typing."""
+
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+
+    def on_okf_committed(self, event: object) -> None:
+        self.calls.append(event)
+
+
+def test_T11_7a_더_새_인덱스_수용_시_propagator_발화() -> None:
+    """더 새 generated_at 인덱스 수용 → propagator.on_okf_committed 1회 발화.
+
+    event.agent_id == index.agent_id, event.committed_at == index.generated_at.
+    """
+    from agent_org_network.git_gateway import OkfChangeEvent
+
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore()
+    propagator = FakeStalenessPropagator()
+    idx = _index("cs_ops", _concept("a", "환불"), generated_at=_T1)
+
+    ok = accept_published_index("alice", idx, reg, store, propagator=propagator)
+
+    assert ok is True
+    assert len(propagator.calls) == 1
+    event = propagator.calls[0]
+    assert isinstance(event, OkfChangeEvent)
+    assert event.agent_id == "cs_ops"
+    assert event.committed_at == _T1
+
+
+def test_T11_7a_동률_인덱스_발화_0회() -> None:
+    """같은 generated_at(동률) 인덱스 → staleness 수용 거부 → 발화 0회(멱등)."""
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore([_index("cs_ops", _concept("a", "환불"), generated_at=_T0)])
+    propagator = FakeStalenessPropagator()
+    idx_same = _index("cs_ops", _concept("b", "환불"), generated_at=_T0)
+
+    accept_published_index("alice", idx_same, reg, store, propagator=propagator)
+
+    assert len(propagator.calls) == 0
+
+
+def test_T11_7a_역행_인덱스_발화_0회() -> None:
+    """옛 generated_at(역행) 인덱스 → staleness 수용 거부 → 발화 0회."""
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore([_index("cs_ops", _concept("a", "환불"), generated_at=_T1)])
+    propagator = FakeStalenessPropagator()
+    idx_old = _index("cs_ops", _concept("b", "환불"), generated_at=_T0)
+
+    accept_published_index("alice", idx_old, reg, store, propagator=propagator)
+
+    assert len(propagator.calls) == 0
+
+
+def test_T11_7a_propagator_None_미주입_하위호환() -> None:
+    """propagator=None(기본) → 발화 0·기존 동작 그대로(하위호환)."""
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore()
+    idx = _index("cs_ops", _concept("a", "환불"), generated_at=_T1)
+
+    ok = accept_published_index("alice", idx, reg, store)  # propagator 미주입
+
+    assert ok is True
+    assert store.get("cs_ops") is not None  # 기존 동작 보존
+
+
+def test_T11_7a_publishable_False_put_미도달_발화_0회() -> None:
+    """타 owner(publishable False) → put 도달 전 return False·발화 0회."""
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore()
+    propagator = FakeStalenessPropagator()
+    idx = _index("cs_ops", _concept("a", "환불"), generated_at=_T1)
+
+    ok = accept_published_index("mallory", idx, reg, store, propagator=propagator)
+
+    assert ok is False
+    assert len(propagator.calls) == 0
+    assert store.get("cs_ops") is None
+
+
+def test_T11_7a_put_더_새_True_반환() -> None:
+    """put이 더 새 인덱스 수용 시 True 반환."""
+    store = InMemoryPublishedIndexStore()
+    idx = _index("agent_x", _concept("a", "환불"), generated_at=_T1)
+
+    result = store.put(idx)
+
+    assert result is True
+
+
+def test_T11_7a_put_동률_False_반환() -> None:
+    """put이 동률 인덱스 수용 거부 시 False 반환."""
+    store = InMemoryPublishedIndexStore()
+    idx = _index("agent_x", _concept("a", "환불"), generated_at=_T0)
+    store.put(idx)
+    idx_same = _index("agent_x", _concept("b", "환불"), generated_at=_T0)
+
+    result = store.put(idx_same)
+
+    assert result is False
+
+
+def test_T11_7a_put_역행_False_반환() -> None:
+    """put이 역행 인덱스 수용 거부 시 False 반환."""
+    store = InMemoryPublishedIndexStore()
+    idx_new = _index("agent_x", _concept("a", "환불"), generated_at=_T1)
+    store.put(idx_new)
+    idx_old = _index("agent_x", _concept("b", "환불"), generated_at=_T0)
+
+    result = store.put(idx_old)
+
+    assert result is False
+
+
+def test_T11_7a_put_첫_인덱스_True_반환() -> None:
+    """put이 첫 인덱스(기존 없음) 수용 시 True 반환."""
+    store = InMemoryPublishedIndexStore()
+    idx = _index("agent_new", _concept("a", "환불"), generated_at=_T0)
+
+    result = store.put(idx)
+
+    assert result is True
+
+
+# ── 10. T11.7a M1 — new_sha 합성 토큰 + 실 StalenessPropagator Answer 축 ────
+
+
+def _make_routed_audit_record(
+    agent_id: str = "cs_ops",
+    owner: str = "alice",
+    snapshot_sha: str | None = "sha-old",
+) -> "dict[str, object]":
+    """InMemoryAuditLog.records()가 돌려주는 구조의 픽스처."""
+    from typing import Any
+
+    answer: dict[str, Any] = {"text": "답변입니다.", "mode": "full", "sources": []}
+    if snapshot_sha is not None:
+        answer["snapshot_sha"] = snapshot_sha
+    return {
+        "timestamp": "2026-06-28T09:00:00+00:00",
+        "user_id": "user1",
+        "question": "환불 되나요?",
+        "intent": "환불",
+        "decision": {
+            "disposition": "routed",
+            "primary": agent_id,
+            "owner": owner,
+            "confidence": 0.9,
+            "reason": "판례",
+            "requires_approval": False,
+            "collaborators": [],
+        },
+        "answer": answer,
+        "dispatch": {"disposition": "delivered"},
+    }
+
+
+def _fake_audit_reader(records: "list[dict[str, object]]") -> "object":
+    """고정 records를 돌려주는 최소 AuditReader 구현."""
+
+    class _FixedAudit:
+        def records(self) -> "list[dict[str, object]]":
+            return records
+
+        def record_at(self, index: int) -> "dict[str, object] | None":
+            if 0 <= index < len(records):
+                return records[index]
+            return None
+
+    return _FixedAudit()
+
+
+def test_T11_7a_M1_new_sha_합성_토큰이_빈_문자열_아님() -> None:
+    """accept_published_index가 발화하는 OkfChangeEvent.new_sha는 빈 문자열이 아니다.
+
+    합성 토큰 형식: 'index@{generated_at.isoformat()}' — 실 git SHA와 안 겹침.
+    """
+    from agent_org_network.git_gateway import OkfChangeEvent
+
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore()
+
+    captured: list[OkfChangeEvent] = []
+
+    class _CapturePropagator:
+        def on_okf_committed(self, event: OkfChangeEvent) -> None:
+            captured.append(event)
+
+    idx = _index("cs_ops", _concept("a", "환불"), generated_at=_T1)
+    accept_published_index("alice", idx, reg, store, propagator=_CapturePropagator())
+
+    assert len(captured) == 1
+    event = captured[0]
+    assert event.new_sha != ""
+    assert event.new_sha == f"index@{_T1.isoformat()}"
+
+
+def test_T11_7a_M1_Answer_축_과검출_단언() -> None:
+    """실 StalenessPropagator 주입 — 합성 new_sha가 실 snapshot_sha와 안 겹쳐
+    그 agent의 routed 답이 전부 reeval 큐에 적재됨(Answer 축 과검출 = 놓침 0).
+
+    snapshot_sha="sha-old"인 기존 답 → new_sha="index@..." (합성)와 안 겹침
+    → AnswerSubject(audit_index=0)가 reeval_store에 적재됨.
+    """
+    from agent_org_network.conflict import InMemoryPrecedentStore
+    from agent_org_network.reeval import AnswerSubject, InMemoryReevalStore, StalenessPropagator
+
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    index_store = InMemoryPublishedIndexStore()
+
+    # audit: cs_ops가 routed 답을 가진 기존 기록(snapshot_sha="sha-old")
+    audit = _fake_audit_reader([_make_routed_audit_record("cs_ops", "alice", "sha-old")])
+    precedents = InMemoryPrecedentStore()
+    reeval_store = InMemoryReevalStore()
+
+    propagator = StalenessPropagator(
+        precedents=precedents,
+        audit_reader=audit,  # type: ignore[arg-type]
+        reeval_store=reeval_store,
+        owner_of=lambda _: "alice",
+    )
+
+    idx = _index("cs_ops", _concept("a", "환불"), generated_at=_T1)
+    ok = accept_published_index("alice", idx, reg, index_store, propagator=propagator)
+
+    assert ok is True
+    items = reeval_store.pending_for_owner("alice")
+    assert len(items) == 1
+    assert isinstance(items[0].subject, AnswerSubject)
+    assert items[0].subject.audit_index == 0
+    assert items[0].agent_id == "cs_ops"
+    # trigger_sha는 합성 토큰이어야 한다
+    assert items[0].trigger_sha == f"index@{_T1.isoformat()}"
+
+
+def test_T11_7a_M1_첫_수용_발화_1회() -> None:
+    """빈 store 첫 수용 → propagator.on_okf_committed 1회 발화."""
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore()
+    propagator = FakeStalenessPropagator()
+
+    # 빈 store → 첫 수용(existing is None 분기)
+    idx = _index("cs_ops", _concept("a", "환불"), generated_at=_T0)
+    accept_published_index("alice", idx, reg, store, propagator=propagator)
+
+    assert len(propagator.calls) == 1
+
+
+def test_T11_7a_M1_더_새_수용_발화_1회() -> None:
+    """기존 인덱스 있는 store에 더 새 것 수용 → propagator.on_okf_committed 1회 발화."""
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    # 기존 인덱스 _T0 미리 수용
+    store = InMemoryPublishedIndexStore([_index("cs_ops", _concept("a", "환불"), generated_at=_T0)])
+    propagator = FakeStalenessPropagator()
+
+    # _T0 → _T1: 더 새 것 수용(index.generated_at > existing.generated_at 분기)
+    idx_newer = _index("cs_ops", _concept("b", "환불"), generated_at=_T1)
+    accept_published_index("alice", idx_newer, reg, store, propagator=propagator)
+
+    assert len(propagator.calls) == 1
+
+
+def test_T11_7a_M1_합성_토큰은_실_snapshot_sha와_안_겹친다() -> None:
+    """합성 토큰 'index@...'는 실 git SHA 형식("sha-"로 시작하는 16진 등)과 안 겹친다.
+
+    따라서 Answer 축 skip 조건(snapshot_sha == event.new_sha)이 절대 성립 안 해
+    과검출(놓침 0)이 보장된다.
+    """
+    from agent_org_network.git_gateway import OkfChangeEvent
+
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore()
+
+    captured: list[OkfChangeEvent] = []
+
+    class _CapturePropagator:
+        def on_okf_committed(self, event: OkfChangeEvent) -> None:
+            captured.append(event)
+
+    idx = _index("cs_ops", _concept("a", "환불"), generated_at=_T1)
+    accept_published_index("alice", idx, reg, store, propagator=_CapturePropagator())
+
+    synthetic_sha = captured[0].new_sha
+    # 합성 토큰은 "index@" 접두사로 시작 — 실 git SHA 형식과 구별됨
+    assert synthetic_sha.startswith("index@")
+    # 실 git SHA("sha-old" 등)와 문자열이 다름
+    assert synthetic_sha != "sha-old"
+    assert synthetic_sha != "sha-new"

@@ -5,15 +5,26 @@
 답)를 주입해 가리고, WS 소켓은 아예 끌어들이지 않는다(프레임 객체로 직접 입출력). 실 WS·실
 claude·재연결 무한 루프(`run_worker`)는 수동 시연 영역이라 여기 들어오지 않는다(ADR 0011 결정
 6-6 — 게이트는 결정론만).
+
+T11.7b(크로스머신 fan-out 배선): ReindexOnCommitListener 결정론 테스트 — Fake sink·Fake
+git gateway·OkfChangeEvent 발화 단일·디스크 재도출 잠금. 실 WS·실 소켓 0.
 """
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from agent_org_network.agent_card import AgentCard
+from agent_org_network.git_gateway import (
+    BuilderCommitRequest,
+    FakeGitGateway,
+    OkfFile,
+    commit_okf_bundle,
+)
 from agent_org_network.runtime import ClaudeCodeRuntime
 from agent_org_network.transport import (
     AuthError,
     Ping,
+    PublishIndex,
     PushWork,
     SubmitAnswer,
     TicketFrame,
@@ -21,6 +32,7 @@ from agent_org_network.transport import (
 )
 from agent_org_network.worker import (
     DEFAULT_MAX_BACKOFF_SECONDS,
+    ReindexOnCommitListener,
     WorkerLogic,
     backoff_seconds,
     parse_central_frame,
@@ -341,3 +353,341 @@ def test_submit_answer가_와이어_왕복으로_보존된다():
 
     assert restored.ticket_id == "tkt-rt"
     assert restored.answer.text == "회신 본문"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# T11.7b — ReindexOnCommitListener 결정론 테스트 (크로스머신 fan-out 배선)
+# ════════════════════════════════════════════════════════════════════════════
+
+_T11B_TS = datetime(2026, 6, 30, 9, 0, 0, tzinfo=timezone.utc)
+
+
+class _FakeReindexSink:
+    """PublishIndex 목록을 기록하는 Fake sink — 실 WS 송신 대역."""
+
+    def __init__(self) -> None:
+        self.received: list[list[PublishIndex]] = []
+
+    def __call__(self, frames: list[PublishIndex]) -> None:
+        self.received.append(frames)
+
+
+def _write_okf_file(root: Path, agent_id: str, filename: str, *, front: str) -> None:
+    d = root / agent_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / filename).write_text(f"---\n{front}\n---\n\n본문\n", encoding="utf-8")
+
+
+def _worker_with_okf(owner_id: str, agent_id: str, okf_root: Path) -> WorkerLogic:
+    """OKF 루트가 있는 WorkerLogic — publish_frames가 비어있지 않은 워커."""
+
+    class _NullRunner:
+        def __call__(self, prompt: str, **kw: object) -> str:
+            return "답"
+
+    card = AgentCard(
+        agent_id=agent_id,
+        owner=owner_id,
+        team="cs",
+        summary="환불 안내",
+        domains=["환불"],
+        last_reviewed_at=BASE_TS.date(),
+    )
+    return WorkerLogic(
+        owner_id=owner_id,
+        cards={agent_id: card},
+        runtime=ClaudeCodeRuntime(runner=_NullRunner()),
+        okf_root=okf_root,
+    )
+
+
+# ── (1) 배선 관통 ────────────────────────────────────────────────────────────
+
+
+def test_T11_7b_배선_관통_commit_후_리스너_발화_PublishIndex_캡처(tmp_path: Path) -> None:
+    """commit_okf_bundle(propagator=ReindexOnCommitListener) → on_okf_committed 1회 →
+    publish_frames 호출 → list[PublishIndex] 구성(Fake sink/last_frames 캡처).
+    """
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불\ndescription: d\ntags: [환불]")
+    worker = _worker_with_okf("alice", "cs_ops", tmp_path)
+    sink = _FakeReindexSink()
+    listener = ReindexOnCommitListener(
+        worker=worker,
+        clock=lambda: _T11B_TS,
+        publish_sink=sink,
+    )
+
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="---\ntitle: 환불\n---\n"),),
+        message="환불 정책 추가",
+    )
+    commit_okf_bundle(req, FakeGitGateway(), propagator=listener)
+
+    # sink에 1회 수신됐어야 한다
+    assert len(sink.received) == 1
+    frames = sink.received[0]
+    assert isinstance(frames, list)
+    assert len(frames) >= 1
+    assert all(isinstance(f, PublishIndex) for f in frames)
+
+    # last_frames 관측 속성도 동일
+    assert listener.last_frames == frames
+
+
+# ── (2) 경로 = 디스크 재도출 잠금 ──────────────────────────────────────────
+
+
+def test_T11_7b_디스크_재도출_publish_frames_직접_호출과_동치(tmp_path: Path) -> None:
+    """리스너 frames == publish_frames(generated_at=clock()) 직접 호출 결과(같은 concepts)."""
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불\ndescription: d\ntags: [환불]")
+    worker = _worker_with_okf("alice", "cs_ops", tmp_path)
+
+    fixed_clock = lambda: _T11B_TS  # noqa: E731
+    sink = _FakeReindexSink()
+    listener = ReindexOnCommitListener(worker=worker, clock=fixed_clock, publish_sink=sink)
+
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="---\ntitle: 환불\n---\n"),),
+        message="커밋",
+    )
+    commit_okf_bundle(req, FakeGitGateway(), propagator=listener)
+
+    direct = worker.publish_frames(generated_at=_T11B_TS)
+
+    # concepts 목록 일치 + generated_at·agent_id 동일
+    assert len(sink.received[0]) == len(direct)
+    for a, b in zip(sink.received[0], direct, strict=True):
+        a_ids = {c.id for c in a.index.concepts}
+        b_ids = {c.id for c in b.index.concepts}
+        assert a_ids == b_ids
+        assert a.index.generated_at == b.index.generated_at
+        assert a.index.agent_id == b.index.agent_id
+
+
+# ── (3) 발화 단일 — reindex 리스너만·reeval 미발화 ───────────────────────────
+
+
+def test_T11_7b_발화_단일_reeval_미발화(tmp_path: Path) -> None:
+    """commit_okf_bundle propagator 슬롯이 하나임을 구조적으로 실증.
+
+    ① reindex 리스너를 propagator로 연결 → sink 1회 채워짐 + reeval spy는 주입 자체가
+       불가(슬롯 하나) — 두 머신이 동시에 발화하지 않음을 배선 수준에서 보증.
+    ② reeval spy를 propagator로 연결한 별도 commit → reindex sink는 채워지지 않음(역방향).
+    """
+
+    class _SpyReeval:
+        called: int = 0
+
+        def on_okf_committed(self, event: object) -> None:
+            self.called += 1
+
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불\ndescription: d\ntags: [환불]")
+    worker = _worker_with_okf("alice", "cs_ops", tmp_path)
+
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="---\ntitle: 환불\n---\n"),),
+        message="커밋",
+    )
+
+    # ① reindex 리스너를 propagator로 — sink가 1회 채워진다
+    sink_reindex = _FakeReindexSink()
+    listener = ReindexOnCommitListener(worker=worker, clock=lambda: _T11B_TS, publish_sink=sink_reindex)
+    commit_okf_bundle(req, FakeGitGateway(), propagator=listener)
+    assert len(sink_reindex.received) == 1  # reindex 1회 발화
+
+    # ② reeval spy를 propagator로 연결한 별도 commit — reindex sink는 미채워짐(역방향 보증)
+    sink_reindex2 = _FakeReindexSink()
+    spy_reeval = _SpyReeval()
+    commit_okf_bundle(req, FakeGitGateway(), propagator=spy_reeval)
+    assert spy_reeval.called == 1       # reeval propagator만 1회 발화
+    assert len(sink_reindex2.received) == 0  # reindex sink는 연결 안 됐으므로 미채워짐
+
+
+# ── (4) 결정론(clock 주입) ───────────────────────────────────────────────────
+
+
+def test_T11_7b_결정론_같은_clock_같은_generated_at(tmp_path: Path) -> None:
+    """같은 commit·같은 주입 clock → 같은 generated_at·같은 프레임(멱등)."""
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불\ndescription: d\ntags: [환불]")
+    worker = _worker_with_okf("alice", "cs_ops", tmp_path)
+
+    sink1 = _FakeReindexSink()
+    sink2 = _FakeReindexSink()
+    fixed_ts = datetime(2026, 6, 30, 10, 0, 0, tzinfo=timezone.utc)
+
+    for sink in (sink1, sink2):
+        listener = ReindexOnCommitListener(worker=worker, clock=lambda: fixed_ts, publish_sink=sink)
+        gw = FakeGitGateway()
+        req = BuilderCommitRequest(
+            agent_id="cs_ops",
+            owner="alice",
+            files=(OkfFile(path="refund.md", content="---\ntitle: 환불\n---\n"),),
+            message="커밋",
+        )
+        commit_okf_bundle(req, gw, propagator=listener)
+
+    # generated_at 동일
+    for f1, f2 in zip(sink1.received[0], sink2.received[0], strict=True):
+        assert f1.index.generated_at == f2.index.generated_at == fixed_ts
+
+
+# ── (5) okf_root None 워커 가드 ─────────────────────────────────────────────
+
+
+def test_T11_7b_okf_root_None_워커_빈_프레임_예외_없음() -> None:
+    """okf_root=None 워커 → publish_frames 빈 리스트 → 리스너도 빈 프레임·예외 0."""
+
+    class _NullRunner:
+        def __call__(self, prompt: str, **kw: object) -> str:
+            return "답"
+
+    card = AgentCard(
+        agent_id="cs_ops",
+        owner="alice",
+        team="cs",
+        summary="환불 안내",
+        domains=["환불"],
+        last_reviewed_at=BASE_TS.date(),
+    )
+    worker = WorkerLogic(
+        owner_id="alice",
+        cards={"cs_ops": card},
+        runtime=ClaudeCodeRuntime(runner=_NullRunner()),
+        # okf_root 미주입
+    )
+    sink = _FakeReindexSink()
+    listener = ReindexOnCommitListener(worker=worker, clock=lambda: _T11B_TS, publish_sink=sink)
+
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="내용"),),
+        message="커밋",
+    )
+    commit_okf_bundle(req, FakeGitGateway(), propagator=listener)
+
+    assert listener.last_frames == []
+    assert sink.received == [[]]
+
+
+# ── (6) 실 WS 미선취 가드 ────────────────────────────────────────────────────
+
+
+def test_T11_7b_기본_sink_no_op_실소켓_0() -> None:
+    """sink 미주입 시 기본 no-op — 예외 없이 실행되고 실 소켓 0(T11.7e seam)."""
+
+    class _NullRunner:
+        def __call__(self, prompt: str, **kw: object) -> str:
+            return "답"
+
+    card = AgentCard(
+        agent_id="cs_ops",
+        owner="alice",
+        team="cs",
+        summary="환불 안내",
+        domains=["환불"],
+        last_reviewed_at=BASE_TS.date(),
+    )
+    worker = WorkerLogic(
+        owner_id="alice",
+        cards={"cs_ops": card},
+        runtime=ClaudeCodeRuntime(runner=_NullRunner()),
+    )
+    # publish_sink 미주입 → 기본 no-op
+    listener = ReindexOnCommitListener(worker=worker, clock=lambda: _T11B_TS)
+
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="내용"),),
+        message="커밋",
+    )
+    # 예외 없이 실행돼야 한다
+    commit_okf_bundle(req, FakeGitGateway(), propagator=listener)
+    assert listener.last_frames == []  # okf_root 없으므로 빈 리스트
+
+
+# ── (7) 이벤트 정확성 ────────────────────────────────────────────────────────
+
+
+def test_T11_7b_이벤트_agent_id_sha_committed_at_정확() -> None:
+    """commit_okf_bundle이 발화한 OkfChangeEvent가 CommitResult와 일치."""
+    from agent_org_network.git_gateway import OkfChangeEvent
+
+    captured_events: list[OkfChangeEvent] = []
+
+    class _EventCapturingListener:
+        def on_okf_committed(self, event: object) -> None:
+            assert isinstance(event, OkfChangeEvent)
+            captured_events.append(event)
+
+    gw = FakeGitGateway()
+    listener = _EventCapturingListener()
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="내용"),),
+        message="커밋",
+    )
+    fixed_ts = datetime(2026, 6, 30, 11, 0, 0, tzinfo=timezone.utc)
+    result = commit_okf_bundle(req, gw, propagator=listener, clock=lambda: fixed_ts)
+
+    assert len(captured_events) == 1
+    ev = captured_events[0]
+    assert ev.agent_id == "cs_ops"
+    assert ev.new_sha == result.sha
+    assert ev.committed_at == fixed_ts
+
+
+# ── (M1) 기본 clock tz-aware 보증 ────────────────────────────────────────────
+
+
+def test_T11_7b_기본_clock_미주입_generated_at_tz_aware(tmp_path: Path) -> None:
+    """ReindexOnCommitListener 기본 clock(미주입) → generated_at이 tz-aware(tzinfo is not None).
+
+    M1 회귀 방어: clock 기본값이 tz-naive(datetime.now)였으면 generated_at.tzinfo is None →
+    InMemoryPublishedIndexStore.put의 generated_at 비교에서 TypeError가 터진다.
+    """
+    from agent_org_network.two_stage_router import InMemoryPublishedIndexStore
+
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불\ndescription: d\ntags: [환불]")
+    worker = _worker_with_okf("alice", "cs_ops", tmp_path)
+    sink = _FakeReindexSink()
+    # clock 미주입 — 기본값 사용
+    listener = ReindexOnCommitListener(worker=worker, publish_sink=sink)
+
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="---\ntitle: 환불\n---\n"),),
+        message="커밋",
+    )
+    commit_okf_bundle(req, FakeGitGateway(), propagator=listener)
+
+    assert len(sink.received) == 1
+    frames = sink.received[0]
+    assert len(frames) >= 1
+
+    # generated_at이 tz-aware여야 한다(M1 핵심 단언)
+    for frame in frames:
+        assert frame.index.generated_at.tzinfo is not None, (
+            "기본 clock generated_at이 tz-naive — InMemoryPublishedIndexStore.put 비교에서 TypeError"
+        )
+
+    # InMemoryPublishedIndexStore.put에 통과시켜 TypeError 없이 동률/더-새 판정 검증
+    store = InMemoryPublishedIndexStore()
+    for frame in frames:
+        # 첫 삽입 → True(수용)
+        accepted = store.put(frame.index)
+        assert accepted is True
+
+    # 같은 인덱스 재삽입 → False(동률 거부·TypeError 없음)
+    for frame in frames:
+        accepted = store.put(frame.index)
+        assert accepted is False

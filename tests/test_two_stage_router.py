@@ -701,8 +701,8 @@ class TestPrecedentReauthorization:
                 return [idx]
             def get(self, agent_id: str) -> KnowledgeIndex | None:
                 return None
-            def put(self, index: KnowledgeIndex) -> None:
-                pass
+            def put(self, index: KnowledgeIndex) -> bool:
+                return False
 
         store = StubStoreGetNone()
         reg = _registry(card)

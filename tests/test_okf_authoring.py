@@ -2127,3 +2127,510 @@ def test_T11_6_seam_가드_pipeline_시그니처_Ingestor_없음():
 
     assert "ingestor" not in pipeline_params
     assert "ingestor" not in reindex_params
+
+
+# ── T11.7c: LlmAuthor 실 어댑터 + 프롬프트/파싱 순수 함수 ──────────────────────
+
+
+from agent_org_network.okf_authoring import (  # noqa: E402
+    LlmAuthor,
+    build_split_request,
+    build_derive_request,
+    build_link_request,
+    parse_split_response,
+    parse_derive_response,
+    parse_link_response,
+)
+from agent_org_network.provider_runtime import (  # noqa: E402
+    ProviderRequest,
+    StubProviderTransport,
+)
+
+import json as _json  # noqa: E402
+
+
+# ── (T11.7c-1) build_split_request 결정론 ────────────────────────────────────
+
+
+def test_T11_7c_build_split_request_결정론():
+    """build_split_request: model 필드·system에 JSON 스키마 힌트·user에 source 직렬화."""
+    sources = (
+        RawSource(source_id="src-001", content="환불 정책 내용"),
+        RawSource(source_id="src-002", content="배송 정책 내용"),
+    )
+    req = build_split_request(sources, model="test-model")
+
+    assert isinstance(req, ProviderRequest)
+    assert req.model == "test-model"
+    # system에 JSON 스키마 힌트가 있어야 함
+    assert "concept_id" in req.system
+    assert "core_question" in req.system
+    # user 메시지에 source 직렬화
+    assert len(req.messages) >= 1
+    user_content = req.messages[-1]["content"]
+    assert "src-001" in user_content
+    assert "환불 정책 내용" in user_content
+    assert "src-002" in user_content
+
+
+# ── (T11.7c-2) build_derive_request 결정론 ──────────────────────────────────
+
+
+def test_T11_7c_build_derive_request_결정론():
+    """build_derive_request: model 필드·system에 정련 지시·user에 drafts 직렬화."""
+    drafts = (
+        OkfDocumentDraft(
+            concept_id="refund-policy",
+            title="환불 정책",
+            body="7일 이내 환불 가능합니다.",
+            core_question="환불이 가능한가요?",
+            domain="환불",
+        ),
+    )
+    req = build_derive_request(drafts, model="test-model")
+
+    assert isinstance(req, ProviderRequest)
+    assert req.model == "test-model"
+    # system에 core_question 정련 관련 스키마
+    assert "concept_id" in req.system
+    assert "core_question" in req.system
+    # user 메시지에 drafts 정보 포함
+    user_content = req.messages[-1]["content"]
+    assert "refund-policy" in user_content
+
+
+# ── (T11.7c-3) build_link_request system에 유효 concept_id 화이트리스트 ───────
+
+
+def test_T11_7c_build_link_request_화이트리스트_포함():
+    """build_link_request: system에 유효 concept_id 목록 명시(dangling 1차 방어)."""
+    drafts = (
+        OkfDocumentDraft(
+            concept_id="refund-policy",
+            title="환불 정책",
+            body="환불 내용",
+            core_question="환불은?",
+            domain="환불",
+        ),
+        OkfDocumentDraft(
+            concept_id="pricing-v2",
+            title="가격 정책",
+            body="가격 내용",
+            core_question="가격은?",
+            domain="가격",
+        ),
+    )
+    req = build_link_request(drafts, model="test-model")
+
+    assert isinstance(req, ProviderRequest)
+    assert req.model == "test-model"
+    # system에 화이트리스트 명시
+    assert "refund-policy" in req.system
+    assert "pricing-v2" in req.system
+    # from_id·to_id·relation 스키마
+    assert "from_id" in req.system
+    assert "to_id" in req.system
+    assert "relation" in req.system
+
+
+# ── (T11.7c-4) split 파싱: 고정 JSON → OkfDocumentDraft tuple ───────────────
+
+
+def test_T11_7c_parse_split_response_정상():
+    """고정 JSON 텍스트 → OkfDocumentDraft tuple."""
+    text = _json.dumps([
+        {
+            "concept_id": "refund-policy",
+            "title": "환불 정책",
+            "body": "7일 이내 환불 가능합니다.",
+            "core_question": "환불이 가능한가요?",
+            "domain": "환불",
+            "type": None,
+        }
+    ])
+    result = parse_split_response(text)
+
+    assert isinstance(result, tuple)
+    assert len(result) == 1
+    assert result[0].concept_id == "refund-policy"
+    assert result[0].title == "환불 정책"
+    assert result[0].body == "7일 이내 환불 가능합니다."
+
+
+# ── (T11.7c-5) derive: core_question만 갱신·title/body/domain 보존 ────────────
+
+
+def test_T11_7c_parse_derive_response_보존():
+    """core_question만 갱신·title/body/domain 보존(환각 차단)."""
+    original = OkfDocumentDraft(
+        concept_id="refund-policy",
+        title="환불 정책",
+        body="7일 이내 환불 가능합니다.",
+        core_question="원래 질문?",
+        domain="환불",
+    )
+    text = _json.dumps([
+        {"concept_id": "refund-policy", "core_question": "환불 조건은 무엇인가요?"}
+    ])
+    result = parse_derive_response(text, (original,))
+
+    assert len(result) == 1
+    updated = result[0]
+    assert updated.core_question == "환불 조건은 무엇인가요?"
+    # title/body/domain 보존
+    assert updated.title == "환불 정책"
+    assert updated.body == "7일 이내 환불 가능합니다."
+    assert updated.domain == "환불"
+
+
+# ── (T11.7c-6) link: edges 동치 + 없는 concept 드롭 ────────────────────────
+
+
+def test_T11_7c_parse_link_response_edges_동치_없는_concept_드롭():
+    """edges 파싱·valid_ids 밖 from/to 드롭."""
+    valid_ids = frozenset({"refund-policy", "pricing-v2"})
+    text = _json.dumps([
+        {"from_id": "refund-policy", "to_id": "pricing-v2", "relation": "related"},
+        {"from_id": "refund-policy", "to_id": "nonexistent", "relation": "related"},  # 드롭
+    ])
+    result = parse_link_response(text, valid_ids)
+
+    assert len(result) == 1
+    assert result[0].from_id == "refund-policy"
+    assert result[0].to_id == "pricing-v2"
+
+
+# ── (T11.7c-7) 깨진 JSON·배열 아님 → ValueError ─────────────────────────────
+
+
+def test_T11_7c_parse_split_response_깨진_JSON_ValueError():
+    """깨진 JSON → ValueError(fail-loud)."""
+    with pytest.raises(ValueError):
+        parse_split_response("이건 JSON이 아님{{{")
+
+
+def test_T11_7c_parse_split_response_배열_아님_ValueError():
+    """배열 아닌 JSON → ValueError."""
+    with pytest.raises(ValueError):
+        parse_split_response('{"concept_id": "x"}')  # object, not array
+
+
+# ── (T11.7c-8) 빈 body/title JSON → OkfDocumentDraft ValueError 위임 ─────────
+
+
+def test_T11_7c_parse_split_response_빈_body_ValueError():
+    """body가 빈 JSON → OkfDocumentDraft 생성자가 ValueError."""
+    text = _json.dumps([
+        {
+            "concept_id": "refund-policy",
+            "title": "환불 정책",
+            "body": "",  # 빈 body
+            "core_question": "질문?",
+            "domain": "환불",
+            "type": None,
+        }
+    ])
+    with pytest.raises(Exception):
+        parse_split_response(text)
+
+
+def test_T11_7c_parse_split_response_빈_title_ValueError():
+    """title이 빈 JSON → OkfDocumentDraft 생성자가 ValueError."""
+    text = _json.dumps([
+        {
+            "concept_id": "refund-policy",
+            "title": "",  # 빈 title
+            "body": "내용",
+            "core_question": "질문?",
+            "domain": "환불",
+            "type": None,
+        }
+    ])
+    with pytest.raises(Exception):
+        parse_split_response(text)
+
+
+# ── (T11.7c-9) concept_id="../x" JSON → ValueError (validate_safe_path_component) ─
+
+
+def test_T11_7c_parse_split_response_unsafe_concept_id_ValueError():
+    """unsafe concept_id → OkfDocumentDraft 생성자가 ValueError(단일 권위)."""
+    text = _json.dumps([
+        {
+            "concept_id": "../escape",
+            "title": "제목",
+            "body": "내용",
+            "core_question": "질문?",
+            "domain": "환불",
+            "type": None,
+        }
+    ])
+    with pytest.raises(Exception):
+        parse_split_response(text)
+
+
+# ── (T11.7c-10) 중복 concept_id split → run_authoring_pipeline이 거부 ──────────
+
+
+def test_T11_7c_중복_concept_id_split_pipeline_거부():
+    """LlmAuthor.split이 중복 concept_id 반환 → run_authoring_pipeline이 OkfDraft 생성에서 거부."""
+    dup_json = _json.dumps([
+        {
+            "concept_id": "refund-policy",
+            "title": "환불 정책",
+            "body": "내용",
+            "core_question": "질문?",
+            "domain": "환불",
+            "type": None,
+        },
+        {
+            "concept_id": "refund-policy",  # 중복
+            "title": "환불 정책2",
+            "body": "내용2",
+            "core_question": "질문2?",
+            "domain": "환불",
+            "type": None,
+        },
+    ])
+    derive_json = _json.dumps([
+        {"concept_id": "refund-policy", "core_question": "정련된 질문?"},
+    ])
+    link_json = _json.dumps([])
+
+    # 다단계 stub: split → dup_json, derive → derive_json, link → link_json
+    call_count = 0
+    responses = [dup_json, derive_json, link_json]
+
+    class _SequentialStub:
+        def __call__(self, request: ProviderRequest) -> list[str]:
+            nonlocal call_count
+            resp = responses[call_count % len(responses)]
+            call_count += 1
+            return [resp]
+
+    author = LlmAuthor(_SequentialStub(), model="m")
+    sources = (RawSource(source_id="s", content="내용"),)
+
+    with pytest.raises(Exception):
+        run_authoring_pipeline(agent_id="cs-ops", sources=sources, author=author)
+
+
+# ── (T11.7c-11) 포트 준수: LlmAuthor가 OkfAuthor 인자로 통과 ───────────────────
+
+
+def test_T11_7c_포트_준수_LlmAuthor_OkfAuthor():
+    """run_authoring_pipeline(..., author=LlmAuthor(StubProviderTransport(...), model="m")) 구조 만족."""
+
+    def _accept_author(author: OkfAuthor) -> None:
+        pass
+
+    author = LlmAuthor(StubProviderTransport(chunks=['[{"concept_id":"a","title":"t","body":"b","core_question":"q","domain":"d","type":null}]']), model="m")
+    _accept_author(author)  # 타입 통과
+
+
+# ── (T11.7c-12) staged 관통: split→derive→link 순차 → AuthoredOkf ─────────────
+
+
+class _SequentialStubTransport:
+    """호출 횟수별 다른 JSON 청크를 내는 테스트 전용 다단계 stub."""
+
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = responses
+        self._call_count = 0
+
+    def __call__(self, request: ProviderRequest) -> list[str]:
+        resp = self._responses[self._call_count % len(self._responses)]
+        self._call_count += 1
+        return [resp]
+
+
+def test_T11_7c_staged_관통_split_derive_link_AuthoredOkf():
+    """split→derive→link 순차 호출 → AuthoredOkf 정상 구성(StubTransport 고정 JSON)."""
+    split_json = _json.dumps([
+        {
+            "concept_id": "refund-policy",
+            "title": "환불 정책",
+            "body": "7일 이내 환불 가능합니다.",
+            "core_question": "환불이 가능한가요?",
+            "domain": "환불",
+            "type": None,
+        }
+    ])
+    derive_json = _json.dumps([
+        {"concept_id": "refund-policy", "core_question": "환불 조건은 무엇인가요?"}
+    ])
+    link_json = _json.dumps([])
+
+    transport = _SequentialStubTransport([split_json, derive_json, link_json])
+    author = LlmAuthor(transport, model="test-model")
+    sources = (RawSource(source_id="src-001", content="환불 정책 내용"),)
+
+    result = run_authoring_pipeline(agent_id="cs-ops", sources=sources, author=author)
+
+    assert isinstance(result, AuthoredOkf)
+    assert len(result.draft.documents) == 1
+    assert result.draft.documents[0].concept_id == "refund-policy"
+    assert result.draft.documents[0].core_question == "환불 조건은 무엇인가요?"
+    assert result.draft.edges == ()
+
+
+# ── (T11.7c-13) 공급자 중립: 다른 model/chunks도 같은 클래스 ─────────────────
+
+
+def test_T11_7c_공급자_중립_다른_model():
+    """다른 model 키워드 인자도 같은 LlmAuthor 클래스 사용."""
+    stub1 = StubProviderTransport(chunks=["[]"])
+    stub2 = StubProviderTransport(chunks=["[]"])
+
+    author1 = LlmAuthor(stub1, model="gpt-5.5")
+    author2 = LlmAuthor(stub2, model="claude-3-5-haiku-20241022")
+
+    assert type(author1) is type(author2)
+    assert author1._model == "gpt-5.5"  # pyright: ignore[reportPrivateUsage]
+    assert author2._model == "claude-3-5-haiku-20241022"  # pyright: ignore[reportPrivateUsage]
+
+
+# ── (T11.7c-14) SDK import 0 가드 ───────────────────────────────────────────
+
+
+def test_T11_7c_SDK_import_0_가드():
+    """okf_authoring 모듈이 openai·anthropic·semantic_os를 직접 import하지 않는다."""
+    import inspect
+    import agent_org_network.okf_authoring as mod
+
+    source = inspect.getsource(mod)
+    # 최상위 import 라인에 openai·anthropic·semantic_os가 없어야 함
+    for forbidden in ("import openai", "import anthropic", "import semantic_os", "from openai", "from anthropic", "from semantic_os"):
+        assert forbidden not in source, f"금지 import 발견: {forbidden!r}"
+
+
+# ── (M1) 누락 필드 → ValueError (docstring 계약 준수) ────────────────────────
+
+
+def test_M1_parse_split_response_누락_필드_ValueError():
+    """split JSON에 body 필드 누락 → ValueError(KeyError 아님)."""
+    text = _json.dumps([
+        {
+            "concept_id": "refund-policy",
+            "title": "환불 정책",
+            # body 누락
+            "core_question": "환불이 가능한가요?",
+            "domain": "환불",
+        }
+    ])
+    with pytest.raises(ValueError):
+        parse_split_response(text)
+
+
+def test_M1_parse_split_response_concept_id_None_ValueError():
+    """split JSON에 concept_id가 null → ValueError(N1: "None" 슬러그 방지)."""
+    text = _json.dumps([
+        {
+            "concept_id": None,
+            "title": "환불 정책",
+            "body": "내용",
+            "core_question": "환불이 가능한가요?",
+            "domain": "환불",
+        }
+    ])
+    with pytest.raises(ValueError):
+        parse_split_response(text)
+
+
+def test_M1_parse_derive_response_누락_필드_ValueError():
+    """derive JSON에 core_question 필드 누락 → ValueError(KeyError 아님)."""
+    original = OkfDocumentDraft(
+        concept_id="refund-policy",
+        title="환불 정책",
+        body="7일 이내 환불 가능합니다.",
+        core_question="원래 질문?",
+        domain="환불",
+    )
+    text = _json.dumps([
+        {
+            "concept_id": "refund-policy",
+            # core_question 누락
+        }
+    ])
+    with pytest.raises(ValueError):
+        parse_derive_response(text, (original,))
+
+
+def test_M1_parse_derive_response_concept_id_None_ValueError():
+    """derive JSON에 concept_id가 null → ValueError(N1: "None" 키 방지)."""
+    original = OkfDocumentDraft(
+        concept_id="refund-policy",
+        title="환불 정책",
+        body="7일 이내 환불 가능합니다.",
+        core_question="원래 질문?",
+        domain="환불",
+    )
+    text = _json.dumps([
+        {"concept_id": None, "core_question": "정련된 질문?"}
+    ])
+    with pytest.raises(ValueError):
+        parse_derive_response(text, (original,))
+
+
+def test_M1_parse_link_response_누락_필드_ValueError():
+    """link JSON에 to_id 필드 누락 → ValueError(KeyError 아님)."""
+    valid_ids = frozenset({"refund-policy", "pricing-v2"})
+    text = _json.dumps([
+        {
+            "from_id": "refund-policy",
+            # to_id 누락
+            "relation": "related",
+        }
+    ])
+    with pytest.raises(ValueError):
+        parse_link_response(text, valid_ids)
+
+
+def test_M1_parse_link_response_from_id_None_ValueError():
+    """link JSON에 from_id가 null → ValueError(N1: "None" 슬러그 방지)."""
+    valid_ids = frozenset({"refund-policy", "pricing-v2"})
+    text = _json.dumps([
+        {"from_id": None, "to_id": "pricing-v2", "relation": "related"}
+    ])
+    with pytest.raises(ValueError):
+        parse_link_response(text, valid_ids)
+
+
+# ── (M2) parse_derive_response 공백 core_question → validator 재실행 ──────────
+
+
+def test_M2_parse_derive_response_공백_core_question_ValueError():
+    """derive delta에 공백 core_question → OkfDocumentDraft validator가 거부(model_copy 우회 방지)."""
+    original = OkfDocumentDraft(
+        concept_id="refund-policy",
+        title="환불 정책",
+        body="7일 이내 환불 가능합니다.",
+        core_question="원래 질문?",
+        domain="환불",
+    )
+    text = _json.dumps([
+        {"concept_id": "refund-policy", "core_question": "   "}  # 공백만
+    ])
+    with pytest.raises(ValueError):
+        parse_derive_response(text, (original,))
+
+
+def test_M2_parse_derive_response_정상_정련_보존():
+    """정상 core_question delta → 필드 보존 확인(기존 테스트 5 동등)."""
+    original = OkfDocumentDraft(
+        concept_id="refund-policy",
+        title="환불 정책",
+        body="7일 이내 환불 가능합니다.",
+        core_question="원래 질문?",
+        domain="환불",
+    )
+    text = _json.dumps([
+        {"concept_id": "refund-policy", "core_question": "환불 조건은 무엇인가요?"}
+    ])
+    result = parse_derive_response(text, (original,))
+
+    assert len(result) == 1
+    assert result[0].core_question == "환불 조건은 무엇인가요?"
+    assert result[0].title == "환불 정책"
+    assert result[0].body == "7일 이내 환불 가능합니다."
+    assert result[0].domain == "환불"

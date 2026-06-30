@@ -660,3 +660,229 @@ class TextIngestor:
             RawSource(source_id=source_id.strip(), content=content.strip())
             for source_id, content in items
         )
+
+
+# ── T11.7c: LlmAuthor 실 어댑터 + 프롬프트/파싱 순수 함수 ──────────────────────
+
+
+import json as _json  # noqa: E402
+from typing import cast  # noqa: E402
+
+
+from agent_org_network.provider_runtime import (  # noqa: E402
+    ProviderRequest,
+    ProviderTransport,
+    assemble_stream,
+)
+
+_SPLIT_SYSTEM = (
+    "원본 소스를 개념 단위로 분할해 JSON 배열만 반환하라. 코드펜스·산문 금지.\n"
+    '스키마: [{"concept_id": "파일명 안전 슬러그·소문자/하이픈만·구분자/`..`/공백 금지",'
+    ' "title": "str", "body": "str", "core_question": "str",'
+    ' "domain": "str", "type": null}]'
+)
+
+_DERIVE_SYSTEM = (
+    "각 개념의 core_question을 정련해 JSON 배열만 반환하라. 코드펜스·산문 금지.\n"
+    '스키마: [{"concept_id": "str", "core_question": "str"}]'
+)
+
+_LINK_SYSTEM_HEADER = (
+    "개념 간 관계(edges)를 도출해 JSON 배열만 반환하라. 코드펜스·산문 금지.\n"
+    "아래 화이트리스트에 없는 concept_id를 가리키는 관계는 절대 만들지 마라.\n"
+    "유효 concept_id 목록:\n"
+)
+_LINK_SYSTEM_FOOTER = (
+    '\n스키마: [{"from_id": "str", "to_id": "str", "relation": "str"}]'
+)
+
+
+def build_split_request(
+    sources: Sequence[RawSource],
+    *,
+    model: str,
+) -> ProviderRequest:
+    """raw sources → 개념 분할 요청(순수·IO 0)."""
+    lines = [f"[{src.source_id}] {src.content}" for src in sources]
+    user_content = "\n\n".join(lines)
+    return ProviderRequest(
+        model=model,
+        system=_SPLIT_SYSTEM,
+        messages=[{"role": "user", "content": user_content}],
+    )
+
+
+def build_derive_request(
+    drafts: Sequence[OkfDocumentDraft],
+    *,
+    model: str,
+) -> ProviderRequest:
+    """drafts → core_question 정련 요청(순수·IO 0)."""
+    lines = [
+        f"[{d.concept_id}] {d.title} / {d.body[:80]} / 현 core_question: {d.core_question}"
+        for d in drafts
+    ]
+    user_content = "\n\n".join(lines)
+    return ProviderRequest(
+        model=model,
+        system=_DERIVE_SYSTEM,
+        messages=[{"role": "user", "content": user_content}],
+    )
+
+
+def build_link_request(
+    drafts: Sequence[OkfDocumentDraft],
+    *,
+    model: str,
+) -> ProviderRequest:
+    """drafts → edges 도출 요청(순수·IO 0)."""
+    whitelist = "\n".join(f"- {d.concept_id}" for d in drafts)
+    system = _LINK_SYSTEM_HEADER + whitelist + _LINK_SYSTEM_FOOTER
+    lines = [f"[{d.concept_id}] {d.title} — {d.core_question}" for d in drafts]
+    user_content = "\n".join(lines)
+    return ProviderRequest(
+        model=model,
+        system=system,
+        messages=[{"role": "user", "content": user_content}],
+    )
+
+
+def _require_str(item: dict[str, object], key: str) -> str:
+    """dict에서 key를 꺼내 str로 반환. 누락·None이면 ValueError."""
+    if key not in item:
+        raise ValueError(f"필드 누락: {key!r}")
+    value = item[key]
+    if value is None:
+        raise ValueError(f"필드가 null입니다: {key!r}")
+    return str(value)
+
+
+def parse_split_response(text: str) -> tuple[OkfDocumentDraft, ...]:
+    """split 응답 JSON → OkfDocumentDraft tuple(순수·IO 0).
+
+    JSON 깨짐·배열 아님 → ValueError(fail-loud).
+    값 객체 생성자에 검증 위임(빈 body·unsafe concept_id 등).
+    """
+    try:
+        raw = _json.loads(text)
+    except _json.JSONDecodeError as exc:
+        raise ValueError(f"split 응답 JSON 파싱 실패: {exc}") from exc
+    if not isinstance(raw, list):
+        raise ValueError(f"split 응답이 JSON 배열이 아닙니다: {type(raw).__name__}")
+    data = cast(list[dict[str, object]], raw)
+    try:
+        return tuple(
+            OkfDocumentDraft(
+                concept_id=_require_str(item, "concept_id"),
+                title=_require_str(item, "title"),
+                body=_require_str(item, "body"),
+                core_question=_require_str(item, "core_question"),
+                domain=_require_str(item, "domain"),
+                type=str(item["type"]) if item.get("type") is not None else None,
+            )
+            for item in data
+        )
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"split 응답 필드 누락/타입 오류: {exc}") from exc
+
+
+def parse_derive_response(
+    text: str,
+    originals: Sequence[OkfDocumentDraft],
+) -> tuple[OkfDocumentDraft, ...]:
+    """derive 응답 JSON → originals에 core_question 델타만 적용(순수·IO 0).
+
+    title/body/domain/type 보존(환각 차단).
+    originals에 없는 concept_id는 무시.
+    """
+    try:
+        raw = _json.loads(text)
+    except _json.JSONDecodeError as exc:
+        raise ValueError(f"derive 응답 JSON 파싱 실패: {exc}") from exc
+    if not isinstance(raw, list):
+        raise ValueError(f"derive 응답이 JSON 배열이 아닙니다: {type(raw).__name__}")
+    data = cast(list[dict[str, object]], raw)
+    try:
+        delta: dict[str, str] = {
+            _require_str(item, "concept_id"): _require_str(item, "core_question")
+            for item in data
+        }
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"derive 응답 필드 누락/타입 오류: {exc}") from exc
+    result: list[OkfDocumentDraft] = []
+    for doc in originals:
+        if doc.concept_id in delta:
+            result.append(OkfDocumentDraft(
+                concept_id=doc.concept_id,
+                title=doc.title,
+                body=doc.body,
+                core_question=delta[doc.concept_id],
+                domain=doc.domain,
+                type=doc.type,
+            ))
+        else:
+            result.append(doc)
+    return tuple(result)
+
+
+def parse_link_response(
+    text: str,
+    valid_ids: frozenset[str],
+) -> tuple[ConceptEdge, ...]:
+    """link 응답 JSON → ConceptEdge tuple(순수·IO 0).
+
+    valid_ids 밖 from/to는 드롭(과생성 흡수·최종 dangling 방어는 admit_okf).
+    """
+    try:
+        raw = _json.loads(text)
+    except _json.JSONDecodeError as exc:
+        raise ValueError(f"link 응답 JSON 파싱 실패: {exc}") from exc
+    if not isinstance(raw, list):
+        raise ValueError(f"link 응답이 JSON 배열이 아닙니다: {type(raw).__name__}")
+    data = cast(list[dict[str, object]], raw)
+    result: list[ConceptEdge] = []
+    try:
+        for item in data:
+            from_id = _require_str(item, "from_id")
+            to_id = _require_str(item, "to_id")
+            if from_id not in valid_ids or to_id not in valid_ids:
+                continue
+            result.append(ConceptEdge(from_id=from_id, to_id=to_id, relation=str(item["relation"])))
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"link 응답 필드 누락/타입 오류: {exc}") from exc
+    return tuple(result)
+
+
+class LlmAuthor:
+    """OkfAuthor 포트 구현 — transport 주입·공급자 중립(ADR 0029).
+
+    model은 필수 키워드 인자(공급자별 기본 모델은 게이트 밖 팩토리가 주입).
+    파이프라인: build_*_request → transport → assemble_stream → parse_*_response.
+    """
+
+    def __init__(self, transport: ProviderTransport, *, model: str) -> None:
+        self._transport = transport
+        self._model = model
+
+    def split(self, sources: Sequence[RawSource]) -> tuple[OkfDocumentDraft, ...]:
+        """2단계: 원본 소스를 개념 단위로 분할한다."""
+        request = build_split_request(sources, model=self._model)
+        text = assemble_stream(self._transport(request))
+        return parse_split_response(text)
+
+    def derive_core_questions(
+        self, drafts: Sequence[OkfDocumentDraft]
+    ) -> tuple[OkfDocumentDraft, ...]:
+        """3단계: 각 개념 초안의 core_question을 정련한다."""
+        request = build_derive_request(drafts, model=self._model)
+        text = assemble_stream(self._transport(request))
+        return parse_derive_response(text, drafts)
+
+    def link(
+        self, drafts: Sequence[OkfDocumentDraft]
+    ) -> tuple[ConceptEdge, ...]:
+        """4단계: 개념 간 관계(edges)를 도출한다."""
+        valid_ids = frozenset(d.concept_id for d in drafts)
+        request = build_link_request(drafts, model=self._model)
+        text = assemble_stream(self._transport(request))
+        return parse_link_response(text, valid_ids)

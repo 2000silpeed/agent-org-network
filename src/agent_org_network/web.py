@@ -45,6 +45,7 @@ from agent_org_network.ask_org import (
 from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog
 
 if TYPE_CHECKING:
+    from agent_org_network.agent_card import AgentCard
     from agent_org_network.audit import AuditReader
 from agent_org_network.conflict import (
     Agreed,
@@ -102,10 +103,23 @@ from agent_org_network.reeval import (
     SupersedePrecedent,
 )
 from agent_org_network.index_matcher import relevant_concepts
+from agent_org_network.okf_authoring import (
+    FakeAuthor,
+    OkfDocumentDraft,
+    OkfDraft,
+    admit_okf,
+    build_index_from_admitted,
+    render_okf_markdown,
+    run_authoring_pipeline,
+    TextIngestor,
+)
 from agent_org_network.registry import Registry
 from agent_org_network.runtime import AgentRuntime
 from agent_org_network.runtime_select import select_runtime
-from agent_org_network.two_stage_router import PublishedIndexStore
+from agent_org_network.two_stage_router import (
+    PublishedIndexStore,
+    accept_published_index,
+)
 from agent_org_network.session import InMemorySessionStore, SessionAskOrg, SessionStore
 from agent_org_network.user import User
 
@@ -711,6 +725,97 @@ class BuilderOkfCommitRequest(BaseModel):
     agent_id: str
     files: list[dict[str, str]]
     message: str = ""
+
+
+# ── OKF 저작면(owner측 — ADR 0030 결정 2) 요청 바디·데모 author ──────────────
+# 이 절의 라우트(/author/run·/author/publish)는 **owner측 저작면**이다(ADR 0030 결정 2).
+# 카드 빌더(/builder/*·중앙)와 별개. 단일머신 데모는 in-process 디제너레이트(ADR 0030 §3·
+# 워커=중앙 박스)로 같은 프로세스에서 돌되 **데이터 경계는 보존**한다 — raw 문서·staged
+# 초안·LLM 토큰은 어떤 중앙 store에도 들어가지 않고, 중앙에 publish되는 것은 *목차*
+# (KnowledgeIndex — concept_id·title·core_question·domain만·본문 0)뿐이다(§비소유 논거).
+
+
+class AuthorRunRequest(BaseModel):
+    """POST /author/run 요청 바디 — raw 문서 → staged 개념 초안(ADR 0030 결정 2·4).
+
+    `agent_id`(어느 카드의 OKF인가)·`document`(owner가 붙여넣은 raw 텍스트). raw 문서는
+    요청→응답 transient다 — 어떤 중앙 store에도 저장하지 않는다(비소유·결정 2).
+    """
+
+    agent_id: str
+    document: str
+
+
+class AuthorConceptDisposition(BaseModel):
+    """승인된 개념 1건의 처분 — /author/publish의 concepts 원소.
+
+    `disposition`: "approved"(원안 그대로)·"edited"(수정 필드 반영)·"rejected"(배포 제외).
+    edited 시 title/core_question/body 수정본을 실으면 그 필드를 덮어쓴다(미지정은 보존).
+    """
+
+    concept_id: str
+    disposition: Literal["approved", "edited", "rejected"]
+    title: str | None = None
+    core_question: str | None = None
+    body: str | None = None
+    domain: str | None = None
+    type: str | None = None
+
+
+class AuthorPublishRequest(BaseModel):
+    """POST /author/publish 요청 바디 — 승인 개념 → owner git 커밋 + 목차 publish.
+
+    `agent_id`·`concepts`(개념별 처분). rejected는 제외하고, edited는 수정 필드를 반영해
+    `OkfDraft`를 구성한다. 커밋은 owner git(commit_okf_bundle), 중앙에는 *목차만* publish한다.
+    """
+
+    agent_id: str
+    concepts: list[AuthorConceptDisposition]
+
+
+# 데모 author 도메인 매핑 — 카드별로 in-domain 2건 + over-claim 1건을 결정론으로 낸다.
+# 키는 agent_id, 값은 (in-domain 개념 2건, over-claim 개념 1건). over-claim의 domain은
+# 어느 데모 카드도 권한으로 갖지 않는 라벨("기밀")이라 admit_okf가 dropped_concepts로 떨군다.
+_DEMO_OVERCLAIM_DOMAIN = "기밀"
+
+
+def _build_demo_author(card: "AgentCard") -> FakeAuthor:
+    """데모용 결정론 author — 카드의 owned domain 2개 + over-claim 1건을 고정 산출한다.
+
+    owner OAuth 없이도 `/author` 데모가 staged 개념·over-claim 드롭·커밋을 한 번 관통하게
+    한다(ADR 0030 결정 4 "얇은 수직 슬라이스"). 실 `LlmAuthor`(owner OAuth provider transport·
+    ADR 0030 S1)는 게이트 밖 스왑이다 — 여기서 `_build_demo_author`를 `LlmAuthor(...)` 주입으로
+    바꾸면 같은 파이프라인이 실 추출로 돈다(주입만 교체·이번 범위 아님).
+
+    카드 domains에서 in-domain 개념 2건을 만들고(없으면 1건), over-claim 개념 1건은
+    `_DEMO_OVERCLAIM_DOMAIN`(어느 데모 카드도 권한 없는 라벨)으로 만들어 admit_okf가 떨구게 한다.
+    입력 문서와 무관하게 고정 산출한다(데모 결정론) — 실 추출은 LlmAuthor가 입력을 본다.
+    """
+    domains = list(card.domains)
+    in_domain = domains[:2] if len(domains) >= 2 else (domains or [_DEMO_OVERCLAIM_DOMAIN])
+    docs: list[OkfDocumentDraft] = []
+    for i, dom in enumerate(in_domain):
+        docs.append(
+            OkfDocumentDraft(
+                concept_id=f"demo-{card.agent_id}-{i + 1}",
+                title=f"{dom} 정책 요약",
+                body=f"{dom}에 대한 기준과 처리 절차를 정리한 개념입니다(데모 자동 초안).",
+                core_question=f"{dom}은 어떻게 처리하나요?",
+                domain=dom,
+            )
+        )
+    # over-claim 개념 1건 — 카드 권한 밖 domain이라 admit_okf가 dropped_concepts로 떨군다.
+    docs.append(
+        OkfDocumentDraft(
+            concept_id=f"demo-{card.agent_id}-nda",
+            title="기밀유지(NDA) 규정",
+            body="권한 밖 도메인의 개념입니다 — admit_okf가 over-claim으로 떨굽니다(데모).",
+            core_question="NDA는 어떻게 처리하나요?",
+            domain=_DEMO_OVERCLAIM_DOMAIN,
+        )
+    )
+    fixed = tuple(docs)
+    return FakeAuthor(split_result=fixed, derive_result=fixed, link_result=())
 
 
 class ManagerActionRequest(BaseModel):
@@ -1360,6 +1465,186 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return {"sha": result.sha, "agent_id": result.agent_id}
+
+    # ── OKF 저작면(owner측 — ADR 0030 결정 2·4) 라우트 2개 ─────────────────────
+    # 저작은 **owner측**이다(ADR 0030 결정 2 — 중앙은 raw·초안·LLM 토큰 0·*목차만*).
+    # 카드 빌더(/builder/*·중앙)와 별개. 단일머신 데모는 in-process 디제너레이트(ADR 0030
+    # §3·워커=중앙 박스)로 같은 프로세스에서 돌되 **데이터 경계는 보존**한다:
+    #   - raw 문서·staged 초안은 어떤 중앙 store에도 안 들어간다(요청→응답 transient·owner측).
+    #   - 중앙 published_index_store에 publish되는 것은 *목차*(KnowledgeIndex)뿐이다 —
+    #     concept_id·title·core_question·domain만·본문 0(§비소유 논거). 이게 이 작업의 핵심.
+
+    def _author_scoped_card(agent_id: str, request: Request) -> "AgentCard":
+        """저작 라우트의 owner 스코프 가드(/builder/okf/commit과 같은 규칙).
+
+        미로그인 → 401(인증 활성 시)·미존재 카드 → 404·세션 신원 ≠ card.owner → 403.
+        인증 OFF면 owner 스코프를 강제하지 않는다(데모/기존 테스트 — 자기 카드만 가정).
+        """
+        session_owner: str | None = None
+        if _auth_enabled:
+            session_owner = _session_identity(request)  # 미로그인 → 401
+        if not agent_id or not agent_id.strip():
+            raise HTTPException(status_code=400, detail="agent_id는 비어 있을 수 없습니다.")
+        try:
+            card = bundle.registry.get(agent_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"카드 미존재: {agent_id!r}")
+        if _auth_enabled and card.owner != session_owner:
+            raise HTTPException(
+                status_code=403,
+                detail=f"자기 OKF만 저작할 수 있습니다(세션 {session_owner!r} ≠ owner {card.owner!r}).",
+            )
+        return card
+
+    @app.post("/author/run")
+    def author_run(req: AuthorRunRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """raw 문서 → staged 개념 초안(owner측·transient·중앙 store 0·ADR 0030 결정 2·4).
+
+        파이프라인: TextIngestor → run_authoring_pipeline(데모 author) → admit_okf(over-claim
+        필터). 데모 author는 owner OAuth 없이도 staged 개념·over-claim 드롭을 한 번 관통하게
+        하는 결정론 더블이다(실 LlmAuthor는 게이트 밖 스왑·_build_demo_author 주석 참조).
+
+        **불변식 가드(비소유)**: raw 문서·staged 초안을 어떤 중앙 store에도 저장하지 않는다 —
+        이 핸들러는 published_index_store·case_store 등 어떤 store에도 *쓰지 않는다*(읽기만·
+        카드 스코프). 산출은 응답으로만 owner에게 돌아간다(요청→응답 transient).
+        """
+        card = _author_scoped_card(req.agent_id, request)
+
+        ingestor = TextIngestor()
+        sources = ingestor.ingest([(f"{req.agent_id}-src", req.document)])
+        author = _build_demo_author(card)
+        authored = run_authoring_pipeline(req.agent_id, sources, author)
+        result = admit_okf(authored.draft, card)
+
+        kept_ids = {doc.concept_id for doc in result.admitted.documents}
+        concepts = [
+            {
+                "concept_id": doc.concept_id,
+                "title": doc.title,
+                "core_question": doc.core_question,
+                "domain": doc.domain,
+                "body": doc.body,
+                "in_domain": doc.concept_id in kept_ids,
+            }
+            for doc in authored.draft.documents
+        ]
+        dropped = [
+            {"concept_id": cid, "reason": "over-claim(권한 밖 domain) — admit_okf가 떨굼"}
+            for cid in result.dropped_concepts
+        ]
+        stages = [
+            {"key": "ingest", "label": "① 인제스트", "state": "done"},
+            {"key": "split", "label": "② 개념 분할", "state": "done"},
+            {"key": "derive", "label": "③ core_question 정련", "state": "done"},
+            {"key": "link", "label": "④ 관계 도출", "state": "done"},
+            {"key": "index", "label": "⑤ 목차(승인 후 publish)", "state": "pending"},
+        ]
+        return {"stages": stages, "concepts": concepts, "dropped": dropped}
+
+    @app.post("/author/publish")
+    def author_publish(req: AuthorPublishRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """승인 개념 → owner git 커밋 + 목차만 중앙 publish(owner측·ADR 0030 결정 2·3).
+
+        disposition 적용: rejected 제외·edited는 수정 필드 반영 → OkfDraft 구성 →
+        admit_okf(over-claim 재필터) → render_okf_markdown → commit_okf_bundle(owner git·
+        /builder/okf/commit과 같은 게이트웨이) → 커밋된 번들에서 **목차(KnowledgeIndex) 도출
+        → 중앙 published_index_store에 publish(목차만·내용 0)**.
+
+        **불변식 가드(비소유)**: 중앙 store에는 *목차*(KnowledgeIndex)만 넣는다 —
+        accept_published_index가 받는 것은 build_index_from_admitted가 만든 KnowledgeIndex
+        (concept_id·title·core_question·domain·type만·본문 0)다. raw 본문·LLM 토큰은 중앙에
+        안 간다(비소유). 목차 도출용 마크다운 직렬화는 *격리 임시 디렉터리*에 쓰고 버린다 —
+        owner OKF 본체·중앙 어디에도 본문이 남지 않는다. rejected 개념은 커밋·publish 0.
+        """
+        card = _author_scoped_card(req.agent_id, request)
+        session_owner = card.owner if not _auth_enabled else _session_identity(request)
+
+        # disposition 적용: rejected 제외·edited 수정 필드 반영 → OkfDocumentDraft 구성
+        docs: list[OkfDocumentDraft] = []
+        for c in req.concepts:
+            if c.disposition == "rejected":
+                continue  # 거부분 — 커밋·publish 0
+            try:
+                docs.append(
+                    OkfDocumentDraft(
+                        concept_id=c.concept_id,
+                        title=c.title or c.concept_id,
+                        body=c.body or "(본문 없음)",
+                        core_question=c.core_question or c.concept_id,
+                        domain=c.domain or "",
+                        type=c.type,
+                    )
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"개념 형식 오류: {exc}") from exc
+
+        if not docs:
+            raise HTTPException(status_code=400, detail="배포할 승인 개념이 없습니다(전부 거부됨).")
+
+        try:
+            draft = OkfDraft(agent_id=req.agent_id, documents=tuple(docs))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"초안 구성 오류: {exc}") from exc
+
+        # over-claim 재필터(저작측 admission — 권한 밖 domain 떨굼)
+        result = admit_okf(draft, card)
+        if not result.admitted.documents:
+            raise HTTPException(
+                status_code=400,
+                detail="권한 안(under-claim) 개념이 없습니다 — 전부 over-claim으로 떨궈졌습니다.",
+            )
+
+        # owner git 커밋(/builder/okf/commit과 같은 게이트웨이·author=세션 신원)
+        okf_files = tuple(
+            OkfFile(path=f"{doc.concept_id}.md", content=render_okf_markdown(doc))
+            for doc in result.admitted.documents
+        )
+        commit_req = BuilderCommitRequest(
+            agent_id=req.agent_id,
+            owner=session_owner,
+            files=okf_files,
+            message=f"OKF 저작 publish: {req.agent_id}",
+        )
+        try:
+            commit_result = commit_okf_bundle(commit_req, _git_gateway)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # 커밋된 번들에서 *목차*(KnowledgeIndex) 도출 → 중앙에 목차만 publish.
+        # build_index_from_admitted는 격리 임시 디렉터리에 마크다운을 쓰고 그것을 읽어
+        # 목차를 도출한다(본문은 임시 디렉터리에만·중앙 도달 0). 중앙 store에 들어가는
+        # 객체는 KnowledgeIndex(목차)뿐 — Concept은 본문 필드를 갖지 않는다(비소유 보장).
+        import tempfile
+        from datetime import UTC, datetime
+
+        generated_at = datetime.now(UTC)
+        with tempfile.TemporaryDirectory() as tmp:
+            index = build_index_from_admitted(
+                result.admitted, card, Path(tmp), generated_at=generated_at
+            )
+        # (임시 디렉터리는 with 블록 종료 시 삭제 — 본문 마크다운은 디스크에 안 남는다)
+
+        published: dict[str, Any] | None = None
+        if bundle.published_index_store is not None:
+            # 중앙 수용 경로 재사용 — accept_published_index가 스코핑→필터→put(staleness).
+            # propagator 옵션은 이번 범위 밖(주입 시 reeval 인덱스-수용 훅·ADR 0030 S4).
+            accept_published_index(
+                session_owner, index, bundle.registry, bundle.published_index_store
+            )
+            published = {
+                "agent_id": index.agent_id,
+                "concept_count": len(index.concepts),
+                "generated_at": generated_at.isoformat(),
+            }
+
+        return {
+            "committed": {
+                "sha": commit_result.sha,
+                "files": [f.path for f in okf_files],
+            },
+            "published": published,
+            "dropped": list(result.dropped_concepts),
+        }
 
     @app.get("/builder")
     def builder_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]

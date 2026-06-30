@@ -566,7 +566,16 @@ function EmptyState({ label }: { label: string }) {
         alt=""
         width={320}
         height={181}
-        className="mb-ds-4 w-full max-w-[260px] opacity-90"
+        priority
+        className="ds-img-dark mb-ds-4 w-full max-w-[260px] opacity-90"
+      />
+      <Image
+        src="/brand/empty-inbox-light.png"
+        alt=""
+        width={320}
+        height={181}
+        priority
+        className="ds-img-light mb-ds-4 w-full max-w-[260px]"
       />
       <p className="text-sm text-[var(--ds-color-ink-muted)]">{label}</p>
     </div>

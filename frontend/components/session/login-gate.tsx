@@ -5,6 +5,15 @@ import { LogIn, ShieldUser, UserCircle2 } from "lucide-react";
 import { DEMO_IDENTITIES, type DemoRole } from "@/lib/session-api";
 import { useSession } from "./session-context";
 
+// 받침 유무로 주제 조사(은/는)를 고른다 — "지식 작성은", "질문하기는".
+function topicParticle(word: string): string {
+  const code = word.charCodeAt(word.length - 1);
+  if (code >= 0xac00 && code <= 0xd7a3) {
+    return (code - 0xac00) % 28 === 0 ? "는" : "은";
+  }
+  return "은(는)";
+}
+
 // Gate for operational surfaces (/inbox·/console). Until a demo identity is
 // chosen (session cookie pinned via POST /login), the backend returns 401 and
 // we show a "로그인 필요" state with a one-click identity picker. `requiredRole`
@@ -47,7 +56,9 @@ export function LoginGate({
               로그인 필요
             </h2>
             <p className="text-sm text-[var(--ds-color-ink-muted)]">
-              {surface}은(는) 운영 신원으로 접근하는 면입니다. 데모 신원을 선택하세요.
+              {surface}
+              {topicParticle(surface)} 운영 권한이 있는 신원으로 접근하는 화면입니다. 데모
+              신원을 선택하세요.
             </p>
           </div>
         </div>

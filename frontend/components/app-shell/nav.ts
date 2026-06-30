@@ -27,9 +27,9 @@ export const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/author",
-    label: "지식 저작",
+    label: "지식 작성",
     surface: "Author",
-    description: "Owner OKF 저작면",
+    description: "문서를 지식으로 정리",
     icon: PenLine,
     persona: "Owner",
   },

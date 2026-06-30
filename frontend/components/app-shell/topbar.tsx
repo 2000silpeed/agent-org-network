@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Network } from "lucide-react";
 import { NAV_ITEMS } from "./nav";
 import { IdentitySwitcher } from "@/components/session/identity-switcher";
+import { ThemeToggle } from "./theme";
 import { cn } from "@/lib/utils";
 
 // Mobile/tablet primary nav. Sidebar is hidden below lg; this horizontal,
@@ -14,14 +15,21 @@ export function Topbar() {
   return (
     <header className="sticky top-0 z-20 border-b border-[var(--ds-color-border)] bg-[var(--ds-color-surface)]/95 backdrop-blur lg:hidden">
       <div className="flex items-center gap-ds-8 px-ds-16 py-ds-12">
-        <Network
-          aria-hidden
-          className="h-5 w-5 shrink-0 text-[var(--ds-color-primary)]"
-        />
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-md bg-white shadow-sm ring-1 ring-[var(--ds-color-border)]">
+          <Image
+            src="/brand/mark.png"
+            alt="Agent Org Network"
+            width={28}
+            height={28}
+            priority
+            className="h-7 w-7 object-contain"
+          />
+        </span>
         <span className="font-heading text-sm font-semibold text-[var(--ds-color-ink)]">
           Agent Org Network
         </span>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-ds-8">
+          <ThemeToggle />
           <IdentitySwitcher />
         </div>
       </div>

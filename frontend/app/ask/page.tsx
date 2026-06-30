@@ -190,7 +190,15 @@ export default function AskPage() {
                 width={420}
                 height={238}
                 priority
-                className="mb-ds-16 w-full max-w-[360px] opacity-90"
+                className="ds-img-dark mb-ds-16 w-full max-w-[360px] opacity-90"
+              />
+              <Image
+                src="/brand/empty-ask-light.png"
+                alt=""
+                width={420}
+                height={238}
+                priority
+                className="ds-img-light mb-ds-16 w-full max-w-[360px]"
               />
               <p className="text-sm text-[var(--ds-color-ink-subtle)]">
                 조직에 궁금한 것을 물어보세요. 질문은 담당을 찾아 흘러갑니다. 예:

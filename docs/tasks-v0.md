@@ -543,4 +543,9 @@ PRD §4 페르소나 면(Ask·Author·Inbox·Console)을 **별 프론트엔드 `
   - **후속 슬라이스 2b**: 재평가 라우트·SSE 라이브 피드·워커 admission API(mcp-runtime), `/ask` 스트리밍(블로킹→점진 렌더).
 - **기존 `web/*.html`(walking skeleton·TRD §1)은 보존** — 운영 면만 `frontend/`로 승격, 사용자 MCP/API 경로는 무변경.
 - **디자인 시스템 출처**: `~/ai-projects/design-ontology-harness/projects/agent-org-network`(spec.md·brand_profile.json·build·preset — 별 레포·당신 자산). 첫 제네릭 합성(에이전트 그래프 대시보드) 폐기 후 우리 제품으로 재합성.
-- **브랜드 자산(gpt-image 생성·`frontend/public/brand/`)**: 라우팅-허브 마크(`mark.png`·사이드바·`app/icon.png` 파비콘)·빈 상태 일러스트(`empty-ask.png` /ask·`empty-inbox.png` /inbox EmptyState). 팔레트 준수(블루 #2563EB·앰버 #F9C163·다크 #0D0F11)·`next/image` 최적화. Codex OAuth 만료로 Higgsfield gpt_image_2 폴백 생성. 원본(2K~2.7K px)은 레포 밖, 웹용 리사이즈만 커밋.
+- **브랜드 자산·테마·자연화(UI 폴리시, 2026-06-30)**:
+  - **앰블럼**: 사용자 제공 블루 육각 로고를 `mark.png`(여백 트리밍·흰 칩)·`app/icon.png` 파비콘으로 — 사이드바·모바일 topbar. 블루-온-화이트라 흰 칩으로 양 테마 보존.
+  - **빈 상태 일러스트(gpt_image_2·디자인 시스템 근거)**: `empty-ask*.png`·`empty-inbox*.png`(라이트/다크 변형, `ds-img-dark`/`ds-img-light` CSS 스왑). **디자인 시스템 정독 후** flat·muted 팔레트(Classic Blue #0F4C81·Apricot #FFB27F·Bottle Green #006A4E)·제품 모티프(질문→트레이스→답변 카드·owner/source 칩 / 처리함 행+상태 태그)로 — anti-패턴(sci-fi glow·marketing·decorative graph) 회피. 이전 3D 글로우 폐기.
+  - **라이트/다크 토글**(`components/app-shell/theme.tsx`·`ThemeProvider`·무플래시 스크립트·localStorage)·사이드바·topbar 토글 버튼. 디자인 시스템 라이트/다크 토큰 활용.
+  - **한국어 자연화**: 전역 `word-break: keep-all`(어절 줄바꿈)·"지식 저작"→"지식 작성"·`/author` jargon 제거(아키텍처 배지·내부 용어)·로그인 게이트 은/는 자동 조사. 사이드바 내부 문구("routing_rules") 제거.
+  - **신원 드롭다운**: 사이드바=위로·좌측·폭 제한(콘텐츠 침범 0)·topbar=아래·우측(오버플로 0).

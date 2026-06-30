@@ -131,3 +131,18 @@ html, body {
   font-family: var(--ds-font-body);
 }
 /* design-ontology:END */
+
+/* Theme-aware brand illustrations: both variants render, CSS shows the matching
+   one by data-theme (set before paint) — no flash, no hydration mismatch. */
+[data-theme="light"] .ds-img-dark { display: none; }
+[data-theme="dark"] .ds-img-light { display: none; }
+
+/* Korean line-breaking: wrap at 어절(word/phrase) boundaries, never mid-character.
+   keep-all stops the default any-character break ("환불 규정 어/떻게"); overflow-wrap
+   still breaks genuinely unbreakable tokens (long URLs, IDs like OKF-CS-0233). Both
+   properties inherit, so html/body cascades to all text. */
+html,
+body {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}

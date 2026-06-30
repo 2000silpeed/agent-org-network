@@ -9,7 +9,13 @@ import { cn } from "@/lib/utils";
 
 // Demo identity picker (운영/owner 세션). Passwordless — choosing a user pins it
 // into the session cookie via POST /login. SSO is a follow-up (실 SSO 후속).
-export function IdentitySwitcher() {
+export function IdentitySwitcher({
+  placement = "down",
+}: {
+  // "up" opens the menu above the trigger — use in the sidebar footer (bottom-anchored)
+  // so the 6-identity list doesn't overflow below the viewport.
+  placement?: "up" | "down";
+} = {}) {
   const { userId, identity, ready, pending, error, login, logout } = useSession();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -96,7 +102,14 @@ export function IdentitySwitcher() {
         <div
           role="menu"
           aria-label="데모 신원 선택"
-          className="absolute right-0 z-30 mt-ds-8 w-[280px] overflow-hidden rounded-lg border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] shadow-lg"
+          className={cn(
+            "absolute z-30 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-[var(--ds-color-border)] bg-[var(--ds-color-surface-elevated)] shadow-xl",
+            // up (sidebar footer): align left, fit within the 244px sidebar column so it
+            // doesn't overhang into content. down (topbar, right-anchored): wider, align right.
+            placement === "up"
+              ? "bottom-full mb-ds-8 left-0 w-[212px]"
+              : "top-full mt-ds-8 right-0 w-[260px]",
+          )}
         >
           <div className="border-b border-[var(--ds-color-border)] px-ds-12 py-ds-8">
             <p className="text-xs font-semibold text-[var(--ds-color-ink-muted)]">

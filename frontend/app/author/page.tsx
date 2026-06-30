@@ -2,10 +2,7 @@
 
 import { useState } from "react";
 import {
-  ShieldCheck,
-  Laptop,
   FileText,
-  Rocket,
   GitCommitHorizontal,
   Check,
   Ban,
@@ -45,25 +42,10 @@ export default function AuthorPage() {
       <PageHeader
         surface="Author"
         persona="Owner"
-        title="지식 저작 (OKF)"
-        description="원본 문서를 개념 단위로 분할하고, core_question을 다듬어 승인된 목차만 중앙에 배포합니다."
-        actions={
-          <div className="flex flex-wrap items-center gap-ds-8 text-xs">
-            <span className="inline-flex items-center gap-ds-4 rounded-pill border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-8 py-[4px] text-[var(--ds-color-ink-muted)]">
-              <Laptop aria-hidden className="h-[14px] w-[14px] text-[var(--ds-color-info)]" />
-              내 환경 실행
-            </span>
-            <span className="inline-flex items-center gap-ds-4 rounded-pill border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-8 py-[4px] text-[var(--ds-color-ink-muted)]">
-              raw·초안은 로컬
-            </span>
-            <span className="inline-flex items-center gap-ds-4 rounded-pill border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-8 py-[4px] text-[var(--ds-color-ink-muted)]">
-              <ShieldCheck aria-hidden className="h-[14px] w-[14px] text-[var(--ds-color-success)]" />
-              중앙은 승인된 목차만
-            </span>
-          </div>
-        }
+        title="지식 작성"
+        description="문서를 올리면 답변에 쓸 지식으로 정리합니다. 검토해 승인한 내용만 조직에 공유됩니다."
       />
-      <LoginGate surface="지식 저작" requiredRole="owner">
+      <LoginGate surface="지식 작성" requiredRole="owner">
         <AuthorWorkspace />
       </LoginGate>
     </div>

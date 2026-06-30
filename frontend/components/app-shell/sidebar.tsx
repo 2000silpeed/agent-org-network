@@ -3,9 +3,9 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { ShieldCheck } from "lucide-react";
 import { NAV_ITEMS } from "./nav";
 import { IdentitySwitcher } from "@/components/session/identity-switcher";
+import { ThemeToggle } from "./theme";
 import { cn } from "@/lib/utils";
 
 // sidebar-nav (navigation family): container, nav-item, icon, label, indicator(active).
@@ -15,14 +15,14 @@ export function Sidebar() {
   return (
     <aside className="hidden w-[244px] shrink-0 flex-col border-r border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] lg:flex">
       <div className="flex items-center gap-ds-8 border-b border-[var(--ds-color-border)] px-ds-16 py-ds-16">
-        <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--ds-color-surface-tint)]">
+        <span className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-md bg-white shadow-sm ring-1 ring-[var(--ds-color-border)]">
           <Image
             src="/brand/mark.png"
             alt="Agent Org Network"
-            width={28}
-            height={28}
+            width={36}
+            height={36}
             priority
-            className="h-7 w-7"
+            className="h-9 w-9 object-contain"
           />
         </span>
         <div className="min-w-0">
@@ -90,15 +90,11 @@ export function Sidebar() {
         </ul>
       </nav>
 
-      <div className="flex flex-col gap-ds-12 border-t border-[var(--ds-color-border)] px-ds-16 py-ds-12">
-        <IdentitySwitcher />
-        <div className="flex items-center gap-ds-8 text-xs text-[var(--ds-color-ink-subtle)]">
-          <ShieldCheck
-            aria-hidden
-            className="h-4 w-4 text-[var(--ds-color-success)]"
-          />
-          <span>권한은 중앙 routing_rules에서만 선언</span>
+      <div className="flex items-center gap-ds-8 border-t border-[var(--ds-color-border)] px-ds-16 py-ds-12">
+        <div className="min-w-0 flex-1">
+          <IdentitySwitcher placement="up" />
         </div>
+        <ThemeToggle />
       </div>
     </aside>
   );

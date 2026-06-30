@@ -43,6 +43,19 @@ async function proxy(req: NextRequest, path: string[]): Promise<Response> {
   respHeaders.delete("content-length");
   respHeaders.delete("transfer-encoding");
 
+  // SSE (text/event-stream) must be piped through, NOT buffered — arrayBuffer()
+  // would wait for the whole response and defeat token-by-token streaming.
+  // Pass the backend's ReadableStream straight to the browser (same origin).
+  const contentType = backendRes.headers.get("content-type") ?? "";
+  if (contentType.includes("text/event-stream") && backendRes.body) {
+    respHeaders.set("cache-control", "no-cache, no-transform");
+    respHeaders.set("x-accel-buffering", "no");
+    return new Response(backendRes.body, {
+      status: backendRes.status,
+      headers: respHeaders,
+    });
+  }
+
   const body = await backendRes.arrayBuffer();
   return new Response(body, { status: backendRes.status, headers: respHeaders });
 }

@@ -9,14 +9,7 @@ import { Tag } from "@/components/ui/tag";
 import { RoutingTrace } from "@/components/ask/routing-trace";
 import { SourceCard } from "@/components/ask/source-card";
 import type { RoutingStep, SourceCard as SourceCardData } from "@/lib/mock-data";
-import {
-  postAsk,
-  pollAsk,
-  modeMeta,
-  pendingTraceLabel,
-  AskError,
-  type OrgReply,
-} from "@/lib/ask-api";
+import { streamAsk, modeMeta, pendingTraceLabel, AskError } from "@/lib/ask-api";
 
 type UserTurn = { id: string; role: "user"; text: string };
 
@@ -64,23 +57,6 @@ function toSourceCards(
   });
 }
 
-// Map an Answered reply onto the org turn (the only routing-facing facts shown:
-// text · owner · confidence · sources).
-function applyAnswered(turn: OrgTurn, reply: Extract<OrgReply, { type: "answered" }>) {
-  turn.loading = false;
-  turn.text = reply.text;
-  turn.owner = reply.answered_by.owner;
-  turn.agentId = reply.answered_by.agent_id;
-  turn.confidence = reply.mode;
-  turn.sources = toSourceCards(reply.sources, reply.answered_by.owner, reply.answered_by.agent_id);
-  turn.trace = [
-    { id: "tr1", label: "담당 찾는 중", state: "done" },
-    { id: "tr2", label: `${reply.answered_by.agent_id} 전달됨`, state: "done" },
-    { id: "tr3", label: "답변 작성 완료", state: "done" },
-  ];
-  turn.pendingMessage = undefined;
-}
-
 export default function AskPage() {
   const [draft, setDraft] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -120,43 +96,64 @@ export default function AskPage() {
     ]);
 
     try {
-      const reply = await postAsk(q);
-
-      if (reply.type === "answered") {
-        patchTurn(orgId, (t) => applyAnswered(t, reply));
-        return;
-      }
-
-      // pending: show staged trace by kind. If tracking present, poll for the answer.
-      const baseTrace: RoutingStep[] = [
-        { id: "tr1", label: "담당 찾는 중", state: "done" },
-        {
-          id: "tr2",
-          label: pendingTraceLabel(reply.kind),
-          state: reply.tracking ? "active" : "done",
-        },
-      ];
-      patchTurn(orgId, (t) => {
-        t.loading = Boolean(reply.tracking);
-        t.trace = baseTrace;
-        t.pendingMessage = reply.message;
-      });
-
-      if (reply.tracking) {
-        const final = await pollAsk(reply.tracking);
-        if (final.type === "answered") {
-          patchTurn(orgId, (t) => applyAnswered(t, final));
-        } else {
+      // SSE token streaming (ADR 0031): meta(담당 즉시) → token*(델타 누적) →
+      // done(최종 신뢰 배지). Pending(다툼/담당 없음/대기)은 단독 안내. error는 중립.
+      await streamAsk(q, {
+        onMeta: (m) => {
           patchTurn(orgId, (t) => {
-            t.loading = false;
-            t.pendingMessage = final.message;
+            t.owner = m.answered_by.owner;
+            t.agentId = m.answered_by.agent_id;
+            t.confidence = m.mode;
+            t.sources = toSourceCards(
+              m.sources,
+              m.answered_by.owner,
+              m.answered_by.agent_id
+            );
             t.trace = [
               { id: "tr1", label: "담당 찾는 중", state: "done" },
-              { id: "tr2", label: pendingTraceLabel(final.kind), state: "done" },
+              { id: "tr2", label: `${m.answered_by.agent_id} 전달됨`, state: "done" },
+              { id: "tr3", label: "답변 작성 중", state: "active" },
             ];
           });
-        }
-      }
+        },
+        onToken: (delta) => {
+          patchTurn(orgId, (t) => {
+            t.loading = false;
+            t.text = (t.text ?? "") + delta;
+          });
+        },
+        onDone: (d) => {
+          patchTurn(orgId, (t) => {
+            t.loading = false;
+            t.confidence = d.mode;
+            if (d.sources.length > 0 && t.owner) {
+              t.sources = toSourceCards(d.sources, t.owner, t.agentId ?? t.owner);
+            }
+            t.trace = [
+              { id: "tr1", label: "담당 찾는 중", state: "done" },
+              { id: "tr2", label: `${t.agentId ?? "담당"} 전달됨`, state: "done" },
+              { id: "tr3", label: "답변 작성 완료", state: "done" },
+            ];
+          });
+        },
+        onPending: (p) => {
+          patchTurn(orgId, (t) => {
+            t.loading = false;
+            t.pendingMessage = p.message;
+            t.trace = [
+              { id: "tr1", label: "담당 찾는 중", state: "done" },
+              { id: "tr2", label: pendingTraceLabel(p.kind), state: "done" },
+            ];
+          });
+        },
+        onError: (msg) => {
+          patchTurn(orgId, (t) => {
+            t.loading = false;
+            t.error = msg;
+            t.trace = undefined;
+          });
+        },
+      });
     } catch (err) {
       const msg =
         err instanceof AskError ? err.message : "알 수 없는 오류가 발생했습니다.";

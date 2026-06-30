@@ -25,7 +25,7 @@ from agent_org_network.conflict import (
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.demo import build_demo_ask_org
 from agent_org_network.registry import Registry
-from agent_org_network.runtime import Answer, StubRuntime
+from agent_org_network.runtime import Answer, StubRuntime, StubStreamingRuntime
 from agent_org_network.session import InMemorySessionStore
 from agent_org_network.transport import WebSocketDispatcher
 from agent_org_network.user import User
@@ -870,3 +870,125 @@ def test_ask_응답_body는_쿠키_이전과_동일하다_기존_회귀():
     # 세션·쿠키 내부값이 응답 body에 없다
     leaky = {"session_id", "transcript", "aon_uid", "user_id", "cookie"}
     assert leaky.isdisjoint(set(body.keys()))
+
+
+# ── POST /ask/stream — SSE 토큰 스트리밍 엔드포인트(ADR 0031 결정 2·3·5 게이트 밖 배선) ──
+#
+# StubStreamingRuntime 주입(결정론 델타열) + LocalStreamingDispatcher(데모 기본) → meta→token*→done
+# SSE 프레임이 결정론으로 흐른다. 실 claude -p subprocess 스트리밍은 게이트 밖(수동 시연).
+
+
+def _parse_sse(raw: str) -> list[tuple[str, dict[str, Any]]]:
+    """SSE 응답 본문(`event: <type>\\ndata: <json>\\n\\n` 반복)을 (type, payload) 목록으로 파싱."""
+    import json
+
+    frames: list[tuple[str, dict[str, Any]]] = []
+    for block in raw.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        event_name = ""
+        data_json = ""
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event_name = line[len("event: ") :]
+            elif line.startswith("data: "):
+                data_json = line[len("data: ") :]
+        frames.append((event_name, json.loads(data_json)))
+    return frames
+
+
+def _stream_app(deltas: tuple[str, ...] | None = None) -> TestClient:
+    runtime = StubStreamingRuntime(deltas=deltas)
+    app: FastAPI = create_app(runtime=runtime)
+    return TestClient(app, raise_server_exceptions=True)
+
+
+def test_ask_stream_라우트가_등록된다():
+    app = create_app(runtime=StubStreamingRuntime())
+    routes = {getattr(r, "path", None) for r in app.routes}
+    assert "/ask/stream" in routes
+
+
+def test_ask_stream_meta_token_done_순서로_흐른다():
+    client = _stream_app(deltas=("환불은 ", "7일 이내 ", "가능합니다."))
+    http: Any = client
+    res = cast(Response, http.post("/ask/stream", json={"question": "환불 되나요?"}))
+
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/event-stream")
+    frames = _parse_sse(res.text)
+    names = [name for name, _ in frames]
+
+    assert names[0] == "meta"
+    assert names[-1] == "done"
+    token_texts = [payload["text"] for name, payload in frames if name == "token"]
+    assert token_texts == ["환불은 ", "7일 이내 ", "가능합니다."]
+
+
+def test_ask_stream_meta는_담당과_출처를_싣는다():
+    client = _stream_app()
+    http: Any = client
+    res = cast(Response, http.post("/ask/stream", json={"question": "환불 되나요?"}))
+
+    frames = _parse_sse(res.text)
+    meta = next(payload for name, payload in frames if name == "meta")
+    # 담당(owner·agent_id)·mode·sources — 노출 투영(내부값 0)
+    assert set(meta["answered_by"].keys()) == {"owner", "agent_id"}
+    assert "mode" in meta
+    assert "sources" in meta
+
+
+def test_ask_stream_token에_내부값이_새지_않는다():
+    # 노출 불변식: token 프레임은 텍스트 델타만(answered_by·mode·sources·confidence 0).
+    client = _stream_app()
+    http: Any = client
+    res = cast(Response, http.post("/ask/stream", json={"question": "환불 되나요?"}))
+
+    frames = _parse_sse(res.text)
+    for name, payload in frames:
+        if name == "token":
+            assert set(payload.keys()) == {"text"}
+
+
+def test_ask_stream_쿠키없는_첫요청에_Set_Cookie가_온다():
+    client = _stream_app()
+    http: Any = client
+    res = cast(Response, http.post("/ask/stream", json={"question": "환불 되나요?"}))
+
+    set_cookie_header: str = res.headers.get("set-cookie", "")
+    assert "aon_uid=" in set_cookie_header
+
+
+def test_ask_stream_프록시_버퍼링_방지_헤더가_있다():
+    client = _stream_app()
+    http: Any = client
+    res = cast(Response, http.post("/ask/stream", json={"question": "환불 되나요?"}))
+
+    assert res.headers.get("cache-control") == "no-cache"
+    assert res.headers.get("x-accel-buffering") == "no"
+
+
+def test_ask_stream_런타임_예외는_error_프레임으로_투영된다():
+    # 노출 불변식: 런타임 예외·스택은 절대 노출하지 않고 중립 error 프레임 1개만.
+    class _BoomStreamingRuntime:
+        def answer_stream(self, question: str, card: Any, context: str | None = None) -> Any:
+            raise RuntimeError("내부 스택 절대 노출 금지 BOOM")
+            yield  # pragma: no cover
+
+        def answer(self, question: str, card: Any, context: str | None = None) -> Answer:
+            raise RuntimeError("내부 스택 절대 노출 금지 BOOM")
+
+    app: FastAPI = create_app(runtime=cast(Any, _BoomStreamingRuntime()))
+    client = TestClient(app, raise_server_exceptions=True)
+    http: Any = client
+    res = cast(Response, http.post("/ask/stream", json={"question": "환불 되나요?"}))
+
+    assert res.status_code == 200
+    frames = _parse_sse(res.text)
+    error_frames = [payload for name, payload in frames if name == "error"]
+    assert len(error_frames) == 1
+    # 중립 안내만 — 내부 예외 메시지·스택 0
+    assert "BOOM" not in res.text
+    assert "RuntimeError" not in res.text
+    assert "Traceback" not in res.text

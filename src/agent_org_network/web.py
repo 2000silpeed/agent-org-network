@@ -25,19 +25,22 @@ OrgReply(Answered | Pending)를 JSON으로 직렬화해 돌려준다.
 
 import os
 import secrets
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Literal, assert_never
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from agent_org_network.ask_org import (
     Answered,
+    ErrorEvent,
     OrgReply,
     Pending,
     project_answered,
     project_pending,
+    serialize_sse_event,
 )
 from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog
 from agent_org_network.conflict import (
@@ -755,6 +758,56 @@ def create_app(
             )
         reply = _session_ask.handle(req.question, User(id=uid))
         return serialize_reply(reply)
+
+    @app.post("/ask/stream")
+    def ask_stream_endpoint(  # pyright: ignore[reportUnusedFunction]
+        req: AskRequest,
+        request: Request,
+    ) -> StreamingResponse:
+        """`/ask`의 SSE 스트리밍 형제 — 답을 토큰 단위로 점진 푸시한다(ADR 0031 결정 2·3·5).
+
+        요청 본문·익명 세션 쿠키(`_COOKIE_NAME`)는 `/ask`와 동일 패턴. `handle_stream`을 순회해
+        각 `AskEvent`를 `serialize_sse_event`로 SSE 프레임으로 흘린다. 런타임 예외·timeout 시
+        내부 예외·스택을 절대 노출하지 않고(노출 불변식) 마지막에 `ErrorEvent` 1프레임만 흘리고
+        종료한다. 기본 런타임이 이미 `ClaudeCodeRuntime`(이제 `answer_stream` 구현)이라 스트리밍
+        디스패처면 여러 델타가, 미지원이면 한 델타가 흐른다(폴백 규약).
+        """
+        uid: str | None = request.cookies.get(_COOKIE_NAME)
+        set_cookie_uid: str | None = None
+        if uid is None:
+            uid = secrets.token_urlsafe(16)
+            set_cookie_uid = uid
+        user = User(id=uid)
+        question = req.question
+
+        def generate() -> Iterator[str]:
+            try:
+                for event in _session_ask.handle_stream(question, user):
+                    yield serialize_sse_event(event)
+            except Exception:
+                # 런타임 실패·timeout — 내부 예외·스택은 절대 노출하지 않고(노출 불변식)
+                # 중립 안내 ErrorEvent 1프레임만 흘리고 종료한다. 부분 출력은 이미 흘러간 뒤다.
+                yield serialize_sse_event(
+                    ErrorEvent(message="답변을 생성하는 중 문제가 발생했어요. 잠시 후 다시 시도해 주세요.")
+                )
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+        sse = StreamingResponse(
+            generate(), media_type="text/event-stream", headers=headers
+        )
+        if set_cookie_uid is not None:
+            sse.set_cookie(
+                key=_COOKIE_NAME,
+                value=set_cookie_uid,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+        return sse
 
     @app.get("/ask/{tracking}")
     def retrieve_endpoint(tracking: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]

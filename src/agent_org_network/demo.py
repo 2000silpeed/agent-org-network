@@ -28,7 +28,7 @@ from agent_org_network.conflict import (
 )
 from agent_org_network.dispatch import (
     DelegationSnapshot,
-    LocalRuntimeDispatcher,
+    LocalStreamingDispatcher,
     RuntimeDispatcher,
 )
 from agent_org_network.index_matcher import ConceptOverlapMatcher
@@ -308,14 +308,16 @@ def build_demo(
         published_index_store=published_index_store,
     )
     # ask_org는 RuntimeDispatcher 경유로 답을 모은다(T6.3 슬라이스2). 데모/in-process는
-    # 분산이 아니라 즉답이 필요하므로 동기 런타임을 LocalRuntimeDispatcher로 감싼다 —
-    # dispatch가 곧 답(항상 Delivered). 분산 회수 경로(2b-i)를 검증할 땐 WebSocketDispatcher
-    # 를 주입해 dispatched→retrieve 흐름을 결정론으로 본다.
+    # 분산이 아니라 즉답이 필요하므로 동기 런타임을 LocalStreamingDispatcher로 감싼다 —
+    # 블로킹 면(dispatch→poll)은 LocalRuntimeDispatcher와 동형(항상 Delivered·즉답 보존)이라
+    # 기존 비스트림 /ask·MCP·테스트는 행위 불변이고, 거기에 스트리밍 능력(dispatch_stream)을
+    # 더해 /ask/stream이 ClaudeCodeRuntime.answer_stream의 토큰 델타를 점진 전달한다(ADR 0031
+    # 결정 4·5 게이트 밖 와이어링). 분산 회수 경로(2b-i)는 WebSocketDispatcher를 주입해 본다.
     runtime_impl: AgentRuntime = (
         runtime if runtime is not None else ClaudeCodeRuntime(okf_root=DEMO_OKF_ROOT)
     )
     dispatcher_impl: RuntimeDispatcher = (
-        dispatcher if dispatcher is not None else LocalRuntimeDispatcher(runtime_impl)
+        dispatcher if dispatcher is not None else LocalStreamingDispatcher(runtime_impl)
     )
     def _manager_of(uid: str) -> str | None:
         return registry.get_user(uid).manager if uid in registry.user_ids() else None

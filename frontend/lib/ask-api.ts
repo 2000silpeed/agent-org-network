@@ -105,6 +105,111 @@ export async function pollAsk(tracking: string): Promise<OrgReply> {
   throw new AskError("답변이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.");
 }
 
+/* ---- SSE token streaming (POST /ask/stream) — ADR 0031 event contract ---- */
+
+export interface AskMeta {
+  answered_by: { owner: string; agent_id: string };
+  mode: AnswerMode;
+  sources: string[];
+}
+export interface AskDone {
+  mode: AnswerMode;
+  sources: string[];
+}
+export interface AskPending {
+  kind: string;
+  message: string;
+  tracking?: string;
+}
+
+export interface AskStreamHandlers {
+  // Routed: meta(담당 즉시) → token*(델타 누적) → done(최종 신뢰 배지)
+  onMeta?: (m: AskMeta) => void;
+  onToken?: (text: string) => void;
+  onDone?: (d: AskDone) => void;
+  // Pending(다툼/담당 없음/대기)은 비스트림 — 단독 1회
+  onPending?: (p: AskPending) => void;
+  // 런타임 실패·timeout — 중립 안내만
+  onError?: (message: string) => void;
+}
+
+// Dispatch a single parsed SSE frame ("event: x\ndata: {json}") to handlers.
+// Backend frame shape is fixed by serialize_sse_event (ask_org.py).
+function dispatchSseFrame(frame: string, h: AskStreamHandlers): void {
+  let name = "message";
+  const dataLines: string[] = [];
+  for (const line of frame.split("\n")) {
+    if (line.startsWith("event:")) name = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  }
+  if (dataLines.length === 0) return;
+  let data: unknown;
+  try {
+    data = JSON.parse(dataLines.join("\n"));
+  } catch {
+    return;
+  }
+  switch (name) {
+    case "meta":
+      h.onMeta?.(data as AskMeta);
+      break;
+    case "token":
+      h.onToken?.((data as { text: string }).text);
+      break;
+    case "done":
+      h.onDone?.(data as AskDone);
+      break;
+    case "pending":
+      h.onPending?.(data as AskPending);
+      break;
+    case "error":
+      h.onError?.((data as { message: string }).message);
+      break;
+  }
+}
+
+/**
+ * POST /api/ask/stream — consume the SSE token stream, dispatching each event.
+ * Reads the response body as a stream (the Next proxy pipes text/event-stream
+ * through unbuffered) and parses SSE frames split on the blank line.
+ */
+export async function streamAsk(
+  question: string,
+  handlers: AskStreamHandlers,
+  signal?: AbortSignal
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch("/api/ask/stream", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question }),
+      signal,
+    });
+  } catch {
+    throw new AskError("네트워크 오류 — 백엔드에 연결할 수 없습니다.");
+  }
+  if (!res.ok || !res.body) {
+    throw new AskError(`스트리밍 요청이 실패했습니다 (HTTP ${res.status}).`, res.status);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      if (frame.trim()) dispatchSseFrame(frame, handlers);
+    }
+  }
+  if (buffer.trim()) dispatchSseFrame(buffer, handlers);
+}
+
 /* ---- UI mapping helpers (kept here so the contract lives in one place) ---- */
 
 import type { StatusTone } from "@/components/ui/status-badge";

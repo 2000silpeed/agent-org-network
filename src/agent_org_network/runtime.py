@@ -72,6 +72,20 @@ class ClaudeRunner(Protocol):
     def __call__(self, prompt: str, /, *, cwd: str | None = None) -> str: ...
 
 
+class StreamingClaudeRunner(Protocol):
+    """`claude -p`를 *스트리밍*으로 돌려 텍스트 델타를 순서대로 yield하는 호출 가능 객체.
+
+    `ClaudeRunner`(블로킹·완성 str 반환)의 스트리밍 형제 — `ClaudeCodeRuntime.answer_stream`이
+    실 subprocess를 격리하려고 주입받는 seam(ADR 0031 결정 5·실 stdout 스트리밍은 게이트 밖).
+    기본값은 실 `claude -p --output-format stream-json --include-partial-messages` 헬퍼이고,
+    테스트는 고정 델타열을 yield하는 가짜 스트리밍 러너를 주입해 `answer_stream`의 오케스트레이션
+    (러너 호출→`AnswerChunk` 변환)을 결정론으로 단위 검증한다. `cwd`는 `ClaudeRunner`와 같은
+    선택 키워드(OKF 번들 접지).
+    """
+
+    def __call__(self, prompt: str, /, *, cwd: str | None = None) -> Iterator[str]: ...
+
+
 class StubRuntime:
     """결정론 AgentRuntime stub — canned 답·관측 seam(last_context).
 
@@ -175,6 +189,111 @@ def _exec_claude(
     return completed.stdout
 
 
+def _stream_claude_headless(
+    prompt: str,
+    /,
+    *,
+    cwd: str | None = None,
+    timeout: int = DEFAULT_CLAUDE_TIMEOUT_SECONDS,
+) -> Iterator[str]:
+    """`claude -p`를 스트리밍으로 한 번 돌려 *텍스트 델타*를 순서대로 yield한다(ADR 0031 결정 5).
+
+    `_run_claude_headless`(블로킹)의 스트리밍 형제 — cwd 접지·읽기 전용 도구 격리 규약은
+    동일하고, 차이는 stdout을 모았다 반환하는 대신 *실시간 증분*으로 흘린다는 것뿐이다.
+    `cwd`가 주어지면(owner OKF 번들) 그 디렉터리에서 `--allowedTools "Read,Glob,Grep"`로 돌고,
+    `None`이면 임시 빈 디렉터리에서 1회성으로 돈다(응답 잡음·프로젝트 CLAUDE.md 간섭 차단).
+
+    실 stdout 스트리밍이라 게이트 밖 — `ClaudeCodeRuntime.answer_stream`이 기본값으로 주입받되
+    테스트는 가짜 스트리밍 러너로 대체한다.
+    """
+    if cwd is not None:
+        yield from _exec_claude_stream(
+            prompt, cwd=cwd, allowed_tools=OKF_ALLOWED_TOOLS, timeout=timeout
+        )
+        return
+    with tempfile.TemporaryDirectory() as workdir:
+        yield from _exec_claude_stream(
+            prompt, cwd=workdir, allowed_tools=None, timeout=timeout
+        )
+
+
+def _exec_claude_stream(
+    prompt: str,
+    *,
+    cwd: str,
+    allowed_tools: str | None,
+    timeout: int,
+) -> Iterator[str]:
+    """`claude -p --output-format stream-json --include-partial-messages`를 띄워 텍스트 델타를 흘린다.
+
+    플래그 근거(직접 검증, ADR 0031 결정 5): `--output-format text`는 답을 다 모은 뒤에야
+    stdout에 쓰므로 점진 토큰이 없다. `stream-json --include-partial-messages --verbose`는
+    줄 단위 JSON 이벤트로 `content_block_delta`(delta.type="text_delta")를 토큰 단위로 *실시간*
+    흘린다 — 그 `text_delta`만 추출해 yield한다. `thinking_delta`/`signature_delta`(내부 추론)는
+    delta.type이 달라 자연히 배제된다(노출 불변식 — 사용자에 추론 미노출).
+
+    `subprocess.Popen`으로 stdout을 라인 버퍼로 읽고, 끝나면 returncode를 확인해 비정상이면
+    `RuntimeError`를 전파한다(부분 출력은 이미 흘러간 뒤라 폐기 불가 — 상위가 ErrorEvent로 투영).
+    timeout 초과 시 프로세스를 죽이고 `subprocess.TimeoutExpired`를 전파한다.
+    """
+    import json
+    import time
+
+    args = [
+        "claude",
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--include-partial-messages",
+        "--verbose",
+    ]
+    if allowed_tools is not None:
+        args += ["--allowedTools", allowed_tools]
+
+    proc = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        cwd=cwd,
+    )
+    deadline = time.monotonic() + timeout
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            if time.monotonic() > deadline:
+                proc.kill()
+                proc.wait()
+                raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") != "stream_event":
+                continue
+            inner = event.get("event", {})
+            if inner.get("type") != "content_block_delta":
+                continue
+            delta = inner.get("delta", {})
+            if delta.get("type") != "text_delta":
+                continue
+            text = delta.get("text", "")
+            if text:
+                yield text
+    finally:
+        proc.stdout.close()
+
+    returncode = proc.wait()
+    if returncode != 0:
+        stderr = proc.stderr.read().strip() if proc.stderr is not None else ""
+        raise RuntimeError(f"claude -p exited with {returncode}: {stderr}")
+
+
 def _build_persona_prompt(question: str, card: AgentCard) -> str:
     """카드로 '담당자 페르소나'를 구성해 그 사람으로서 답하게 하는 프롬프트.
 
@@ -226,10 +345,14 @@ class ClaudeCodeRuntime:
         runner: ClaudeRunner = _run_claude_headless,
         okf_root: str | Path | None = None,
         git_gateway: "GitGateway | None" = None,
+        stream_runner: StreamingClaudeRunner = _stream_claude_headless,
     ) -> None:
         self._runner = runner
         self._okf_root = Path(okf_root) if okf_root is not None else None
         self._git_gateway = git_gateway
+        # 스트리밍 러너 seam(ADR 0031 결정 5) — `answer_stream`이 실 subprocess 스트리밍을
+        # 격리하려고 주입받는다. 기본값은 실 `claude -p` 스트리밍 헬퍼, 테스트는 가짜 러너 주입.
+        self._stream_runner = stream_runner
 
     def build_prompt(self, question: str, card: AgentCard) -> str:
         return _build_persona_prompt(question, card)
@@ -318,3 +441,51 @@ class ClaudeCodeRuntime:
                 mode="full",
             )
         return Answer(text=text, sources=sources, mode="full")
+
+    def answer_stream(
+        self, question: str, card: AgentCard, context: str | None = None
+    ) -> Iterator[AnswerChunk]:
+        """`claude -p`를 스트리밍으로 돌려 텍스트 델타를 `AnswerChunk`로 흘린다(ADR 0031 결정 1·5).
+
+        `answer`(블로킹)의 *형제 메서드* — 코어 포트 `answer`는 무변경이고, 이 메서드는
+        `StreamingRuntime` 능력을 더한다. `answer`와 *같은 프롬프트*(`build_prompt`)·*같은 cwd
+        접지*(git_gateway 스냅샷 또는 `bundle_dir`)를 재사용해 블로킹/스트리밍 답의 일관성을
+        보장한다. 차이는 완성 str을 모았다 반환하는 대신 `stream_runner`가 흘리는 텍스트 델타를
+        그대로 `AnswerChunk(text_delta=...)`로 yield한다는 것뿐이다.
+
+        완성 `Answer` 조립(델타 합·sources·mode "full")은 디스패처 책임이다(`StreamedAnswer`,
+        dispatch.py) — 여기선 *델타만* 순서대로 흘린다.
+
+        에러/timeout(ADR 0031 결정 5): subprocess 실패(`RuntimeError`)·`TimeoutExpired`는
+        `answer`가 중립 폴백 `Answer`로 감싸는 것과 *대칭으로 예외를 그대로 전파*한다 — 상위
+        `/ask/stream` 엔드포인트가 잡아 `ErrorEvent` SSE 프레임으로 투영한다(내부 예외·스택은
+        엔드포인트가 중립 안내로 가린다). 이미 흘러간 부분 출력은 버린다.
+        """
+        prompt = self.build_prompt(question, card)
+
+        # 커밋 스냅샷 모드(ADR 0018 결정 4): git_gateway 주입 시 HEAD 스냅샷을 추출한 디렉터리를
+        # cwd로 스트리밍. TemporaryDirectory는 스트림이 다 흐를 때까지 살아 있어야 하므로 generator
+        # 안에서 `with`로 감싼다(yield 동안 컨텍스트 유지).
+        if self._git_gateway is not None:
+            sha: str | None
+            try:
+                sha = self._git_gateway.head_sha(card.agent_id)
+            except (ValueError, KeyError):
+                sha = None
+            if sha is not None:
+                with tempfile.TemporaryDirectory() as workdir:
+                    snap_dir = self._git_gateway.extract_snapshot(
+                        sha, card.agent_id, Path(workdir)
+                    )
+                    for delta in self._stream_runner(prompt, cwd=str(snap_dir)):
+                        yield AnswerChunk(text_delta=delta)
+                return
+
+        # 기존 working tree 직독 경로(bundle_dir cwd 접지 또는 tempfile)
+        bundle = self.bundle_dir(card)
+        if bundle is not None:
+            stream = self._stream_runner(prompt, cwd=str(bundle))
+        else:
+            stream = self._stream_runner(prompt)
+        for delta in stream:
+            yield AnswerChunk(text_delta=delta)

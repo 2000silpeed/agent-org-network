@@ -516,3 +516,12 @@
   - **외부 결정·결정 대기(슬라이스별 귀속)**: **정합성 점검 2건(ADR 0030 Open Questions)** — ① `accept_published_index` bool 노출 진화 → **T11.7a**(결정 대기 아님·tdd-engineer가 더 작은 쪽 선택) · ② 공급자별 OAuth 위임 비대칭 → **T11.7c**(ADR 0027 결정 9 위임·첫 demo 공급자 transport 선택 대기). 그 밖 — `LlmAuthor` 추출 품질(T11.7c·eval·후속) · owner-로컬 repo 운영(T11.7d·초기화·GitHub 선택 백업·다중 카드 repo 구조) · 크로스머신 전파 지연·중복(T11.7e·실 인프라 관측 후) · reeval 훅 과검출 정밀화(T11.7a·`changed_paths`·후속) · `SemanticOsAuthor` 확장점 패키징(후속 가산·owner 확장 실제 요구 시) · 인제스트 형식 확장(후속 가산·PDF/위키).
   - **넘김(슬라이스별)**: T11.7a → **tdd-engineer**(결정론·spy). T11.7b → **tdd-engineer**(Fake 리스너 결정론) + 실 배선은 T11.7e(mcp-runtime-engineer). T11.7c → **mcp-runtime-engineer**(owner OAuth·게이트 밖) + 추출 품질 **골든셋 eval/수동**. T11.7d → **mcp-runtime-engineer**(게이트 밖 수동·owner 환경). T11.7e → **수동 시연**(mcp-runtime-engineer 실 배선 준비). 새 도메인 타입 필요 시(T11.7b reindex 소비자 shape·T11.7d 저작면 면 타입) → **domain-architect** 선경유. 후속 가산(`SemanticOsAuthor`·PDF/위키 인제스트) → **mcp-runtime-engineer**(후속).
   - **SSOT 갱신 지점(규칙 2·슬라이스 착지 시)**: T11.7a·T11.7b 착지(게이트 내 그린) → **TRD** `accept_published_index` propagator 진화·reindex 소비자 배선 반영·**tasks** 체크 + 게이트 수치 · **CONTEXT** "머신별 단일 발화·reeval 인덱스-수용 훅" 절은 이미 ADR 0030과 착지(구현 디테일만 보강). T11.7c~T11.7e 착지(게이트 밖) → **PRD** 저작 앞단 실 동작 기술(소비 경로 무변경 명시)·**TRD** `LlmAuthor`/owner 저작면/크로스머신 토폴로지·**CONTEXT** `LlmAuthor` 절 구현 착지 보강 · **ADR 0030** Open Questions 해소분(공급자 transport 선택·repo 운영 관측) 반영. 되돌리기 어려운 새 결정 발생 시(예: 실 transport 비대칭의 새 판정) → 신규 ADR(domain-architect).
+
+## 운영 면 프론트엔드 — Next.js 콘솔 (2026-06-30 · design-ontology-harness 디자인 시스템)
+
+PRD §4 페르소나 면(Ask·Author·Inbox·Console)을 **별 프론트엔드 `frontend/`(Next.js 14 + Tailwind v3 + 디자인 토큰)**로 실체화. 디자인 시스템은 **design-ontology-harness**가 우리 *실제 제품 spec*(질문 라우팅 4면·노출 불변식·중앙 토큰 0·StageDisposition)으로 재합성한 프리셋 `dashboard--corporate-trust`를 `install-preset --adapter nextjs-tailwind-shadcn`으로 설치(`frontend/design-system/` STYLE/DESIGN/IMPLEMENTATION_CONTRACT·CSS 토큰·Pretendard/Source Code Pro·dark 기본).
+
+- **4 route**: `/ask`(사용자 채팅·담당/신뢰/출처·노출 불변식) · `/author`(OKF 저작·staged 스텝퍼·승인/수정/거부·diff·중앙 토큰 0) · `/inbox`(처리함 3탭 다툼/백업/재평가) · `/console`(운영자 라이브 피드·워커 admission·audit).
+- **현 상태**: 정적 목 데이터(`frontend/lib/mock-data.ts`)·`pnpm build` 통과·반응형·컬러모드 패리티. **백엔드 와이어링(FastAPI `web.py` 실 API 연결)은 후속.**
+- **기존 `web/*.html`(walking skeleton·TRD §1)은 보존** — 운영 면만 `frontend/`로 승격, 사용자 MCP/API 경로는 무변경.
+- **디자인 시스템 출처**: `~/ai-projects/design-ontology-harness/projects/agent-org-network`(spec.md·brand_profile.json·build·preset — 별 레포·당신 자산). 첫 제네릭 합성(에이전트 그래프 대시보드) 폐기 후 우리 제품으로 재합성.

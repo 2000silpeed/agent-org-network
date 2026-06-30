@@ -1,0 +1,27 @@
+{
+  "id": "dashboard--corporate-trust",
+  "schema_version": "1.0.0",
+  "preset_api_version": "1.0.0",
+  "generated_by_harness_version": "0.2.0",
+  "preview_version": "1.0.0",
+  "adapter_compatibility": {
+    "nextjs-tailwind-shadcn": ">=0.1.0 <1.0.0",
+    "raw-css-variables": ">=0.1.0 <1.0.0",
+    "vite-tailwind": ">=0.1.0 <1.0.0"
+  },
+  "source_project": "agent-org-network",
+  "content_hash": "sha256:29d6e3cf3e6585d4308f39be642884f1a9a00bd21b2bdd984b0d508324dfe085",
+  "app_mode": "dashboard",
+  "brand_tone": "corporate-trust",
+  "color_modes": [
+    "light",
+    "dark"
+  ],
+  "default_color_mode": "dark",
+  "tags": [],
+  "locale_pairings": {},
+  "owner": "sungwoon",
+  "tier": "P1",
+  "generated_at": "2026-06-30T03:02:05Z",
+  "description": "Agent Org Network question-routing console design system"
+}

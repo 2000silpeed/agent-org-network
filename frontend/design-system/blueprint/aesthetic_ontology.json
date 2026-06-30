@@ -1,0 +1,1166 @@
+{
+  "schema_version": "aesthetic-evaluation-ontology/v1",
+  "dimensions": [
+    {
+      "id": "visual_harmony",
+      "label": "Visual harmony",
+      "weight": 0.24,
+      "description": "How coherently color, type, spacing, and composition work together.",
+      "metrics": [
+        "color_harmony",
+        "spacing_consistency",
+        "typography_balance",
+        "composition_order"
+      ]
+    },
+    {
+      "id": "clarity",
+      "label": "Clarity",
+      "weight": 0.2,
+      "description": "How quickly the intended hierarchy, action, and information structure can be read.",
+      "metrics": [
+        "hierarchy_clarity",
+        "contrast_legibility",
+        "content_density_control",
+        "task_focus"
+      ]
+    },
+    {
+      "id": "brand_fit",
+      "label": "Brand fit",
+      "weight": 0.18,
+      "description": "How well the candidate expresses the intended brand posture and avoids anti-keywords.",
+      "metrics": [
+        "keyword_alignment",
+        "tone_alignment",
+        "domain_fit",
+        "anti_keyword_avoidance"
+      ]
+    },
+    {
+      "id": "emotional_appeal",
+      "label": "Emotional appeal",
+      "weight": 0.14,
+      "description": "How desirable, confident, and affectively appropriate the surface feels.",
+      "metrics": [
+        "desirability",
+        "confidence_signal",
+        "warmth_or_energy"
+      ]
+    },
+    {
+      "id": "craft_quality",
+      "label": "Craft quality",
+      "weight": 0.14,
+      "description": "How polished and implementation-ready the candidate is across fit, tokens, and affordances.",
+      "metrics": [
+        "responsive_fit",
+        "token_binding",
+        "accessibility_baseline",
+        "interaction_affordance",
+        "asset_completeness"
+      ]
+    },
+    {
+      "id": "novelty",
+      "label": "Novelty",
+      "weight": 0.1,
+      "description": "How distinctive the design is without breaking its product and brand constraints.",
+      "metrics": [
+        "distinctiveness",
+        "reference_transformation",
+        "memorability"
+      ]
+    },
+    {
+      "id": "brand_semantic_fit",
+      "label": "Brand semantic fit",
+      "weight": 0.22,
+      "description": "Kansei-style alignment between brand/tone words and the perceived design impression.",
+      "metrics": [
+        "brand_keyword:agentic-93c83c59",
+        "brand_keyword:operational-7a65affc",
+        "brand_keyword:networked-87d078dc",
+        "brand_keyword:observable-51e3d9c9",
+        "brand_keyword:governed-f4746222",
+        "brand_keyword:precise-d53a4c62",
+        "brand_keyword:structured-52a6391f",
+        "brand_keyword:calm-2ec3d0c7",
+        "brand_tone:direct-24a1733c",
+        "brand_tone:operational-7a65affc",
+        "brand_tone:audit-friendly-24bfd914",
+        "brand_tone:low-drama-29d1680f",
+        "brand_tone:specific-660cffc2"
+      ],
+      "research_basis": [
+        "kansei",
+        "aesthemos"
+      ]
+    },
+    {
+      "id": "brand_boundary_fit",
+      "label": "Brand boundary fit",
+      "weight": 0.16,
+      "description": "How well the design avoids explicitly forbidden brand impressions and visual tropes.",
+      "metrics": [
+        "anti_keyword:decorative-graph-7656fdca",
+        "anti_keyword:marketing-heavy-401f18a1",
+        "anti_keyword:sci-fi-glow-3ad677df",
+        "anti_keyword:generic-card-wall-8b9c58da",
+        "anti_keyword:noisy-e570e577",
+        "anti_keyword:unexplained-automation-ada48e7d",
+        "anti_keyword:opaque-status-4da228d9",
+        "anti_keyword:exposed-routing-internals-to-end-use-c9b53f7b",
+        "avoid_pattern:decorative-network-graph-without-lab-ceb4c338",
+        "avoid_pattern:abstract-ai-glow-background-333dfd55",
+        "avoid_pattern:unexplained-autonomous-action-fa79e114",
+        "avoid_pattern:internal-routing-scores-exposed-to-t-43636c6b"
+      ],
+      "research_basis": [
+        "kansei"
+      ]
+    },
+    {
+      "id": "product_ontology_fit",
+      "label": "Product ontology fit",
+      "weight": 0.22,
+      "description": "How clearly product primitives and ontology-required signals appear in the design.",
+      "metrics": [
+        "product_primitive:answer-chat-thread-254be9c7",
+        "product_primitive:question-and-answer-bubble-e39db32c",
+        "product_primitive:trust-state-chip-32f49bc5",
+        "product_primitive:source-chip-98487a0c",
+        "product_primitive:owner-chip-21597298",
+        "product_primitive:staged-routing-progress-trace-5a18f06f",
+        "product_primitive:staged-pipeline-stepper-c8058501",
+        "product_primitive:concept-draft-card-4e7b427f",
+        "product_primitive:approve-edit-reject-disposition-cont-de805307",
+        "product_primitive:before-after-diff-card-3d2a6bff",
+        "must_include:answer-attribution-owner-trust-state-93c28ff9",
+        "must_include:review-queue-or-inbox-with-clear-per-5eb673a6",
+        "must_include:live-event-feed-or-audit-table-with-5c85138f"
+      ],
+      "research_basis": [
+        "beauvis",
+        "kansei"
+      ]
+    },
+    {
+      "id": "audience_context_fit",
+      "label": "Audience context fit",
+      "weight": 0.12,
+      "description": "How well the design serves declared users, platforms, and accessibility floors.",
+      "metrics": [
+        "audience_need:question-asker-end-user-054d63ab",
+        "audience_need:knowledge-owner-accountable-for-a-do-afbeaa2e",
+        "audience_need:operations-monitor-be377ab8",
+        "audience_need:governance-and-audit-reviewer-bd3e6da6",
+        "audience_need:team-lead-35b08c0e",
+        "accessibility_target:wcag-2-2-aa-41a998cd",
+        "accessibility_target:full-keyboard-operation-5598c831",
+        "accessibility_target:non-color-status-encoding-3dfaf248"
+      ],
+      "research_basis": [
+        "visawi",
+        "aesthemos"
+      ]
+    }
+  ],
+  "metrics": {
+    "color_harmony": {
+      "label": "Color harmony",
+      "improvement": "Tighten the palette around one primary accent, one neutral surface ladder, and explicit semantic roles.",
+      "expected_lift": 0.08
+    },
+    "spacing_consistency": {
+      "label": "Spacing consistency",
+      "improvement": "Normalize page rhythm with shared spacing steps for section, cluster, and control gaps.",
+      "expected_lift": 0.07
+    },
+    "typography_balance": {
+      "label": "Typography balance",
+      "improvement": "Rebalance type hierarchy so headings, body, captions, and controls use distinct but restrained roles.",
+      "expected_lift": 0.07
+    },
+    "composition_order": {
+      "label": "Composition order",
+      "improvement": "Strengthen alignment, focal sequence, and proportional grouping before adding more decoration.",
+      "expected_lift": 0.08
+    },
+    "hierarchy_clarity": {
+      "label": "Hierarchy clarity",
+      "improvement": "Make the primary state, primary action, and next-best secondary action visible in the first scan.",
+      "expected_lift": 0.09
+    },
+    "contrast_legibility": {
+      "label": "Contrast and legibility",
+      "improvement": "Raise text/background and control/border contrast while preserving the selected token roles.",
+      "expected_lift": 0.08
+    },
+    "content_density_control": {
+      "label": "Content density control",
+      "improvement": "Reduce competing modules or group dense content into scannable rows, tables, rails, or panels.",
+      "expected_lift": 0.07
+    },
+    "task_focus": {
+      "label": "Task focus",
+      "improvement": "Move decorative or pitch-like content below the operational surface that supports the user's main task.",
+      "expected_lift": 0.08
+    },
+    "keyword_alignment": {
+      "label": "Keyword alignment",
+      "improvement": "Map the strongest brand keywords to visible choices in layout, tone, density, and component emphasis.",
+      "expected_lift": 0.08
+    },
+    "tone_alignment": {
+      "label": "Tone alignment",
+      "improvement": "Adjust copy weight, control styling, and visual temperature to match the intended voice.",
+      "expected_lift": 0.06
+    },
+    "domain_fit": {
+      "label": "Domain fit",
+      "improvement": "Add domain-native structures such as tables, maps, media, timelines, inspectors, or product objects where relevant.",
+      "expected_lift": 0.08
+    },
+    "anti_keyword_avoidance": {
+      "label": "Anti-keyword avoidance",
+      "improvement": "Remove visual tropes that match the brand profile's anti-keywords before polishing details.",
+      "expected_lift": 0.06
+    },
+    "desirability": {
+      "label": "Desirability",
+      "improvement": "Give the primary surface a more intentional visual reward: stronger imagery, tactile controls, or clearer payoff.",
+      "expected_lift": 0.07
+    },
+    "confidence_signal": {
+      "label": "Confidence signal",
+      "improvement": "Add evidence, provenance, precision, or stable UI states that make the surface feel trustworthy.",
+      "expected_lift": 0.07
+    },
+    "warmth_or_energy": {
+      "label": "Warmth or energy",
+      "improvement": "Tune motion, image choice, accent placement, or microcopy energy to the target audience.",
+      "expected_lift": 0.06
+    },
+    "responsive_fit": {
+      "label": "Responsive fit",
+      "improvement": "Verify mobile and desktop fit, then fix overflow, clipped labels, and unstable control sizing.",
+      "expected_lift": 0.08
+    },
+    "token_binding": {
+      "label": "Token binding",
+      "improvement": "Replace local visual constants with design-system tokens and keep semantic roles consistent.",
+      "expected_lift": 0.06
+    },
+    "accessibility_baseline": {
+      "label": "Accessibility baseline",
+      "improvement": "Check contrast, focus states, labels, and target sizes as part of visual polish, not after it.",
+      "expected_lift": 0.07
+    },
+    "interaction_affordance": {
+      "label": "Interaction affordance",
+      "improvement": "Make controls, filters, state chips, and navigation visually legible with icons, state, and hit-area clarity.",
+      "expected_lift": 0.07
+    },
+    "asset_completeness": {
+      "label": "Asset completeness",
+      "improvement": "Use concrete product, place, object, identity, or content assets where the domain expects visual substance.",
+      "expected_lift": 0.08
+    },
+    "distinctiveness": {
+      "label": "Distinctiveness",
+      "improvement": "Introduce one memorable composition or interaction pattern while keeping the rest of the system restrained.",
+      "expected_lift": 0.06
+    },
+    "reference_transformation": {
+      "label": "Reference transformation",
+      "improvement": "Absorb reference morphology without copying palette, copy, IA, or protected asset choices.",
+      "expected_lift": 0.06
+    },
+    "memorability": {
+      "label": "Memorability",
+      "improvement": "Create a recognizable signature in the first viewport through layout, identity asset, or product-native visual.",
+      "expected_lift": 0.06
+    },
+    "brand_keyword:agentic-93c83c59": {
+      "label": "Expresses brand keyword: agentic",
+      "improvement": "Make 'agentic' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.brand_keywords",
+      "target_value": "agentic"
+    },
+    "brand_keyword:operational-7a65affc": {
+      "label": "Expresses brand keyword: operational",
+      "improvement": "Make 'operational' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.brand_keywords",
+      "target_value": "operational"
+    },
+    "brand_keyword:networked-87d078dc": {
+      "label": "Expresses brand keyword: networked",
+      "improvement": "Make 'networked' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.brand_keywords",
+      "target_value": "networked"
+    },
+    "brand_keyword:observable-51e3d9c9": {
+      "label": "Expresses brand keyword: observable",
+      "improvement": "Make 'observable' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.brand_keywords",
+      "target_value": "observable"
+    },
+    "brand_keyword:governed-f4746222": {
+      "label": "Expresses brand keyword: governed",
+      "improvement": "Make 'governed' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.brand_keywords",
+      "target_value": "governed"
+    },
+    "brand_keyword:precise-d53a4c62": {
+      "label": "Expresses brand keyword: precise",
+      "improvement": "Make 'precise' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.brand_keywords",
+      "target_value": "precise"
+    },
+    "brand_keyword:structured-52a6391f": {
+      "label": "Expresses brand keyword: structured",
+      "improvement": "Make 'structured' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.brand_keywords",
+      "target_value": "structured"
+    },
+    "brand_keyword:calm-2ec3d0c7": {
+      "label": "Expresses brand keyword: calm",
+      "improvement": "Make 'calm' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.brand_keywords",
+      "target_value": "calm"
+    },
+    "brand_tone:direct-24a1733c": {
+      "label": "Expresses tone of voice: direct",
+      "improvement": "Tune hierarchy, copy weight, and interaction tone so the surface feels 'direct'.",
+      "expected_lift": 0.06,
+      "source": "brand_profile.tone_of_voice",
+      "target_value": "direct"
+    },
+    "brand_tone:operational-7a65affc": {
+      "label": "Expresses tone of voice: operational",
+      "improvement": "Tune hierarchy, copy weight, and interaction tone so the surface feels 'operational'.",
+      "expected_lift": 0.06,
+      "source": "brand_profile.tone_of_voice",
+      "target_value": "operational"
+    },
+    "brand_tone:audit-friendly-24bfd914": {
+      "label": "Expresses tone of voice: audit-friendly",
+      "improvement": "Tune hierarchy, copy weight, and interaction tone so the surface feels 'audit-friendly'.",
+      "expected_lift": 0.06,
+      "source": "brand_profile.tone_of_voice",
+      "target_value": "audit-friendly"
+    },
+    "brand_tone:low-drama-29d1680f": {
+      "label": "Expresses tone of voice: low-drama",
+      "improvement": "Tune hierarchy, copy weight, and interaction tone so the surface feels 'low-drama'.",
+      "expected_lift": 0.06,
+      "source": "brand_profile.tone_of_voice",
+      "target_value": "low-drama"
+    },
+    "brand_tone:specific-660cffc2": {
+      "label": "Expresses tone of voice: specific",
+      "improvement": "Tune hierarchy, copy weight, and interaction tone so the surface feels 'specific'.",
+      "expected_lift": 0.06,
+      "source": "brand_profile.tone_of_voice",
+      "target_value": "specific"
+    },
+    "anti_keyword:decorative-graph-7656fdca": {
+      "label": "Avoids anti-keyword: decorative graph",
+      "improvement": "Remove cues that make the product read as 'decorative graph'.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.anti_keywords",
+      "target_value": "decorative graph"
+    },
+    "anti_keyword:marketing-heavy-401f18a1": {
+      "label": "Avoids anti-keyword: marketing-heavy",
+      "improvement": "Remove cues that make the product read as 'marketing-heavy'.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.anti_keywords",
+      "target_value": "marketing-heavy"
+    },
+    "anti_keyword:sci-fi-glow-3ad677df": {
+      "label": "Avoids anti-keyword: sci-fi glow",
+      "improvement": "Remove cues that make the product read as 'sci-fi glow'.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.anti_keywords",
+      "target_value": "sci-fi glow"
+    },
+    "anti_keyword:generic-card-wall-8b9c58da": {
+      "label": "Avoids anti-keyword: generic card wall",
+      "improvement": "Remove cues that make the product read as 'generic card wall'.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.anti_keywords",
+      "target_value": "generic card wall"
+    },
+    "anti_keyword:noisy-e570e577": {
+      "label": "Avoids anti-keyword: noisy",
+      "improvement": "Remove cues that make the product read as 'noisy'.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.anti_keywords",
+      "target_value": "noisy"
+    },
+    "anti_keyword:unexplained-automation-ada48e7d": {
+      "label": "Avoids anti-keyword: unexplained automation",
+      "improvement": "Remove cues that make the product read as 'unexplained automation'.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.anti_keywords",
+      "target_value": "unexplained automation"
+    },
+    "anti_keyword:opaque-status-4da228d9": {
+      "label": "Avoids anti-keyword: opaque status",
+      "improvement": "Remove cues that make the product read as 'opaque status'.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.anti_keywords",
+      "target_value": "opaque status"
+    },
+    "anti_keyword:exposed-routing-internals-to-end-use-c9b53f7b": {
+      "label": "Avoids anti-keyword: exposed routing internals to end users",
+      "improvement": "Remove cues that make the product read as 'exposed routing internals to end users'.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.anti_keywords",
+      "target_value": "exposed routing internals to end users"
+    },
+    "avoid_pattern:decorative-network-graph-without-lab-ceb4c338": {
+      "label": "Avoids visual pattern: decorative network graph without labels",
+      "improvement": "Replace 'decorative network graph without labels' with brand-owned morphology and token-governed visual choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.visual_reference.avoid_patterns",
+      "target_value": "decorative network graph without labels"
+    },
+    "avoid_pattern:abstract-ai-glow-background-333dfd55": {
+      "label": "Avoids visual pattern: abstract AI glow background",
+      "improvement": "Replace 'abstract AI glow background' with brand-owned morphology and token-governed visual choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.visual_reference.avoid_patterns",
+      "target_value": "abstract AI glow background"
+    },
+    "avoid_pattern:unexplained-autonomous-action-fa79e114": {
+      "label": "Avoids visual pattern: unexplained autonomous action",
+      "improvement": "Replace 'unexplained autonomous action' with brand-owned morphology and token-governed visual choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.visual_reference.avoid_patterns",
+      "target_value": "unexplained autonomous action"
+    },
+    "avoid_pattern:internal-routing-scores-exposed-to-t-43636c6b": {
+      "label": "Avoids visual pattern: internal routing scores exposed to the end user",
+      "improvement": "Replace 'internal routing scores exposed to the end user' with brand-owned morphology and token-governed visual choices.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.visual_reference.avoid_patterns",
+      "target_value": "internal routing scores exposed to the end user"
+    },
+    "product_primitive:answer-chat-thread-254be9c7": {
+      "label": "Embodies product primitive: answer chat thread",
+      "improvement": "Represent 'answer chat thread' as a first-class product surface, not as generic decoration.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.product_primitives",
+      "target_value": "answer chat thread"
+    },
+    "product_primitive:question-and-answer-bubble-e39db32c": {
+      "label": "Embodies product primitive: question and answer bubble",
+      "improvement": "Represent 'question and answer bubble' as a first-class product surface, not as generic decoration.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.product_primitives",
+      "target_value": "question and answer bubble"
+    },
+    "product_primitive:trust-state-chip-32f49bc5": {
+      "label": "Embodies product primitive: trust state chip",
+      "improvement": "Represent 'trust state chip' as a first-class product surface, not as generic decoration.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.product_primitives",
+      "target_value": "trust state chip"
+    },
+    "product_primitive:source-chip-98487a0c": {
+      "label": "Embodies product primitive: source chip",
+      "improvement": "Represent 'source chip' as a first-class product surface, not as generic decoration.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.product_primitives",
+      "target_value": "source chip"
+    },
+    "product_primitive:owner-chip-21597298": {
+      "label": "Embodies product primitive: owner chip",
+      "improvement": "Represent 'owner chip' as a first-class product surface, not as generic decoration.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.product_primitives",
+      "target_value": "owner chip"
+    },
+    "product_primitive:staged-routing-progress-trace-5a18f06f": {
+      "label": "Embodies product primitive: staged routing progress trace",
+      "improvement": "Represent 'staged routing progress trace' as a first-class product surface, not as generic decoration.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.product_primitives",
+      "target_value": "staged routing progress trace"
+    },
+    "product_primitive:staged-pipeline-stepper-c8058501": {
+      "label": "Embodies product primitive: staged pipeline stepper",
+      "improvement": "Represent 'staged pipeline stepper' as a first-class product surface, not as generic decoration.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.product_primitives",
+      "target_value": "staged pipeline stepper"
+    },
+    "product_primitive:concept-draft-card-4e7b427f": {
+      "label": "Embodies product primitive: concept draft card",
+      "improvement": "Represent 'concept draft card' as a first-class product surface, not as generic decoration.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.product_primitives",
+      "target_value": "concept draft card"
+    },
+    "product_primitive:approve-edit-reject-disposition-cont-de805307": {
+      "label": "Embodies product primitive: approve edit reject disposition control",
+      "improvement": "Represent 'approve edit reject disposition control' as a first-class product surface, not as generic decoration.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.product_primitives",
+      "target_value": "approve edit reject disposition control"
+    },
+    "product_primitive:before-after-diff-card-3d2a6bff": {
+      "label": "Embodies product primitive: before-after diff card",
+      "improvement": "Represent 'before-after diff card' as a first-class product surface, not as generic decoration.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.product_primitives",
+      "target_value": "before-after diff card"
+    },
+    "must_include:answer-attribution-owner-trust-state-93c28ff9": {
+      "label": "Includes required visual/system signal: answer attribution: owner, trust state, and source visible near the answer",
+      "improvement": "Make 'answer attribution: owner, trust state, and source visible near the answer' visible and scannable in the main workflow.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.visual_reference.must_include",
+      "target_value": "answer attribution: owner, trust state, and source visible near the answer"
+    },
+    "must_include:review-queue-or-inbox-with-clear-per-5eb673a6": {
+      "label": "Includes required visual/system signal: review queue or inbox with clear per-item disposition controls",
+      "improvement": "Make 'review queue or inbox with clear per-item disposition controls' visible and scannable in the main workflow.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.visual_reference.must_include",
+      "target_value": "review queue or inbox with clear per-item disposition controls"
+    },
+    "must_include:live-event-feed-or-audit-table-with-5c85138f": {
+      "label": "Includes required visual/system signal: live event feed or audit table with legible status tags",
+      "improvement": "Make 'live event feed or audit table with legible status tags' visible and scannable in the main workflow.",
+      "expected_lift": 0.08,
+      "source": "brand_profile.visual_reference.must_include",
+      "target_value": "live event feed or audit table with legible status tags"
+    },
+    "audience_need:question-asker-end-user-054d63ab": {
+      "label": "Fits audience context: question asker (end user)",
+      "improvement": "Adjust density, language, workflow order, and controls for 'question asker (end user)'.",
+      "expected_lift": 0.06,
+      "source": "brand_profile.audiences",
+      "target_value": "question asker (end user)"
+    },
+    "audience_need:knowledge-owner-accountable-for-a-do-afbeaa2e": {
+      "label": "Fits audience context: knowledge owner accountable for a domain",
+      "improvement": "Adjust density, language, workflow order, and controls for 'knowledge owner accountable for a domain'.",
+      "expected_lift": 0.06,
+      "source": "brand_profile.audiences",
+      "target_value": "knowledge owner accountable for a domain"
+    },
+    "audience_need:operations-monitor-be377ab8": {
+      "label": "Fits audience context: operations monitor",
+      "improvement": "Adjust density, language, workflow order, and controls for 'operations monitor'.",
+      "expected_lift": 0.06,
+      "source": "brand_profile.audiences",
+      "target_value": "operations monitor"
+    },
+    "audience_need:governance-and-audit-reviewer-bd3e6da6": {
+      "label": "Fits audience context: governance and audit reviewer",
+      "improvement": "Adjust density, language, workflow order, and controls for 'governance and audit reviewer'.",
+      "expected_lift": 0.06,
+      "source": "brand_profile.audiences",
+      "target_value": "governance and audit reviewer"
+    },
+    "audience_need:team-lead-35b08c0e": {
+      "label": "Fits audience context: team lead",
+      "improvement": "Adjust density, language, workflow order, and controls for 'team lead'.",
+      "expected_lift": 0.06,
+      "source": "brand_profile.audiences",
+      "target_value": "team lead"
+    },
+    "accessibility_target:wcag-2-2-aa-41a998cd": {
+      "label": "Supports accessibility target: WCAG 2.2 AA",
+      "improvement": "Verify 'WCAG 2.2 AA' with contrast, sizing, focus, motion, and alternate-view checks.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.accessibility_targets",
+      "target_value": "WCAG 2.2 AA"
+    },
+    "accessibility_target:full-keyboard-operation-5598c831": {
+      "label": "Supports accessibility target: full keyboard operation",
+      "improvement": "Verify 'full keyboard operation' with contrast, sizing, focus, motion, and alternate-view checks.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.accessibility_targets",
+      "target_value": "full keyboard operation"
+    },
+    "accessibility_target:non-color-status-encoding-3dfaf248": {
+      "label": "Supports accessibility target: non-color status encoding",
+      "improvement": "Verify 'non-color status encoding' with contrast, sizing, focus, motion, and alternate-view checks.",
+      "expected_lift": 0.07,
+      "source": "brand_profile.accessibility_targets",
+      "target_value": "non-color status encoding"
+    }
+  },
+  "relations": [
+    {
+      "source": "DesignCandidate",
+      "relation": "evaluated_by",
+      "target": "AestheticDimension"
+    },
+    {
+      "source": "AestheticDimension",
+      "relation": "measured_by",
+      "target": "AestheticMetric"
+    },
+    {
+      "source": "AestheticMetric",
+      "relation": "improved_by",
+      "target": "ImprovementAction"
+    },
+    {
+      "source": "AestheticEvaluation",
+      "relation": "gates",
+      "target": "Execution"
+    }
+  ],
+  "context": {
+    "brand_name": "Agent Org Network",
+    "system_name": "Agent Org Network Design System",
+    "product_summary": "A question-routing organization layer: a person asks in plain language, the system finds the accountable human owner, that owner answers from their own knowledge, and every answer carries its owner, trust state, and sources — with internal routing hidden from the asker.",
+    "audiences": [
+      "question asker (end user)",
+      "knowledge owner accountable for a domain",
+      "operations monitor",
+      "governance and audit reviewer",
+      "team lead"
+    ],
+    "brand_keywords": [
+      "agentic",
+      "operational",
+      "networked",
+      "observable",
+      "governed",
+      "precise",
+      "structured",
+      "calm",
+      "trustworthy"
+    ],
+    "anti_keywords": [
+      "decorative graph",
+      "marketing-heavy",
+      "sci-fi glow",
+      "generic card wall",
+      "noisy",
+      "unexplained automation",
+      "opaque status",
+      "exposed routing internals to end users",
+      "knowledge bodies leaving the owner environment"
+    ],
+    "tone_of_voice": [
+      "direct",
+      "operational",
+      "audit-friendly",
+      "low-drama",
+      "specific"
+    ],
+    "product_primitives": [
+      "answer chat thread",
+      "question and answer bubble",
+      "trust state chip",
+      "source chip",
+      "owner chip",
+      "staged routing progress trace",
+      "staged pipeline stepper",
+      "concept draft card",
+      "approve edit reject disposition control",
+      "before-after diff card",
+      "owner inbox tabs",
+      "contested case card",
+      "candidate coverage list",
+      "on-demand document pull",
+      "assign owner control",
+      "backup answer review card",
+      "re-review queue row",
+      "metric summary card",
+      "live event feed",
+      "routing outcome status tag",
+      "worker admission panel",
+      "audit log table",
+      "light org reference map",
+      "data tables",
+      "search and filter",
+      "workspace navigation",
+      "modal and dialog",
+      "notifications",
+      "onboarding and stepper",
+      "forms"
+    ]
+  },
+  "brand_aesthetic_contract": {
+    "schema_version": "brand-aesthetic-contract/v1",
+    "brand_name": "Agent Org Network",
+    "system_name": "Agent Org Network Design System",
+    "research_basis": [
+      {
+        "id": "visawi",
+        "label": "VisAWI",
+        "construct": "perceived website visual aesthetics",
+        "operational_use": "Map simplicity, diversity, colorfulness, and craftsmanship into visual system coherence metrics.",
+        "source_url": "https://www.sciencedirect.com/science/article/pii/S1071581910000777"
+      },
+      {
+        "id": "apid",
+        "label": "APiD",
+        "construct": "aesthetic pleasure in designed artifacts",
+        "operational_use": "Keep a direct pleasure/desirability layer instead of only formal pixel metrics.",
+        "source_url": "https://opus.lib.uts.edu.au/handle/10453/81276"
+      },
+      {
+        "id": "beauvis",
+        "label": "BeauVis",
+        "construct": "aesthetic pleasure of visual representations",
+        "operational_use": "Treat scores as comparative, context-bound judgments rather than universal beauty values.",
+        "source_url": "https://arxiv.org/abs/2207.14147"
+      },
+      {
+        "id": "aesthemos",
+        "label": "AESTHEMOS",
+        "construct": "aesthetic emotions",
+        "operational_use": "Translate brand tone and target affect into measurable emotional-response proxies.",
+        "source_url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0178899"
+      },
+      {
+        "id": "kansei",
+        "label": "Kansei / semantic differential",
+        "construct": "design element to impression mapping",
+        "operational_use": "Use brand keywords and anti-keywords as semantic impression targets and boundaries.",
+        "source_url": "https://www.mdpi.com/2073-8994/12/8/1340"
+      }
+    ],
+    "dimensions": [
+      {
+        "id": "brand_semantic_fit",
+        "label": "Brand semantic fit",
+        "weight": 0.22,
+        "description": "Kansei-style alignment between brand/tone words and the perceived design impression.",
+        "metrics": [
+          "brand_keyword:agentic-93c83c59",
+          "brand_keyword:operational-7a65affc",
+          "brand_keyword:networked-87d078dc",
+          "brand_keyword:observable-51e3d9c9",
+          "brand_keyword:governed-f4746222",
+          "brand_keyword:precise-d53a4c62",
+          "brand_keyword:structured-52a6391f",
+          "brand_keyword:calm-2ec3d0c7",
+          "brand_tone:direct-24a1733c",
+          "brand_tone:operational-7a65affc",
+          "brand_tone:audit-friendly-24bfd914",
+          "brand_tone:low-drama-29d1680f",
+          "brand_tone:specific-660cffc2"
+        ],
+        "research_basis": [
+          "kansei",
+          "aesthemos"
+        ]
+      },
+      {
+        "id": "brand_boundary_fit",
+        "label": "Brand boundary fit",
+        "weight": 0.16,
+        "description": "How well the design avoids explicitly forbidden brand impressions and visual tropes.",
+        "metrics": [
+          "anti_keyword:decorative-graph-7656fdca",
+          "anti_keyword:marketing-heavy-401f18a1",
+          "anti_keyword:sci-fi-glow-3ad677df",
+          "anti_keyword:generic-card-wall-8b9c58da",
+          "anti_keyword:noisy-e570e577",
+          "anti_keyword:unexplained-automation-ada48e7d",
+          "anti_keyword:opaque-status-4da228d9",
+          "anti_keyword:exposed-routing-internals-to-end-use-c9b53f7b",
+          "avoid_pattern:decorative-network-graph-without-lab-ceb4c338",
+          "avoid_pattern:abstract-ai-glow-background-333dfd55",
+          "avoid_pattern:unexplained-autonomous-action-fa79e114",
+          "avoid_pattern:internal-routing-scores-exposed-to-t-43636c6b"
+        ],
+        "research_basis": [
+          "kansei"
+        ]
+      },
+      {
+        "id": "product_ontology_fit",
+        "label": "Product ontology fit",
+        "weight": 0.22,
+        "description": "How clearly product primitives and ontology-required signals appear in the design.",
+        "metrics": [
+          "product_primitive:answer-chat-thread-254be9c7",
+          "product_primitive:question-and-answer-bubble-e39db32c",
+          "product_primitive:trust-state-chip-32f49bc5",
+          "product_primitive:source-chip-98487a0c",
+          "product_primitive:owner-chip-21597298",
+          "product_primitive:staged-routing-progress-trace-5a18f06f",
+          "product_primitive:staged-pipeline-stepper-c8058501",
+          "product_primitive:concept-draft-card-4e7b427f",
+          "product_primitive:approve-edit-reject-disposition-cont-de805307",
+          "product_primitive:before-after-diff-card-3d2a6bff",
+          "must_include:answer-attribution-owner-trust-state-93c28ff9",
+          "must_include:review-queue-or-inbox-with-clear-per-5eb673a6",
+          "must_include:live-event-feed-or-audit-table-with-5c85138f"
+        ],
+        "research_basis": [
+          "beauvis",
+          "kansei"
+        ]
+      },
+      {
+        "id": "audience_context_fit",
+        "label": "Audience context fit",
+        "weight": 0.12,
+        "description": "How well the design serves declared users, platforms, and accessibility floors.",
+        "metrics": [
+          "audience_need:question-asker-end-user-054d63ab",
+          "audience_need:knowledge-owner-accountable-for-a-do-afbeaa2e",
+          "audience_need:operations-monitor-be377ab8",
+          "audience_need:governance-and-audit-reviewer-bd3e6da6",
+          "audience_need:team-lead-35b08c0e",
+          "accessibility_target:wcag-2-2-aa-41a998cd",
+          "accessibility_target:full-keyboard-operation-5598c831",
+          "accessibility_target:non-color-status-encoding-3dfaf248"
+        ],
+        "research_basis": [
+          "visawi",
+          "aesthemos"
+        ]
+      }
+    ],
+    "metrics": {
+      "brand_keyword:agentic-93c83c59": {
+        "label": "Expresses brand keyword: agentic",
+        "improvement": "Make 'agentic' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.brand_keywords",
+        "target_value": "agentic"
+      },
+      "brand_keyword:operational-7a65affc": {
+        "label": "Expresses brand keyword: operational",
+        "improvement": "Make 'operational' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.brand_keywords",
+        "target_value": "operational"
+      },
+      "brand_keyword:networked-87d078dc": {
+        "label": "Expresses brand keyword: networked",
+        "improvement": "Make 'networked' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.brand_keywords",
+        "target_value": "networked"
+      },
+      "brand_keyword:observable-51e3d9c9": {
+        "label": "Expresses brand keyword: observable",
+        "improvement": "Make 'observable' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.brand_keywords",
+        "target_value": "observable"
+      },
+      "brand_keyword:governed-f4746222": {
+        "label": "Expresses brand keyword: governed",
+        "improvement": "Make 'governed' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.brand_keywords",
+        "target_value": "governed"
+      },
+      "brand_keyword:precise-d53a4c62": {
+        "label": "Expresses brand keyword: precise",
+        "improvement": "Make 'precise' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.brand_keywords",
+        "target_value": "precise"
+      },
+      "brand_keyword:structured-52a6391f": {
+        "label": "Expresses brand keyword: structured",
+        "improvement": "Make 'structured' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.brand_keywords",
+        "target_value": "structured"
+      },
+      "brand_keyword:calm-2ec3d0c7": {
+        "label": "Expresses brand keyword: calm",
+        "improvement": "Make 'calm' visible through palette, density, component rhythm, imagery, and microcopy choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.brand_keywords",
+        "target_value": "calm"
+      },
+      "brand_tone:direct-24a1733c": {
+        "label": "Expresses tone of voice: direct",
+        "improvement": "Tune hierarchy, copy weight, and interaction tone so the surface feels 'direct'.",
+        "expected_lift": 0.06,
+        "source": "brand_profile.tone_of_voice",
+        "target_value": "direct"
+      },
+      "brand_tone:operational-7a65affc": {
+        "label": "Expresses tone of voice: operational",
+        "improvement": "Tune hierarchy, copy weight, and interaction tone so the surface feels 'operational'.",
+        "expected_lift": 0.06,
+        "source": "brand_profile.tone_of_voice",
+        "target_value": "operational"
+      },
+      "brand_tone:audit-friendly-24bfd914": {
+        "label": "Expresses tone of voice: audit-friendly",
+        "improvement": "Tune hierarchy, copy weight, and interaction tone so the surface feels 'audit-friendly'.",
+        "expected_lift": 0.06,
+        "source": "brand_profile.tone_of_voice",
+        "target_value": "audit-friendly"
+      },
+      "brand_tone:low-drama-29d1680f": {
+        "label": "Expresses tone of voice: low-drama",
+        "improvement": "Tune hierarchy, copy weight, and interaction tone so the surface feels 'low-drama'.",
+        "expected_lift": 0.06,
+        "source": "brand_profile.tone_of_voice",
+        "target_value": "low-drama"
+      },
+      "brand_tone:specific-660cffc2": {
+        "label": "Expresses tone of voice: specific",
+        "improvement": "Tune hierarchy, copy weight, and interaction tone so the surface feels 'specific'.",
+        "expected_lift": 0.06,
+        "source": "brand_profile.tone_of_voice",
+        "target_value": "specific"
+      },
+      "anti_keyword:decorative-graph-7656fdca": {
+        "label": "Avoids anti-keyword: decorative graph",
+        "improvement": "Remove cues that make the product read as 'decorative graph'.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.anti_keywords",
+        "target_value": "decorative graph"
+      },
+      "anti_keyword:marketing-heavy-401f18a1": {
+        "label": "Avoids anti-keyword: marketing-heavy",
+        "improvement": "Remove cues that make the product read as 'marketing-heavy'.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.anti_keywords",
+        "target_value": "marketing-heavy"
+      },
+      "anti_keyword:sci-fi-glow-3ad677df": {
+        "label": "Avoids anti-keyword: sci-fi glow",
+        "improvement": "Remove cues that make the product read as 'sci-fi glow'.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.anti_keywords",
+        "target_value": "sci-fi glow"
+      },
+      "anti_keyword:generic-card-wall-8b9c58da": {
+        "label": "Avoids anti-keyword: generic card wall",
+        "improvement": "Remove cues that make the product read as 'generic card wall'.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.anti_keywords",
+        "target_value": "generic card wall"
+      },
+      "anti_keyword:noisy-e570e577": {
+        "label": "Avoids anti-keyword: noisy",
+        "improvement": "Remove cues that make the product read as 'noisy'.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.anti_keywords",
+        "target_value": "noisy"
+      },
+      "anti_keyword:unexplained-automation-ada48e7d": {
+        "label": "Avoids anti-keyword: unexplained automation",
+        "improvement": "Remove cues that make the product read as 'unexplained automation'.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.anti_keywords",
+        "target_value": "unexplained automation"
+      },
+      "anti_keyword:opaque-status-4da228d9": {
+        "label": "Avoids anti-keyword: opaque status",
+        "improvement": "Remove cues that make the product read as 'opaque status'.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.anti_keywords",
+        "target_value": "opaque status"
+      },
+      "anti_keyword:exposed-routing-internals-to-end-use-c9b53f7b": {
+        "label": "Avoids anti-keyword: exposed routing internals to end users",
+        "improvement": "Remove cues that make the product read as 'exposed routing internals to end users'.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.anti_keywords",
+        "target_value": "exposed routing internals to end users"
+      },
+      "avoid_pattern:decorative-network-graph-without-lab-ceb4c338": {
+        "label": "Avoids visual pattern: decorative network graph without labels",
+        "improvement": "Replace 'decorative network graph without labels' with brand-owned morphology and token-governed visual choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.visual_reference.avoid_patterns",
+        "target_value": "decorative network graph without labels"
+      },
+      "avoid_pattern:abstract-ai-glow-background-333dfd55": {
+        "label": "Avoids visual pattern: abstract AI glow background",
+        "improvement": "Replace 'abstract AI glow background' with brand-owned morphology and token-governed visual choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.visual_reference.avoid_patterns",
+        "target_value": "abstract AI glow background"
+      },
+      "avoid_pattern:unexplained-autonomous-action-fa79e114": {
+        "label": "Avoids visual pattern: unexplained autonomous action",
+        "improvement": "Replace 'unexplained autonomous action' with brand-owned morphology and token-governed visual choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.visual_reference.avoid_patterns",
+        "target_value": "unexplained autonomous action"
+      },
+      "avoid_pattern:internal-routing-scores-exposed-to-t-43636c6b": {
+        "label": "Avoids visual pattern: internal routing scores exposed to the end user",
+        "improvement": "Replace 'internal routing scores exposed to the end user' with brand-owned morphology and token-governed visual choices.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.visual_reference.avoid_patterns",
+        "target_value": "internal routing scores exposed to the end user"
+      },
+      "product_primitive:answer-chat-thread-254be9c7": {
+        "label": "Embodies product primitive: answer chat thread",
+        "improvement": "Represent 'answer chat thread' as a first-class product surface, not as generic decoration.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.product_primitives",
+        "target_value": "answer chat thread"
+      },
+      "product_primitive:question-and-answer-bubble-e39db32c": {
+        "label": "Embodies product primitive: question and answer bubble",
+        "improvement": "Represent 'question and answer bubble' as a first-class product surface, not as generic decoration.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.product_primitives",
+        "target_value": "question and answer bubble"
+      },
+      "product_primitive:trust-state-chip-32f49bc5": {
+        "label": "Embodies product primitive: trust state chip",
+        "improvement": "Represent 'trust state chip' as a first-class product surface, not as generic decoration.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.product_primitives",
+        "target_value": "trust state chip"
+      },
+      "product_primitive:source-chip-98487a0c": {
+        "label": "Embodies product primitive: source chip",
+        "improvement": "Represent 'source chip' as a first-class product surface, not as generic decoration.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.product_primitives",
+        "target_value": "source chip"
+      },
+      "product_primitive:owner-chip-21597298": {
+        "label": "Embodies product primitive: owner chip",
+        "improvement": "Represent 'owner chip' as a first-class product surface, not as generic decoration.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.product_primitives",
+        "target_value": "owner chip"
+      },
+      "product_primitive:staged-routing-progress-trace-5a18f06f": {
+        "label": "Embodies product primitive: staged routing progress trace",
+        "improvement": "Represent 'staged routing progress trace' as a first-class product surface, not as generic decoration.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.product_primitives",
+        "target_value": "staged routing progress trace"
+      },
+      "product_primitive:staged-pipeline-stepper-c8058501": {
+        "label": "Embodies product primitive: staged pipeline stepper",
+        "improvement": "Represent 'staged pipeline stepper' as a first-class product surface, not as generic decoration.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.product_primitives",
+        "target_value": "staged pipeline stepper"
+      },
+      "product_primitive:concept-draft-card-4e7b427f": {
+        "label": "Embodies product primitive: concept draft card",
+        "improvement": "Represent 'concept draft card' as a first-class product surface, not as generic decoration.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.product_primitives",
+        "target_value": "concept draft card"
+      },
+      "product_primitive:approve-edit-reject-disposition-cont-de805307": {
+        "label": "Embodies product primitive: approve edit reject disposition control",
+        "improvement": "Represent 'approve edit reject disposition control' as a first-class product surface, not as generic decoration.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.product_primitives",
+        "target_value": "approve edit reject disposition control"
+      },
+      "product_primitive:before-after-diff-card-3d2a6bff": {
+        "label": "Embodies product primitive: before-after diff card",
+        "improvement": "Represent 'before-after diff card' as a first-class product surface, not as generic decoration.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.product_primitives",
+        "target_value": "before-after diff card"
+      },
+      "must_include:answer-attribution-owner-trust-state-93c28ff9": {
+        "label": "Includes required visual/system signal: answer attribution: owner, trust state, and source visible near the answer",
+        "improvement": "Make 'answer attribution: owner, trust state, and source visible near the answer' visible and scannable in the main workflow.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.visual_reference.must_include",
+        "target_value": "answer attribution: owner, trust state, and source visible near the answer"
+      },
+      "must_include:review-queue-or-inbox-with-clear-per-5eb673a6": {
+        "label": "Includes required visual/system signal: review queue or inbox with clear per-item disposition controls",
+        "improvement": "Make 'review queue or inbox with clear per-item disposition controls' visible and scannable in the main workflow.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.visual_reference.must_include",
+        "target_value": "review queue or inbox with clear per-item disposition controls"
+      },
+      "must_include:live-event-feed-or-audit-table-with-5c85138f": {
+        "label": "Includes required visual/system signal: live event feed or audit table with legible status tags",
+        "improvement": "Make 'live event feed or audit table with legible status tags' visible and scannable in the main workflow.",
+        "expected_lift": 0.08,
+        "source": "brand_profile.visual_reference.must_include",
+        "target_value": "live event feed or audit table with legible status tags"
+      },
+      "audience_need:question-asker-end-user-054d63ab": {
+        "label": "Fits audience context: question asker (end user)",
+        "improvement": "Adjust density, language, workflow order, and controls for 'question asker (end user)'.",
+        "expected_lift": 0.06,
+        "source": "brand_profile.audiences",
+        "target_value": "question asker (end user)"
+      },
+      "audience_need:knowledge-owner-accountable-for-a-do-afbeaa2e": {
+        "label": "Fits audience context: knowledge owner accountable for a domain",
+        "improvement": "Adjust density, language, workflow order, and controls for 'knowledge owner accountable for a domain'.",
+        "expected_lift": 0.06,
+        "source": "brand_profile.audiences",
+        "target_value": "knowledge owner accountable for a domain"
+      },
+      "audience_need:operations-monitor-be377ab8": {
+        "label": "Fits audience context: operations monitor",
+        "improvement": "Adjust density, language, workflow order, and controls for 'operations monitor'.",
+        "expected_lift": 0.06,
+        "source": "brand_profile.audiences",
+        "target_value": "operations monitor"
+      },
+      "audience_need:governance-and-audit-reviewer-bd3e6da6": {
+        "label": "Fits audience context: governance and audit reviewer",
+        "improvement": "Adjust density, language, workflow order, and controls for 'governance and audit reviewer'.",
+        "expected_lift": 0.06,
+        "source": "brand_profile.audiences",
+        "target_value": "governance and audit reviewer"
+      },
+      "audience_need:team-lead-35b08c0e": {
+        "label": "Fits audience context: team lead",
+        "improvement": "Adjust density, language, workflow order, and controls for 'team lead'.",
+        "expected_lift": 0.06,
+        "source": "brand_profile.audiences",
+        "target_value": "team lead"
+      },
+      "accessibility_target:wcag-2-2-aa-41a998cd": {
+        "label": "Supports accessibility target: WCAG 2.2 AA",
+        "improvement": "Verify 'WCAG 2.2 AA' with contrast, sizing, focus, motion, and alternate-view checks.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.accessibility_targets",
+        "target_value": "WCAG 2.2 AA"
+      },
+      "accessibility_target:full-keyboard-operation-5598c831": {
+        "label": "Supports accessibility target: full keyboard operation",
+        "improvement": "Verify 'full keyboard operation' with contrast, sizing, focus, motion, and alternate-view checks.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.accessibility_targets",
+        "target_value": "full keyboard operation"
+      },
+      "accessibility_target:non-color-status-encoding-3dfaf248": {
+        "label": "Supports accessibility target: non-color status encoding",
+        "improvement": "Verify 'non-color status encoding' with contrast, sizing, focus, motion, and alternate-view checks.",
+        "expected_lift": 0.07,
+        "source": "brand_profile.accessibility_targets",
+        "target_value": "non-color status encoding"
+      }
+    },
+    "rule": "Brand-owned aesthetic quality is evaluated as fit to declared semantic targets, explicit boundaries, product ontology, audience context, and visual craft."
+  },
+  "interpretation_rule": "Scores represent observed or reviewed response proxies in a declared context; they are not universal beauty claims."
+}

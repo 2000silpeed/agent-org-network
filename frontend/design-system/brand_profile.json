@@ -1,0 +1,238 @@
+{
+  "brand_name": "Agent Org Network",
+  "system_name": "Agent Org Network Design System",
+  "product_summary": "A question-routing organization layer: a person asks in plain language, the system finds the accountable human owner, that owner answers from their own knowledge, and every answer carries its owner, trust state, and sources — with internal routing hidden from the asker.",
+  "audiences": [
+    "question asker (end user)",
+    "knowledge owner accountable for a domain",
+    "operations monitor",
+    "governance and audit reviewer",
+    "team lead"
+  ],
+  "brand_keywords": [
+    "agentic",
+    "operational",
+    "networked",
+    "observable",
+    "governed",
+    "precise",
+    "structured",
+    "calm",
+    "trustworthy"
+  ],
+  "anti_keywords": [
+    "decorative graph",
+    "marketing-heavy",
+    "sci-fi glow",
+    "generic card wall",
+    "noisy",
+    "unexplained automation",
+    "opaque status",
+    "exposed routing internals to end users",
+    "knowledge bodies leaving the owner environment"
+  ],
+  "tone_of_voice": [
+    "direct",
+    "operational",
+    "audit-friendly",
+    "low-drama",
+    "specific"
+  ],
+  "visual_keywords": [
+    "trustworthy answer chat with owner and source chips",
+    "staged routing progress trace",
+    "owner knowledge authoring workspace",
+    "staged concept review cards with approve edit reject",
+    "before-after diff card",
+    "owner handling inbox with tabs",
+    "live operations event feed",
+    "routing outcome status tags",
+    "worker admission panel",
+    "audit log table",
+    "restrained multi-accent system",
+    "dense legible dark console"
+  ],
+  "interaction_keywords": [
+    "ask and receive an accountable answer",
+    "watch a staged routing trace resolve",
+    "approve edit or reject a staged concept draft",
+    "commit and publish reviewed knowledge",
+    "settle contested ownership by assigning",
+    "review a backup answer first-person",
+    "pull document content on demand",
+    "follow a live event feed",
+    "admit or revoke a worker",
+    "trace one question from arrival to answer"
+  ],
+  "platforms": [
+    "web",
+    "desktop-web"
+  ],
+  "accessibility_targets": [
+    "WCAG 2.2 AA",
+    "full keyboard operation",
+    "non-color status encoding"
+  ],
+  "product_primitives": [
+    "answer chat thread",
+    "question and answer bubble",
+    "trust state chip",
+    "source chip",
+    "owner chip",
+    "staged routing progress trace",
+    "staged pipeline stepper",
+    "concept draft card",
+    "approve edit reject disposition control",
+    "before-after diff card",
+    "owner inbox tabs",
+    "contested case card",
+    "candidate coverage list",
+    "on-demand document pull",
+    "assign owner control",
+    "backup answer review card",
+    "re-review queue row",
+    "metric summary card",
+    "live event feed",
+    "routing outcome status tag",
+    "worker admission panel",
+    "audit log table",
+    "light org reference map",
+    "data tables",
+    "search and filter",
+    "workspace navigation",
+    "modal and dialog",
+    "notifications",
+    "onboarding and stepper",
+    "forms"
+  ],
+  "reference_preferences": {
+    "prioritize_sources_containing": [
+      "components",
+      "typography",
+      "accessibility",
+      "data density",
+      "conversation",
+      "review queue",
+      "live feed",
+      "table",
+      "dashboard",
+      "governance"
+    ],
+    "avoid_sources_containing": [
+      "brand-only",
+      "marketing-only",
+      "single chatbot demo"
+    ]
+  },
+  "seeds": [
+    {
+      "url": "https://primer.style",
+      "kind": "design-system",
+      "title": "Primer",
+      "notes": "Practical component contracts and dense developer-tool surfaces"
+    },
+    {
+      "url": "https://carbondesignsystem.com",
+      "kind": "design-system",
+      "title": "Carbon",
+      "notes": "Enterprise data UI, status patterns, and accessibility guidance"
+    },
+    {
+      "url": "https://atlassian.design",
+      "kind": "design-system",
+      "title": "Atlassian Design System",
+      "notes": "Workspace navigation, permissions, and operational SaaS patterns"
+    }
+  ],
+  "color_reference": {
+    "path": "../../docs/color-reference.md",
+    "preferred_families": [
+      "Cool Grays",
+      "Standard Blues",
+      "Natural Greens",
+      "Reds"
+    ],
+    "palette_strategy": {
+      "mode": "brand-guided",
+      "candidate_count": 3,
+      "active_candidate": 1,
+      "temperature": "balanced",
+      "contrast": "balanced",
+      "diversity": "balanced",
+      "surface_style": "flat",
+      "prefer_moods": [
+        "정확함",
+        "신뢰감",
+        "차분함",
+        "운영성"
+      ],
+      "avoid_moods": [
+        "과장",
+        "장식적",
+        "몽환적",
+        "유아적"
+      ]
+    },
+    "palette_expansion": {
+      "enabled": true,
+      "supporting_color_count": 8,
+      "combination_count": 3,
+      "prefer_pairings": true,
+      "prefer_related_families": true
+    },
+    "notes": [
+      "Base surfaces should stay neutral and readable under dense operational data.",
+      "Use blue for primary focus and selection, green for healthy automation, red for risk and blocked handoffs.",
+      "Avoid a single purple or blue gradient identity; the product needs role, risk, and ownership distinction."
+    ]
+  },
+  "visual_reference": {
+    "mode": "local-images",
+    "query": [
+      "trustworthy answer chat with owner attribution and source citations",
+      "human approval inbox and review queue with status tags",
+      "operations event feed dashboard with audit log table dark theme"
+    ],
+    "sources": [],
+    "preferred_count": 12,
+    "weights": {
+      "layout": 0.32,
+      "component_shape": 0.26,
+      "color_balance": 0.16,
+      "typography_mood": 0.12,
+      "surface_style": 0.14
+    },
+    "extraction_policy": "advisory-only",
+    "must_include": [
+      "answer attribution: owner, trust state, and source visible near the answer",
+      "review queue or inbox with clear per-item disposition controls",
+      "live event feed or audit table with legible status tags"
+    ],
+    "avoid_patterns": [
+      "decorative network graph without labels",
+      "abstract AI glow background",
+      "unexplained autonomous action",
+      "internal routing scores exposed to the end user"
+    ],
+    "notes": [
+      "References guide density, workspace layout, feed and table pairing, and operational affordances only.",
+      "Do not copy reference colors or generated copy. Final IA must keep answer attribution, trust state, sources, and audit visible, and must hide routing internals from the question-asker."
+    ],
+    "pinterest_assist": {
+      "enabled": false,
+      "capture_mode": "manual-save",
+      "capture_dir": "references/visual/pinterest-assisted",
+      "max_candidates_per_query": 6,
+      "max_selected_per_query": 2,
+      "preferred_sources": [
+        "pins",
+        "boards",
+        "adjacent-search"
+      ],
+      "notes": [
+        "Pinterest is optional. This project defaults to local Omnigen UI references.",
+        "Only selected local files should be connected to visual_reference.sources."
+      ]
+    }
+  }
+}

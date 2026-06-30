@@ -1,0 +1,21 @@
+{
+  "preset_id": "dashboard--corporate-trust",
+  "preset_api_version": "1.0.0",
+  "adapter_id": "nextjs-tailwind-shadcn",
+  "adapter_version": "0.1.0",
+  "harness_version": "0.2.0",
+  "color_mode": "dark",
+  "locale": "ko",
+  "installed_at": "2026-06-30T03:07:21Z",
+  "content_hash": "sha256:29d6e3cf3e6585d4308f39be642884f1a9a00bd21b2bdd984b0d508324dfe085",
+  "proposed_files": [
+    "tailwind.config.ts.ds-proposed"
+  ],
+  "counts": {
+    "created": 25,
+    "merged": 1,
+    "overwritten": 0,
+    "proposed": 1,
+    "skipped": 0
+  }
+}

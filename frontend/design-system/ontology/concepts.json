@@ -1,0 +1,176 @@
+{
+  "concepts": [
+    {
+      "id": "design_system",
+      "label": "Design System",
+      "terms": [
+        "design system",
+        "디자인 시스템",
+        "design language"
+      ]
+    },
+    {
+      "id": "style_guide",
+      "label": "Style Guide",
+      "terms": [
+        "style guide",
+        "스타일 가이드",
+        "brand guide",
+        "design guide"
+      ]
+    },
+    {
+      "id": "design_token",
+      "label": "Design Token",
+      "terms": [
+        "design token",
+        "token",
+        "토큰"
+      ]
+    },
+    {
+      "id": "component",
+      "label": "Component",
+      "terms": [
+        "component",
+        "components",
+        "컴포넌트"
+      ]
+    },
+    {
+      "id": "pattern",
+      "label": "Pattern",
+      "terms": [
+        "pattern",
+        "patterns",
+        "패턴"
+      ]
+    },
+    {
+      "id": "foundation",
+      "label": "Foundation",
+      "terms": [
+        "foundation",
+        "foundations",
+        "기초",
+        "기반"
+      ]
+    },
+    {
+      "id": "color",
+      "label": "Color",
+      "terms": [
+        "color",
+        "colour",
+        "색상",
+        "컬러"
+      ]
+    },
+    {
+      "id": "typography",
+      "label": "Typography",
+      "terms": [
+        "typography",
+        "font",
+        "fonts",
+        "타이포그래피",
+        "폰트"
+      ]
+    },
+    {
+      "id": "iconography",
+      "label": "Iconography",
+      "terms": [
+        "iconography",
+        "icon",
+        "icons",
+        "아이콘"
+      ]
+    },
+    {
+      "id": "spacing",
+      "label": "Spacing",
+      "terms": [
+        "spacing",
+        "space",
+        "간격",
+        "spacing scale"
+      ]
+    },
+    {
+      "id": "layout",
+      "label": "Layout",
+      "terms": [
+        "layout",
+        "grid",
+        "레이아웃",
+        "그리드"
+      ]
+    },
+    {
+      "id": "motion",
+      "label": "Motion",
+      "terms": [
+        "motion",
+        "animation",
+        "모션",
+        "애니메이션"
+      ]
+    },
+    {
+      "id": "accessibility",
+      "label": "Accessibility",
+      "terms": [
+        "accessibility",
+        "a11y",
+        "접근성"
+      ]
+    },
+    {
+      "id": "content",
+      "label": "Content",
+      "terms": [
+        "content",
+        "copywriting",
+        "writing",
+        "콘텐츠"
+      ]
+    },
+    {
+      "id": "brand",
+      "label": "Brand",
+      "terms": [
+        "brand",
+        "branding",
+        "브랜드",
+        "logo"
+      ]
+    },
+    {
+      "id": "imagery",
+      "label": "Imagery",
+      "terms": [
+        "imagery",
+        "visual asset",
+        "generated image",
+        "image generation",
+        "illustration",
+        "media asset"
+      ]
+    },
+    {
+      "id": "product_realism",
+      "label": "Commercial Product Realism",
+      "terms": [
+        "commercial UI",
+        "production UI",
+        "real product",
+        "operational UI",
+        "operational density",
+        "data provenance",
+        "status variation",
+        "live operations"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,133 @@
+/* Pretendard (heading/body) + Source Code Pro (mono) — design-system token fonts */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
+@import url("https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@400;500;600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-color: var(--ds-color-border);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  body {
+    font-feature-settings: "cv11", "ss01";
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: var(--ds-color-surface-tint);
+    color: var(--ds-color-ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ds-color-primary);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  /* non-color status: icon + word pairing helper — never color alone */
+  .ds-scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--ds-color-border-strong) transparent;
+  }
+  .ds-scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .ds-scrollbar-thin::-webkit-scrollbar-thumb {
+    background: var(--ds-color-border-strong);
+    border-radius: 999px;
+  }
+  .ds-scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+
+/* design-ontology:START */
+/* preset: dashboard--corporate-trust — locale: ko */
+
+:root {
+  --ds-color-accent: #F59E0B;
+  --ds-color-border: #D6DDE6;
+  --ds-color-border-strong: #B0BAC7;
+  --ds-color-canvas: #F7F8FA;
+  --ds-color-danger: #E2725B;
+  --ds-color-info: #0F4C81;
+  --ds-color-ink: #111111;
+  --ds-color-ink-inverse: #FFFFFF;
+  --ds-color-ink-muted: #4B5563;
+  --ds-color-ink-subtle: #6B7280;
+  --ds-color-link: #2563EB;
+  --ds-color-primary: #2563EB;
+  --ds-color-success: #006A4E;
+  --ds-color-surface: #FFFFFF;
+  --ds-color-surface-elevated: #FFFFFF;
+  --ds-color-surface-muted: #EEF1F6;
+  --ds-color-surface-tint: #E0E7FF;
+  --ds-color-warning: #FFB27F;
+  --ds-font-heading: Pretendard, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ds-font-body: Pretendard, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ds-font-mono: "Source Code Pro", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ds-radius-sm: 4px;
+  --ds-radius-md: 8px;
+  --ds-radius-lg: 12px;
+}
+
+[data-theme='dark'] {
+  --ds-color-accent: #F9C163;
+  --ds-color-border: #2D3239;
+  --ds-color-border-strong: #3F4650;
+  --ds-color-canvas: #0D0F11;
+  --ds-color-danger: #EA9786;
+  --ds-color-info: #197CD3;
+  --ds-color-ink: #F0F0F0;
+  --ds-color-ink-inverse: #1A1A1A;
+  --ds-color-ink-muted: #AFB6C0;
+  --ds-color-ink-subtle: #858B99;
+  --ds-color-link: #799FF3;
+  --ds-color-primary: #799FF3;
+  --ds-color-success: #00D69E;
+  --ds-color-surface: #171717;
+  --ds-color-surface-elevated: #1C1C1C;
+  --ds-color-surface-muted: #1D2025;
+  --ds-color-surface-tint: #31343F;
+  --ds-color-warning: #FFA970;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --ds-color-accent: #F9C163;
+    --ds-color-border: #2D3239;
+    --ds-color-border-strong: #3F4650;
+    --ds-color-canvas: #0D0F11;
+    --ds-color-danger: #EA9786;
+    --ds-color-info: #197CD3;
+    --ds-color-ink: #F0F0F0;
+    --ds-color-ink-inverse: #1A1A1A;
+    --ds-color-ink-muted: #AFB6C0;
+    --ds-color-ink-subtle: #858B99;
+    --ds-color-link: #799FF3;
+    --ds-color-primary: #799FF3;
+    --ds-color-success: #00D69E;
+    --ds-color-surface: #171717;
+    --ds-color-surface-elevated: #1C1C1C;
+    --ds-color-surface-muted: #1D2025;
+    --ds-color-surface-tint: #31343F;
+    --ds-color-warning: #FFA970;
+  }
+}
+
+html, body {
+  background: var(--ds-color-canvas);
+  color: var(--ds-color-ink);
+  font-family: var(--ds-font-body);
+}
+/* design-ontology:END */

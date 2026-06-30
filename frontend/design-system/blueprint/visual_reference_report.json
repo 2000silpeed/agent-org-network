@@ -1,0 +1,502 @@
+{
+  "mode": "local-images",
+  "query": [
+    "trustworthy answer chat with owner attribution and source citations",
+    "human approval inbox and review queue with status tags",
+    "operations event feed dashboard with audit log table dark theme"
+  ],
+  "preferred_count": 12,
+  "weights": {
+    "layout": 0.32,
+    "component_shape": 0.26,
+    "color_balance": 0.16,
+    "typography_mood": 0.12,
+    "surface_style": 0.14
+  },
+  "extraction_policy": "advisory-only",
+  "notes": [
+    "References guide density, workspace layout, feed and table pairing, and operational affordances only.",
+    "Do not copy reference colors or generated copy. Final IA must keep answer attribution, trust state, sources, and audit visible, and must hide routing internals from the question-asker."
+  ],
+  "must_include": [
+    "answer attribution: owner, trust state, and source visible near the answer",
+    "review queue or inbox with clear per-item disposition controls",
+    "live event feed or audit table with legible status tags"
+  ],
+  "avoid_patterns": [
+    "decorative network graph without labels",
+    "abstract AI glow background",
+    "unexplained autonomous action",
+    "internal routing scores exposed to the end user"
+  ],
+  "sources": [],
+  "images": [],
+  "selected_images": [],
+  "duplicate_groups": [],
+  "similar_groups": [],
+  "coverage": {
+    "source_count": 0,
+    "resolved_source_count": 0,
+    "image_count": 0,
+    "selected_image_count": 0,
+    "format_counts": {},
+    "orientation_counts": {},
+    "aspect_ratio_buckets": {}
+  },
+  "visual_motifs": {
+    "density": {
+      "value": "dense",
+      "confidence": 0.52,
+      "evidence": [
+        "dashboard x0.45",
+        "table x3.25",
+        "control x1.8"
+      ],
+      "candidates": [
+        {
+          "value": "dense",
+          "score": 14.7
+        },
+        {
+          "value": "balanced",
+          "score": 1.9
+        },
+        {
+          "value": "airy",
+          "score": 0.75
+        }
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Derived from query and brand context only because no local image selection was available."
+      }
+    },
+    "surface_style": {
+      "value": "elevated",
+      "confidence": 0.15,
+      "evidence": [
+        "modal x0.9"
+      ],
+      "candidates": [
+        {
+          "value": "elevated",
+          "score": 0.9
+        }
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Derived from query and brand context only because no local image selection was available."
+      }
+    },
+    "typography_mood": {
+      "value": "utilitarian",
+      "confidence": 0.33,
+      "evidence": [
+        "dashboard x0.45",
+        "control x1.8",
+        "table x3.25"
+      ],
+      "candidates": [
+        {
+          "value": "utilitarian",
+          "score": 8.2
+        },
+        {
+          "value": "editorial",
+          "score": 0.9
+        }
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Derived from query and brand context only because no local image selection was available."
+      }
+    },
+    "corner_style": {
+      "value": "medium",
+      "confidence": 0.28,
+      "evidence": [
+        "card x5.4"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Derived from query and brand context only because no local image geometry was available."
+      }
+    },
+    "color_balance": {
+      "observed": false,
+      "temperature": "unknown",
+      "contrast_profile": "unknown",
+      "neutral_bias": "unknown",
+      "dominant": [],
+      "supporting": [],
+      "provenance": {
+        "level": "unverified",
+        "detail": "No reliable pixel-color sample was available from the current selection."
+      }
+    },
+    "image_selection": {
+      "selected_image_count": 0,
+      "available_image_count": 0,
+      "provenance": {
+        "level": "unverified",
+        "detail": "No local image files were available for selection."
+      }
+    }
+  },
+  "layout_cues": [
+    {
+      "id": "data-review-surface",
+      "label": "Data review surface",
+      "confidence": 0.52,
+      "evidence": [
+        "table x3.25",
+        "audit x3.25",
+        "log x2.15",
+        "data x0.9",
+        "filter x0.9",
+        "review x4.4"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Layout cue inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "editorial-feed",
+      "label": "Editorial feed",
+      "confidence": 0.52,
+      "evidence": [
+        "content x0.45",
+        "feed x3.7",
+        "review x4.4",
+        "publish x0.45"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Layout cue inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "conversation-panel",
+      "label": "Conversation side panel",
+      "confidence": 0.46,
+      "evidence": [
+        "chat x2.15",
+        "thread x0.9",
+        "inbox x3.0500000000000003"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Layout cue inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "dashboard-grid",
+      "label": "Dashboard grid",
+      "confidence": 0.42,
+      "evidence": [
+        "dashboard x0.45",
+        "metric x0.9",
+        "table x3.25"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Layout cue inferred from query and brand context only; local image grounding was unavailable."
+      }
+    }
+  ],
+  "component_style_hints": {
+    "cards": {
+      "direction": "raised cards with restrained depth를 기본으로 하고, 압축된 spacing과 얇은 divider 중심의 hierarchy. 중간 반경으로 제품 UI 절제 유지.",
+      "confidence": 0.29,
+      "evidence": [
+        "surface=elevated",
+        "density=dense",
+        "corner=medium"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Component styling hint synthesized from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    "navigation": {
+      "direction": "navigation은 compact하게 유지하되 filter/scope controls와 혼합하지 않는다.",
+      "confidence": 0.29,
+      "evidence": [
+        "Data review surface"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Component styling hint synthesized from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    "typography": {
+      "direction": "정보 밀도에 맞춰 type scale 차이를 줄이고 table/list label의 정렬 정확도를 우선한다.",
+      "confidence": 0.18,
+      "evidence": [
+        "typography_mood=utilitarian"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Component styling hint synthesized from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    "data_display": {
+      "direction": "정보 밀도를 유지하되 thin dividers와 restrained accent로 hierarchy를 만든다.",
+      "confidence": 0.29,
+      "evidence": [
+        "layout=dashboard-grid",
+        "density=dense"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Component styling hint synthesized from query and brand context only; local image grounding was unavailable."
+      }
+    }
+  },
+  "candidate_component_archetypes": [
+    {
+      "id": "data-review-table",
+      "label": "Data review table",
+      "family": "data-display",
+      "confidence": 0.48,
+      "suggested_components": [
+        "data-table",
+        "column-header",
+        "row-actions",
+        "filter-toolbar",
+        "pagination"
+      ],
+      "supports_primitives": [
+        "data tables",
+        "search and filter"
+      ],
+      "evidence": [
+        "layout=data-review-surface (0.52)",
+        "layout=dashboard-grid (0.42)",
+        "table x3.25",
+        "data x0.9",
+        "audit x3.25",
+        "log x2.15"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Archetype candidate inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "review-coverage-system",
+      "label": "Review coverage system",
+      "family": "editorial",
+      "confidence": 0.48,
+      "suggested_components": [
+        "review-card",
+        "score-badge",
+        "comparison-table",
+        "ranking-list",
+        "filter-chip"
+      ],
+      "supports_primitives": [
+        "comparison and ranking",
+        "search and filter",
+        "tags and labels"
+      ],
+      "evidence": [
+        "layout=data-review-surface (0.52)",
+        "layout=editorial-feed (0.52)",
+        "review x4.4",
+        "primitive=search and filter"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Archetype candidate inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "workspace-shell",
+      "label": "Workspace shell",
+      "family": "navigation",
+      "confidence": 0.48,
+      "suggested_components": [
+        "app-shell",
+        "sidebar-nav",
+        "workspace-switcher",
+        "breadcrumb",
+        "context-panel"
+      ],
+      "supports_primitives": [
+        "workspace navigation"
+      ],
+      "evidence": [
+        "workspace x1.9",
+        "navigation x0.9",
+        "panel x1.7000000000000002",
+        "primitive=workspace navigation"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Archetype candidate inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "conversation-sidecar",
+      "label": "Conversation sidecar",
+      "family": "overlay",
+      "confidence": 0.43,
+      "suggested_components": [
+        "chat-panel",
+        "message-thread",
+        "message-composer",
+        "context-drawer"
+      ],
+      "supports_primitives": [
+        "chat and messaging"
+      ],
+      "evidence": [
+        "layout=conversation-panel (0.46)",
+        "chat x2.15",
+        "panel x1.7000000000000002"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Archetype candidate inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "dashboard-insight-module",
+      "label": "Dashboard insight module",
+      "family": "data-display",
+      "confidence": 0.33,
+      "suggested_components": [
+        "stat-card",
+        "insight-card",
+        "chart-panel",
+        "section-header",
+        "filter-chip"
+      ],
+      "supports_primitives": [
+        "dashboard cards",
+        "charts and visualization"
+      ],
+      "evidence": [
+        "layout=dashboard-grid (0.42)",
+        "dashboard x0.45",
+        "metric x0.9"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Archetype candidate inferred from query and brand context only; local image grounding was unavailable."
+      }
+    }
+  ],
+  "reference_mood_summary": {
+    "top_layout": "Data review surface",
+    "recommended_direction": [
+      "layout는 Data review surface 기준으로 정리",
+      "surface language는 elevated 성향 우선",
+      "typography mood는 utilitarian 축 유지",
+      "density는 dense 기준으로 primitive spacing 조정",
+      "palette temperature는 unknown 쪽을 우선"
+    ],
+    "avoidance": [
+      "decorative network graph without labels",
+      "abstract AI glow background",
+      "unexplained autonomous action",
+      "internal routing scores exposed to the end user"
+    ],
+    "component_focus": [
+      "cards",
+      "data_display",
+      "navigation",
+      "typography"
+    ],
+    "provenance": {
+      "level": "inferred",
+      "detail": "Mood summary synthesized from visual motifs, layout cues, and component hints."
+    }
+  },
+  "brand_context": {
+    "brand_name": "Agent Org Network",
+    "system_name": "Agent Org Network Design System",
+    "brand_keywords": [
+      "agentic",
+      "operational",
+      "networked",
+      "observable",
+      "governed",
+      "precise",
+      "structured",
+      "calm",
+      "trustworthy"
+    ],
+    "anti_keywords": [
+      "decorative graph",
+      "marketing-heavy",
+      "sci-fi glow",
+      "generic card wall",
+      "noisy",
+      "unexplained automation",
+      "opaque status",
+      "exposed routing internals to end users",
+      "knowledge bodies leaving the owner environment"
+    ],
+    "visual_keywords": [
+      "trustworthy answer chat with owner and source chips",
+      "staged routing progress trace",
+      "owner knowledge authoring workspace",
+      "staged concept review cards with approve edit reject",
+      "before-after diff card",
+      "owner handling inbox with tabs",
+      "live operations event feed",
+      "routing outcome status tags",
+      "worker admission panel",
+      "audit log table",
+      "restrained multi-accent system",
+      "dense legible dark console"
+    ],
+    "interaction_keywords": [
+      "ask and receive an accountable answer",
+      "watch a staged routing trace resolve",
+      "approve edit or reject a staged concept draft",
+      "commit and publish reviewed knowledge",
+      "settle contested ownership by assigning",
+      "review a backup answer first-person",
+      "pull document content on demand",
+      "follow a live event feed",
+      "admit or revoke a worker",
+      "trace one question from arrival to answer"
+    ],
+    "product_primitives": [
+      "answer chat thread",
+      "question and answer bubble",
+      "trust state chip",
+      "source chip",
+      "owner chip",
+      "staged routing progress trace",
+      "staged pipeline stepper",
+      "concept draft card",
+      "approve edit reject disposition control",
+      "before-after diff card",
+      "owner inbox tabs",
+      "contested case card",
+      "candidate coverage list",
+      "on-demand document pull",
+      "assign owner control",
+      "backup answer review card",
+      "re-review queue row",
+      "metric summary card",
+      "live event feed",
+      "routing outcome status tag",
+      "worker admission panel",
+      "audit log table",
+      "light org reference map",
+      "data tables",
+      "search and filter",
+      "workspace navigation",
+      "modal and dialog",
+      "notifications",
+      "onboarding and stepper",
+      "forms"
+    ]
+  }
+}

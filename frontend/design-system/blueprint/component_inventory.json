@@ -1,0 +1,2618 @@
+{
+  "families": [
+    {
+      "family": "button",
+      "priority": "high",
+      "required_states": [
+        "default",
+        "hover",
+        "active",
+        "disabled",
+        "loading"
+      ],
+      "components": [
+        "primary-button",
+        "secondary-button",
+        "ghost-button",
+        "icon-button",
+        "cta-button",
+        "link-button",
+        "form-actions"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "copilot-artifact",
+      "priority": "high",
+      "required_states": [
+        "default",
+        "loading",
+        "verified",
+        "error"
+      ],
+      "components": [
+        "source-card",
+        "citation-drawer"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "copilot-chat",
+      "priority": "high",
+      "required_states": [
+        "default",
+        "loading",
+        "complete",
+        "error"
+      ],
+      "components": [
+        "tool-call-trace"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "data-display",
+      "priority": "high",
+      "required_states": [
+        "default",
+        "sorted",
+        "filtered",
+        "empty"
+      ],
+      "components": [
+        "data-table",
+        "tag",
+        "column-header",
+        "row-actions",
+        "chat-message",
+        "chat-thread",
+        "chart-container",
+        "chart-legend",
+        "avatar",
+        "profile-card",
+        "stat-card",
+        "insight-card",
+        "activity-card",
+        "section-header",
+        "kanban-board",
+        "kanban-column",
+        "kanban-card",
+        "comment-thread",
+        "exception-queue",
+        "audit-timeline",
+        "evidence-graph",
+        "bulk-action-table",
+        "decision-record-card"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "document",
+      "priority": "high",
+      "required_states": [
+        "default",
+        "selected",
+        "commenting",
+        "resolved"
+      ],
+      "components": [
+        "article-body",
+        "table-of-contents",
+        "heading-anchor",
+        "prose-block",
+        "reading-pane",
+        "footnote",
+        "link-card",
+        "diff-viewer",
+        "redline-viewer"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "editorial",
+      "priority": "high",
+      "required_states": [
+        "default",
+        "selected",
+        "editing"
+      ],
+      "components": [
+        "editor-canvas",
+        "editor-toolbar",
+        "inline-format-menu",
+        "slash-command-menu",
+        "block-controls"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "feedback",
+      "priority": "high",
+      "required_states": [
+        "info",
+        "success",
+        "warning",
+        "danger"
+      ],
+      "components": [
+        "filter-chip",
+        "toast",
+        "inline-alert",
+        "empty-state",
+        "banner",
+        "status-badge",
+        "step-progress"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "input",
+      "priority": "high",
+      "required_states": [
+        "default",
+        "focus",
+        "error",
+        "disabled"
+      ],
+      "components": [
+        "text-field",
+        "select",
+        "checkbox",
+        "radio",
+        "textarea",
+        "search-field",
+        "segmented-control",
+        "chip",
+        "filter-chip",
+        "chat-input",
+        "radio-group",
+        "form-section",
+        "comment-input"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "layout",
+      "priority": "high",
+      "required_states": [
+        "default",
+        "resizing",
+        "collapsed"
+      ],
+      "components": [
+        "resizable-split-pane"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "navigation",
+      "priority": "high",
+      "required_states": [
+        "default",
+        "active",
+        "hover",
+        "collapsed"
+      ],
+      "components": [
+        "sidebar-nav",
+        "topbar",
+        "breadcrumb",
+        "workspace-switcher",
+        "mobile-topbar",
+        "mobile-tab-bar",
+        "back-button",
+        "section-tabs",
+        "pagination",
+        "prev-next-pager",
+        "wizard-layout",
+        "saved-view-bar"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "foundation",
+      "priority": "medium",
+      "required_states": [
+        "default"
+      ],
+      "components": [
+        "column-header",
+        "row-actions",
+        "pagination",
+        "app-shell",
+        "form-section"
+      ],
+      "visual_reference_signals": []
+    },
+    {
+      "family": "overlay",
+      "priority": "medium",
+      "required_states": [
+        "closed",
+        "opening",
+        "open"
+      ],
+      "components": [
+        "bottom-sheet",
+        "modal-dialog",
+        "chart-tooltip",
+        "user-menu",
+        "mention-popup",
+        "tooltip-guide"
+      ],
+      "visual_reference_signals": []
+    }
+  ],
+  "components": [
+    {
+      "name": "data-table",
+      "family": "data-display",
+      "supports_primitive": "data tables",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "column-header",
+      "family": "foundation",
+      "supports_primitive": "data tables",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "filter-chip",
+      "family": "feedback",
+      "supports_primitive": "data tables",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "row-actions",
+      "family": "foundation",
+      "supports_primitive": "data tables",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "pagination",
+      "family": "foundation",
+      "supports_primitive": "data tables",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "app-shell",
+      "family": "foundation",
+      "supports_primitive": "workspace navigation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "sidebar-nav",
+      "family": "navigation",
+      "supports_primitive": "workspace navigation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "topbar",
+      "family": "navigation",
+      "supports_primitive": "workspace navigation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "breadcrumb",
+      "family": "navigation",
+      "supports_primitive": "workspace navigation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "workspace-switcher",
+      "family": "navigation",
+      "supports_primitive": "workspace navigation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "toast",
+      "family": "feedback",
+      "supports_primitive": "notifications",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "inline-alert",
+      "family": "feedback",
+      "supports_primitive": "notifications",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "empty-state",
+      "family": "feedback",
+      "supports_primitive": "notifications",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "banner",
+      "family": "feedback",
+      "supports_primitive": "notifications",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "text-field",
+      "family": "input",
+      "supports_primitive": "forms",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "select",
+      "family": "input",
+      "supports_primitive": "forms",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "checkbox",
+      "family": "input",
+      "supports_primitive": "forms",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "radio",
+      "family": "input",
+      "supports_primitive": "forms",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "textarea",
+      "family": "input",
+      "supports_primitive": "forms",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "form-section",
+      "family": "foundation",
+      "supports_primitive": "forms",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "primary-button",
+      "family": "button",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "secondary-button",
+      "family": "button",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "ghost-button",
+      "family": "button",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "icon-button",
+      "family": "button",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "cta-button",
+      "family": "button",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "mobile-topbar",
+      "family": "navigation",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "mobile-tab-bar",
+      "family": "navigation",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "back-button",
+      "family": "navigation",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "section-tabs",
+      "family": "navigation",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "bottom-sheet",
+      "family": "overlay",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "modal-dialog",
+      "family": "overlay",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "search-field",
+      "family": "input",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "segmented-control",
+      "family": "input",
+      "supports_primitive": "system baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "link-button",
+      "family": "button",
+      "supports_primitive": "baseline",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "tag",
+      "family": "data-display",
+      "supports_primitive": "tags and labels",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "status-badge",
+      "family": "feedback",
+      "supports_primitive": "tags and labels",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "chip",
+      "family": "input",
+      "supports_primitive": "tags and labels",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "editor-canvas",
+      "family": "editorial",
+      "supports_primitive": "rich text editor",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "editor-toolbar",
+      "family": "editorial",
+      "supports_primitive": "rich text editor",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "inline-format-menu",
+      "family": "editorial",
+      "supports_primitive": "rich text editor",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "slash-command-menu",
+      "family": "editorial",
+      "supports_primitive": "rich text editor",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "block-controls",
+      "family": "editorial",
+      "supports_primitive": "rich text editor",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "column-header",
+      "family": "data-display",
+      "supports_primitive": "data tables",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "row-actions",
+      "family": "data-display",
+      "supports_primitive": "data tables",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "pagination",
+      "family": "navigation",
+      "supports_primitive": "data tables",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "filter-chip",
+      "family": "input",
+      "supports_primitive": "data tables",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "chat-message",
+      "family": "data-display",
+      "supports_primitive": "chat and messaging",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "chat-input",
+      "family": "input",
+      "supports_primitive": "chat and messaging",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "chat-thread",
+      "family": "data-display",
+      "supports_primitive": "chat and messaging",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "chart-container",
+      "family": "data-display",
+      "supports_primitive": "charts and visualization",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "chart-tooltip",
+      "family": "overlay",
+      "supports_primitive": "charts and visualization",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "chart-legend",
+      "family": "data-display",
+      "supports_primitive": "charts and visualization",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "avatar",
+      "family": "data-display",
+      "supports_primitive": "user profile and avatar",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "user-menu",
+      "family": "overlay",
+      "supports_primitive": "user profile and avatar",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "profile-card",
+      "family": "data-display",
+      "supports_primitive": "user profile and avatar",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "radio-group",
+      "family": "input",
+      "supports_primitive": "forms",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "form-section",
+      "family": "input",
+      "supports_primitive": "forms",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "form-actions",
+      "family": "button",
+      "supports_primitive": "forms",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "stat-card",
+      "family": "data-display",
+      "supports_primitive": "dashboard cards",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "insight-card",
+      "family": "data-display",
+      "supports_primitive": "dashboard cards",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "activity-card",
+      "family": "data-display",
+      "supports_primitive": "dashboard cards",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "section-header",
+      "family": "data-display",
+      "supports_primitive": "dashboard cards",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "kanban-board",
+      "family": "data-display",
+      "supports_primitive": "kanban and board",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "kanban-column",
+      "family": "data-display",
+      "supports_primitive": "kanban and board",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "kanban-card",
+      "family": "data-display",
+      "supports_primitive": "kanban and board",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "article-body",
+      "family": "document",
+      "supports_primitive": "reference documentation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "table-of-contents",
+      "family": "document",
+      "supports_primitive": "reference documentation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "heading-anchor",
+      "family": "document",
+      "supports_primitive": "reference documentation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "prose-block",
+      "family": "document",
+      "supports_primitive": "reference documentation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "reading-pane",
+      "family": "document",
+      "supports_primitive": "reference documentation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "footnote",
+      "family": "document",
+      "supports_primitive": "reference documentation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "prev-next-pager",
+      "family": "navigation",
+      "supports_primitive": "reference documentation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "link-card",
+      "family": "document",
+      "supports_primitive": "reference documentation",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "comment-thread",
+      "family": "data-display",
+      "supports_primitive": "comments and discussion",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "comment-input",
+      "family": "input",
+      "supports_primitive": "comments and discussion",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "mention-popup",
+      "family": "overlay",
+      "supports_primitive": "comments and discussion",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "step-progress",
+      "family": "feedback",
+      "supports_primitive": "onboarding and stepper",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "wizard-layout",
+      "family": "navigation",
+      "supports_primitive": "onboarding and stepper",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "tooltip-guide",
+      "family": "overlay",
+      "supports_primitive": "onboarding and stepper",
+      "status": "planned",
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "diff-viewer",
+      "family": "document",
+      "role": "Before/after document comparison with inline additions and removals",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "AI rewrites, policy edits, or reviewer changes need auditability",
+        "users must approve what changed before publishing"
+      ],
+      "avoid_when": [
+        "only a short status message changed"
+      ],
+      "pairs_with": [
+        "redline-viewer",
+        "revision-timeline",
+        "approval-rail"
+      ],
+      "matched_signals": [
+        "approve",
+        "diff",
+        "draft",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:document-content"
+      ],
+      "score": 16,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "exception-queue",
+      "family": "data-display",
+      "role": "Work queue for unresolved policy, data, or workflow exceptions",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "multiple issues require triage, assignment, and resolution",
+        "reviewers need to batch handle exceptions"
+      ],
+      "avoid_when": [
+        "exceptions are rare and single-item"
+      ],
+      "pairs_with": [
+        "bulk-action-table",
+        "policy-matrix",
+        "approval-rail"
+      ],
+      "matched_signals": [
+        "assign",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "queue",
+        "resolve"
+      ],
+      "score": 16,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "resizable-split-pane",
+      "family": "layout",
+      "role": "Resizable two/three-pane workspace shell for dense tools",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "primary work happens between list, canvas/chat, and detail panels",
+        "users need to compare or inspect adjacent information without navigation"
+      ],
+      "avoid_when": [
+        "single linear form or landing page is enough"
+      ],
+      "pairs_with": [
+        "thread-list",
+        "artifact-preview-panel",
+        "inspector-drawer"
+      ],
+      "matched_signals": [
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "panel",
+        "thread",
+        "workspace"
+      ],
+      "score": 16,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "source-card",
+      "family": "copilot-artifact",
+      "role": "Compact source record card with title, excerpt, metadata, and verification state",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "AI output depends on external or internal source records",
+        "users need a repeatable citation preview component"
+      ],
+      "avoid_when": [
+        "source metadata is unavailable"
+      ],
+      "pairs_with": [
+        "citation-drawer",
+        "evidence-graph",
+        "inline-citation"
+      ],
+      "matched_signals": [
+        "document",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:document-content",
+        "reference",
+        "source"
+      ],
+      "score": 16,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "audit-timeline",
+      "family": "data-display",
+      "role": "Chronological audit trail with actor, action, timestamp, and linked artifact",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "regulated workflows require traceable user and AI actions",
+        "reviewers need to reconstruct what happened before approval"
+      ],
+      "avoid_when": [
+        "events are not user-facing or not actionable"
+      ],
+      "pairs_with": [
+        "decision-record-card",
+        "approval-rail",
+        "tool-call-trace"
+      ],
+      "matched_signals": [
+        "audit",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "trace"
+      ],
+      "score": 14,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "evidence-graph",
+      "family": "data-display",
+      "role": "Node-link evidence map connecting claims, sources, policies, and decisions",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "trust depends on seeing relationships between claims and sources",
+        "auditors need to trace why an answer or decision was made"
+      ],
+      "avoid_when": [
+        "a simple source list communicates the relationship"
+      ],
+      "pairs_with": [
+        "citation-drawer",
+        "decision-record-card",
+        "policy-matrix"
+      ],
+      "matched_signals": [
+        "audit",
+        "graph",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "trace"
+      ],
+      "score": 14,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "saved-view-bar",
+      "family": "navigation",
+      "role": "Saved view and scope switcher for repeated operational filters",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "teams revisit the same filtered views often",
+        "dense tools need stable scope memory"
+      ],
+      "avoid_when": [
+        "filters are one-off and simple"
+      ],
+      "pairs_with": [
+        "filter-builder",
+        "bulk-action-table",
+        "exception-queue"
+      ],
+      "matched_signals": [
+        "filter",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "view"
+      ],
+      "score": 14,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "tool-call-trace",
+      "family": "copilot-chat",
+      "role": "Expandable trace of AI tool calls, inputs, outputs, and latency",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "AI actions need explainability or debugging",
+        "operators need to audit retrieval, policy checks, or workflow calls"
+      ],
+      "avoid_when": [
+        "trace data is sensitive and cannot be summarized"
+      ],
+      "pairs_with": [
+        "audit-timeline",
+        "citation-drawer",
+        "decision-record-card"
+      ],
+      "matched_signals": [
+        "audit",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "trace"
+      ],
+      "score": 14,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "redline-viewer",
+      "family": "document",
+      "role": "Review-oriented prose surface with suggested insertions, deletions, and comments",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "legal, compliance, or editorial text needs reviewer markup",
+        "comments must stay anchored to exact text ranges"
+      ],
+      "avoid_when": [
+        "structured rows are more important than prose"
+      ],
+      "pairs_with": [
+        "diff-viewer",
+        "comment-thread",
+        "approval-rail"
+      ],
+      "matched_signals": [
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:document-content",
+        "pairs:comment-thread",
+        "review"
+      ],
+      "score": 13,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "bulk-action-table",
+      "family": "data-display",
+      "role": "Selectable data table with sticky bulk action affordances",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "users handle many records at once",
+        "selection count and destructive actions must stay visible"
+      ],
+      "avoid_when": [
+        "records are read-only or single-action"
+      ],
+      "pairs_with": [
+        "saved-view-bar",
+        "filter-builder",
+        "exception-queue"
+      ],
+      "matched_signals": [
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "queue",
+        "table"
+      ],
+      "score": 12,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "citation-drawer",
+      "family": "copilot-artifact",
+      "role": "Source and citation drawer for AI answers, policies, and quoted evidence",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "answers must show supporting policy, document, or source records",
+        "users need to inspect evidence without losing conversation context"
+      ],
+      "avoid_when": [
+        "citations are static footnotes only"
+      ],
+      "pairs_with": [
+        "inline-citation",
+        "source-card",
+        "evidence-graph"
+      ],
+      "matched_signals": [
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:document-content",
+        "source"
+      ],
+      "score": 12,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    },
+    {
+      "name": "decision-record-card",
+      "family": "data-display",
+      "role": "Auditable decision record summarizing decision, actor, evidence, and retention",
+      "supports_primitive": "advanced-component-catalog",
+      "status": "recommended-advanced",
+      "advanced_component": true,
+      "usage_guidance": [
+        "a reviewer or AI-assisted workflow reaches a durable decision",
+        "regulated teams need record ids and retention status"
+      ],
+      "avoid_when": [
+        "the action is transient and not auditable"
+      ],
+      "pairs_with": [
+        "audit-timeline",
+        "approval-rail",
+        "citation-drawer"
+      ],
+      "matched_signals": [
+        "audit",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops"
+      ],
+      "score": 12,
+      "must_document": [
+        "anatomy",
+        "states",
+        "content rules",
+        "accessibility",
+        "dos and donts"
+      ]
+    }
+  ],
+  "candidate_component_archetypes": [
+    {
+      "id": "data-review-table",
+      "label": "Data review table",
+      "family": "data-display",
+      "confidence": 0.48,
+      "suggested_components": [
+        "data-table",
+        "column-header",
+        "row-actions",
+        "filter-toolbar",
+        "pagination"
+      ],
+      "supports_primitives": [
+        "data tables",
+        "search and filter"
+      ],
+      "evidence": [
+        "layout=data-review-surface (0.52)",
+        "layout=dashboard-grid (0.42)",
+        "table x3.25",
+        "data x0.9",
+        "audit x3.25",
+        "log x2.15"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Archetype candidate inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "review-coverage-system",
+      "label": "Review coverage system",
+      "family": "editorial",
+      "confidence": 0.48,
+      "suggested_components": [
+        "review-card",
+        "score-badge",
+        "comparison-table",
+        "ranking-list",
+        "filter-chip"
+      ],
+      "supports_primitives": [
+        "comparison and ranking",
+        "search and filter",
+        "tags and labels"
+      ],
+      "evidence": [
+        "layout=data-review-surface (0.52)",
+        "layout=editorial-feed (0.52)",
+        "review x4.4",
+        "primitive=search and filter"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Archetype candidate inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "workspace-shell",
+      "label": "Workspace shell",
+      "family": "navigation",
+      "confidence": 0.48,
+      "suggested_components": [
+        "app-shell",
+        "sidebar-nav",
+        "workspace-switcher",
+        "breadcrumb",
+        "context-panel"
+      ],
+      "supports_primitives": [
+        "workspace navigation"
+      ],
+      "evidence": [
+        "workspace x1.9",
+        "navigation x0.9",
+        "panel x1.7000000000000002",
+        "primitive=workspace navigation"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Archetype candidate inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "conversation-sidecar",
+      "label": "Conversation sidecar",
+      "family": "overlay",
+      "confidence": 0.43,
+      "suggested_components": [
+        "chat-panel",
+        "message-thread",
+        "message-composer",
+        "context-drawer"
+      ],
+      "supports_primitives": [
+        "chat and messaging"
+      ],
+      "evidence": [
+        "layout=conversation-panel (0.46)",
+        "chat x2.15",
+        "panel x1.7000000000000002"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Archetype candidate inferred from query and brand context only; local image grounding was unavailable."
+      }
+    },
+    {
+      "id": "dashboard-insight-module",
+      "label": "Dashboard insight module",
+      "family": "data-display",
+      "confidence": 0.33,
+      "suggested_components": [
+        "stat-card",
+        "insight-card",
+        "chart-panel",
+        "section-header",
+        "filter-chip"
+      ],
+      "supports_primitives": [
+        "dashboard cards",
+        "charts and visualization"
+      ],
+      "evidence": [
+        "layout=dashboard-grid (0.42)",
+        "dashboard x0.45",
+        "metric x0.9"
+      ],
+      "provenance": {
+        "level": "inferred",
+        "detail": "Archetype candidate inferred from query and brand context only; local image grounding was unavailable."
+      }
+    }
+  ],
+  "advanced_component_catalog": [
+    {
+      "name": "resizable-split-pane",
+      "family": "layout",
+      "role": "Resizable two/three-pane workspace shell for dense tools",
+      "use_when": [
+        "primary work happens between list, canvas/chat, and detail panels",
+        "users need to compare or inspect adjacent information without navigation"
+      ],
+      "avoid_when": [
+        "single linear form or landing page is enough"
+      ],
+      "pairs_with": [
+        "thread-list",
+        "artifact-preview-panel",
+        "inspector-drawer"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "dashboard",
+        "canvas-tool",
+        "monitoring-ops"
+      ]
+    },
+    {
+      "name": "command-palette",
+      "family": "overlay",
+      "role": "Keyboard-first command launcher and cross-surface search",
+      "use_when": [
+        "the product has many actions or navigation targets",
+        "expert users benefit from quick action search"
+      ],
+      "avoid_when": [
+        "there are fewer than five meaningful commands"
+      ],
+      "pairs_with": [
+        "shortcut-hint",
+        "saved-view-bar",
+        "filter-builder"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "dashboard",
+        "canvas-tool",
+        "monitoring-ops"
+      ]
+    },
+    {
+      "name": "inspector-drawer",
+      "family": "overlay",
+      "role": "Contextual detail drawer for properties, policy facts, or record metadata",
+      "use_when": [
+        "a selected item needs rich detail without leaving the main workflow",
+        "users need source facts, owners, versions, or retention metadata"
+      ],
+      "avoid_when": [
+        "the detail is short enough for an inline disclosure"
+      ],
+      "pairs_with": [
+        "policy-matrix",
+        "citation-drawer",
+        "decision-record-card"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "dashboard",
+        "canvas-tool",
+        "monitoring-ops"
+      ]
+    },
+    {
+      "name": "diff-viewer",
+      "family": "document",
+      "role": "Before/after document comparison with inline additions and removals",
+      "use_when": [
+        "AI rewrites, policy edits, or reviewer changes need auditability",
+        "users must approve what changed before publishing"
+      ],
+      "avoid_when": [
+        "only a short status message changed"
+      ],
+      "pairs_with": [
+        "redline-viewer",
+        "revision-timeline",
+        "approval-rail"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "document-content"
+      ]
+    },
+    {
+      "name": "redline-viewer",
+      "family": "document",
+      "role": "Review-oriented prose surface with suggested insertions, deletions, and comments",
+      "use_when": [
+        "legal, compliance, or editorial text needs reviewer markup",
+        "comments must stay anchored to exact text ranges"
+      ],
+      "avoid_when": [
+        "structured rows are more important than prose"
+      ],
+      "pairs_with": [
+        "diff-viewer",
+        "comment-thread",
+        "approval-rail"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "document-content"
+      ]
+    },
+    {
+      "name": "citation-drawer",
+      "family": "copilot-artifact",
+      "role": "Source and citation drawer for AI answers, policies, and quoted evidence",
+      "use_when": [
+        "answers must show supporting policy, document, or source records",
+        "users need to inspect evidence without losing conversation context"
+      ],
+      "avoid_when": [
+        "citations are static footnotes only"
+      ],
+      "pairs_with": [
+        "inline-citation",
+        "source-card",
+        "evidence-graph"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "document-content"
+      ]
+    },
+    {
+      "name": "evidence-graph",
+      "family": "data-display",
+      "role": "Node-link evidence map connecting claims, sources, policies, and decisions",
+      "use_when": [
+        "trust depends on seeing relationships between claims and sources",
+        "auditors need to trace why an answer or decision was made"
+      ],
+      "avoid_when": [
+        "a simple source list communicates the relationship"
+      ],
+      "pairs_with": [
+        "citation-drawer",
+        "decision-record-card",
+        "policy-matrix"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "monitoring-ops"
+      ]
+    },
+    {
+      "name": "policy-matrix",
+      "family": "data-display",
+      "role": "Policy requirement by answer/field matrix with pass, warning, and exception states",
+      "use_when": [
+        "multiple policy rules must be checked against multiple claims or fields",
+        "reviewers need dense scan-and-drill compliance status"
+      ],
+      "avoid_when": [
+        "there is only one policy outcome"
+      ],
+      "pairs_with": [
+        "risk-summary-card",
+        "exception-queue",
+        "approval-rail"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "dashboard",
+        "monitoring-ops"
+      ]
+    },
+    {
+      "name": "audit-timeline",
+      "family": "data-display",
+      "role": "Chronological audit trail with actor, action, timestamp, and linked artifact",
+      "use_when": [
+        "regulated workflows require traceable user and AI actions",
+        "reviewers need to reconstruct what happened before approval"
+      ],
+      "avoid_when": [
+        "events are not user-facing or not actionable"
+      ],
+      "pairs_with": [
+        "decision-record-card",
+        "approval-rail",
+        "tool-call-trace"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "monitoring-ops",
+        "dashboard"
+      ]
+    },
+    {
+      "name": "approval-rail",
+      "family": "workflow",
+      "role": "Persistent approval state rail with owners, blockers, and next action",
+      "use_when": [
+        "work requires review, approval, rejection, or handoff",
+        "users need to know who owns the next decision"
+      ],
+      "avoid_when": [
+        "there is no explicit workflow owner or state"
+      ],
+      "pairs_with": [
+        "policy-matrix",
+        "risk-summary-card",
+        "diff-viewer"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "dashboard",
+        "document-content"
+      ]
+    },
+    {
+      "name": "risk-summary-card",
+      "family": "data-display",
+      "role": "Compact risk score card with drivers, confidence, and recommended mitigation",
+      "use_when": [
+        "users need a fast read of risk before drilling into policy details",
+        "AI confidence or compliance severity must be visible"
+      ],
+      "avoid_when": [
+        "score cannot be explained with drivers"
+      ],
+      "pairs_with": [
+        "policy-matrix",
+        "confidence-meter",
+        "exception-queue"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "dashboard",
+        "monitoring-ops"
+      ]
+    },
+    {
+      "name": "exception-queue",
+      "family": "data-display",
+      "role": "Work queue for unresolved policy, data, or workflow exceptions",
+      "use_when": [
+        "multiple issues require triage, assignment, and resolution",
+        "reviewers need to batch handle exceptions"
+      ],
+      "avoid_when": [
+        "exceptions are rare and single-item"
+      ],
+      "pairs_with": [
+        "bulk-action-table",
+        "policy-matrix",
+        "approval-rail"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "dashboard",
+        "monitoring-ops"
+      ]
+    },
+    {
+      "name": "saved-view-bar",
+      "family": "navigation",
+      "role": "Saved view and scope switcher for repeated operational filters",
+      "use_when": [
+        "teams revisit the same filtered views often",
+        "dense tools need stable scope memory"
+      ],
+      "avoid_when": [
+        "filters are one-off and simple"
+      ],
+      "pairs_with": [
+        "filter-builder",
+        "bulk-action-table",
+        "exception-queue"
+      ],
+      "recommended_for": [
+        "dashboard",
+        "monitoring-ops",
+        "conversation-copilot"
+      ]
+    },
+    {
+      "name": "filter-builder",
+      "family": "input",
+      "role": "Advanced condition builder for multi-field filtering",
+      "use_when": [
+        "users need AND/OR logic across several fields",
+        "filters should be saved, shared, or audited"
+      ],
+      "avoid_when": [
+        "a few filter chips are sufficient"
+      ],
+      "pairs_with": [
+        "saved-view-bar",
+        "bulk-action-table",
+        "exception-queue"
+      ],
+      "recommended_for": [
+        "dashboard",
+        "monitoring-ops",
+        "conversation-copilot"
+      ]
+    },
+    {
+      "name": "bulk-action-table",
+      "family": "data-display",
+      "role": "Selectable data table with sticky bulk action affordances",
+      "use_when": [
+        "users handle many records at once",
+        "selection count and destructive actions must stay visible"
+      ],
+      "avoid_when": [
+        "records are read-only or single-action"
+      ],
+      "pairs_with": [
+        "saved-view-bar",
+        "filter-builder",
+        "exception-queue"
+      ],
+      "recommended_for": [
+        "dashboard",
+        "monitoring-ops",
+        "conversation-copilot"
+      ]
+    },
+    {
+      "name": "tool-call-trace",
+      "family": "copilot-chat",
+      "role": "Expandable trace of AI tool calls, inputs, outputs, and latency",
+      "use_when": [
+        "AI actions need explainability or debugging",
+        "operators need to audit retrieval, policy checks, or workflow calls"
+      ],
+      "avoid_when": [
+        "trace data is sensitive and cannot be summarized"
+      ],
+      "pairs_with": [
+        "audit-timeline",
+        "citation-drawer",
+        "decision-record-card"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "monitoring-ops"
+      ]
+    },
+    {
+      "name": "source-card",
+      "family": "copilot-artifact",
+      "role": "Compact source record card with title, excerpt, metadata, and verification state",
+      "use_when": [
+        "AI output depends on external or internal source records",
+        "users need a repeatable citation preview component"
+      ],
+      "avoid_when": [
+        "source metadata is unavailable"
+      ],
+      "pairs_with": [
+        "citation-drawer",
+        "evidence-graph",
+        "inline-citation"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "document-content"
+      ]
+    },
+    {
+      "name": "confidence-meter",
+      "family": "feedback",
+      "role": "Confidence or certainty meter with explanation and threshold labels",
+      "use_when": [
+        "AI or policy outcome includes uncertainty",
+        "users must decide whether to trust, edit, or escalate"
+      ],
+      "avoid_when": [
+        "confidence cannot be explained or calibrated"
+      ],
+      "pairs_with": [
+        "risk-summary-card",
+        "policy-matrix",
+        "tool-call-trace"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "monitoring-ops",
+        "dashboard"
+      ]
+    },
+    {
+      "name": "decision-record-card",
+      "family": "data-display",
+      "role": "Auditable decision record summarizing decision, actor, evidence, and retention",
+      "use_when": [
+        "a reviewer or AI-assisted workflow reaches a durable decision",
+        "regulated teams need record ids and retention status"
+      ],
+      "avoid_when": [
+        "the action is transient and not auditable"
+      ],
+      "pairs_with": [
+        "audit-timeline",
+        "approval-rail",
+        "citation-drawer"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "dashboard",
+        "monitoring-ops"
+      ]
+    },
+    {
+      "name": "reviewer-assignment-picker",
+      "family": "input",
+      "role": "Reviewer picker with role, availability, and escalation hints",
+      "use_when": [
+        "workflows require human approval or reassignment",
+        "reviewer choice depends on policy ownership or availability"
+      ],
+      "avoid_when": [
+        "there is only one fixed reviewer"
+      ],
+      "pairs_with": [
+        "approval-rail",
+        "exception-queue",
+        "presence-indicator"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "dashboard",
+        "document-content"
+      ]
+    },
+    {
+      "name": "retention-indicator",
+      "family": "feedback",
+      "role": "Retention and recordkeeping status indicator for regulated content",
+      "use_when": [
+        "users need to know whether a record is retained, pending, or expired",
+        "policy requires retention visibility near decisions"
+      ],
+      "avoid_when": [
+        "retention is not relevant to user workflow"
+      ],
+      "pairs_with": [
+        "decision-record-card",
+        "audit-timeline",
+        "inspector-drawer"
+      ],
+      "recommended_for": [
+        "conversation-copilot",
+        "monitoring-ops"
+      ]
+    }
+  ],
+  "advanced_recommendations": [
+    {
+      "name": "diff-viewer",
+      "family": "document",
+      "role": "Before/after document comparison with inline additions and removals",
+      "use_when": [
+        "AI rewrites, policy edits, or reviewer changes need auditability",
+        "users must approve what changed before publishing"
+      ],
+      "avoid_when": [
+        "only a short status message changed"
+      ],
+      "pairs_with": [
+        "redline-viewer",
+        "revision-timeline",
+        "approval-rail"
+      ],
+      "score": 16,
+      "matched_signals": [
+        "approve",
+        "diff",
+        "draft",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:document-content"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "exception-queue",
+      "family": "data-display",
+      "role": "Work queue for unresolved policy, data, or workflow exceptions",
+      "use_when": [
+        "multiple issues require triage, assignment, and resolution",
+        "reviewers need to batch handle exceptions"
+      ],
+      "avoid_when": [
+        "exceptions are rare and single-item"
+      ],
+      "pairs_with": [
+        "bulk-action-table",
+        "policy-matrix",
+        "approval-rail"
+      ],
+      "score": 16,
+      "matched_signals": [
+        "assign",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "queue",
+        "resolve"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "resizable-split-pane",
+      "family": "layout",
+      "role": "Resizable two/three-pane workspace shell for dense tools",
+      "use_when": [
+        "primary work happens between list, canvas/chat, and detail panels",
+        "users need to compare or inspect adjacent information without navigation"
+      ],
+      "avoid_when": [
+        "single linear form or landing page is enough"
+      ],
+      "pairs_with": [
+        "thread-list",
+        "artifact-preview-panel",
+        "inspector-drawer"
+      ],
+      "score": 16,
+      "matched_signals": [
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "panel",
+        "thread",
+        "workspace"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "source-card",
+      "family": "copilot-artifact",
+      "role": "Compact source record card with title, excerpt, metadata, and verification state",
+      "use_when": [
+        "AI output depends on external or internal source records",
+        "users need a repeatable citation preview component"
+      ],
+      "avoid_when": [
+        "source metadata is unavailable"
+      ],
+      "pairs_with": [
+        "citation-drawer",
+        "evidence-graph",
+        "inline-citation"
+      ],
+      "score": 16,
+      "matched_signals": [
+        "document",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:document-content",
+        "reference",
+        "source"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "audit-timeline",
+      "family": "data-display",
+      "role": "Chronological audit trail with actor, action, timestamp, and linked artifact",
+      "use_when": [
+        "regulated workflows require traceable user and AI actions",
+        "reviewers need to reconstruct what happened before approval"
+      ],
+      "avoid_when": [
+        "events are not user-facing or not actionable"
+      ],
+      "pairs_with": [
+        "decision-record-card",
+        "approval-rail",
+        "tool-call-trace"
+      ],
+      "score": 14,
+      "matched_signals": [
+        "audit",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "trace"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "evidence-graph",
+      "family": "data-display",
+      "role": "Node-link evidence map connecting claims, sources, policies, and decisions",
+      "use_when": [
+        "trust depends on seeing relationships between claims and sources",
+        "auditors need to trace why an answer or decision was made"
+      ],
+      "avoid_when": [
+        "a simple source list communicates the relationship"
+      ],
+      "pairs_with": [
+        "citation-drawer",
+        "decision-record-card",
+        "policy-matrix"
+      ],
+      "score": 14,
+      "matched_signals": [
+        "audit",
+        "graph",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "trace"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "saved-view-bar",
+      "family": "navigation",
+      "role": "Saved view and scope switcher for repeated operational filters",
+      "use_when": [
+        "teams revisit the same filtered views often",
+        "dense tools need stable scope memory"
+      ],
+      "avoid_when": [
+        "filters are one-off and simple"
+      ],
+      "pairs_with": [
+        "filter-builder",
+        "bulk-action-table",
+        "exception-queue"
+      ],
+      "score": 14,
+      "matched_signals": [
+        "filter",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "view"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "tool-call-trace",
+      "family": "copilot-chat",
+      "role": "Expandable trace of AI tool calls, inputs, outputs, and latency",
+      "use_when": [
+        "AI actions need explainability or debugging",
+        "operators need to audit retrieval, policy checks, or workflow calls"
+      ],
+      "avoid_when": [
+        "trace data is sensitive and cannot be summarized"
+      ],
+      "pairs_with": [
+        "audit-timeline",
+        "citation-drawer",
+        "decision-record-card"
+      ],
+      "score": 14,
+      "matched_signals": [
+        "audit",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "trace"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "redline-viewer",
+      "family": "document",
+      "role": "Review-oriented prose surface with suggested insertions, deletions, and comments",
+      "use_when": [
+        "legal, compliance, or editorial text needs reviewer markup",
+        "comments must stay anchored to exact text ranges"
+      ],
+      "avoid_when": [
+        "structured rows are more important than prose"
+      ],
+      "pairs_with": [
+        "diff-viewer",
+        "comment-thread",
+        "approval-rail"
+      ],
+      "score": 13,
+      "matched_signals": [
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:document-content",
+        "pairs:comment-thread",
+        "review"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "bulk-action-table",
+      "family": "data-display",
+      "role": "Selectable data table with sticky bulk action affordances",
+      "use_when": [
+        "users handle many records at once",
+        "selection count and destructive actions must stay visible"
+      ],
+      "avoid_when": [
+        "records are read-only or single-action"
+      ],
+      "pairs_with": [
+        "saved-view-bar",
+        "filter-builder",
+        "exception-queue"
+      ],
+      "score": 12,
+      "matched_signals": [
+        "mode:conversation-copilot",
+        "mode:monitoring-ops",
+        "queue",
+        "table"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "citation-drawer",
+      "family": "copilot-artifact",
+      "role": "Source and citation drawer for AI answers, policies, and quoted evidence",
+      "use_when": [
+        "answers must show supporting policy, document, or source records",
+        "users need to inspect evidence without losing conversation context"
+      ],
+      "avoid_when": [
+        "citations are static footnotes only"
+      ],
+      "pairs_with": [
+        "inline-citation",
+        "source-card",
+        "evidence-graph"
+      ],
+      "score": 12,
+      "matched_signals": [
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:document-content",
+        "source"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    },
+    {
+      "name": "decision-record-card",
+      "family": "data-display",
+      "role": "Auditable decision record summarizing decision, actor, evidence, and retention",
+      "use_when": [
+        "a reviewer or AI-assisted workflow reaches a durable decision",
+        "regulated teams need record ids and retention status"
+      ],
+      "avoid_when": [
+        "the action is transient and not auditable"
+      ],
+      "pairs_with": [
+        "audit-timeline",
+        "approval-rail",
+        "citation-drawer"
+      ],
+      "score": 12,
+      "matched_signals": [
+        "audit",
+        "mode-default",
+        "mode:conversation-copilot",
+        "mode:monitoring-ops"
+      ],
+      "source": "advanced-component-catalog",
+      "status": "recommended-advanced"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "valid": true,
+  "errors": [],
+  "warnings": [
+    "[pitfall#3-rebrand] Ochre vs Apricot (orange): lightness diff 28, saturation diff 29 — possible rebrand remnant",
+    "visual_reference.sources is empty"
+  ]
+}

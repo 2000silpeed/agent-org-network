@@ -1,8 +1,9 @@
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from agent_org_network.agent_card import AgentCard
 
@@ -32,6 +33,33 @@ class AgentRuntime(Protocol):
     def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer: ...
 
 
+# 스트리밍 답 한 토막(ADR 0031 결정 1·CONTEXT AnswerChunk 절). `StreamingRuntime.answer_stream`이
+# N개를 순서대로 yield하고, 스트림이 끝나면 *조립된 완성 `Answer`*(델타를 합친 text·sources·mode)가
+# 확정돼 audit·세션 적재·노출 투영이 그 완성 답을 본다. 델타에는 mode·sources·answered_by를 안
+# 싣는다 — 그건 `meta`/`done` 이벤트가 한 번씩만(노출 불변식·답 전체에 붙는 신뢰 메타).
+@dataclass(frozen=True)
+class AnswerChunk:
+    text_delta: str
+
+
+@runtime_checkable
+class StreamingRuntime(Protocol):
+    """토큰 스트리밍을 지원하는 런타임의 *옵셔널* 능력(ADR 0031 결정 1).
+
+    `answer`(코어 포트·블로킹)와 별개의 메서드 — `answer`를 구현한 런타임이 *추가로* 이
+    메서드를 구현하면 점진 전달이 가능하고, 안 하면 호출 측이 블로킹 `answer`로 폴백한다
+    (미아 없음·하위호환). capability 감지는 `isinstance(runtime, StreamingRuntime)`로
+    타입 안전하게(`@runtime_checkable` Protocol — `NotificationChannel`·`GitGateway` 감지 정신).
+
+    공급자 중립: claude·codex·gemini가 같은 능력의 다른 구현. 미지원 공급자는 블로킹 폴백.
+    실 stdout/SDK 스트리밍 구현은 게이트 밖(T9.6) — 게이트 내는 `StubStreamingRuntime` 결정론.
+    """
+
+    def answer_stream(
+        self, question: str, card: AgentCard, context: str | None = None
+    ) -> Iterator[AnswerChunk]: ...
+
+
 class ClaudeRunner(Protocol):
     """`claude -p`를 실제로 돌리는 호출 가능 객체의 모양 — 테스트는 FakeRunner로 대체한다.
 
@@ -58,6 +86,36 @@ class StubRuntime:
         self.last_context = context
         return Answer(
             text=f"[{card.agent_id}] {card.summary}",
+            sources=tuple(card.knowledge_sources),
+            mode="full",
+        )
+
+
+class StubStreamingRuntime:
+    """결정론 StreamingRuntime stub — 고정 델타 시퀀스 yield(ADR 0031 결정 6·StubProviderTransport 정신).
+
+    `answer_stream`은 주입된 고정 델타들을 `AnswerChunk`로 순서대로 흘리고, `answer`는 그 델타들을
+    합친 완성 `Answer`를 돌려준다(스트림 종착 = 완성 답). 텍스트 외 메타(sources·mode)는 카드에서
+    파생해 `StubRuntime`과 같은 결을 둔다. 실 secrets·네트워크·SDK 0 — 단위 테스트 주입 전용.
+    """
+
+    _DEFAULT_DELTAS: tuple[str, ...] = ("스트리밍 ", "응답 ", "입니다.")
+
+    def __init__(self, deltas: tuple[str, ...] | None = None) -> None:
+        self._deltas: tuple[str, ...] = deltas if deltas is not None else self._DEFAULT_DELTAS
+        self.last_context: str | None = None
+
+    def answer_stream(
+        self, question: str, card: AgentCard, context: str | None = None
+    ) -> Iterator[AnswerChunk]:
+        self.last_context = context
+        for delta in self._deltas:
+            yield AnswerChunk(text_delta=delta)
+
+    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
+        self.last_context = context
+        return Answer(
+            text="".join(self._deltas),
             sources=tuple(card.knowledge_sources),
             mode="full",
         )

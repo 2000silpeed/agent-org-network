@@ -32,7 +32,13 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
 
-from agent_org_network.ask_org import Answered, OrgReply, Pending
+from agent_org_network.ask_org import (
+    Answered,
+    OrgReply,
+    Pending,
+    project_answered,
+    project_pending,
+)
 from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog
 from agent_org_network.conflict import (
     Agreed,
@@ -201,29 +207,17 @@ class FetchDocumentRequest(BaseModel):
 
 
 def serialize_reply(reply: OrgReply) -> dict[str, Any]:
-    """OrgReply를 사용자에게 보낼 dict로 변환한다(내부값 미포함)."""
+    """OrgReply를 사용자에게 보낼 dict로 변환한다(내부값 미포함).
+
+    노출 투영 SSOT(ADR 0031 결정 3): `project_answered`·`project_pending`(ask_org)을 공유한다 —
+    스트리밍 SSE(`serialize_sse_event`)와 *같은 투영*을 거쳐 두 경로가 노출 불변식을 다르게
+    흘릴 여지를 제거한다. 답 회수용 불투명 추적 토큰은 dispatched에만(project_pending이 처리).
+    """
     match reply:
         case Answered():
-            return {
-                "type": "answered",
-                "text": reply.text,
-                "answered_by": {
-                    "owner": reply.answered_by[0],
-                    "agent_id": reply.answered_by[1],
-                },
-                "mode": reply.mode,
-                "sources": list(reply.sources),
-            }
+            return project_answered(reply)
         case Pending():
-            body: dict[str, Any] = {
-                "type": "pending",
-                "kind": reply.kind,
-                "message": reply.message,
-            }
-            # 답 회수용 불투명 추적 토큰(dispatched에만 존재, ADR 0011 결정 6-5).
-            if reply.tracking is not None:
-                body["tracking"] = reply.tracking
-            return body
+            return project_pending(reply)
         case _ as never:
             assert_never(never)
 

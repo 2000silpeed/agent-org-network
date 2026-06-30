@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, assert_never
 
@@ -11,6 +11,7 @@ from agent_org_network.dispatch import (
     Delivered,
     DispatchOutcome,
     EscalatedToManager,
+    LocalStreamingDispatcher,
     RuntimeDispatcher,
     WorkTicket,
 )
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.notify import Notifier
     from agent_org_network.review import BackupReview, BackupReviewItem, BackupReviewStore
+    from agent_org_network.runtime import Answer
 
 
 @dataclass(frozen=True)
@@ -66,9 +68,152 @@ class Pending:
 OrgReply = Answered | Pending
 
 
+# ── 노출 투영 헬퍼(SSOT) — 블로킹 /ask·SSE가 공유 ────────────────────────
+#
+# ADR 0031 결정 3: `meta`·`done`·`pending`의 페이로드 투영은 `serialize_reply`와 *같은
+# 투영 규칙*을 공유한다. 두 경로(블로킹 /ask·스트리밍 SSE)가 노출 불변식을 *다르게* 흘릴
+# 여지를 구조적으로 제거하려, `serialize_reply`가 Answered/Pending을 dict로 투영하던 로직을
+# 여기 순수 헬퍼로 추출한다 — `serialize_reply`도 이 헬퍼를 쓰고, SSE 직렬화도 같은 헬퍼를
+# 쓴다(노출 SSOT). 내부값(confidence·candidates·manager_id 등)은 어느 헬퍼도 싣지 않는다.
+
+
+def project_answered_by(answered_by: tuple[str, str]) -> dict[str, str]:
+    """담당(owner·agent_id) 투영 — Answered·MetaEvent가 공유(노출 불변식: 담당만)."""
+    return {"owner": answered_by[0], "agent_id": answered_by[1]}
+
+
+def project_answered(reply: "Answered") -> dict[str, "object"]:
+    """Answered를 사용자向 dict로 투영한다(담당·mode·출처만 — 내부값 0)."""
+    return {
+        "type": "answered",
+        "text": reply.text,
+        "answered_by": project_answered_by(reply.answered_by),
+        "mode": reply.mode,
+        "sources": list(reply.sources),
+    }
+
+
+def project_pending(reply: "Pending") -> dict[str, "object"]:
+    """Pending을 사용자向 dict로 투영한다(kind·message·tracking?만 — 내부값 0)."""
+    body: dict[str, object] = {
+        "type": "pending",
+        "kind": reply.kind,
+        "message": reply.message,
+    }
+    if reply.tracking is not None:
+        body["tracking"] = reply.tracking
+    return body
+
+
+def _answer_of(answered: "Answered") -> "Answer":
+    """Answered(사용자向 투영)에서 audit용 runtime Answer를 복원한다(text·mode·sources).
+
+    audit는 Delivered.answer(=runtime Answer)를 본다 — handle_stream이 완성 Answered를
+    audit 엔트리에 싣기 위한 역투영(answered_by는 audit decision이 따로 들어 떨군다).
+    """
+    from agent_org_network.runtime import Answer as _Answer
+
+    return _Answer(text=answered.text, sources=answered.sources, mode=answered.mode)
+
+
 # 분산 전송 결말 → 사용자向 Pending 안내 문구. 둘 다 같은 `dispatched`로 모이되,
 # 문구도 내부(워커 미연결 vs escalation)를 비추지 않는 중립 안내로 통일한다.
 _DISPATCHED_MESSAGE = "담당에게 질문을 전달했어요. 답변이 준비되면 알림드릴게요."
+
+
+# ── SSE 스트리밍 이벤트: AskEvent sealed sum(ADR 0031 결정 3) ─────────────
+#
+# `/ask` 스트리밍 한 프레임 — sealed sum("타입이 곧 상태", RoutingDecision·DispatchOutcome
+# 정신). 각 이벤트는 SSE `event:` + `data:`(JSON) 한 프레임으로 직렬화된다. 이벤트 순서
+# 불변: Routed 성공 `meta→token*→done` · Pending `pending` 단독 · 실패 `(meta?)→error`
+# (한 스트림에 done과 pending 동시 불가·상호 배타).
+
+
+@dataclass(frozen=True)
+class MetaEvent:
+    """Routed 스트림 시작 시 1회 — 담당·*초기 추정* mode·출처(노출 투영 후).
+
+    `mode`는 초기 추정(보통 full)이고, *최종 권위*는 `DoneEvent.mode`다(Approval 게이트·
+    backup 하향은 완성 답에 적용되므로). 답 전체에 붙는 신뢰 메타라 델타(token)엔 안 싣는다.
+    """
+
+    answered_by: tuple[str, str]
+    mode: AnswerMode
+    sources: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class TokenEvent:
+    """델타마다 N회 — 텍스트 델타만(answered_by·mode·sources 미포함·노출 불변식)."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class DoneEvent:
+    """Routed 스트림 종료 시 1회 — Approval 게이트 적용 후 *최종 권위* mode·출처."""
+
+    mode: AnswerMode
+    sources: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class PendingEvent:
+    """Contested/Unowned/dispatched 1회 후 종료(비스트림) — kind·message·tracking?만."""
+
+    kind: PendingKind
+    message: str
+    tracking: str | None = None
+
+
+@dataclass(frozen=True)
+class ErrorEvent:
+    """런타임 실패·timeout 1회 후 종료 — *중립 안내만*(내부 예외·스택 0)."""
+
+    message: str
+
+
+AskEvent = MetaEvent | TokenEvent | DoneEvent | PendingEvent | ErrorEvent
+
+
+def serialize_sse_event(event: AskEvent) -> str:
+    """AskEvent를 SSE 프레임 문자열(`event: <type>\\ndata: <json>\\n\\n`)로 직렬화한다(순수).
+
+    노출 투영 SSOT(ADR 0031 결정 3): meta·done·pending 페이로드는 `serialize_reply`와 같은
+    투영 헬퍼(`project_answered_by`·`project_pending`)를 거친다 — 두 경로가 노출 불변식을
+    다르게 흘릴 여지 0. token은 텍스트 델타만, error는 중립 안내만(내부값 0). match+assert_never로
+    5종 망라 — 새 이벤트 타입 추가 시 컴파일 강제(serialize_reply·_project_outcome 정신).
+    """
+    import json
+
+    name: str
+    data: dict[str, object]
+    match event:
+        case MetaEvent():
+            name = "meta"
+            data = {
+                "answered_by": project_answered_by(event.answered_by),
+                "mode": event.mode,
+                "sources": list(event.sources),
+            }
+        case TokenEvent():
+            name = "token"
+            data = {"text": event.text}
+        case DoneEvent():
+            name = "done"
+            data = {"mode": event.mode, "sources": list(event.sources)}
+        case PendingEvent():
+            name = "pending"
+            data = {"kind": event.kind, "message": event.message}
+            if event.tracking is not None:
+                data["tracking"] = event.tracking
+        case ErrorEvent():
+            name = "error"
+            data = {"message": event.message}
+        case _ as never:
+            assert_never(never)
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {name}\ndata: {payload}\n\n"
 
 
 class AskOrg:
@@ -488,6 +633,169 @@ class AskOrg:
             )
         )
         return reply
+
+    def handle_stream(
+        self, question: str, user: User, *, context: str | None = None
+    ) -> Iterator[AskEvent]:
+        """질문을 스트리밍으로 처리한다 — `Iterator[AskEvent]`(ADR 0031 결정 2·3).
+
+        `handle`의 *형제 메서드*(handle은 무변경). decide↔answer 분리·audit-once:
+          1. decide: `route(question)` 정확히 1회(맨 질문만 — 맥락은 dispatch로만).
+          2. 분기(sealed sum match):
+             - Contested/Unowned: 기존 `handle`의 그 분기 부수효과를 *그대로 1회*
+               (ConflictCase open·push 통지·Manager 큐 적재) 후 **단일 pending 이벤트**를
+               yield하고 종료(Pending 비스트림). audit 1회 후 종료.
+             - Routed: `dispatch_stream`으로 meta → token*(델타) → 완성 Answer 확정 →
+               Approval 게이트(_apply_approval_gate)를 완성 답에 적용 → audit 1회 → done.
+          3. audit-once: 스트림을 다 흘린 뒤 done 직전 `self._audit.record`를 정확히 1회.
+
+        `handle`/`handle_stream`은 상호 배타(한 질문은 둘 중 하나·web 엔드포인트가 가름)라
+        이중 audit 구조적 불가. 비스트림 디스패처(`LocalStreamingDispatcher` 아님)면 Routed도
+        블로킹 폴백으로 흘린다(아래 — answer 1델타).
+        """
+        decision = self._router.route(question)
+
+        match decision:
+            case Routed():
+                yield from self._stream_routed(question, user, decision, context)
+            case Contested():
+                yield self._handle_contested_stream(question, decision)
+                self._audit_simple(question, user, decision)
+            case Unowned():
+                yield self._handle_unowned_stream(question, decision)
+                self._audit_simple(question, user, decision)
+
+    def _stream_routed(
+        self,
+        question: str,
+        user: User,
+        decision: Routed,
+        context: str | None,
+    ) -> Iterator[AskEvent]:
+        """Routed 스트림 분기 — meta → token* → (게이트·audit) → done."""
+        card = decision.primary
+
+        # meta: 담당·초기 mode(런타임 초기·보통 full)·sources 투영. done의 mode가 최종 권위.
+        yield MetaEvent(
+            answered_by=(card.owner, card.agent_id),
+            mode="full",
+            sources=tuple(card.knowledge_sources),
+        )
+
+        # 스트리밍 디스패처면 델타를 흘리고 완성 답을 확정, 아니면 블로킹 폴백.
+        completed: Answered
+        if isinstance(self._dispatcher, LocalStreamingDispatcher):
+            stream = self._dispatcher.dispatch_stream(question, card, context=context)
+            for chunk in stream:
+                yield TokenEvent(text=chunk.text_delta)
+            answer = stream.completed
+            completed = Answered(
+                text=answer.text,
+                answered_by=(card.owner, card.agent_id),
+                mode=answer.mode,
+                sources=answer.sources,
+            )
+        else:
+            ticket = self._dispatcher.dispatch(question, card, context=context)
+            outcome = self._dispatcher.poll(ticket)
+            reply = self._project_outcome(outcome, card.owner, card.agent_id, None)
+            if isinstance(reply, Answered):
+                completed = reply
+                yield TokenEvent(text=reply.text)
+            else:
+                # 비스트림 디스패처가 Delivered가 아니면(미회신/escalation) pending으로 종착.
+                # 로컬 스트리밍 경로는 항상 Delivered라 여긴 분산 폴백 자리(이번 범위 밖 보호).
+                # reply는 Answered가 아니므로 Pending으로 좁혀진다(_project_outcome 반환).
+                self._audit_routed(question, user, decision, outcome, None)
+                yield PendingEvent(
+                    kind=reply.kind, message=reply.message, tracking=reply.tracking
+                )
+                return
+
+        # Approval 게이트를 *완성 답*에 적용(델타마다 아님) — done의 mode가 최종 권위.
+        gated = self._apply_approval_gate(completed, decision)
+        final = gated if isinstance(gated, Answered) else completed
+
+        # audit-once: 스트림 다 흘린 뒤 done 직전 정확히 1회.
+        delivered = Delivered(
+            ticket=WorkTicket(
+                owner_id=card.owner,
+                agent_id=card.agent_id,
+                question=question,
+                enqueued_at=self._clock(),
+            ),
+            answer=_answer_of(final),
+        )
+        self._audit_routed(question, user, decision, delivered, None)
+
+        yield DoneEvent(mode=final.mode, sources=final.sources)
+
+    def _handle_contested_stream(self, question: str, decision: Contested) -> PendingEvent:
+        """Contested 부수효과(ConflictCase open·push 통지)를 1회 수행하고 pending 이벤트를 만든다.
+
+        기존 `handle`의 Contested arm과 동형 부수효과 — 같은 책임을 한 곳에서.
+        """
+        if (
+            self._case_store is not None
+            and self._case_store.open_for_intent(decision.intent) is None
+        ):
+            case = ConflictCase(
+                intent=decision.intent,
+                question=question,
+                candidates=tuple(
+                    Candidate(agent_id=c.agent_id, owner=c.owner) for c in decision.candidates
+                ),
+                opened_at=self._clock(),
+            )
+            self._case_store.open_case(case)
+            self._push_conflict_notification(case)
+        return PendingEvent(
+            kind="contested",
+            message="담당을 확인하고 있어요. 정해지면 답변드릴게요.",
+        )
+
+    def _handle_unowned_stream(self, question: str, decision: Unowned) -> PendingEvent:
+        """Unowned 부수효과(Manager 큐 적재)를 1회 수행하고 pending 이벤트를 만든다."""
+        self._enqueue_unowned(decision, question)
+        return PendingEvent(
+            kind="unowned",
+            message="아직 담당이 없어 매니저에게 전달했어요. 답변되면 알림드릴게요.",
+        )
+
+    def _audit_simple(self, question: str, user: User, decision: Contested | Unowned) -> None:
+        """Contested/Unowned는 디스패치 없음 — outcome None으로 audit 1회(기존 handle과 동형)."""
+        self._audit.record(
+            AuditEntry(
+                timestamp=self._clock(),
+                user_id=user.id,
+                question=question,
+                intent=decision.intent,
+                decision=decision,
+                dispatch_outcome=None,
+                tracking=None,
+            )
+        )
+
+    def _audit_routed(
+        self,
+        question: str,
+        user: User,
+        decision: Routed,
+        outcome: DispatchOutcome,
+        tracking: str | None,
+    ) -> None:
+        """Routed 스트림 종료 시 audit 1회(기존 handle 끝 record와 동형·지점만 이동)."""
+        self._audit.record(
+            AuditEntry(
+                timestamp=self._clock(),
+                user_id=user.id,
+                question=question,
+                intent=decision.intent,
+                decision=decision,
+                dispatch_outcome=outcome,
+                tracking=tracking,
+            )
+        )
 
     def _push_conflict_notification(self, case: ConflictCase) -> None:
         """ConflictCase open 직후 후보 owner들에게 push 통지를 쏜다(T7.4·ADR 0022 결정 4).

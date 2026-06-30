@@ -16,13 +16,13 @@ N번째 인스턴스 — 새 메커니즘 0.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
-    from agent_org_network.ask_org import OrgReply
+    from agent_org_network.ask_org import AskEvent, OrgReply
     from agent_org_network.user import User
 
 SessionStatus = Literal["active", "ended"]
@@ -158,6 +158,10 @@ class _AskHandle(Protocol):
 
     def handle(self, question: str, user: "User", *, context: str | None = None) -> "OrgReply": ...
 
+    def handle_stream(
+        self, question: str, user: "User", *, context: str | None = None
+    ) -> "Iterator[AskEvent]": ...
+
 
 class SessionAskOrg:
     """AskOrg + SessionStore 합성 래퍼 (T9.1(d), ADR 0024 결정 5).
@@ -198,6 +202,37 @@ class SessionAskOrg:
             self._session_store.append_turn(session.session_id, turn)
 
         return reply
+
+    def handle_stream(self, question: str, user: "User") -> "Iterator[AskEvent]":
+        """스트리밍으로 위임하되 *완성 답*으로 1회 append_turn한다(ADR 0031 결정 2).
+
+        `handle`의 형제 — 세션을 암묵 시작(open_or_get)하고 과거 턴만 맥락으로 조립해
+        (assemble_context는 적재 전 호출이라 맥락 = 과거 턴만·0027 결정 7 보존) dispatch로만
+        넘긴다. AskOrg.handle_stream의 이벤트를 그대로 흘리되, meta로 담당을·token으로
+        완성 텍스트를 누적해 done을 만나면 *완성 답*으로 SessionTurn을 1회 적재한다(전이≠기록 —
+        세션 적재는 스트림 종료 1회). Pending(비스트림)은 턴 미적재(동기 handle과 대칭).
+        """
+        from agent_org_network.ask_org import DoneEvent, MetaEvent, TokenEvent
+
+        session = self._session_store.open_or_get(user.id)
+        assembled = assemble_context(session, question)
+
+        answered_by: str = ""
+        text_parts: list[str] = []
+        for event in self._ask.handle_stream(question, user, context=assembled or None):
+            if isinstance(event, MetaEvent):
+                answered_by = event.answered_by[1]
+            elif isinstance(event, TokenEvent):
+                text_parts.append(event.text)
+            elif isinstance(event, DoneEvent):
+                turn = SessionTurn(
+                    question=question,
+                    answer_text="".join(text_parts),
+                    answered_by=answered_by,
+                    at=self._clock(),
+                )
+                self._session_store.append_turn(session.session_id, turn)
+            yield event
 
 
 def assemble_context(session: Session, current_question: str) -> str:

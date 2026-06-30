@@ -10,9 +10,10 @@
   - 기존 라우팅(Contested/Unowned/Dispatched) 종착 동일.
 """
 
+from collections.abc import Iterator
 from datetime import datetime, timezone
 
-from agent_org_network.ask_org import Answered, OrgReply, Pending
+from agent_org_network.ask_org import Answered, AskEvent, OrgReply, Pending
 from agent_org_network.session import (
     InMemorySessionStore,
 )
@@ -66,6 +67,12 @@ class FakeAskOrg:
         self.last_user = user
         self.last_context = context
         return self._reply
+
+    def handle_stream(
+        self, question: str, user: User, *, context: str | None = None
+    ) -> Iterator[AskEvent]:
+        # 이 fake는 handle만 테스트 — handle_stream은 _AskHandle Protocol 충족용 stub.
+        return iter(())
 
 
 # ── 기본 위임·노출 불변식 ─────────────────────────────────────────────
@@ -198,6 +205,11 @@ def test_연속_Answered이면_턴이_누적된다():
             self._idx += 1
             return r
 
+        def handle_stream(
+            self, question: str, user: User, *, context: str | None = None
+        ) -> Iterator[AskEvent]:
+            return iter(())
+
     replies: list[Answered] = [
         _make_answered(text="첫 번째 답", agent_id="contract_ops"),
         _make_answered(text="두 번째 답", agent_id="hr_ops"),
@@ -311,6 +323,11 @@ def test_alice와_bob_세션이_격리된다():
     class _UserFake:
         def handle(self, question: str, user: User, *, context: str | None = None) -> OrgReply:
             return _make_answered(text=f"{user.id} 답변", agent_id="contract_ops")
+
+        def handle_stream(
+            self, question: str, user: User, *, context: str | None = None
+        ) -> Iterator[AskEvent]:
+            return iter(())
 
     fake = _UserFake()
     store = InMemorySessionStore(clock=_fixed_clock)

@@ -149,8 +149,16 @@ class OkfAuthor(Protocol):
     구현: FakeAuthor(테스트)·실 어댑터는 T11.7 게이트 밖.
     """
 
-    def split(self, sources: Sequence[RawSource]) -> tuple[OkfDocumentDraft, ...]:
-        """2단계: 원본 소스를 개념 단위로 분할한다."""
+    def split(
+        self, sources: Sequence[RawSource], allowed_domains: Sequence[str]
+    ) -> tuple[OkfDocumentDraft, ...]:
+        """2단계: 원본 소스를 개념 단위로 분할한다.
+
+        allowed_domains: 이 작성자의 권한 domain *힌트*(card.domains). 개념이 이 중 하나에
+            해당하면 그 라벨을 정확히 그대로 domain에 쓰게 유도한다(매칭률↑). 강제 분류가
+            아니다 — 어디에도 안 맞으면 실제 domain을 쓰고 over-claim 필터(admit_okf)가
+            정상 drop한다. 빈 시퀀스면 기존 자유 분류(하위호환).
+        """
         ...
 
     def derive_core_questions(
@@ -194,12 +202,20 @@ class FakeAuthor:
         self._derive_result = derive_result
         self._link_result = link_result
         self.split_seen: tuple[RawSource, ...] | None = None
+        self.split_allowed_domains_seen: tuple[str, ...] | None = None
         self.derive_seen: tuple[OkfDocumentDraft, ...] | None = None
         self.link_seen: tuple[OkfDocumentDraft, ...] | None = None
 
-    def split(self, sources: Sequence[RawSource]) -> tuple[OkfDocumentDraft, ...]:
-        """입력 무관 고정 산출 반환·split_seen에 입력 기록."""
+    def split(
+        self, sources: Sequence[RawSource], allowed_domains: Sequence[str]
+    ) -> tuple[OkfDocumentDraft, ...]:
+        """입력 무관 고정 산출 반환·split_seen/split_allowed_domains_seen에 입력 기록.
+
+        allowed_domains는 테스트 더블 정신으로 *무시*하고 고정 산출을 유지한다.
+        다만 파이프라인이 권한 domain을 실제로 전달하는지 단언할 관측 seam에 기록한다.
+        """
         self.split_seen = tuple(sources)
+        self.split_allowed_domains_seen = tuple(allowed_domains)
         return self._split_result
 
     def derive_core_questions(
@@ -221,14 +237,19 @@ def run_authoring_pipeline(
     agent_id: str,
     sources: Sequence[RawSource],
     author: OkfAuthor,
+    allowed_domains: Sequence[str] = (),
 ) -> AuthoredOkf:
     """staged OKF 저작 오케스트레이터 — 순수 함수.
 
     1단계(인제스트)는 sources 인자로 이미 받았다고 전제(T11.6 Ingestor seam).
     5단계(인덱싱)는 하지 않는다(T11.4 seam — KnowledgeIndex 미선취).
     HITL 승인 상태는 부여하지 않는다(T11.3 seam).
+
+    allowed_domains: 작성자 권한 domain 힌트(card.domains) — split에 그대로 전달한다.
+        domain 라벨링을 권한과 정렬해 매칭률을 높이는 힌트지 강제가 아니다(over-claim
+        필터 보존). 기본 빈 tuple은 자유 분류(하위호환).
     """
-    split_drafts = author.split(sources)            # 2단계: 개념 분할
+    split_drafts = author.split(sources, allowed_domains)  # 2단계: 개념 분할
     derived = author.derive_core_questions(split_drafts)  # 3단계: core_question 정련
     edges = author.link(derived)                    # 4단계: edges 도출
     draft = OkfDraft(agent_id=agent_id, documents=derived, edges=edges)
@@ -564,7 +585,9 @@ def reindex_incrementally(req: ReindexRequest, author: OkfAuthor) -> ReindexResu
         )
 
     # ② 영향 재처리: changed_sources만 split
-    split_drafts = author.split(req.changed_sources)
+    # allowed_domains는 ReindexRequest에 없어 빈 tuple(자유 분류) — 증분 재인덱싱은
+    # prior와 동일 작성자 컨텍스트를 가정하고, domain 정합은 admit_okf가 최종 보증한다.
+    split_drafts = author.split(req.changed_sources, ())
     reprocessed = author.derive_core_questions(split_drafts)
 
     # ③ 합치기: 재도출분이 충돌 concept_id에서 승
@@ -697,17 +720,43 @@ _LINK_SYSTEM_FOOTER = (
 )
 
 
+def _split_system_for(allowed_domains: Sequence[str]) -> str:
+    """allowed_domains가 비어있지 않으면 _SPLIT_SYSTEM에 권한 domain 절을 덧댄다.
+
+    권한 목록은 *힌트/컨텍스트*다(강제 분류 아님): 개념이 권한 domain 중 하나에 해당하면
+    그 라벨을 정확히 그대로 쓰게 유도(매칭률↑), 어디에도 안 맞으면 실제 주제를 domain으로
+    쓰게 둔다(over-claim 필터가 정상 drop). 빈 시퀀스면 권한 절을 안 넣는다(하위호환).
+    """
+    if not allowed_domains:
+        return _SPLIT_SYSTEM
+    listed = ", ".join(allowed_domains)
+    clause = (
+        f"\n이 작성자의 권한 도메인: [{listed}].\n"
+        "각 개념이 이 권한 도메인 중 하나에 해당하면 그 라벨을 정확히 그대로 "
+        '"domain"에 쓰라(글자 그대로·임의 변형 금지).\n'
+        '어느 것에도 해당하지 않으면 개념의 실제 주제를 "domain"으로 쓰라'
+        "(권한 밖으로 분류될 수 있음 — 강제로 권한 도메인에 끼워 넣지 마라)."
+    )
+    return _SPLIT_SYSTEM + clause
+
+
 def build_split_request(
     sources: Sequence[RawSource],
     *,
     model: str,
+    allowed_domains: Sequence[str] = (),
 ) -> ProviderRequest:
-    """raw sources → 개념 분할 요청(순수·IO 0)."""
+    """raw sources → 개념 분할 요청(순수·IO 0).
+
+    allowed_domains: 작성자 권한 domain 힌트. 비어있지 않으면 system 프롬프트에 권한 절을
+        주입해 domain 라벨링을 권한과 정렬한다(힌트지 강제 아님 — over-claim 필터 보존).
+        빈 시퀀스면 기존 자유 분류(하위호환).
+    """
     lines = [f"[{src.source_id}] {src.content}" for src in sources]
     user_content = "\n\n".join(lines)
     return ProviderRequest(
         model=model,
-        system=_SPLIT_SYSTEM,
+        system=_split_system_for(allowed_domains),
         messages=[{"role": "user", "content": user_content}],
     )
 
@@ -747,6 +796,22 @@ def build_link_request(
     )
 
 
+def _strip_code_fence(text: str) -> str:
+    """LLM 응답의 마크다운 코드펜스(```json … ```)를 벗긴다(순수·IO 0).
+
+    프롬프트로 "코드펜스 금지"를 지시해도 LLM이 간헐적으로 펜스를 붙이므로,
+    JSON 파싱 전 방어적으로 제거한다(parse_split/derive/link 공통 전처리).
+    """
+    t = text.strip()
+    if t.startswith("```"):
+        first_nl = t.find("\n")
+        if first_nl != -1:
+            t = t[first_nl + 1 :]
+        if t.endswith("```"):
+            t = t[:-3]
+    return t.strip()
+
+
 def _require_str(item: dict[str, object], key: str) -> str:
     """dict에서 key를 꺼내 str로 반환. 누락·None이면 ValueError."""
     if key not in item:
@@ -764,7 +829,7 @@ def parse_split_response(text: str) -> tuple[OkfDocumentDraft, ...]:
     값 객체 생성자에 검증 위임(빈 body·unsafe concept_id 등).
     """
     try:
-        raw = _json.loads(text)
+        raw = _json.loads(_strip_code_fence(text))
     except _json.JSONDecodeError as exc:
         raise ValueError(f"split 응답 JSON 파싱 실패: {exc}") from exc
     if not isinstance(raw, list):
@@ -796,7 +861,7 @@ def parse_derive_response(
     originals에 없는 concept_id는 무시.
     """
     try:
-        raw = _json.loads(text)
+        raw = _json.loads(_strip_code_fence(text))
     except _json.JSONDecodeError as exc:
         raise ValueError(f"derive 응답 JSON 파싱 실패: {exc}") from exc
     if not isinstance(raw, list):
@@ -834,7 +899,7 @@ def parse_link_response(
     valid_ids 밖 from/to는 드롭(과생성 흡수·최종 dangling 방어는 admit_okf).
     """
     try:
-        raw = _json.loads(text)
+        raw = _json.loads(_strip_code_fence(text))
     except _json.JSONDecodeError as exc:
         raise ValueError(f"link 응답 JSON 파싱 실패: {exc}") from exc
     if not isinstance(raw, list):
@@ -864,9 +929,16 @@ class LlmAuthor:
         self._transport = transport
         self._model = model
 
-    def split(self, sources: Sequence[RawSource]) -> tuple[OkfDocumentDraft, ...]:
-        """2단계: 원본 소스를 개념 단위로 분할한다."""
-        request = build_split_request(sources, model=self._model)
+    def split(
+        self, sources: Sequence[RawSource], allowed_domains: Sequence[str]
+    ) -> tuple[OkfDocumentDraft, ...]:
+        """2단계: 원본 소스를 개념 단위로 분할한다.
+
+        allowed_domains를 build_split_request에 전달해 권한 domain 힌트를 프롬프트에 싣는다.
+        """
+        request = build_split_request(
+            sources, model=self._model, allowed_domains=allowed_domains
+        )
         text = assemble_stream(self._transport(request))
         return parse_split_response(text)
 

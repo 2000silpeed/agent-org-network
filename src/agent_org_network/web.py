@@ -104,7 +104,7 @@ from agent_org_network.reeval import (
 )
 from agent_org_network.index_matcher import relevant_concepts
 from agent_org_network.okf_authoring import (
-    FakeAuthor,
+    OkfAuthor,
     OkfDocumentDraft,
     OkfDraft,
     admit_okf,
@@ -773,49 +773,34 @@ class AuthorPublishRequest(BaseModel):
     concepts: list[AuthorConceptDisposition]
 
 
-# 데모 author 도메인 매핑 — 카드별로 in-domain 2건 + over-claim 1건을 결정론으로 낸다.
-# 키는 agent_id, 값은 (in-domain 개념 2건, over-claim 개념 1건). over-claim의 domain은
-# 어느 데모 카드도 권한으로 갖지 않는 라벨("기밀")이라 admit_okf가 dropped_concepts로 떨군다.
-_DEMO_OVERCLAIM_DOMAIN = "기밀"
+# OKF 저작 추출 모델 — owner측 staged 추출(split/derive/link)에 쓰는 공급자 모델 ID.
+# `provider_transport_anthropic.py:_DEFAULT_MODEL`(답변=opus)·`classifier.py:CLASSIFIER_MODEL`
+# (분류=haiku)과 같은 *모듈 상수* 패턴 — 저작은 균형 모델(Sonnet)을 명시한다. 모델 교체는
+# 이 한 줄만 바꾼다(env 토글 없음 — 프로덕션 기본은 항상 실 추출).
+_AUTHOR_MODEL = "claude-sonnet-5"
 
 
-def _build_demo_author(card: "AgentCard") -> FakeAuthor:
-    """데모용 결정론 author — 카드의 owned domain 2개 + over-claim 1건을 고정 산출한다.
+def _make_default_author() -> OkfAuthor:
+    """프로덕션 기본 OKF 저작자 — owner OAuth 인프로세스 anthropic SDK 실 추출(중앙 토큰 0).
 
-    owner OAuth 없이도 `/author` 데모가 staged 개념·over-claim 드롭·커밋을 한 번 관통하게
-    한다(ADR 0030 결정 4 "얇은 수직 슬라이스"). 실 `LlmAuthor`(owner OAuth provider transport·
-    ADR 0030 S1)는 게이트 밖 스왑이다 — 여기서 `_build_demo_author`를 `LlmAuthor(...)` 주입으로
-    바꾸면 같은 파이프라인이 실 추출로 돈다(주입만 교체·이번 범위 아님).
+    `runtime_select._make_claude_api_runtime`과 *대칭* — anthropic SDK는 선택 extra라
+    (`pip install agent-org-network[claude-api]`) **지연 import**한다(코어 의존 0 — 미설치
+    owner는 author 기본 생성도 무접촉). 미설치면 `select_runtime`식 명확한 SystemExit 안내.
 
-    카드 domains에서 in-domain 개념 2건을 만들고(없으면 1건), over-claim 개념 1건은
-    `_DEMO_OVERCLAIM_DOMAIN`(어느 데모 카드도 권한 없는 라벨)으로 만들어 admit_okf가 떨구게 한다.
-    입력 문서와 무관하게 고정 산출한다(데모 결정론) — 실 추출은 LlmAuthor가 입력을 본다.
+    같은 `AnthropicSdkTransport`를 `/ask` 답변 경로(`ClaudeApiRuntime`)와 공유한다 — 인자
+    없는 `anthropic.Anthropic()`가 owner `ANTHROPIC_API_KEY`/`ant` OAuth 프로필을 자동 해석
+    (중앙 키 주입 0). `LlmAuthor`가 staged 파이프라인(split/derive/link)을 실 LLM으로 돌린다.
     """
-    domains = list(card.domains)
-    in_domain = domains[:2] if len(domains) >= 2 else (domains or [_DEMO_OVERCLAIM_DOMAIN])
-    docs: list[OkfDocumentDraft] = []
-    for i, dom in enumerate(in_domain):
-        docs.append(
-            OkfDocumentDraft(
-                concept_id=f"demo-{card.agent_id}-{i + 1}",
-                title=f"{dom} 정책 요약",
-                body=f"{dom}에 대한 기준과 처리 절차를 정리한 개념입니다(데모 자동 초안).",
-                core_question=f"{dom}은 어떻게 처리하나요?",
-                domain=dom,
-            )
-        )
-    # over-claim 개념 1건 — 카드 권한 밖 domain이라 admit_okf가 dropped_concepts로 떨군다.
-    docs.append(
-        OkfDocumentDraft(
-            concept_id=f"demo-{card.agent_id}-nda",
-            title="기밀유지(NDA) 규정",
-            body="권한 밖 도메인의 개념입니다 — admit_okf가 over-claim으로 떨굽니다(데모).",
-            core_question="NDA는 어떻게 처리하나요?",
-            domain=_DEMO_OVERCLAIM_DOMAIN,
-        )
-    )
-    fixed = tuple(docs)
-    return FakeAuthor(split_result=fixed, derive_result=fixed, link_result=())
+    try:
+        from agent_org_network.okf_authoring import LlmAuthor
+        from agent_org_network.provider_transport_anthropic import AnthropicSdkTransport
+    except ImportError as exc:  # anthropic SDK extra 미설치
+        raise SystemExit(
+            "OKF 저작(/author/run)이 실 추출을 쓰는데 anthropic SDK가 없습니다 — "
+            "공급자 extra를 설치하세요: pip install 'agent-org-network[claude-api]'  "
+            "(uv: uv sync --extra claude-api)"
+        ) from exc
+    return LlmAuthor(AnthropicSdkTransport(), model=_AUTHOR_MODEL)
 
 
 class ManagerActionRequest(BaseModel):
@@ -927,6 +912,7 @@ def create_app(
     git_gateway: GitGateway | None = None,
     oidc_provider: OidcProvider | None = None,
     session_store: SessionStore | None = None,
+    author: OkfAuthor | None = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -942,6 +928,10 @@ def create_app(
     `session_store`(Phase 9·ADR 0024 결정 A): 채팅 세션 저장소 관찰 seam. 주입 시
     그 store를 쓴다(테스트가 active_for_user 등으로 세션 상태를 직접 검사). 미주입이면
     `InMemorySessionStore()` 내부 생성(하위호환 — 기존 동작).
+    `author`(T11.7d 실 배선·ADR 0030 S1): `/author/run`이 쓰는 OKF 저작 포트. **미주입이면
+    프로덕션 기본 = `LlmAuthor`(owner OAuth 인프로세스 anthropic SDK 실 추출·중앙 토큰 0)**를
+    *지연* 생성한다(`_make_default_author` — anthropic 미설치면 명확한 SystemExit). 결정론
+    테스트는 `FakeAuthor` 주입으로 실 LLM·실 네트워크를 막는다(`git_gateway`와 같은 seam).
     """
     from starlette.middleware.sessions import SessionMiddleware
 
@@ -983,6 +973,19 @@ def create_app(
     _reeval_service = reeval_service
     _manager_queue_store = manager_queue_store
     _git_gateway: GitGateway = git_gateway if git_gateway is not None else FakeGitGateway()
+    # OKF 저작자(/author/run) — 주입(테스트=FakeAuthor)이면 그대로, 미주입(프로덕션)이면 실
+    # `LlmAuthor`를 *지연* 생성한다. `runtime_select` 대칭: anthropic SDK는 선택 extra라 첫
+    # 저작 호출 시점에야 import한다(미설치 owner는 /author를 안 치는 한 무접촉·core 의존 0).
+    # 1-요소 holder로 클로저 안에서 1회 초기화한다(앱당 1개 author 재사용).
+    _author_holder: list[OkfAuthor | None] = [author]
+
+    def _get_author() -> OkfAuthor:
+        existing = _author_holder[0]
+        if existing is not None:
+            return existing
+        built = _make_default_author()  # anthropic 미설치면 여기서 명확한 SystemExit
+        _author_holder[0] = built
+        return built
     # SSO 모드(T7.1·ADR 0021 결정 4) — oidc_provider 주입 시 SSO 모드(POST /login/sso 활성·
     # 무비밀번호 POST /login은 403 거부). 미주입이면 기존 동작(OFF/무비밀번호).
     _oidc_provider = oidc_provider
@@ -1500,20 +1503,36 @@ def create_app(
     def author_run(req: AuthorRunRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """raw 문서 → staged 개념 초안(owner측·transient·중앙 store 0·ADR 0030 결정 2·4).
 
-        파이프라인: TextIngestor → run_authoring_pipeline(데모 author) → admit_okf(over-claim
-        필터). 데모 author는 owner OAuth 없이도 staged 개념·over-claim 드롭을 한 번 관통하게
-        하는 결정론 더블이다(실 LlmAuthor는 게이트 밖 스왑·_build_demo_author 주석 참조).
+        파이프라인: TextIngestor → run_authoring_pipeline(실 `LlmAuthor`) → admit_okf(over-claim
+        필터). 프로덕션 author는 owner OAuth 인프로세스 anthropic SDK로 split/derive/link를 실
+        추출한다(중앙 토큰 0·`_make_default_author`). 결정론 테스트는 `create_app(author=...)`로
+        `FakeAuthor`를 주입해 실 LLM·실 네트워크를 막는다(T11.7d·ADR 0030 S1).
 
         **불변식 가드(비소유)**: raw 문서·staged 초안을 어떤 중앙 store에도 저장하지 않는다 —
         이 핸들러는 published_index_store·case_store 등 어떤 store에도 *쓰지 않는다*(읽기만·
         카드 스코프). 산출은 응답으로만 owner에게 돌아간다(요청→응답 transient).
+
+        **노출 불변식**: 실 LLM 호출 실패·타임아웃 시 내부 예외·스택을 절대 노출하지 않는다 —
+        `/ask` 스트림 ErrorEvent와 같은 정신으로 502 + 중립 메시지만 돌려준다(권한 가드의
+        401/403/404 HTTPException은 try 밖이라 그대로 보존된다).
         """
         card = _author_scoped_card(req.agent_id, request)
 
         ingestor = TextIngestor()
         sources = ingestor.ingest([(f"{req.agent_id}-src", req.document)])
-        author = _build_demo_author(card)
-        authored = run_authoring_pipeline(req.agent_id, sources, author)
+        try:
+            author = _get_author()
+            # 카드 권한 domain을 split에 힌트로 주입 — LLM이 개념 domain을 owner 권한
+            # 라벨(예: 환불·보상)로 정렬하게 한다(매칭률↑). 강제 아님 — over-claim은
+            # admit_okf가 정상 drop한다(ADR 0030 비소유·권한 중앙 선언 보존).
+            authored = run_authoring_pipeline(
+                req.agent_id, sources, author, tuple(card.domains)
+            )
+        except Exception as exc:  # 실 LLM 호출·파싱·타임아웃 실패 — 내부 예외·스택 미노출
+            raise HTTPException(
+                status_code=502,
+                detail="저작 추출 중 문제가 발생했어요. 잠시 후 다시 시도해 주세요.",
+            ) from exc
         result = admit_okf(authored.draft, card)
 
         kept_ids = {doc.concept_id for doc in result.admitted.documents}

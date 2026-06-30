@@ -526,7 +526,7 @@ def test_FakeAuthor_각_단계_반환_타입():
     fake = _make_fake_author()
     sources = _make_sources()
 
-    split_ret = fake.split(sources)
+    split_ret = fake.split(sources, ())
     derive_ret = fake.derive_core_questions(split_ret)
     link_ret = fake.link(derive_ret)
 
@@ -546,9 +546,9 @@ def test_FakeAuthor_결정론_여러_호출_같은_산출():
     fake = _make_fake_author()
     sources = _make_sources()
 
-    r1 = fake.split(sources)
-    r2 = fake.split(sources)
-    r3 = fake.split((_make_sources()[0],))  # 다른 입력도 같은 고정 산출
+    r1 = fake.split(sources, ())
+    r2 = fake.split(sources, ())
+    r3 = fake.split((_make_sources()[0],), ())  # 다른 입력도 같은 고정 산출
 
     assert r1 == r2 == r3
 
@@ -571,7 +571,7 @@ def test_FakeAuthor_주입_산출_그대로_반환():
     sources = _make_sources()
     docs = (_make_doc("any"),)
 
-    assert fake.split(sources) is split_result
+    assert fake.split(sources, ()) is split_result
     assert fake.derive_core_questions(docs) is derive_result
     assert fake.link(docs) is link_result
 
@@ -614,6 +614,38 @@ def test_run_authoring_pipeline_데이터_배선():
     assert fake.derive_seen == split_result
     # derive 결과가 link 입력으로 전달됐는지
     assert fake.link_seen == derive_result
+
+
+# ── (32b) allowed_domains 배선: run_authoring_pipeline이 split에 권한 domain 전달 ─
+
+
+def test_run_authoring_pipeline_allowed_domains_split에_전달():
+    """run_authoring_pipeline이 allowed_domains를 author.split에 그대로 전달한다.
+
+    FakeAuthor.split_allowed_domains_seen으로 파이프라인 배선을 단언한다 — 이게 끊기면
+    LlmAuthor가 권한 domain 힌트 없이 split해 domain을 잘못(agent_id 등) 라벨한다.
+    """
+    fake = _make_fake_author()
+    sources = _make_sources()
+
+    run_authoring_pipeline(
+        agent_id="cs-ops",
+        sources=sources,
+        author=fake,
+        allowed_domains=("환불", "보상"),
+    )
+
+    assert fake.split_allowed_domains_seen == ("환불", "보상")
+
+
+def test_run_authoring_pipeline_allowed_domains_기본_빈_tuple():
+    """allowed_domains 미지정 시 split에 빈 tuple이 전달된다(하위호환·자유 분류)."""
+    fake = _make_fake_author()
+    sources = _make_sources()
+
+    run_authoring_pipeline(agent_id="cs-ops", sources=sources, author=fake)
+
+    assert fake.split_allowed_domains_seen == ()
 
 
 # ── (33) staged 순차: AuthoredOkf.draft 필드 = derive_result·edges = link_result ─
@@ -2173,6 +2205,44 @@ def test_T11_7c_build_split_request_결정론():
     assert "src-002" in user_content
 
 
+# ── (T11.7c-1b) build_split_request: 권한 domain 힌트 주입/하위호환 ────────────
+
+
+def test_T11_7c_build_split_request_allowed_domains_프롬프트_주입():
+    """비어있지 않은 allowed_domains가 system 프롬프트에 권한 라벨로 실린다(매칭률↑).
+
+    이 절이 빠지면 LLM이 입력 source_id에서 domain을 추측해(agent_id 등) admit_okf가
+    전부 over-claim drop한다 — 결함 회귀 가드.
+    """
+    sources = (RawSource(source_id="cs_ops-src", content="14일 내 전액 환불"),)
+    req = build_split_request(
+        sources, model="test-model", allowed_domains=("환불", "보상")
+    )
+
+    # 권한 라벨이 글자 그대로 system에 등장
+    assert "환불" in req.system
+    assert "보상" in req.system
+    # 권한 절 취지(권한 도메인 컨텍스트)가 명시됨
+    assert "권한 도메인" in req.system
+    # 스키마 힌트는 그대로 보존(권한 절은 덧대기지 교체가 아님)
+    assert "concept_id" in req.system
+
+
+def test_T11_7c_build_split_request_빈_allowed_domains_권한절_없음():
+    """빈 allowed_domains면 권한 절을 안 넣는다(하위호환·자유 분류).
+
+    기본 인자(미지정)와 명시적 빈 tuple 둘 다 기존 _SPLIT_SYSTEM과 동일해야 한다.
+    """
+    sources = (RawSource(source_id="src-001", content="내용"),)
+    default_req = build_split_request(sources, model="test-model")
+    empty_req = build_split_request(sources, model="test-model", allowed_domains=())
+
+    assert "권한 도메인" not in default_req.system
+    assert "권한 도메인" not in empty_req.system
+    # 둘 다 권한 절 없는 동일 system
+    assert default_req.system == empty_req.system
+
+
 # ── (T11.7c-2) build_derive_request 결정론 ──────────────────────────────────
 
 
@@ -2298,6 +2368,40 @@ def test_T11_7c_parse_link_response_edges_동치_없는_concept_드롭():
     assert len(result) == 1
     assert result[0].from_id == "refund-policy"
     assert result[0].to_id == "pricing-v2"
+
+
+# ── (T11.7c-6b) 코드펜스(```json) 방어 — LLM 간헐 펜스에도 파싱(실측 502 회귀 방지) ──
+
+
+def test_parse_split_response_코드펜스_방어():
+    """```json 펜스로 감싼 split 응답도 정상 파싱."""
+    inner = _json.dumps([{
+        "concept_id": "refund-policy", "title": "환불 정책",
+        "body": "7일 이내 환불.", "core_question": "환불 되나요?",
+        "domain": "환불", "type": None,
+    }])
+    result = parse_split_response(f"```json\n{inner}\n```")
+    assert len(result) == 1
+    assert result[0].domain == "환불"
+
+
+def test_parse_derive_response_코드펜스_방어():
+    """```json 펜스로 감싼 derive 응답도 정상 파싱."""
+    original = OkfDocumentDraft(
+        concept_id="refund-policy", title="환불 정책",
+        body="7일 이내 환불.", core_question="원래?", domain="환불",
+    )
+    inner = _json.dumps([{"concept_id": "refund-policy", "core_question": "환불 조건?"}])
+    result = parse_derive_response(f"```json\n{inner}\n```", (original,))
+    assert result[0].core_question == "환불 조건?"
+
+
+def test_parse_link_response_코드펜스_방어():
+    """```json 펜스로 감싼 link 응답도 정상 파싱(실측 502 회귀 방지)."""
+    inner = _json.dumps([{"from_id": "a", "to_id": "b", "relation": "related"}])
+    result = parse_link_response(f"```json\n{inner}\n```", frozenset({"a", "b"}))
+    assert len(result) == 1
+    assert result[0].from_id == "a"
 
 
 # ── (T11.7c-7) 깨진 JSON·배열 아님 → ValueError ─────────────────────────────

@@ -13,17 +13,64 @@ from typing import Any, cast
 from fastapi.testclient import TestClient
 from httpx import Response
 
-from agent_org_network.demo import seed_published_index_store
+from agent_org_network.agent_card import AgentCard
+from agent_org_network.demo import build_demo, seed_published_index_store
 from agent_org_network.git_gateway import FakeGitGateway
+from agent_org_network.okf_authoring import FakeAuthor, OkfDocumentDraft
 from agent_org_network.runtime import StubRuntime
 from agent_org_network.web import create_app
 
 _SECRET = "test-secret"
 
+# 어느 데모 카드도 권한으로 갖지 않는 over-claim 라벨 — admit_okf가 dropped_concepts로 떨군다.
+_OVERCLAIM_DOMAIN = "기밀"
+
+
+def _fake_author_for(card: AgentCard) -> FakeAuthor:
+    """결정론 OKF 저작 더블 — 카드 owned domain 2건(in-domain) + over-claim 1건 고정 산출.
+
+    프로덕션은 실 `LlmAuthor`(owner OAuth 추출)지만, 라우트 결정론 테스트는 실 LLM·실 네트워크를
+    치면 안 되므로 `create_app(author=...)`로 이 Fake를 주입한다(T11.7d·ADR 0030 S1 — "항상 실
+    LLM"은 *프로덕션 기본*이지 테스트가 네트워크를 친다는 뜻이 아니다). 입력 무관 고정 산출이라
+    raw 본문 토큰이 결코 개념에 섞이지 않는다(비소유 단언과도 정합).
+    """
+    domains = list(card.domains)
+    in_domain = domains[:2] if len(domains) >= 2 else (domains or [_OVERCLAIM_DOMAIN])
+    docs: list[OkfDocumentDraft] = [
+        OkfDocumentDraft(
+            concept_id=f"demo-{card.agent_id}-{i + 1}",
+            title=f"{dom} 정책 요약",
+            body=f"{dom}에 대한 기준과 처리 절차를 정리한 개념입니다(테스트 고정 초안).",
+            core_question=f"{dom}은 어떻게 처리하나요?",
+            domain=dom,
+        )
+        for i, dom in enumerate(in_domain)
+    ]
+    # over-claim 1건 — 카드 권한 밖 domain이라 admit_okf가 over-claim으로 떨군다.
+    docs.append(
+        OkfDocumentDraft(
+            concept_id=f"demo-{card.agent_id}-nda",
+            title="기밀유지(NDA) 규정",
+            body="권한 밖 도메인의 개념입니다 — admit_okf가 over-claim으로 떨굽니다(테스트).",
+            core_question="NDA는 어떻게 처리하나요?",
+            domain=_OVERCLAIM_DOMAIN,
+        )
+    )
+    fixed = tuple(docs)
+    return FakeAuthor(split_result=fixed, derive_result=fixed, link_result=())
+
 
 def _make_client(gw: FakeGitGateway | None = None) -> TestClient:
     gw = gw or FakeGitGateway()
-    app = create_app(runtime=StubRuntime(), session_secret=_SECRET, git_gateway=gw)
+    # cs_ops(domains=환불·보상) 기준 Fake author를 주입한다. 200 경로 테스트는 이 산출을
+    # 단언하고, 401/403/404 경로는 권한 가드가 먼저라 author 산출에 도달하지 않는다.
+    card = build_demo(runtime=StubRuntime()).registry.get("cs_ops")
+    app = create_app(
+        runtime=StubRuntime(),
+        session_secret=_SECRET,
+        git_gateway=gw,
+        author=_fake_author_for(card),
+    )
     return TestClient(app)
 
 

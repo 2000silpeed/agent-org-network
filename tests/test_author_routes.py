@@ -763,3 +763,271 @@ class TestDeleteConcept삭제:
         _delete_concept(client, "cs_ops", "gone")
         status, _ = _get_concept(client, "cs_ops", "gone")
         assert status == 404
+
+
+# ── POST /author/dedup/{agent_id} — near-dup 후보 탐지(ADR 0032 결정 C·탐지 전용) ──
+# `select_embedder`를 모킹해 결정론 보장(실 fastembed 모델은 게이트 밖·여기서 로드 안 함).
+
+
+def _dedup(
+    client: TestClient, agent_id: str, concepts: list[dict[str, Any]]
+) -> tuple[int, Any]:
+    http: Any = client
+    res: Response = cast(
+        Response,
+        http.post(f"/author/dedup/{agent_id}", json={"concepts": concepts}),
+    )
+    try:
+        body: Any = res.json()
+    except Exception:
+        body = res.text
+    return res.status_code, body
+
+
+def _dedup_concept(
+    concept_id: str,
+    title: str,
+    core_question: str,
+    body: str,
+    domain: str = "환불",
+) -> dict[str, Any]:
+    """POST /author/dedup 요청의 신규 staged 개념 1건."""
+    return {
+        "concept_id": concept_id,
+        "title": title,
+        "core_question": core_question,
+        "body": body,
+        "domain": domain,
+    }
+
+
+def _embed_text(title: str, core_question: str, body: str) -> str:
+    """라우트의 임베딩 입력 합성과 동일(title\\ncore_question\\nbody)."""
+    return f"{title}\n{core_question}\n{body}"
+
+
+class TestAuthorDedup후보탐지:
+    """POST /author/dedup/{agent_id} — near-dup 후보 탐지(읽기 전용·중앙/owner git 무쓰기)."""
+
+    def test_미로그인_401(self) -> None:
+        client = _make_client()
+        status, _ = _dedup(
+            client, "cs_ops", [_dedup_concept("x", "제목", "질문?", "본문")]
+        )
+        assert status == 401
+
+    def test_타인_카드_403(self) -> None:
+        client = _make_client()
+        _login(client, "cs_lead")
+        status, _ = _dedup(
+            client, "contract_ops", [_dedup_concept("x", "제목", "질문?", "본문")]
+        )
+        assert status == 403
+
+    def test_미존재_카드_404(self) -> None:
+        client = _make_client()
+        _login(client, "cs_lead")
+        status, _ = _dedup(
+            client, "no_such_card", [_dedup_concept("x", "제목", "질문?", "본문")]
+        )
+        assert status == 404
+
+    def test_임베더_None이면_빈_candidates(self) -> None:
+        """운영 기본(select_embedder가 None=비활성) → 임베딩 스킵·빈 후보(미아 아님)."""
+        import agent_org_network.web as web_mod
+
+        client, _gw = _client_with_store_and_gw()
+        _login(client, "cs_lead")
+        orig = web_mod.select_embedder
+        try:
+            web_mod.select_embedder = lambda: None  # type: ignore[assignment]
+            status, body = _dedup(
+                client, "cs_ops", [_dedup_concept("n1", "환불 정책", "환불은?", "본문")]
+            )
+        finally:
+            web_mod.select_embedder = orig  # type: ignore[assignment]
+        assert status == 200
+        assert body["candidates"] == []
+
+    def test_게시_라이브러리_없으면_빈_candidates(self) -> None:
+        """게시 개념 0(번들 없음) → existing 0 → 후보 0(임베더 활성이어도 빈 후보)."""
+        import agent_org_network.web as web_mod
+        from agent_org_network.okf_dedup import FakeEmbedder
+
+        client, _gw = _client_with_store_and_gw()
+        _login(client, "cs_lead")
+        new_text = _embed_text("환불 정책", "환불은 언제까지?", "7일 이내")
+        fake = FakeEmbedder({new_text: (1.0, 0.0, 0.0)})
+        orig = web_mod.select_embedder
+        try:
+            web_mod.select_embedder = lambda: fake  # type: ignore[assignment]
+            status, body = _dedup(
+                client,
+                "cs_ops",
+                [_dedup_concept("n1", "환불 정책", "환불은 언제까지?", "7일 이내")],
+            )
+        finally:
+            web_mod.select_embedder = orig  # type: ignore[assignment]
+        assert status == 200
+        assert body["candidates"] == []
+
+    def test_정상_후보_auto_suggest_와_similar(self) -> None:
+        """게시 개념 2건 + 신규 1건, Fake 임베더 주입으로 알려진 cosine → 등급 분류 검증.
+
+        new(v=[1,0,0])와:
+          - existing dup(v=[1,0,0]) → cosine 1.0 ≥ 0.88 → auto_suggest
+          - existing similar(v=[0.8,0.6,0]) → cosine 0.8 ∈ [0.70,0.88) → similar
+        정규화 벡터라 dot=cosine. 게시 개념의 합성 텍스트는 게시 후 실제 저장값으로 구성한다.
+        """
+        import agent_org_network.web as web_mod
+        from agent_org_network.okf_dedup import FakeEmbedder
+
+        client, _gw = _client_with_store_and_gw()
+        _login(client, "cs_lead")
+
+        # 게시 라이브러리에 2건 게시(dup·similar 대상)
+        _publish(
+            client,
+            "cs_ops",
+            [
+                _single_concept(
+                    "existing-dup",
+                    "환불 가능 기간",
+                    core_question="환불은 언제까지 가능한가요?",
+                    body="구매일로부터 7일 이내 환불 가능합니다.",
+                ),
+                _single_concept(
+                    "existing-similar",
+                    "교환 안내",
+                    core_question="교환은 어떻게 하나요?",
+                    body="상품 교환은 영업일 기준 3일 내 처리됩니다.",
+                ),
+            ],
+        )
+
+        # 게시 후 실제 저장된 값으로 existing 합성 텍스트 구성(render→parse 왕복 반영).
+        _, dup_doc = _get_concept(client, "cs_ops", "existing-dup")
+        _, sim_doc = _get_concept(client, "cs_ops", "existing-similar")
+        dup_text = _embed_text(
+            dup_doc["title"], dup_doc["core_question"], dup_doc["body"]
+        )
+        sim_text = _embed_text(
+            sim_doc["title"], sim_doc["core_question"], sim_doc["body"]
+        )
+
+        new_title, new_q, new_body = "환불 기간 정리", "환불 기한이 어떻게 되나요?", "환불은 7일 이내."
+        new_text = _embed_text(new_title, new_q, new_body)
+
+        fake = FakeEmbedder(
+            {
+                new_text: (1.0, 0.0, 0.0),
+                dup_text: (1.0, 0.0, 0.0),  # cosine 1.0 → auto_suggest
+                sim_text: (0.8, 0.6, 0.0),  # cosine 0.8 → similar
+            }
+        )
+        orig = web_mod.select_embedder
+        try:
+            web_mod.select_embedder = lambda: fake  # type: ignore[assignment]
+            status, body = _dedup(
+                client,
+                "cs_ops",
+                [_dedup_concept("new-1", new_title, new_q, new_body)],
+            )
+        finally:
+            web_mod.select_embedder = orig  # type: ignore[assignment]
+
+        assert status == 200, body
+        cands = body["candidates"]
+        assert len(cands) == 2
+        # similarity 내림차순 정렬 — auto_suggest(1.0) 먼저
+        assert cands[0]["existing_concept_id"] == "existing-dup"
+        assert cands[0]["grade"] == "auto_suggest"
+        assert abs(cands[0]["similarity"] - 1.0) < 1e-9
+        assert cands[1]["existing_concept_id"] == "existing-similar"
+        assert cands[1]["grade"] == "similar"
+        assert abs(cands[1]["similarity"] - 0.8) < 1e-9
+        # 모든 후보의 new_concept_id는 요청 개념
+        assert all(c["new_concept_id"] == "new-1" for c in cands)
+
+    def test_번들_메타_index_md는_비교_대상에서_제외된다(self) -> None:
+        """`index.md`(type=index·번들 메타)는 개념이 아니므로 dedup 비교에서 빠진다.
+
+        디스크 시드 번들(seed_gateway_from_disk)엔 index.md가 흔히 같이 있다 — 게이트 내
+        FakeGitGateway 테스트는 보통 publish 경로만 거쳐 index.md가 안 생기므로(이 버그가
+        가게 내 테스트로는 안 잡혔다), 여기서 index.md를 직접 커밋해 재현·고정한다.
+        """
+        import agent_org_network.web as web_mod
+        from agent_org_network.git_gateway import CommitRequest, OkfFile
+        from agent_org_network.okf_dedup import FakeEmbedder
+
+        client, gw = _client_with_store_and_gw()
+        _login(client, "cs_lead")
+        _publish(client, "cs_ops", [_single_concept("real", "진짜 개념")])
+
+        # 번들 메타 index.md를 직접 커밋(디스크 시드가 만드는 모양 재현).
+        gw.commit_bundle(
+            CommitRequest(
+                agent_id="cs_ops",
+                author="cs_lead",
+                files=(
+                    OkfFile(
+                        path="index.md",
+                        content=(
+                            "---\ntitle: cs_ops 지식 번들\ndescription: 목차\ntags:\n"
+                            "- 환불\ntype: index\n---\n\n번들 메타.\n"
+                        ),
+                    ),
+                ),
+                message="번들 메타 커밋",
+            )
+        )
+
+        _, real_doc = _get_concept(client, "cs_ops", "real")
+        real_text = _embed_text(real_doc["title"], real_doc["core_question"], real_doc["body"])
+        new_text = _embed_text("신규 개념", "신규 질문?", "신규 본문")
+        fake = FakeEmbedder({new_text: (1.0, 0.0, 0.0), real_text: (0.0, 1.0, 0.0)})
+        orig = web_mod.select_embedder
+        try:
+            web_mod.select_embedder = lambda: fake  # type: ignore[assignment]
+            status, body = _dedup(
+                client, "cs_ops", [_dedup_concept("n1", "신규 개념", "신규 질문?", "신규 본문")]
+            )
+        finally:
+            web_mod.select_embedder = orig  # type: ignore[assignment]
+
+        assert status == 200, body
+        existing_ids = {c["existing_concept_id"] for c in body["candidates"]}
+        assert "index" not in existing_ids
+
+    def test_탐지는_중앙_목차를_안_바꾼다(self) -> None:
+        """dedup은 읽기 전용 — 호출 전후 published 목차(concept_count) 불변."""
+        import agent_org_network.web as web_mod
+        from agent_org_network.okf_dedup import FakeEmbedder
+
+        client, _gw = _client_with_store_and_gw()
+        _login(client, "cs_lead")
+        _publish(client, "cs_ops", [_single_concept("keep", "남는 개념")])
+
+        _, before = _get_index(client, "cs_ops")
+        count_before = len(before["concepts"])
+
+        _, kept = _get_concept(client, "cs_ops", "keep")
+        kept_text = _embed_text(
+            kept["title"], kept["core_question"], kept["body"]
+        )
+        new_text = _embed_text("새 개념", "새 질문?", "새 본문")
+        fake = FakeEmbedder(
+            {new_text: (1.0, 0.0, 0.0), kept_text: (0.0, 1.0, 0.0)}
+        )
+        orig = web_mod.select_embedder
+        try:
+            web_mod.select_embedder = lambda: fake  # type: ignore[assignment]
+            status, _ = _dedup(
+                client, "cs_ops", [_dedup_concept("new-x", "새 개념", "새 질문?", "새 본문")]
+            )
+        finally:
+            web_mod.select_embedder = orig  # type: ignore[assignment]
+        assert status == 200
+
+        _, after = _get_index(client, "cs_ops")
+        assert len(after["concepts"]) == count_before

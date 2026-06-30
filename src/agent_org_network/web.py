@@ -104,6 +104,8 @@ from agent_org_network.reeval import (
 )
 from agent_org_network.index_matcher import relevant_concepts
 from agent_org_network.author_select import select_author
+from agent_org_network.embedder_select import select_embedder
+from agent_org_network.okf_dedup import classify_dedup_candidates
 from agent_org_network.okf_authoring import (
     OkfDocumentDraft,
     OkfDraft,
@@ -791,6 +793,37 @@ class AuthorConceptEditRequest(BaseModel):
 # 데모 author 빌더는 `author_select.build_demo_author`로 이동했다(시임 통합). `/author/run`은
 # `select_author(card)`로 env(`AON_AUTHOR`) 분기 — 미설정/`demo`면 그 데모 빌더, `claude-code`면
 # 실 LlmAuthor(`claude -p`). 기존 동작·테스트는 미설정 기본 경로로 100% 보존된다.
+
+
+class AuthorDedupConcept(BaseModel):
+    """POST /author/dedup 요청의 신규 staged 개념 1건(ADR 0032 §C 252~271행).
+
+    `/author/run` 응답 concepts 원소와 같은 모양(concept_id·title·core_question·body·
+    domain·type). 임베딩 입력 텍스트는 이 본문이라 owner측에서만 계산된다.
+    """
+
+    concept_id: str
+    title: str
+    core_question: str
+    body: str
+    domain: str
+    type: str | None = None
+
+
+class AuthorDedupRequest(BaseModel):
+    """POST /author/dedup/{agent_id} 요청 — 신규 추출 staged 개념 vs 게시 라이브러리 near-dup.
+
+    `concepts`: 이번 /author/run이 낸 미게시 staged 개념(아직 commit 안 됨). 핸들러가 owner측
+    게시 라이브러리 전체를 읽어 pairwise cosine으로 near-dup 후보를 분류한다(ADR 0032 결정 C).
+    """
+
+    concepts: list[AuthorDedupConcept]
+
+
+# near-dup 임계값(ADR 0032 OQ-5·결정 C3 — 주입 정책값·하드코딩 분산 금지). e5 instruct
+# prefix 전제 cosine. OQ-5 갱신 시 이 *한 곳*만 바뀐다.
+DEDUP_TAU_HIGH = 0.88  # 이상이면 auto_suggest(거의 동일·자동 병합 후보 제안)
+DEDUP_TAU_LOW = 0.70  # [LOW, HIGH)이면 similar("비슷한 개념" 표시만)
 
 
 class ManagerActionRequest(BaseModel):
@@ -1720,6 +1753,56 @@ def create_app(
             type=concept_type,
         )
 
+    def _read_all_concept_docs(card: "AgentCard") -> "list[OkfDocumentDraft]":
+        """owner 게이트웨이 번들의 게시 개념 *전체*를 OkfDocumentDraft 리스트로 읽는다.
+
+        `_read_concept_doc`(단일)의 디렉터리 버전: head_sha → extract_snapshot → 디렉터리
+        `*.md` glob → 각 파일을 같은 역parse 규약(parse_okf_document)으로 OkfDocumentDraft로
+        변환. 파일명 정렬(결정론·okf_index 도출 규칙과 같은 결).
+
+        게시 인덱스 없음(커밋/번들 없음)이면 빈 리스트 → near-dup 후보 0(미아 아님·ADR 0032
+        §C 278행). **owner 자기 조회**(읽기 전용·임시 디렉터리는 with 종료 시 삭제).
+
+        `index.md`(번들 메타·type="index")는 실제 개념이 아니므로 제외한다(`LibraryPanel`이
+        같은 메타를 화면에서 숨기는 것과 같은 결 — 비교 대상에 끼면 의미 없는 후보가 생긴다).
+        """
+        import tempfile
+
+        try:
+            head = _git_gateway.head_sha(card.agent_id)
+        except (ValueError, KeyError):
+            return []
+        docs: list[OkfDocumentDraft] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / card.agent_id
+            _git_gateway.extract_snapshot(head, card.agent_id, dest)
+            for md_path in sorted(dest.glob("*.md")):
+                text = md_path.read_text(encoding="utf-8")
+                front, body = parse_okf_document(text)
+                title = str(front.get("title", "") or "")
+                core_question = str(front.get("description", "") or "")
+                raw_tags: object = front.get("tags", [])
+                domain = ""
+                if isinstance(raw_tags, list) and raw_tags:
+                    first_tag: object = cast("list[object]", raw_tags)[0]
+                    domain = str(first_tag)
+                raw_type = front.get("type")
+                concept_type = str(raw_type) if raw_type is not None else None
+                if concept_type == "index":
+                    continue
+                concept_id = md_path.stem
+                docs.append(
+                    OkfDocumentDraft(
+                        concept_id=concept_id,
+                        title=title or concept_id,
+                        body=body or "(본문 없음)",
+                        core_question=core_question or concept_id,
+                        domain=domain,
+                        type=concept_type,
+                    )
+                )
+        return docs
+
     def _rederive_and_accept_index(
         card: "AgentCard", sha: str, session_owner: str
     ) -> "dict[str, Any] | None":
@@ -1886,6 +1969,64 @@ def create_app(
             "deleted": {"concept_id": cid},
             "committed": {"sha": commit_result.sha},
             "published": published,
+        }
+
+    @app.post("/author/dedup/{agent_id}")
+    def author_dedup(  # pyright: ignore[reportUnusedFunction]
+        agent_id: str, req: AuthorDedupRequest, request: Request
+    ) -> dict[str, Any]:
+        """신규 staged 개념 vs 게시 라이브러리 near-dup 후보 탐지(ADR 0032 결정 C·탐지 전용).
+
+        **읽기 전용** — 중앙 store 무변경·owner git 무변경. 임베딩·cosine·후보 분류가 전부
+        owner 프로세스에서 돈다(중앙 비소유). 응답은 concept_id·유사도·등급뿐(본문 0).
+
+        절차(ADR 0032 §C 273~289행):
+          owner 스코프 가드(401/404/403) → 게시 라이브러리 전체 읽기(`_read_all_concept_docs`·
+          없으면 빈 리스트→후보 0) → `embed_text = title\\ncore_question\\nbody` 합성 →
+          `select_embedder()`(env AON_EMBEDDER·미설정/demo면 None=비활성) → new/existing 양쪽
+          임베딩 → `classify_dedup_candidates(τ_high·τ_low 주입)` → {"candidates": [...]}.
+
+        임베더가 `None`(운영 기본·비활성)이면 임베딩을 건너뛰고 빈 후보를 낸다(extra 미설치
+        owner 무영향). 병합 *실행*은 이 라우트가 안 한다 — owner가 후보를 보고 확정하면
+        프론트가 기존 PUT(병합 본문)/DELETE(버릴 개념)로 처분한다(ADR 0032 결정 C4·301행).
+        """
+        card = _author_scoped_card(agent_id, request)
+
+        def _embed_text(title: str, core_question: str, body: str) -> str:
+            return f"{title}\n{core_question}\n{body}"
+
+        embedder = select_embedder()
+        if embedder is None:
+            # 운영 기본(비활성) — 임베딩 의존성 없이 빈 후보로 통과(미아 아님).
+            return {"candidates": []}
+
+        existing_docs = _read_all_concept_docs(card)
+        new_texts = [
+            _embed_text(c.title, c.core_question, c.body) for c in req.concepts
+        ]
+        existing_texts = [
+            _embed_text(d.title, d.core_question, d.body) for d in existing_docs
+        ]
+        new_vecs = embedder.embed(new_texts)
+        existing_vecs = embedder.embed(existing_texts)
+        candidates = classify_dedup_candidates(
+            new_concepts=list(zip([c.concept_id for c in req.concepts], new_vecs)),
+            existing_concepts=list(
+                zip([d.concept_id for d in existing_docs], existing_vecs)
+            ),
+            tau_high=DEDUP_TAU_HIGH,
+            tau_low=DEDUP_TAU_LOW,
+        )
+        return {
+            "candidates": [
+                {
+                    "new_concept_id": c.new_concept_id,
+                    "existing_concept_id": c.existing_concept_id,
+                    "similarity": c.similarity,
+                    "grade": c.grade,
+                }
+                for c in candidates
+            ]
         }
 
     @app.get("/builder")

@@ -16,6 +16,7 @@ import {
   Pencil,
   Trash2,
   X,
+  GitMerge,
 } from "lucide-react";
 import { PageHeader } from "@/components/app-shell/page-header";
 import { LoginGate } from "@/components/session/login-gate";
@@ -32,12 +33,15 @@ import {
   fetchConcept,
   updateConcept,
   deleteConcept,
+  checkDedup,
   AuthorError,
   type AuthorRunResult,
   type AuthorPublishResult,
   type AuthorIndexResult,
   type AuthorConceptDetail,
+  type AuthorConcept,
   type Disposition,
+  type DedupCandidate,
 } from "@/lib/author-api";
 import { cn } from "@/lib/utils";
 
@@ -139,6 +143,8 @@ function OwnerWorkspace({ agentId }: { agentId: string }) {
   const [published, setPublished] = useState<AuthorPublishResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [library, setLibrary] = useState<AuthorIndexResult | null>(null);
+  const [dedupCandidates, setDedupCandidates] = useState<DedupCandidate[]>([]);
+  const [mergingId, setMergingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const reloadLibrary = useCallback(() => {
@@ -185,11 +191,41 @@ function OwnerWorkspace({ agentId }: { agentId: string }) {
       for (const c of r.concepts) init[c.concept_id] = "approved";
       setDispositions(init);
       setEdits({});
+      setDedupCandidates([]);
+      // 의미 중복 탐지(ADR 0032 결정 C) — 게시 라이브러리와 비슷한 신규 개념이 있는지
+      // 읽기 전용으로 확인한다. AON_EMBEDDER 비활성(기본)이면 빈 후보가 와 조용히 무력.
+      if (r.concepts.length > 0) {
+        checkDedup(agentId, r.concepts)
+          .then((res) => setDedupCandidates(res.candidates))
+          .catch(() => setDedupCandidates([]));
+      }
     } catch (e) {
       setError(e instanceof AuthorError ? e.message : "분석에 실패했습니다.");
       setResult(null);
     } finally {
       setRunning(false);
+    }
+  }
+
+  // owner가 "기존 개념과 같다"고 확정 — 기존 개념을 신규 추출 내용으로 갱신(PUT 재사용)하고
+  // 신규는 거부 처리해 배포 대상에서 뺀다(ADR 0032 결정 C4 — 새 병합 연산 0).
+  async function mergeIntoExisting(concept: AuthorConcept, existingConceptId: string) {
+    setMergingId(concept.concept_id);
+    setError(null);
+    try {
+      await updateConcept(agentId, existingConceptId, {
+        title: concept.title,
+        core_question: edits[concept.concept_id] ?? concept.core_question,
+        body: concept.body,
+        domain: concept.domain,
+      });
+      setDisp(concept.concept_id, "rejected");
+      setDedupCandidates((prev) => prev.filter((d) => d.new_concept_id !== concept.concept_id));
+      reloadLibrary();
+    } catch (e) {
+      setError(e instanceof AuthorError ? e.message : "병합에 실패했습니다.");
+    } finally {
+      setMergingId(null);
     }
   }
 
@@ -323,6 +359,7 @@ function OwnerWorkspace({ agentId }: { agentId: string }) {
                   {concepts.map((c) => {
                     const disp = dispositions[c.concept_id] ?? "approved";
                     const rejected = disp === "rejected";
+                    const dupMatches = dedupCandidates.filter((d) => d.new_concept_id === c.concept_id);
                     return (
                       <div
                         key={c.concept_id}
@@ -355,6 +392,39 @@ function OwnerWorkspace({ agentId }: { agentId: string }) {
                             className="rounded-md border border-[var(--ds-color-border)] bg-[var(--ds-color-canvas)] px-ds-8 py-[6px] text-sm text-[var(--ds-color-ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ds-color-primary)] disabled:opacity-60"
                           />
                           <p className="line-clamp-3 text-xs text-[var(--ds-color-ink-muted)]">{c.body}</p>
+                          {!rejected &&
+                            dupMatches.map((d) => {
+                              const existingTitle =
+                                library?.concepts.find((lc) => lc.id === d.existing_concept_id)?.label ??
+                                d.existing_concept_id;
+                              const pct = Math.round(d.similarity * 100);
+                              return (
+                                <div
+                                  key={d.existing_concept_id}
+                                  className="flex flex-col gap-ds-4 rounded-md border border-[var(--ds-color-warning)] bg-[color-mix(in_srgb,var(--ds-color-warning)_8%,transparent)] px-ds-8 py-ds-8 text-xs"
+                                >
+                                  <div className="flex items-center gap-ds-4 text-[var(--ds-color-ink)]">
+                                    <GitMerge aria-hidden className="h-[14px] w-[14px] shrink-0 text-[var(--ds-color-warning)]" />
+                                    <span>
+                                      {d.grade === "auto_suggest" ? "거의 동일한" : "비슷한"} 기존 개념 발견
+                                      — <span className="font-medium">{existingTitle}</span> ({pct}%)
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <Button
+                                      size="sm"
+                                      variant="secondary"
+                                      onClick={() => void mergeIntoExisting(c, d.existing_concept_id)}
+                                      loading={mergingId === c.concept_id}
+                                      disabled={mergingId === c.concept_id}
+                                    >
+                                      <GitMerge aria-hidden className="h-[14px] w-[14px]" />
+                                      기존 개념으로 병합
+                                    </Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           {c.okf_markdown && (
                             <details className="group mt-ds-4 rounded-md border border-[var(--ds-color-border)] bg-[var(--ds-color-canvas)]">
                               <summary className="flex cursor-pointer list-none items-center gap-ds-4 px-ds-8 py-[6px] text-xs font-medium text-[var(--ds-color-ink-subtle)] hover:text-[var(--ds-color-ink-muted)]">

@@ -208,3 +208,29 @@ export function deleteConcept(
     `/api/author/concept/${encodeURIComponent(agentId)}/${encodeURIComponent(conceptId)}`,
   );
 }
+
+// 의미 기반 near-dup 후보(ADR 0032 결정 C) — 신규 staged 개념 vs 게시 라이브러리.
+// 탐지 전용(읽기 전용·중앙 0). 병합 실행은 기존 updateConcept/deleteConcept를 재사용한다.
+export interface DedupCandidate {
+  new_concept_id: string;
+  existing_concept_id: string;
+  similarity: number;
+  grade: "auto_suggest" | "similar";
+}
+
+/** POST /api/author/dedup/{agentId} — 신규 staged 개념과 게시 라이브러리의 near-dup 후보. */
+export function checkDedup(
+  agentId: string,
+  concepts: AuthorConcept[],
+): Promise<{ candidates: DedupCandidate[] }> {
+  return postJson(`/api/author/dedup/${encodeURIComponent(agentId)}`, {
+    concepts: concepts.map((c) => ({
+      concept_id: c.concept_id,
+      title: c.title,
+      core_question: c.core_question,
+      body: c.body,
+      domain: c.domain,
+      type: c.type ?? null,
+    })),
+  });
+}

@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Network, ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 import { NAV_ITEMS } from "./nav";
 import { IdentitySwitcher } from "@/components/session/identity-switcher";
 import { cn } from "@/lib/utils";
@@ -15,9 +16,13 @@ export function Sidebar() {
     <aside className="hidden w-[244px] shrink-0 flex-col border-r border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] lg:flex">
       <div className="flex items-center gap-ds-8 border-b border-[var(--ds-color-border)] px-ds-16 py-ds-16">
         <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--ds-color-surface-tint)]">
-          <Network
-            aria-hidden
-            className="h-5 w-5 text-[var(--ds-color-primary)]"
+          <Image
+            src="/brand/mark.png"
+            alt="Agent Org Network"
+            width={28}
+            height={28}
+            priority
+            className="h-7 w-7"
           />
         </span>
         <div className="min-w-0">

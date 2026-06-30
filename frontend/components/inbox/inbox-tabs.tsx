@@ -12,9 +12,9 @@ import {
   ArrowRightLeft,
   Loader2,
   AlertTriangle,
-  Inbox as InboxIcon,
   Quote,
 } from "lucide-react";
+import Image from "next/image";
 import {
   getInboxCases,
   getBackupReviews,
@@ -561,7 +561,13 @@ function PanelSkeleton({ label }: { label: string }) {
 function EmptyState({ label }: { label: string }) {
   return (
     <div className="flex flex-col items-center gap-ds-8 rounded-lg border border-dashed border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-16 py-ds-24 text-center">
-      <InboxIcon aria-hidden className="h-6 w-6 text-[var(--ds-color-ink-subtle)]" />
+      <Image
+        src="/brand/empty-inbox.png"
+        alt=""
+        width={320}
+        height={181}
+        className="mb-ds-4 w-full max-w-[260px] opacity-90"
+      />
       <p className="text-sm text-[var(--ds-color-ink-muted)]">{label}</p>
     </div>
   );

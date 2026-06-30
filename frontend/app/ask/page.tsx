@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { Send, UserRound, Network, AlertCircle, Loader2 } from "lucide-react";
 import { PageHeader } from "@/components/app-shell/page-header";
 import { Button } from "@/components/ui/button";
@@ -182,10 +183,20 @@ export default function AskPage() {
       >
         <div aria-label="대화" className="mx-auto flex max-w-3xl flex-col gap-ds-16">
           {turns.length === 0 && (
-            <p className="mx-auto mt-ds-24 max-w-md text-center text-sm text-[var(--ds-color-ink-subtle)]">
-              조직에 궁금한 것을 물어보세요. 예: &ldquo;환불 규정 어떻게 돼?&rdquo;,
-              &ldquo;계약 검토 어떻게 받아?&rdquo;
-            </p>
+            <div className="mx-auto mt-ds-24 flex max-w-md flex-col items-center text-center">
+              <Image
+                src="/brand/empty-ask.png"
+                alt=""
+                width={420}
+                height={238}
+                priority
+                className="mb-ds-16 w-full max-w-[360px] opacity-90"
+              />
+              <p className="text-sm text-[var(--ds-color-ink-subtle)]">
+                조직에 궁금한 것을 물어보세요. 질문은 담당을 찾아 흘러갑니다. 예:
+                &ldquo;환불 규정 어떻게 돼?&rdquo;, &ldquo;계약 검토 어떻게 받아?&rdquo;
+              </p>
+            </div>
           )}
 
           {turns.map((turn) =>

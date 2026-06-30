@@ -45,7 +45,7 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/console",
     label: "운영 콘솔",
     surface: "Console",
-    description: "라이브 피드 · 워커 승인",
+    description: "라이브 모니터 · 감사 로그",
     icon: MonitorDot,
     persona: "운영자",
   },

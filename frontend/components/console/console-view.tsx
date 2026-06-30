@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Radio,
   Activity,
   History,
   RefreshCw,
@@ -12,11 +11,9 @@ import {
   Loader2,
 } from "lucide-react";
 import { StatCard } from "@/components/console/stat-card";
-import { LiveFeed } from "@/components/console/live-feed";
-import { WorkerAdmission } from "@/components/console/worker-admission";
 import { ManagerQueue } from "@/components/console/manager-queue";
 import { OrgSummary } from "@/components/console/org-summary";
-import { feedEvents, pendingWorkers, type ConsoleMetric } from "@/lib/mock-data";
+import { type ConsoleMetric } from "@/lib/mock-data";
 import {
   getMonitor,
   getOrgGraph,
@@ -25,7 +22,6 @@ import {
   type OrgGraph,
   type ManagerItem,
 } from "@/lib/console-api";
-import { MockMarker } from "@/components/session/mock-marker";
 import { useSession } from "@/components/session/session-context";
 import type { StatusTone } from "@/components/ui/status-badge";
 import { cn } from "@/lib/utils";
@@ -120,10 +116,10 @@ export function ConsoleView() {
   const [queue, setQueue] = useState<ManagerItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastSync, setLastSync] = useState<Date | null>(null);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const refresh = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [m, g, q] = await Promise.all([
         getMonitor(),
@@ -133,16 +129,26 @@ export function ConsoleView() {
       setRecords(m);
       setGraph(g);
       setQueue(q);
+      setError(null);
+      setLastSync(new Date());
     } catch (e) {
       setError(e instanceof Error ? e.message : "콘솔 데이터를 불러오지 못했습니다.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
+  // initial load + reload on identity change
   useEffect(() => {
     void refresh();
   }, [refresh, userId]);
+
+  // live polling — silent refresh every 5s so the activity feed stays current
+  // without the full-panel loading flash. /monitor is the real-time source.
+  useEffect(() => {
+    const id = setInterval(() => void refresh(true), 5000);
+    return () => clearInterval(id);
+  }, [refresh]);
 
   const orgCardCount = useMemo(
     () => (graph?.nodes ?? []).filter((n) => n.type === "card").length,
@@ -158,9 +164,16 @@ export function ConsoleView() {
   return (
     <div className="flex flex-col gap-ds-16 px-ds-16 py-ds-16 md:px-ds-24">
       <div className="flex items-center justify-between gap-ds-8">
-        <p className="text-xs text-[var(--ds-color-ink-subtle)]">
-          {loading ? "감사 로그·조직 맵 불러오는 중…" : `감사 로그 ${records.length}건 · 조직 카드 ${orgCardCount}종`}
-        </p>
+        <div className="flex items-center gap-ds-8">
+          <LiveDot />
+          <p className="text-xs text-[var(--ds-color-ink-subtle)]">
+            {loading
+              ? "감사 로그·조직 맵 불러오는 중…"
+              : `감사 로그 ${records.length}건 · 조직 카드 ${orgCardCount}종${
+                  lastSync ? ` · ${shortClock(lastSync)} 동기화` : ""
+                }`}
+          </p>
+        </div>
         <button
           type="button"
           onClick={() => void refresh()}
@@ -197,7 +210,8 @@ export function ConsoleView() {
             <h2 className="font-heading text-md font-semibold text-[var(--ds-color-ink)]">
               최근 라우팅 활동
             </h2>
-            <span className="ml-auto text-xs text-[var(--ds-color-ink-subtle)]">/monitor</span>
+            <LiveDot />
+            <span className="ml-auto font-mono text-xs text-[var(--ds-color-ink-subtle)]">/monitor · 5초 자동</span>
           </div>
           {loading && records.length === 0 ? (
             <PanelLoading label="감사 로그" />
@@ -300,39 +314,31 @@ export function ConsoleView() {
           </section>
         </aside>
       </div>
-
-      {/* mock surfaces — routes not yet implemented backend-side */}
-      <div className="grid grid-cols-1 gap-ds-16 lg:grid-cols-3">
-        <section className="overflow-hidden rounded-lg border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] lg:col-span-2">
-          <div className="flex items-center gap-ds-8 border-b border-[var(--ds-color-border)] px-ds-16 py-ds-12">
-            <Activity aria-hidden className="h-[18px] w-[18px] text-[var(--ds-color-info)]" />
-            <h2 className="font-heading text-md font-semibold text-[var(--ds-color-ink)]">
-              라이브 피드
-            </h2>
-          </div>
-          <div className="px-ds-16 pt-ds-12">
-            <MockMarker note="SSE 라이브 피드 라우트가 백엔드에 아직 없습니다 (SSE 피드 미구현). 실시간성은 위 '최근 라우팅 활동'을 새로고침으로 대체합니다." />
-          </div>
-          <LiveFeed events={feedEvents} />
-        </section>
-
-        <aside className="flex flex-col gap-ds-16">
-          <section className="overflow-hidden rounded-lg border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)]">
-            <div className="flex items-center gap-ds-8 border-b border-[var(--ds-color-border)] px-ds-16 py-ds-12">
-              <Radio aria-hidden className="h-[18px] w-[18px] text-[var(--ds-color-warning)]" />
-              <h2 className="font-heading text-md font-semibold text-[var(--ds-color-ink)]">
-                워커 승인 대기
-              </h2>
-            </div>
-            <div className="px-ds-16 pt-ds-12">
-              <MockMarker note="워커 admission 라우트가 백엔드에 아직 없습니다 (워커 admission 미구현)." />
-            </div>
-            <WorkerAdmission workers={pendingWorkers} />
-          </section>
-        </aside>
-      </div>
     </div>
   );
+}
+
+// Pulsing dot that signals the console is live-polling (/monitor every 5s).
+function LiveDot() {
+  return (
+    <span className="inline-flex items-center gap-ds-4">
+      <span className="relative flex h-2 w-2">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-pill bg-[var(--ds-color-success)] opacity-60" />
+        <span className="relative inline-flex h-2 w-2 rounded-pill bg-[var(--ds-color-success)]" />
+      </span>
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ds-color-success)]">
+        live
+      </span>
+    </span>
+  );
+}
+
+function shortClock(d: Date): string {
+  try {
+    return d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return "";
+  }
 }
 
 function PanelLoading({ label }: { label: string }) {

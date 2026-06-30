@@ -29,11 +29,14 @@ export default function RootLayout({
       <body className="min-h-screen bg-[var(--ds-color-canvas)] font-sans text-[var(--ds-color-ink)] antialiased">
         <ThemeProvider>
           <SessionProvider>
-            <div className="flex min-h-screen">
+            {/* Desktop (lg+): app shell is viewport-fixed — sidebar/topbar stay
+                put, only <main> scrolls. Mobile (<lg): document scrolls as before
+                (sidebar is hidden, the Topbar is sticky), so no regression. */}
+            <div className="flex min-h-screen lg:h-screen lg:overflow-hidden">
               <Sidebar />
-              <div className="flex min-w-0 flex-1 flex-col">
+              <div className="flex min-w-0 flex-1 flex-col lg:overflow-hidden">
                 <Topbar />
-                <main className="min-w-0 flex-1">{children}</main>
+                <main className="min-w-0 flex-1 lg:overflow-y-auto">{children}</main>
               </div>
             </div>
           </SessionProvider>

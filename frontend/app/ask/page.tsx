@@ -169,7 +169,7 @@ export default function AskPage() {
   }
 
   return (
-    <div className="flex h-full min-h-[calc(100vh-0px)] flex-col">
+    <div className="flex h-full min-h-[calc(100vh-0px)] flex-col lg:min-h-0">
       <PageHeader
         surface="Ask"
         persona="사용자"

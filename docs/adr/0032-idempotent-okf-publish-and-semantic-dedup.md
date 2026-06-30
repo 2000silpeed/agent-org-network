@@ -161,7 +161,7 @@ near-dup 병합은 새 토폴로지가 아니라 결정 B2(concept_id 정규화 
 ## Open Questions / 게이트 밖
 
 - **OQ-1 (B·결정 B1)**: 커밋-직후 인덱스 도출 입력 디렉터리 = working tree 직독(a) vs 커밋 스냅샷 추출(b). MVP는 (a)(워커 경로 동일). "이 인덱스는 이 커밋 기준" 감사가 필요해지면 (b)로(ADR 0018 결정 4 정신·`KnowledgeIndex`에 `snapshot_sha` 추가 여부). `GitGateway` 포트에 `bundle_dir(agent_id)` 또는 도출용 디렉터리 노출 메서드를 더할지(현재 `extract_snapshot`만 디렉터리를 냄) — tdd/mcp-runtime이 더 작은 쪽 선택.
-- **OQ-2 (B·결정 B2)**: `OkfConceptKey.derive`의 정규화 규칙 세부(길이 캡·유니코드 정규화 형식·동일 (domain,title)이 다른 개념일 충돌 빈도). 실 추출 골든셋으로 키 안정성·충돌율 관측 후 확정.
+- **OQ-2 (B·결정 B2)**: ~~`OkfConceptKey.derive`의 정규화 규칙 세부(길이 캡·유니코드 정규화 형식·동일 (domain,title)이 다른 개념일 충돌 빈도).~~ **decided (2026-07-01) — `okf_authoring.derive_concept_key(domain, title)`(T11.8b)**. NFKC 정규화→소문자→공백을 하이픈으로→영숫자/하이픈 외 제거→연속 하이픈 축약→80자 캡. 정규화 후 빈 문자열(한글뿐인 입력)은 `(domain,title)` sha256 해시 16자로 폴백(`concept-<hex16>`). 동일 (domain,title) 충돌은 *의도된 멱등*(같은 개념으로 간주해 덮어쓴다) — 다른 개념인데 키가 같아지는 실제 빈도는 실 추출 골든셋 운영 데이터 없이는 여전히 미관측(80자 truncation 충돌 가능성 포함, 실 owner 트래픽이 쌓이면 재관측). `parse_split_response`가 LLM concept_id를 무시하고 이 함수로 덮어쓴다. `reindex_incrementally` 병합 비교는 `_concept_match_key`(같은 정규화 규칙)로 층2 보강.
 - **OQ-3 (B·결정 B3)**: ~~삭제 = `commit_okf_bundle` 확장(제거 목록 인자)의 시그니처.~~ **decided (2026-07-01) — `removed_paths: tuple[str, ...] = ()` on `CommitRequest`/`BuilderCommitRequest`**. 별도 `delete_okf_concept` 연산이 아니라 *기존 커밋 시그니처에 삭제 목록 필드를 더하는* 최소 확장을 택했다(새 값객체·새 연산 0 — 추가·삭제·편집이 모두 한 커밋 경로로 수렴). 근거: ① `commit_okf_bundle`이 이미 단일 커밋 오케스트레이터라 삭제도 같은 닫힌 루프(쓰기+커밋)에 자연 합류한다 ② `files`만 들던 추가 전용 커밋은 빈 튜플 기본값으로 *완전 하위호환*(기존 호출 무영향) ③ 편집(같은 경로 덮어쓰기)·삭제(`files=()`+`removed_paths`)·삭제+추가가 모두 한 `CommitRequest`로 표현된다 — 별도 연산이면 트랜잭션 경계가 둘로 갈린다. 경로 안전은 `validate_removed_paths`(`validate_okf_paths`와 같은 규칙)로 `FakeGitGateway`·`SubprocessGitGateway` 동일 강제. `FakeGitGateway`는 working tree에서 path 제거 후 새 스냅샷, `SubprocessGitGateway`는 `git rm -f --ignore-unmatch`(없는 path idempotent). `OkfTombstone` 값 객체는 *만들지 않았다* — 삭제 명령이 `removed_paths` 한 필드로 충분히 표현돼 새 도메인 타입이 과설계였다(결정 B3의 "tombstone은 도메인 연산 표현으로만·중앙 영속 0" 정신을 *필드*로 더 가볍게 실현). 구현: `git_gateway.py`(`removed_paths`·`validate_removed_paths`), web의 `DELETE /author/concept/{agent_id}/{concept_id}`(삭제 커밋→인덱스 재도출).
 - **OQ-4 (C·결정 C2)**: 로컬 다국어 임베딩 모델 선택(구체 모델명·크기·한국어 품질)·새 의존성(되돌리기 어려움) — T10.5와 합류해 한 번에. dedup이 T10.5 임베딩 첫 사용처가 될지(routing ANN 먼저냐 dedup 먼저냐).
 - **OQ-5 (C·결정 C3)**: τ_high·τ_low 임계 실값·UX(자동 제안 vs 후보 목록만). 실 임베딩 관측 후.
@@ -172,7 +172,7 @@ near-dup 병합은 새 토폴로지가 아니라 결정 B2(concept_id 정규화 
 ## 결정 요약 (5줄)
 
 1. **B1**: publish 인덱스 도출을 "이번 admitted draft+임시 디렉터리" → **owner OKF 본체 디렉터리 전체 glob**(워커 `publish_frames`와 수렴·새 도출 코드 0·commit 누적이 곧 멱등 누적).
-2. **B2**: concept_id를 LLM 자유 슬러그 → **`(domain,title)` 결정론 키(`OkfConceptKey`)** + 병합 정규화 매칭(같은 개념=같은 파일 경로=git 덮어쓰기 멱등).
+2. **B2**: concept_id를 LLM 자유 슬러그 → **`(domain,title)` 결정론 키(`OkfConceptKey`)** + 병합 정규화 매칭(같은 개념=같은 파일 경로=git 덮어쓰기 멱등). **구현(OQ-2 decided·T11.8b)**: `okf_authoring.derive_concept_key`+`parse_split_response` 강제 덮어쓰기(층1)·`reindex_incrementally`의 `_concept_match_key` 정규화 비교(층2).
 3. **B3**: 명시 삭제 = **물리 삭제 커밋**(git 이력이 보존·중앙은 완전 인덱스 교체로 자연 반영·삭제도 staleness reeval) — tombstone은 도메인 연산 표현으로만(중앙 영속 0). **구현(OQ-3 decided)**: 별도 `OkfTombstone` 값객체 없이 `CommitRequest.removed_paths: tuple[str,...] = ()` 한 필드로 삭제 명령을 실현(추가·편집·삭제가 한 커밋 경로로 수렴·완전 하위호환). `DELETE /author/concept/{agent_id}/{concept_id}`가 삭제 커밋→인덱스 재도출로 owner 자기 개념 삭제를 제공한다.
 4. **C1·C2**: 의미 near-dup 탐지·병합은 **owner측 저작 단계·로컬 다국어 임베딩(중앙 토큰 0·T10.5 인프라 공유·포트 뒤)** — 중앙 무변경.
 5. **C3·C4**: **자동 병합 금지·owner 확인 후보 제안**(과병합=지식 손실·1인칭 처분), 병합 연산은 B2·B3 기계 재사용.

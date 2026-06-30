@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from agent_org_network.okf_authoring import LlmAuthor
+from agent_org_network.okf_authoring import LlmAuthor, derive_concept_key
 from agent_org_network.provider_runtime import ProviderRequest, ProviderTransport
 from agent_org_network.provider_transport_claude_code import (
     ClaudeCodeCall,
@@ -97,7 +97,8 @@ def test_LlmAuthor에_꽂혀_split_관통() -> None:
 
     drafts = author.split([RawSource(source_id="src1", content="환불 정책 본문")])
     assert len(drafts) == 1
-    assert drafts[0].concept_id == "refund-policy"
+    # concept_id는 LLM이 낸 값이 아니라 derive_concept_key(domain, title)로 도출(ADR 0032 B2)
+    assert drafts[0].concept_id == derive_concept_key("환불", "환불 정책")
     assert drafts[0].domain == "환불"
     # split 프롬프트가 runner까지 닿았다(source 내용 포함).
     assert runner.seen is not None

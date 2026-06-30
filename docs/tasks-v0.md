@@ -522,6 +522,11 @@
 PRD §4 페르소나 면(Ask·Author·Inbox·Console)을 **별 프론트엔드 `frontend/`(Next.js 14 + Tailwind v3 + 디자인 토큰)**로 실체화. 디자인 시스템은 **design-ontology-harness**가 우리 *실제 제품 spec*(질문 라우팅 4면·노출 불변식·중앙 토큰 0·StageDisposition)으로 재합성한 프리셋 `dashboard--corporate-trust`를 `install-preset --adapter nextjs-tailwind-shadcn`으로 설치(`frontend/design-system/` STYLE/DESIGN/IMPLEMENTATION_CONTRACT·CSS 토큰·Pretendard/Source Code Pro·dark 기본).
 
 - **4 route**: `/ask`(사용자 채팅·담당/신뢰/출처·노출 불변식) · `/author`(OKF 저작·staged 스텝퍼·승인/수정/거부·diff·중앙 토큰 0) · `/inbox`(처리함 3탭 다툼/백업/재평가) · `/console`(운영자 라이브 피드·워커 admission·audit).
-- **현 상태**: 정적 목 데이터(`frontend/lib/mock-data.ts`)·`pnpm build` 통과·반응형·컬러모드 패리티. **백엔드 와이어링(FastAPI `web.py` 실 API 연결)은 후속.**
+- **현 상태(2026-06-30)**: **실 백엔드 와이어링 진행 중.** 서버사이드 프록시(`app/api/[...path]/route.ts` → FastAPI 8011·동일 출처)로 연결.
+  - `/ask` — 실 라우팅+실 LLM 답변(`postAsk`/`pollAsk`·`lib/ask-api.ts`). 노출 불변식 준수(담당·신뢰·출처만, 점수/후보 X). ✅
+  - `/inbox` — 데모 로그인(세션·`*_lead`=owner) 후 실 다툼 케이스(`/inbox/cases`)·백업 답(`/inbox/backup-reviews`)·담당 지정(`/cases/{id}/concur`). 재평가 탭은 목(라우트 후속). ✅
+  - `/console` — 실 메트릭·최근 라우팅(`/monitor`)·조직 맵(`/org/graph`)·매니저 큐(`/manager/queue`). 라이브 피드(SSE)·워커 admission은 "실 API 후속" 마커. ✅
+  - `/author` — owner-측 게이트 밖(중앙 비소유 보존). 후속.
+  - **후속 슬라이스 2b**: 재평가 라우트·SSE 라이브 피드·워커 admission API(mcp-runtime), `/ask` 스트리밍(블로킹→점진 렌더).
 - **기존 `web/*.html`(walking skeleton·TRD §1)은 보존** — 운영 면만 `frontend/`로 승격, 사용자 MCP/API 경로는 무변경.
 - **디자인 시스템 출처**: `~/ai-projects/design-ontology-harness/projects/agent-org-network`(spec.md·brand_profile.json·build·preset — 별 레포·당신 자산). 첫 제네릭 합성(에이전트 그래프 대시보드) 폐기 후 우리 제품으로 재합성.

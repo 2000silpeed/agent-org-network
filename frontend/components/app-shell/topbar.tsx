@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Network } from "lucide-react";
 import { NAV_ITEMS } from "./nav";
+import { IdentitySwitcher } from "@/components/session/identity-switcher";
 import { cn } from "@/lib/utils";
 
 // Mobile/tablet primary nav. Sidebar is hidden below lg; this horizontal,
@@ -20,6 +21,9 @@ export function Topbar() {
         <span className="font-heading text-sm font-semibold text-[var(--ds-color-ink)]">
           Agent Org Network
         </span>
+        <div className="ml-auto">
+          <IdentitySwitcher />
+        </div>
       </div>
       <nav
         aria-label="제품 영역"

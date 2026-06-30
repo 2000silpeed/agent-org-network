@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Network, ShieldCheck } from "lucide-react";
 import { NAV_ITEMS } from "./nav";
+import { IdentitySwitcher } from "@/components/session/identity-switcher";
 import { cn } from "@/lib/utils";
 
 // sidebar-nav (navigation family): container, nav-item, icon, label, indicator(active).
@@ -84,7 +85,8 @@ export function Sidebar() {
         </ul>
       </nav>
 
-      <div className="border-t border-[var(--ds-color-border)] px-ds-16 py-ds-12">
+      <div className="flex flex-col gap-ds-12 border-t border-[var(--ds-color-border)] px-ds-16 py-ds-12">
+        <IdentitySwitcher />
         <div className="flex items-center gap-ds-8 text-xs text-[var(--ds-color-ink-subtle)]">
           <ShieldCheck
             aria-hidden

@@ -42,18 +42,23 @@ BASE_TS = datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
 
 
 class _RecordingRunner:
-    """프롬프트를 받아 고정 응답을 돌려주며 마지막 프롬프트를 기록(실 claude 대역).
+    """프롬프트를 받아 고정 응답을 돌려주며 마지막 user 프롬프트·system_prompt를 기록(실 claude 대역).
 
     `cwd`는 ClaudeRunner Protocol(ADR 0013 OKF 소비)의 선택 키워드 — 이 테스트들은 OKF
     번들을 두지 않아 cwd가 전달되지 않지만, 시그니처로 흡수해 Protocol에 부합한다(행위 불변).
+    `system_prompt`(노출 격리·본 작업)도 선택 키워드 — 페르소나가 system으로 분리돼 넘어온다.
     """
 
     def __init__(self, reply: str) -> None:
         self.reply = reply
         self.last_prompt: str | None = None
+        self.last_system: str | None = None
 
-    def __call__(self, prompt: str, *, cwd: str | None = None) -> str:
+    def __call__(
+        self, prompt: str, *, cwd: str | None = None, system_prompt: str | None = None
+    ) -> str:
         self.last_prompt = prompt
+        self.last_system = system_prompt
         return self.reply
 
 
@@ -123,10 +128,11 @@ def test_runner에_ticket_question이_전달된다():
     logic.handle_push_work(_push(question="보증 기간 얼마예요?"))
 
     assert runner.last_prompt is not None
-    # 워커가 ticket의 question을 로컬 claude(ClaudeCodeRuntime)에 넘긴다.
+    # 워커가 ticket의 question을 로컬 claude(ClaudeCodeRuntime)에 user 프롬프트로 넘긴다.
     assert "보증 기간 얼마예요?" in runner.last_prompt
-    # 카드 페르소나도 프롬프트에 녹는다(ClaudeCodeRuntime 재사용 — 재구현 아님).
-    assert "cs_ops" in runner.last_prompt
+    # 카드 페르소나는 system_prompt로 분리돼 넘어온다(노출 격리·ClaudeCodeRuntime 재사용).
+    assert runner.last_system is not None
+    assert "cs_ops" in runner.last_system
 
 
 def test_답의_sources와_mode가_카드에서_보존된다():

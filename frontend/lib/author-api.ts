@@ -17,7 +17,10 @@ export interface AuthorConcept {
   core_question: string;
   domain: string;
   body: string;
+  type?: string | null;
   in_domain: boolean;
+  // 실제 커밋되는 OKF 마크다운(프론트매터 + 본문) — owner가 OKF 형식을 확인.
+  okf_markdown?: string;
 }
 
 export interface DroppedConcept {
@@ -49,6 +52,22 @@ export interface AuthorPublishResult {
   // null when every concept was rejected (nothing to publish)
   published: { agent_id: string; concept_count: number; generated_at: string } | null;
   dropped?: string[];
+}
+
+// 이미 중앙에 게시된 목차(KnowledgeIndex) — owner가 "이미 만든 개념"을 보는 라이브러리.
+// 본문은 없다(중앙 비소유) — id·label·core_question·domain·type만.
+export interface AuthorIndexConcept {
+  id: string;
+  label: string;
+  core_question: string;
+  domain: string;
+  type: string | null;
+}
+
+export interface AuthorIndexResult {
+  agent_id: string;
+  generated_at: string | null;
+  concepts: AuthorIndexConcept[];
 }
 
 export class AuthorError extends Error {
@@ -99,4 +118,93 @@ export function publishAuthor(
     agent_id: agentId,
     concepts,
   });
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(path, { headers: { accept: "application/json" } });
+  } catch {
+    throw new AuthorError("네트워크 오류 — 백엔드에 연결할 수 없습니다.");
+  }
+  if (res.status === 401) throw new AuthorError("로그인이 필요합니다.", 401);
+  if (res.status === 403) {
+    throw new AuthorError("자기 담당의 지식만 볼 수 있습니다.", 403);
+  }
+  if (res.status === 404) {
+    throw new AuthorError("저작 백엔드가 연결되어 있지 않습니다.", 404);
+  }
+  if (!res.ok) throw new AuthorError(`요청 실패 (HTTP ${res.status}).`, res.status);
+  return (await res.json()) as T;
+}
+
+/** GET /api/author/index/{agentId} — 이미 중앙에 게시된 목차(있으면). */
+export function fetchAuthorIndex(agentId: string): Promise<AuthorIndexResult> {
+  return getJson<AuthorIndexResult>(`/api/author/index/${encodeURIComponent(agentId)}`);
+}
+
+// 게시 개념의 본문 포함 상세 — owner 자기 OKF 조회(본문은 owner 번들에서·중앙 비소유 무관).
+export interface AuthorConceptDetail {
+  concept_id: string;
+  title: string;
+  core_question: string;
+  domain: string;
+  body: string;
+  type: string | null;
+}
+
+export interface ConceptEditPatch {
+  title?: string;
+  core_question?: string;
+  body?: string;
+  domain?: string;
+}
+
+async function sendJson<T>(method: "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: body !== undefined ? { "content-type": "application/json" } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new AuthorError("네트워크 오류 — 백엔드에 연결할 수 없습니다.");
+  }
+  if (res.status === 401) throw new AuthorError("로그인이 필요합니다.", 401);
+  if (res.status === 403) throw new AuthorError("자기 담당의 지식만 변경할 수 있습니다.", 403);
+  if (res.status === 404) throw new AuthorError("개념을 찾을 수 없습니다.", 404);
+  if (!res.ok) throw new AuthorError(`요청 실패 (HTTP ${res.status}).`, res.status);
+  return (await res.json()) as T;
+}
+
+/** GET — 게시 개념의 본문 포함 상세(편집용). */
+export function fetchConcept(agentId: string, conceptId: string): Promise<AuthorConceptDetail> {
+  return getJson<AuthorConceptDetail>(
+    `/api/author/concept/${encodeURIComponent(agentId)}/${encodeURIComponent(conceptId)}`,
+  );
+}
+
+/** PUT — 개념 편집(미지정 필드 보존). 인덱스 재도출까지 백엔드가 처리. */
+export function updateConcept(
+  agentId: string,
+  conceptId: string,
+  patch: ConceptEditPatch,
+): Promise<{ concept: AuthorConceptDetail; published: AuthorPublishResult["published"] }> {
+  return sendJson(
+    "PUT",
+    `/api/author/concept/${encodeURIComponent(agentId)}/${encodeURIComponent(conceptId)}`,
+    patch,
+  );
+}
+
+/** DELETE — 개념 삭제(목차에서 제거·인덱스 재도출). */
+export function deleteConcept(
+  agentId: string,
+  conceptId: string,
+): Promise<{ deleted: { concept_id: string }; published: AuthorPublishResult["published"] }> {
+  return sendJson(
+    "DELETE",
+    `/api/author/concept/${encodeURIComponent(agentId)}/${encodeURIComponent(conceptId)}`,
+  );
 }

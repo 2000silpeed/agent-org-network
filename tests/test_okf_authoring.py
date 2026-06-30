@@ -2158,7 +2158,7 @@ def test_T11_7c_build_split_request_결정론():
         RawSource(source_id="src-001", content="환불 정책 내용"),
         RawSource(source_id="src-002", content="배송 정책 내용"),
     )
-    req = build_split_request(sources, model="test-model")
+    req = build_split_request(sources, model="test-model", owned_domains=("환불", "배송"))
 
     assert isinstance(req, ProviderRequest)
     assert req.model == "test-model"
@@ -2171,6 +2171,20 @@ def test_T11_7c_build_split_request_결정론():
     assert "src-001" in user_content
     assert "환불 정책 내용" in user_content
     assert "src-002" in user_content
+
+
+def test_T11_7c_build_split_request_owned_domains_제약_프롬프트():
+    """build_split_request: owned-domain 목록을 system에 싣고 domain을 그 안으로 강제한다.
+
+    치명 갭 교정 — LLM이 owned-domain을 모르면 domain을 추측해 admit_okf가 전부 over-claim으로
+    떨군다. link 프롬프트의 concept_id 화이트리스트 패턴 모방(유효 목록을 명시)."""
+    sources = (RawSource(source_id="src-001", content="계약 검토 본문"),)
+    req = build_split_request(
+        sources, model="test-model", owned_domains=("계약 검토", "법무 자문")
+    )
+    # 유효 domain 목록이 system 프롬프트에 그대로 실린다.
+    assert "계약 검토" in req.system
+    assert "법무 자문" in req.system
 
 
 # ── (T11.7c-2) build_derive_request 결정론 ──────────────────────────────────
@@ -2255,6 +2269,26 @@ def test_T11_7c_parse_split_response_정상():
     assert result[0].concept_id == "refund-policy"
     assert result[0].title == "환불 정책"
     assert result[0].body == "7일 이내 환불 가능합니다."
+
+
+def test_T11_7c_parse_split_response_코드펜스_벗김():
+    """LLM이 ```json … ``` 코드펜스로 감싸 내도 파싱한다(프롬프트 금지해도 비결정)."""
+    inner = _json.dumps([
+        {
+            "concept_id": "refund-policy",
+            "title": "환불 정책",
+            "body": "7일 이내 환불 가능합니다.",
+            "core_question": "환불이 가능한가요?",
+            "domain": "환불",
+            "type": None,
+        }
+    ])
+    fenced = f"```json\n{inner}\n```"
+    result = parse_split_response(fenced)
+
+    assert len(result) == 1
+    assert result[0].concept_id == "refund-policy"
+    assert result[0].domain == "환불"
 
 
 # ── (T11.7c-5) derive: core_question만 갱신·title/body/domain 보존 ────────────
@@ -2488,6 +2522,39 @@ def test_T11_7c_공급자_중립_다른_model():
     assert type(author1) is type(author2)
     assert author1._model == "gpt-5.5"  # pyright: ignore[reportPrivateUsage]
     assert author2._model == "claude-3-5-haiku-20241022"  # pyright: ignore[reportPrivateUsage]
+
+
+class _CapturingTransport:
+    """split 호출의 ProviderRequest를 관측하는 테스트 transport(첫 호출만 캡처·빈 배열 반환)."""
+
+    def __init__(self) -> None:
+        self.split_request: ProviderRequest | None = None
+        self._call_count = 0
+
+    def __call__(self, request: ProviderRequest) -> list[str]:
+        if self._call_count == 0:
+            self.split_request = request
+        self._call_count += 1
+        return ["[]"]
+
+
+def test_T11_7c_LlmAuthor_owned_domains를_split_요청에_전달():
+    """LlmAuthor(owned_domains=...)가 split 프롬프트에 유효 domain 목록을 싣는다(치명 갭 교정)."""
+    transport = _CapturingTransport()
+    author = LlmAuthor(transport, model="m", owned_domains=("계약 검토", "법무 자문"))
+    author.split([RawSource(source_id="src", content="계약 검토 본문")])
+
+    assert transport.split_request is not None
+    assert "계약 검토" in transport.split_request.system
+    assert "법무 자문" in transport.split_request.system
+
+
+def test_T11_7c_LlmAuthor_owned_domains_기본_빈튜플_하위호환():
+    """owned_domains 생략 시 빈 튜플(제약 없음) — 기존 LlmAuthor(transport, model=) 호출 보존."""
+    transport = _CapturingTransport()
+    author = LlmAuthor(transport, model="m")
+    author.split([RawSource(source_id="src", content="본문")])
+    assert author._owned_domains == ()  # pyright: ignore[reportPrivateUsage]
 
 
 # ── (T11.7c-14) SDK import 0 가드 ───────────────────────────────────────────

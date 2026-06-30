@@ -675,12 +675,43 @@ from agent_org_network.provider_runtime import (  # noqa: E402
     assemble_stream,
 )
 
-_SPLIT_SYSTEM = (
-    "원본 소스를 개념 단위로 분할해 JSON 배열만 반환하라. 코드펜스·산문 금지.\n"
+# 범위 밖(어느 owned-domain에도 안 맞는) 개념의 over-claim placeholder domain. 어느 카드도
+# owned로 갖지 않을 일반 라벨이라 admit_okf의 domain_authorized 검사에서 자연 드롭된다.
+_SPLIT_OVERCLAIM_DOMAIN = "기타"
+
+_SPLIT_SYSTEM_HEADER = "원본 소스를 개념 단위로 분할해 JSON 배열만 반환하라. 코드펜스·산문 금지.\n"
+
+# domain 제약 — link 프롬프트의 concept_id 화이트리스트 패턴 모방. LLM이 owned-domain을 모르면
+# domain을 추측(예: agent_id)해 admit_okf가 전부 over-claim으로 떨군다(치명 갭·E2E 확인).
+# in-scope 개념이 정확한 owned-domain을 받게 하고, 범위 밖은 명시 over-claim 라벨로 둔다.
+_SPLIT_DOMAIN_HEADER = (
+    "각 개념의 domain은 반드시 아래 유효 domain 목록 중 하나여야 한다.\n"
+    "유효 domain 목록:\n"
+)
+_SPLIT_DOMAIN_FOOTER = (
+    f'\n위 목록 중 어느 것에도 맞지 않는 범위 밖 개념은 domain을 "{_SPLIT_OVERCLAIM_DOMAIN}"로 둔다'
+    "(권한 밖 표식 — 검증 게이트가 떨군다). 유효 목록에 맞는 개념은 절대 이 표식을 쓰지 마라.\n"
+)
+
+_SPLIT_SCHEMA = (
     '스키마: [{"concept_id": "파일명 안전 슬러그·소문자/하이픈만·구분자/`..`/공백 금지",'
     ' "title": "str", "body": "str", "core_question": "str",'
     ' "domain": "str", "type": null}]'
 )
+
+
+def _build_split_system(owned_domains: Sequence[str]) -> str:
+    """split 시스템 프롬프트 조립 — owned_domains가 있으면 domain 제약 절을 끼운다(순수·IO 0).
+
+    빈 목록이면 제약 절을 생략한다(하위호환·"제약 없음"). select_author 경로는 반드시
+    card.domains를 넘기므로 실 추출에서는 항상 제약이 실린다.
+    """
+    parts = [_SPLIT_SYSTEM_HEADER]
+    if owned_domains:
+        whitelist = "\n".join(f"- {d}" for d in owned_domains)
+        parts.append(_SPLIT_DOMAIN_HEADER + whitelist + _SPLIT_DOMAIN_FOOTER)
+    parts.append(_SPLIT_SCHEMA)
+    return "".join(parts)
 
 _DERIVE_SYSTEM = (
     "각 개념의 core_question을 정련해 JSON 배열만 반환하라. 코드펜스·산문 금지.\n"
@@ -701,13 +732,19 @@ def build_split_request(
     sources: Sequence[RawSource],
     *,
     model: str,
+    owned_domains: Sequence[str] = (),
 ) -> ProviderRequest:
-    """raw sources → 개념 분할 요청(순수·IO 0)."""
+    """raw sources → 개념 분할 요청(순수·IO 0).
+
+    owned_domains: 카드 owned-domain 목록 — 프롬프트에 유효 domain 제약으로 실어 LLM이
+    in-scope 개념에 정확한 domain을 고르게 한다(link 화이트리스트 패턴). 빈 목록이면 제약
+    없음(하위호환). select_author 경로는 반드시 card.domains를 넘긴다.
+    """
     lines = [f"[{src.source_id}] {src.content}" for src in sources]
     user_content = "\n\n".join(lines)
     return ProviderRequest(
         model=model,
-        system=_SPLIT_SYSTEM,
+        system=_build_split_system(owned_domains),
         messages=[{"role": "user", "content": user_content}],
     )
 
@@ -757,6 +794,25 @@ def _require_str(item: dict[str, object], key: str) -> str:
     return str(value)
 
 
+def _strip_code_fence(text: str) -> str:
+    """LLM이 JSON을 ```json … ``` 코드펜스로 감싸 낸 경우를 벗긴다(순수·IO 0).
+
+    프롬프트로 "코드펜스 금지"를 지시해도 모델 출력은 비결정이라 종종 펜스로 감싼다.
+    펜스가 없으면 trim만 한다. 있으면 첫 ``` 줄(``` 또는 ```json 등)과 끝 ``` 펜스를
+    제거하고 안쪽 텍스트를 반환한다 — 내용 자체 검증은 호출자의 json.loads에 맡긴다(fail-loud).
+    """
+    s = text.strip()
+    if not s.startswith("```"):
+        return s
+    newline = s.find("\n")
+    if newline == -1:
+        return s  # 펜스 마커만 있고 개행 없음 — 그대로(호출자 json.loads가 fail-loud)
+    inner = s[newline + 1 :].rstrip()
+    if inner.endswith("```"):
+        inner = inner[: inner.rfind("```")]
+    return inner.strip()
+
+
 def parse_split_response(text: str) -> tuple[OkfDocumentDraft, ...]:
     """split 응답 JSON → OkfDocumentDraft tuple(순수·IO 0).
 
@@ -764,7 +820,7 @@ def parse_split_response(text: str) -> tuple[OkfDocumentDraft, ...]:
     값 객체 생성자에 검증 위임(빈 body·unsafe concept_id 등).
     """
     try:
-        raw = _json.loads(text)
+        raw = _json.loads(_strip_code_fence(text))
     except _json.JSONDecodeError as exc:
         raise ValueError(f"split 응답 JSON 파싱 실패: {exc}") from exc
     if not isinstance(raw, list):
@@ -796,7 +852,7 @@ def parse_derive_response(
     originals에 없는 concept_id는 무시.
     """
     try:
-        raw = _json.loads(text)
+        raw = _json.loads(_strip_code_fence(text))
     except _json.JSONDecodeError as exc:
         raise ValueError(f"derive 응답 JSON 파싱 실패: {exc}") from exc
     if not isinstance(raw, list):
@@ -834,7 +890,7 @@ def parse_link_response(
     valid_ids 밖 from/to는 드롭(과생성 흡수·최종 dangling 방어는 admit_okf).
     """
     try:
-        raw = _json.loads(text)
+        raw = _json.loads(_strip_code_fence(text))
     except _json.JSONDecodeError as exc:
         raise ValueError(f"link 응답 JSON 파싱 실패: {exc}") from exc
     if not isinstance(raw, list):
@@ -857,16 +913,28 @@ class LlmAuthor:
     """OkfAuthor 포트 구현 — transport 주입·공급자 중립(ADR 0029).
 
     model은 필수 키워드 인자(공급자별 기본 모델은 게이트 밖 팩토리가 주입).
+    owned_domains는 카드 owned-domain 상태 — split 프롬프트에 유효 domain 제약으로 실어 LLM이
+    in-scope 개념에 정확한 domain을 고르게 한다(없으면 admit_okf가 전부 over-claim 드롭·치명 갭).
+    `OkfAuthor.split(sources)` Protocol 시그니처는 불변(owned_domains는 생성자 상태).
     파이프라인: build_*_request → transport → assemble_stream → parse_*_response.
     """
 
-    def __init__(self, transport: ProviderTransport, *, model: str) -> None:
+    def __init__(
+        self,
+        transport: ProviderTransport,
+        *,
+        model: str,
+        owned_domains: Sequence[str] = (),
+    ) -> None:
         self._transport = transport
         self._model = model
+        self._owned_domains = tuple(owned_domains)
 
     def split(self, sources: Sequence[RawSource]) -> tuple[OkfDocumentDraft, ...]:
         """2단계: 원본 소스를 개념 단위로 분할한다."""
-        request = build_split_request(sources, model=self._model)
+        request = build_split_request(
+            sources, model=self._model, owned_domains=self._owned_domains
+        )
         text = assemble_stream(self._transport(request))
         return parse_split_response(text)
 

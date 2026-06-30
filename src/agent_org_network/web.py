@@ -27,7 +27,7 @@ import os
 import secrets
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, assert_never
+from typing import TYPE_CHECKING, Any, Literal, assert_never, cast
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
@@ -103,16 +103,16 @@ from agent_org_network.reeval import (
     SupersedePrecedent,
 )
 from agent_org_network.index_matcher import relevant_concepts
+from agent_org_network.author_select import select_author
 from agent_org_network.okf_authoring import (
-    FakeAuthor,
     OkfDocumentDraft,
     OkfDraft,
     admit_okf,
-    build_index_from_admitted,
     render_okf_markdown,
     run_authoring_pipeline,
     TextIngestor,
 )
+from agent_org_network.okf_index import build_knowledge_index_from_okf, parse_okf_document
 from agent_org_network.registry import Registry
 from agent_org_network.runtime import AgentRuntime
 from agent_org_network.runtime_select import select_runtime
@@ -773,49 +773,24 @@ class AuthorPublishRequest(BaseModel):
     concepts: list[AuthorConceptDisposition]
 
 
-# 데모 author 도메인 매핑 — 카드별로 in-domain 2건 + over-claim 1건을 결정론으로 낸다.
-# 키는 agent_id, 값은 (in-domain 개념 2건, over-claim 개념 1건). over-claim의 domain은
-# 어느 데모 카드도 권한으로 갖지 않는 라벨("기밀")이라 admit_okf가 dropped_concepts로 떨군다.
-_DEMO_OVERCLAIM_DOMAIN = "기밀"
+class AuthorConceptEditRequest(BaseModel):
+    """PUT /author/concept/{agent_id}/{concept_id} 요청 바디 — 개념 편집(부분 덮어쓰기).
 
-
-def _build_demo_author(card: "AgentCard") -> FakeAuthor:
-    """데모용 결정론 author — 카드의 owned domain 2개 + over-claim 1건을 고정 산출한다.
-
-    owner OAuth 없이도 `/author` 데모가 staged 개념·over-claim 드롭·커밋을 한 번 관통하게
-    한다(ADR 0030 결정 4 "얇은 수직 슬라이스"). 실 `LlmAuthor`(owner OAuth provider transport·
-    ADR 0030 S1)는 게이트 밖 스왑이다 — 여기서 `_build_demo_author`를 `LlmAuthor(...)` 주입으로
-    바꾸면 같은 파이프라인이 실 추출로 돈다(주입만 교체·이번 범위 아님).
-
-    카드 domains에서 in-domain 개념 2건을 만들고(없으면 1건), over-claim 개념 1건은
-    `_DEMO_OVERCLAIM_DOMAIN`(어느 데모 카드도 권한 없는 라벨)으로 만들어 admit_okf가 떨구게 한다.
-    입력 문서와 무관하게 고정 산출한다(데모 결정론) — 실 추출은 LlmAuthor가 입력을 본다.
+    모든 필드 선택(미지정=기존 값 보존). 핸들러가 현재 개념을 먼저 읽어 미지정 필드를 머지한
+    뒤 admit_okf로 domain 권한을 재검증한다(over-claim 거부·Authority 중앙). concept_id는
+    path에서 받으므로 body에 두지 않는다(고정 — 편집은 같은 파일 덮어쓰기).
     """
-    domains = list(card.domains)
-    in_domain = domains[:2] if len(domains) >= 2 else (domains or [_DEMO_OVERCLAIM_DOMAIN])
-    docs: list[OkfDocumentDraft] = []
-    for i, dom in enumerate(in_domain):
-        docs.append(
-            OkfDocumentDraft(
-                concept_id=f"demo-{card.agent_id}-{i + 1}",
-                title=f"{dom} 정책 요약",
-                body=f"{dom}에 대한 기준과 처리 절차를 정리한 개념입니다(데모 자동 초안).",
-                core_question=f"{dom}은 어떻게 처리하나요?",
-                domain=dom,
-            )
-        )
-    # over-claim 개념 1건 — 카드 권한 밖 domain이라 admit_okf가 dropped_concepts로 떨군다.
-    docs.append(
-        OkfDocumentDraft(
-            concept_id=f"demo-{card.agent_id}-nda",
-            title="기밀유지(NDA) 규정",
-            body="권한 밖 도메인의 개념입니다 — admit_okf가 over-claim으로 떨굽니다(데모).",
-            core_question="NDA는 어떻게 처리하나요?",
-            domain=_DEMO_OVERCLAIM_DOMAIN,
-        )
-    )
-    fixed = tuple(docs)
-    return FakeAuthor(split_result=fixed, derive_result=fixed, link_result=())
+
+    title: str | None = None
+    core_question: str | None = None
+    body: str | None = None
+    domain: str | None = None
+    type: str | None = None
+
+
+# 데모 author 빌더는 `author_select.build_demo_author`로 이동했다(시임 통합). `/author/run`은
+# `select_author(card)`로 env(`AON_AUTHOR`) 분기 — 미설정/`demo`면 그 데모 빌더, `claude-code`면
+# 실 LlmAuthor(`claude -p`). 기존 동작·테스트는 미설정 기본 경로로 100% 보존된다.
 
 
 class ManagerActionRequest(BaseModel):
@@ -1500,9 +1475,10 @@ def create_app(
     def author_run(req: AuthorRunRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """raw 문서 → staged 개념 초안(owner측·transient·중앙 store 0·ADR 0030 결정 2·4).
 
-        파이프라인: TextIngestor → run_authoring_pipeline(데모 author) → admit_okf(over-claim
-        필터). 데모 author는 owner OAuth 없이도 staged 개념·over-claim 드롭을 한 번 관통하게
-        하는 결정론 더블이다(실 LlmAuthor는 게이트 밖 스왑·_build_demo_author 주석 참조).
+        파이프라인: TextIngestor → run_authoring_pipeline(select_author) → admit_okf(over-claim
+        필터). author는 `select_author(card)`가 env(`AON_AUTHOR`)로 고른다 — 미설정/`demo`면 owner
+        OAuth 없이도 staged 개념·over-claim 드롭을 관통하는 결정론 더블, `claude-code`면 실 LlmAuthor
+        (`claude -p` 구독 자격·입력 문서를 실제로 본다·게이트 밖).
 
         **불변식 가드(비소유)**: raw 문서·staged 초안을 어떤 중앙 store에도 저장하지 않는다 —
         이 핸들러는 published_index_store·case_store 등 어떤 store에도 *쓰지 않는다*(읽기만·
@@ -1512,7 +1488,7 @@ def create_app(
 
         ingestor = TextIngestor()
         sources = ingestor.ingest([(f"{req.agent_id}-src", req.document)])
-        author = _build_demo_author(card)
+        author = select_author(card)
         authored = run_authoring_pipeline(req.agent_id, sources, author)
         result = admit_okf(authored.draft, card)
 
@@ -1524,7 +1500,10 @@ def create_app(
                 "core_question": doc.core_question,
                 "domain": doc.domain,
                 "body": doc.body,
+                "type": doc.type,
                 "in_domain": doc.concept_id in kept_ids,
+                # 실제 커밋되는 OKF 마크다운(프론트매터+본문) — owner가 OKF 형식을 눈으로 확인.
+                "okf_markdown": render_okf_markdown(doc),
             }
             for doc in authored.draft.documents
         ]
@@ -1610,18 +1589,19 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        # 커밋된 번들에서 *목차*(KnowledgeIndex) 도출 → 중앙에 목차만 publish.
-        # build_index_from_admitted는 격리 임시 디렉터리에 마크다운을 쓰고 그것을 읽어
-        # 목차를 도출한다(본문은 임시 디렉터리에만·중앙 도달 0). 중앙 store에 들어가는
-        # 객체는 KnowledgeIndex(목차)뿐 — Concept은 본문 필드를 갖지 않는다(비소유 보장).
+        # 커밋된 번들 전체에서 *목차*(KnowledgeIndex) 도출 → 중앙에 목차만 publish.
+        # ADR 0032 결정 B1: extract_snapshot으로 그 커밋 시점의 OKF 번들 *전체*(이전+이번 누적)를
+        # 임시 디렉터리에 추출 → build_knowledge_index_from_okf로 전체 glob 도출.
+        # 중앙 store에 들어가는 객체는 KnowledgeIndex(목차)뿐 — 비소유 보장.
         import tempfile
         from datetime import UTC, datetime
 
         generated_at = datetime.now(UTC)
         with tempfile.TemporaryDirectory() as tmp:
-            index = build_index_from_admitted(
-                result.admitted, card, Path(tmp), generated_at=generated_at
-            )
+            okf_root = Path(tmp)
+            agent_dest = okf_root / req.agent_id
+            _git_gateway.extract_snapshot(commit_result.sha, req.agent_id, agent_dest)
+            index = build_knowledge_index_from_okf(card, okf_root, generated_at=generated_at)
         # (임시 디렉터리는 with 블록 종료 시 삭제 — 본문 마크다운은 디스크에 안 남는다)
 
         published: dict[str, Any] | None = None
@@ -1644,6 +1624,268 @@ def create_app(
             },
             "published": published,
             "dropped": list(result.dropped_concepts),
+        }
+
+    @app.get("/author/index/{agent_id}")
+    def author_index(agent_id: str, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """owner의 published 목차(KnowledgeIndex) 조회 — 중앙 store의 *목차만* 노출.
+
+        owner 스코프 가드(`_author_scoped_card`): 미로그인 401·미존재 404·타인 403.
+
+        **불변식 가드(비소유)**: 중앙 published_index_store에는 목차(KnowledgeIndex)뿐이라
+        반환도 *목차만*이다 — Concept은 본문 필드 자체가 없다(id·label·core_question·domain·
+        type만). raw 문서·staged 초안·LLM 토큰은 store에 안 들어가므로 여기서 노출할 길이 없다.
+        미게시 카드(store None·get None)는 빈 목차(미아 아님)로 응답한다.
+        """
+        _author_scoped_card(agent_id, request)
+
+        empty: dict[str, Any] = {"agent_id": agent_id, "generated_at": None, "concepts": []}
+        if bundle.published_index_store is None:
+            return empty
+        index = bundle.published_index_store.get(agent_id)
+        if index is None:
+            return empty
+        return {
+            "agent_id": index.agent_id,
+            "generated_at": index.generated_at.isoformat(),
+            "concepts": [
+                {
+                    "id": c.id,
+                    "label": c.label,
+                    "core_question": c.core_question,
+                    "domain": c.domain,
+                    "type": c.type,
+                }
+                for c in index.concepts
+            ],
+        }
+
+    def _validate_concept_id(concept_id: str) -> str:
+        """concept_id가 순수 파일명 컴포넌트인지 검증(traversal 방어 — 400).
+
+        저작면 단일 권위 `validate_safe_path_component`(agent_card.py) 재사용 — 구분자·`..`·
+        절대경로·빈 값 거부. path 파라미터로 들어온 stem이 okf_root/{agent_id} 밖을 못 가리키게
+        한다(GET/PUT/DELETE concept 공통 1차 방어).
+        """
+        from agent_org_network.agent_card import validate_safe_path_component
+
+        try:
+            return validate_safe_path_component(concept_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"concept_id 형식 오류: {exc}") from exc
+
+    def _read_concept_doc(
+        card: "AgentCard", concept_id: str
+    ) -> "OkfDocumentDraft | None":
+        """owner 게이트웨이 번들에서 한 개념의 OKF 본문을 읽어 OkfDocumentDraft로 역파싱한다.
+
+        head_sha → extract_snapshot → {concept_id}.md 읽기 → _parse_frontmatter로 프론트매터
+        파싱(render_okf_markdown 규약 역parse: title→title·description→core_question·
+        tags[0]→domain·type→type·`---` 이후 본문→body). 파일/커밋 없으면 None.
+
+        **owner 자기 조회**(익명 /ask 아님 — owner는 자기 OKF 소유자라 본문 노출은 비소유 위반
+        아님). 임시 디렉터리는 with 블록 종료 시 삭제(본문 디스크 잔존 없음).
+        """
+        import tempfile
+
+        try:
+            head = _git_gateway.head_sha(card.agent_id)
+        except (ValueError, KeyError):
+            return None
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / card.agent_id
+            _git_gateway.extract_snapshot(head, card.agent_id, dest)
+            md_path = dest / f"{concept_id}.md"
+            if not md_path.is_file():
+                return None
+            text = md_path.read_text(encoding="utf-8")
+        # render_okf_markdown 규약 역parse: title→title·description→core_question·
+        # tags[0]→domain·type→type·`---` 이후 본문→body(parse_okf_document 단일 권위).
+        front, body = parse_okf_document(text)
+        title = str(front.get("title", "") or "")
+        core_question = str(front.get("description", "") or "")
+        raw_tags: object = front.get("tags", [])
+        domain = ""
+        if isinstance(raw_tags, list) and raw_tags:
+            first_tag: object = cast("list[object]", raw_tags)[0]
+            domain = str(first_tag)
+        raw_type = front.get("type")
+        concept_type = str(raw_type) if raw_type is not None else None
+        return OkfDocumentDraft(
+            concept_id=concept_id,
+            title=title or concept_id,
+            body=body or "(본문 없음)",
+            core_question=core_question or concept_id,
+            domain=domain,
+            type=concept_type,
+        )
+
+    def _rederive_and_accept_index(
+        card: "AgentCard", sha: str, session_owner: str
+    ) -> "dict[str, Any] | None":
+        """커밋 직후 번들 전체에서 목차 재도출 → 중앙 publish(ADR 0032 B1 재사용).
+
+        extract_snapshot(sha)로 그 커밋 시점 OKF 번들 전체를 임시 디렉터리에 추출 →
+        build_knowledge_index_from_okf로 전체 glob 도출 → accept_published_index(스코핑→
+        필터→put·staleness). store None이면 None. /author/publish의 재도출과 *동일 경로*다.
+        """
+        import tempfile
+        from datetime import UTC, datetime
+
+        generated_at = datetime.now(UTC)
+        with tempfile.TemporaryDirectory() as tmp:
+            okf_root = Path(tmp)
+            agent_dest = okf_root / card.agent_id
+            _git_gateway.extract_snapshot(sha, card.agent_id, agent_dest)
+            index = build_knowledge_index_from_okf(card, okf_root, generated_at=generated_at)
+        if bundle.published_index_store is None:
+            return None
+        accept_published_index(
+            session_owner, index, bundle.registry, bundle.published_index_store
+        )
+        return {
+            "agent_id": index.agent_id,
+            "concept_count": len(index.concepts),
+            "generated_at": generated_at.isoformat(),
+        }
+
+    @app.get("/author/concept/{agent_id}/{concept_id}")
+    def author_concept_detail(  # pyright: ignore[reportUnusedFunction]
+        agent_id: str, concept_id: str, request: Request
+    ) -> dict[str, Any]:
+        """owner의 게시 개념 1건을 *본문 포함* 상세 조회(ADR 0032 OQ-3 — 편집 전 본문 확보).
+
+        owner 스코프 가드(미로그인 401·미존재 카드 404·타인 403)·concept_id traversal 방어(400).
+        게이트웨이 번들에서 그 개념 OKF 본문을 읽어 {concept_id, title, core_question, domain,
+        body, type}로 반환한다. 개념 파일 없으면 404.
+
+        **owner 자기 조회**: 본문 노출은 비소유 위반이 아니다 — owner는 자기 OKF 소유자이고,
+        이 라우트는 _author_scoped_card로 *자기 카드*만 통과시킨다(타 owner 403).
+        """
+        card = _author_scoped_card(agent_id, request)
+        cid = _validate_concept_id(concept_id)
+        doc = _read_concept_doc(card, cid)
+        if doc is None:
+            raise HTTPException(status_code=404, detail=f"개념 미존재: {cid!r}")
+        return {
+            "concept_id": doc.concept_id,
+            "title": doc.title,
+            "core_question": doc.core_question,
+            "domain": doc.domain,
+            "body": doc.body,
+            "type": doc.type,
+        }
+
+    @app.put("/author/concept/{agent_id}/{concept_id}")
+    def author_concept_edit(  # pyright: ignore[reportUnusedFunction]
+        agent_id: str,
+        concept_id: str,
+        req: AuthorConceptEditRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        """owner의 게시 개념 1건을 편집(부분 덮어쓰기·ADR 0032 OQ-3).
+
+        절차: owner 스코프 가드 → 현재 개념 읽기(없으면 404) → 미지정 필드 머지 →
+        OkfDocumentDraft(concept_id 고정) → admit_okf(domain 권한 재검증·over-claim 400) →
+        render_okf_markdown → commit_okf_bundle(같은 {concept_id}.md 덮어쓰기) → 인덱스 재도출
+        → accept_published_index. 응답: 갱신 개념 + published concept_count.
+
+        **Authority 중앙**: admit_okf로 domain∈card.domains 재검증 — 편집이 권한을 못 넓힌다.
+        """
+        card = _author_scoped_card(agent_id, request)
+        session_owner = card.owner if not _auth_enabled else _session_identity(request)
+        cid = _validate_concept_id(concept_id)
+
+        current = _read_concept_doc(card, cid)
+        if current is None:
+            raise HTTPException(status_code=404, detail=f"개념 미존재: {cid!r}")
+
+        # 미지정 필드는 기존 값 보존(부분 덮어쓰기 머지). type는 명시 None 구분 없이 미지정 보존.
+        merged_type = req.type if req.type is not None else current.type
+        try:
+            edited = OkfDocumentDraft(
+                concept_id=cid,
+                title=req.title if req.title is not None else current.title,
+                body=req.body if req.body is not None else current.body,
+                core_question=(
+                    req.core_question
+                    if req.core_question is not None
+                    else current.core_question
+                ),
+                domain=req.domain if req.domain is not None else current.domain,
+                type=merged_type,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"개념 형식 오류: {exc}") from exc
+
+        # over-claim 재필터(Authority 중앙 — 편집 domain이 권한 밖이면 떨궈 400)
+        result = admit_okf(OkfDraft(agent_id=agent_id, documents=(edited,)), card)
+        if not result.admitted.documents:
+            raise HTTPException(
+                status_code=400,
+                detail="권한 밖 domain입니다 — 편집이 over-claim으로 거부되었습니다.",
+            )
+        admitted_doc = result.admitted.documents[0]
+
+        commit_req = BuilderCommitRequest(
+            agent_id=agent_id,
+            owner=session_owner,
+            files=(OkfFile(path=f"{cid}.md", content=render_okf_markdown(admitted_doc)),),
+            message=f"OKF 개념 편집: {agent_id}/{cid}",
+        )
+        try:
+            commit_result = commit_okf_bundle(commit_req, _git_gateway)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        published = _rederive_and_accept_index(card, commit_result.sha, session_owner)
+        return {
+            "concept": {
+                "concept_id": admitted_doc.concept_id,
+                "title": admitted_doc.title,
+                "core_question": admitted_doc.core_question,
+                "domain": admitted_doc.domain,
+                "body": admitted_doc.body,
+                "type": admitted_doc.type,
+            },
+            "committed": {"sha": commit_result.sha},
+            "published": published,
+        }
+
+    @app.delete("/author/concept/{agent_id}/{concept_id}")
+    def author_concept_delete(  # pyright: ignore[reportUnusedFunction]
+        agent_id: str, concept_id: str, request: Request
+    ) -> dict[str, Any]:
+        """owner의 게시 개념 1건을 삭제(ADR 0032 OQ-3·결정 B3 물리 삭제 커밋).
+
+        절차: owner 스코프 가드 → commit_okf_bundle(removed_paths=("{cid}.md",)·files=())로
+        삭제 커밋 → 인덱스 재도출(그 개념 빠진 목차) → accept_published_index. 응답: 삭제 confirm
+        + 남은 concept_count. 마지막 개념 삭제로 빈 번들이면 빈 인덱스(0 후보→Unowned→
+        escalation·미아 없음 보존).
+
+        **중앙 비소유**: 중앙은 삭제를 따로 모른다 — 완전 인덱스 교체가 곧 삭제 반영(결정 B3).
+        """
+        card = _author_scoped_card(agent_id, request)
+        session_owner = card.owner if not _auth_enabled else _session_identity(request)
+        cid = _validate_concept_id(concept_id)
+
+        commit_req = BuilderCommitRequest(
+            agent_id=agent_id,
+            owner=session_owner,
+            files=(),
+            removed_paths=(f"{cid}.md",),
+            message=f"OKF 개념 삭제: {agent_id}/{cid}",
+        )
+        try:
+            commit_result = commit_okf_bundle(commit_req, _git_gateway)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        published = _rederive_and_accept_index(card, commit_result.sha, session_owner)
+        return {
+            "deleted": {"concept_id": cid},
+            "committed": {"sha": commit_result.sha},
+            "published": published,
         }
 
     @app.get("/builder")
@@ -1697,6 +1939,46 @@ def create_app(
     return app
 
 
+def seed_gateway_from_disk(
+    gateway: GitGateway, registry: Registry, okf_root: str | Path
+) -> None:
+    """디스크 `okf/{agent_id}/*.md` 베이스라인을 게이트웨이에 카드별 1커밋으로 시드한다.
+
+    저작→답변 루프(ADR 0018 결정 4)의 단일 진실원천을 게이트웨이로 모은다 — 답변 런타임이
+    커밋 스냅샷 모드로 접지할 때 *시드(기존 디스크 OKF)+저작(publish 누적)* 둘 다 닿게 하려고
+    publish가 쓰는 그 게이트웨이를 디스크 베이스라인으로 먼저 채운다. 시드 = 같은 okf/ 파일이라
+    기존 디스크-접지 답변과 동일 내용(회귀 0).
+
+    규약: `okf_root/{agent_id}/`의 마크다운 파일들을 `OkfFile(path=상대경로)`로 모아
+    `commit_okf_bundle`(author=card.owner)로 1커밋. okf 디렉터리가 없는 카드는 건너뛴다
+    (커밋 없음 → 답변은 working tree 직독 폴백·하위호환). 실 git이 아니라 주입 게이트웨이
+    (데모는 `FakeGitGateway`)에 커밋하므로 부작용·비결정 0.
+    """
+    root = Path(okf_root)
+    for card in registry.all_cards():
+        bundle_dir = root / card.agent_id
+        if not bundle_dir.is_dir():
+            continue
+        files = tuple(
+            OkfFile(
+                path=str(md.relative_to(bundle_dir)),
+                content=md.read_text(encoding="utf-8"),
+            )
+            for md in sorted(bundle_dir.rglob("*.md"))
+        )
+        if not files:
+            continue
+        commit_okf_bundle(
+            BuilderCommitRequest(
+                agent_id=card.agent_id,
+                owner=card.owner,
+                files=files,
+                message=f"seed OKF baseline: {card.agent_id}",
+            ),
+            gateway,
+        )
+
+
 # OPERATOR_SESSION_SECRET env 설정 시 인증 ON(프로덕션), 미설정 시 인증 OFF(데모).
 # 프로덕션에서는 반드시 OPERATOR_SESSION_SECRET 환경변수를 설정할 것. 하드코딩 금지.
 #
@@ -1706,12 +1988,26 @@ def create_app(
 _demo_reeval_store = InMemoryReevalStore()
 _demo_reeval_service = ReevalService(_demo_reeval_store)
 seed_demo_reeval_items(_demo_reeval_store)
+
+# 저작→답변 루프 단일 진실원천 = 게이트웨이(ADR 0018 결정 4). publish가 커밋하는 *그*
+# 게이트웨이를 답변 런타임의 스냅샷 접지원으로도 쓴다 — 그래야 디스크 시드(기존 OKF)와
+# 저작(publish 누적)이 *한 원천*으로 답변에 닿는다. 절차:
+#   ① 게이트웨이 먼저 생성 → ② 디스크 okf/ 베이스라인을 카드별 1커밋으로 시드(seed_gateway_from_disk)
+#   → ③ claude-code 분기 답변 런타임을 그 게이트웨이로 snapshot 모드 연결(select_runtime)
+#   → ④ 같은 게이트웨이를 create_app에 주입(publish가 시드 위에 누적 커밋).
+# `AON_PROVIDER` 설정 시(owner OAuth 공급자)는 게이트웨이가 그 분기에서 *무시*되고 런타임의
+# okf_root 접지를 유지한다(snapshot 모드는 claude-code 전용 — select_runtime이 분기 격리).
+_demo_gateway = FakeGitGateway()
+# build_demo의 registry로 카드 목록을 얻는다(런타임은 안 부르고 .registry만 읽음 — 부작용 0).
+seed_gateway_from_disk(_demo_gateway, build_demo().registry, DEMO_OKF_ROOT)
 # 답 생성 런타임을 owner `AON_PROVIDER`로 고른다(worker와 공유 `select_runtime`). 미설정이면
-# `ClaudeCodeRuntime`(기존 build_demo 기본·게이트·데모 행위 불변·무회귀). `AON_PROVIDER=claude-api`면
+# `ClaudeCodeRuntime`(기존 build_demo 기본·게이트·데모 행위 불변·무회귀)에 `_demo_gateway`를
+# snapshot 모드로 연결 — 답변이 시드+저작 커밋 번들을 cwd로 접지한다. `AON_PROVIDER=claude-api`면
 # owner OAuth 인프로세스 anthropic SDK 스트리밍 — `/ask/stream`에 실 토큰 델타가 흐른다(중앙 토큰 0).
 app = create_app(
-    runtime=select_runtime(DEMO_OKF_ROOT),
+    runtime=select_runtime(DEMO_OKF_ROOT, git_gateway=_demo_gateway),
     session_secret=os.environ.get("OPERATOR_SESSION_SECRET"),
     reeval_store=_demo_reeval_store,
     reeval_service=_demo_reeval_service,
+    git_gateway=_demo_gateway,
 )

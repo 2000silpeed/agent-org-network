@@ -51,6 +51,23 @@ def validate_okf_paths(files: tuple[OkfFile, ...]) -> None:
             raise ValueError(f"번들 밖 경로 탈출은 허용되지 않습니다: {p!r}")
 
 
+def validate_removed_paths(removed_paths: tuple[str, ...]) -> None:
+    """삭제 대상 경로 탈출을 거부하는 *공유* 검증(ADR 0032 OQ-3 — 삭제도 안전 경계).
+
+    `files`와 *같은 규칙*(`validate_okf_paths`)을 삭제 path에도 적용한다 — 빈 문자열,
+    공백뿐, 절대경로, `..` 구성요소를 거부한다. 삭제 커밋이 번들 밖 파일을 `git rm`하지
+    못하게 막는다(`FakeGitGateway`·`SubprocessGitGateway` 동일 행동 — 안전 단일 권위).
+    """
+    for p in removed_paths:
+        if not p or not p.strip():
+            raise ValueError(f"removed_paths 경로가 비어 있습니다: {p!r}")
+        parts = PurePosixPath(p).parts
+        if parts and parts[0] == "/":
+            raise ValueError(f"절대 경로 삭제는 허용되지 않습니다: {p!r}")
+        if ".." in parts:
+            raise ValueError(f"번들 밖 경로 삭제는 허용되지 않습니다: {p!r}")
+
+
 def validate_agent_id(agent_id: str) -> None:
     """agent_id 경로 탈출을 거부하는 *공유* 검증(안전 경계 — 등록 무결성).
 
@@ -106,12 +123,18 @@ class CommitRequest:
     `author`는 커밋 author로 박힐 owner 신원(세션 신원 — ADR 0018 결정 5, T7.1 SSO 전).
     스코프 강제(세션 신원 ≠ card.owner → 403)는 *web 경계*에서 빌더 카드 검증과 같은 규칙으로
     이뤄지고(ADR 0016 재사용), 이 값 객체는 그 통과 후의 커밋 요청만 든다.
+
+    `removed_paths`(ADR 0032 OQ-3 — 명시 삭제): 이 커밋이 *제거*할 번들 내 상대 경로 목록.
+    기본 빈 튜플(하위호환 — 추가만 하던 기존 커밋 무영향). 삭제 커밋은 working tree에서
+    removed_paths를 빼고 files를 적용한 새 스냅샷을 만든다(`removed_paths`에 있는데 없는
+    path는 무시 — idempotent). 경로 탈출은 `validate_removed_paths`가 거부한다.
     """
 
     agent_id: str
     files: tuple[OkfFile, ...]
     author: str
     message: str
+    removed_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -195,8 +218,12 @@ class FakeGitGateway:
     def __init__(self) -> None:
         # agent_id → 커밋 SHA 리스트(append-only 커밋 로그). 결정론 — 실 파일 IO 0.
         self._commits: dict[str, list[CommitResult]] = {}
-        # sha → 그 커밋이 든 파일들(스냅샷 추출 결정론 재현용).
-        self._trees: dict[str, tuple[OkfFile, ...]] = {}
+        # sha → 그 커밋 시점의 누적 파일 dict(path → content). 스냅샷 추출 결정론 재현용.
+        # 실 git 동작 모사: commit_bundle은 working tree에 *누적* 쓰기(같은 경로 덮어씀).
+        # extract_snapshot(sha)는 그 SHA 시점의 누적 파일 전체를 줘야 증분 멱등이 성립한다.
+        self._trees: dict[str, dict[str, str]] = {}  # sha → {path: content}
+        # agent_id → 현재 working tree 파일 dict(path → content). 누적 상태 추적.
+        self._working_trees: dict[str, dict[str, str]] = {}
         # agent_id → 커밋 요청 기록(author·message 검증용).
         self._requests: dict[str, list[CommitRequest]] = {}
         # 전역 커밋 카운터 — SHA 유일성 보장.
@@ -221,10 +248,19 @@ class FakeGitGateway:
     def commit_bundle(self, req: CommitRequest) -> CommitResult:
         validate_agent_id(req.agent_id)
         self._validate_paths(req.files)
+        validate_removed_paths(req.removed_paths)
         sha = self._make_sha(req.agent_id)
         result = CommitResult(sha=sha, agent_id=req.agent_id)
         self._commits.setdefault(req.agent_id, []).append(result)
-        self._trees[sha] = req.files
+        # 실 git 동작 모사: removed_paths를 working tree에서 빼고(없는 path는 무시·idempotent),
+        # 같은 경로는 덮어쓰고 새 경로는 추가(누적 working tree).
+        working = self._working_trees.setdefault(req.agent_id, {})
+        for path in req.removed_paths:
+            working.pop(path, None)
+        for f in req.files:
+            working[f.path] = f.content
+        # 이 SHA의 스냅샷 = working tree 현재 상태 전체(복사본·삭제 반영).
+        self._trees[sha] = dict(working)
         self._requests.setdefault(req.agent_id, []).append(req)
         return result
 
@@ -236,13 +272,13 @@ class FakeGitGateway:
 
     def extract_snapshot(self, sha: str, agent_id: str, dest: Path) -> Path:
         validate_agent_id(agent_id)
-        files = self._trees.get(sha)
-        if files is None:
+        tree = self._trees.get(sha)
+        if tree is None:
             raise ValueError(f"알 수 없는 SHA: {sha!r}")
-        for f in files:
-            target = dest / f.path
+        for path, content in tree.items():
+            target = dest / path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(f.content, encoding="utf-8")
+            target.write_text(content, encoding="utf-8")
         return dest
 
 
@@ -285,11 +321,20 @@ class SubprocessGitGateway:
         # ① 경로 탈출 거부 — FakeGitGateway와 *같은 규칙*(공유 함수·안전 경계).
         #    파일을 쓰기 *전에* 검증해 번들 밖 쓰기를 원천 차단(등록 무결성).
         #    agent_id가 okf_root/{agent_id} 경로에 박히므로 agent_id 탈출도 쓰기 전 거부.
+        #    removed_paths도 같은 규칙으로 검증(ADR 0032 OQ-3 — 삭제도 안전 경계).
         validate_agent_id(req.agent_id)
         validate_okf_paths(req.files)
+        validate_removed_paths(req.removed_paths)
 
-        # ② okf_root/{agent_id}/{file.path}에 각 파일 쓰기(부모 디렉터리 mkdir).
         bundle_dir = self.okf_root / req.agent_id
+
+        # ② removed_paths 먼저 처리(ADR 0032 OQ-3) — 존재하면 `git rm`, 없으면 무시(idempotent).
+        #    git rm은 인덱스+working tree에서 제거한다. --ignore-unmatch로 없는 path는 조용히 통과.
+        for path in req.removed_paths:
+            target = bundle_dir / path
+            self._run_git("rm", "-f", "--ignore-unmatch", "--", str(target))
+
+        # ③ okf_root/{agent_id}/{file.path}에 각 파일 쓰기(부모 디렉터리 mkdir).
         written: list[str] = []
         for f in req.files:
             target = bundle_dir / f.path
@@ -297,10 +342,12 @@ class SubprocessGitGateway:
             target.write_text(f.content, encoding="utf-8")
             written.append(str(target))
 
-        # ③ git add — 방금 쓴 파일들만(번들 밖 변경 끌어들이지 않게 -- 구분자·명시 경로).
-        add = self._run_git("add", "--", *written)
-        if add.returncode != 0:
-            raise RuntimeError(f"git add 실패: {add.stderr.strip()}")
+        # ④ git add — 방금 쓴 파일들만(번들 밖 변경 끌어들이지 않게 -- 구분자·명시 경로).
+        #    files가 비고 removed_paths만 있는 삭제 전용 커밋은 add를 건너뛴다(rm이 이미 staged).
+        if written:
+            add = self._run_git("add", "--", *written)
+            if add.returncode != 0:
+                raise RuntimeError(f"git add 실패: {add.stderr.strip()}")
 
         # ④ git commit — author=owner 신원(ADR 0018 결정 5). committer identity는 환경에
         #    의존하지 않게 -c user.name/email로 빌더 봇 고정(환경 의존 회피).
@@ -385,12 +432,17 @@ class BuilderCommitRequest:
     web과 분리한 *순수 입력*(`BuilderValidateRequest`와 같은 결) — 핸들러가 세션 신원으로
     `author`를 채우고(path/body 아님 — ADR 0016 위조 차단), 스코프(세션 신원 ≠ card.owner →
     403)를 web에서 강제한 뒤 이 요청을 서비스에 넘긴다.
+
+    `removed_paths`(ADR 0032 OQ-3): 이 커밋이 제거할 번들 내 상대 경로 목록(기본 빈 튜플).
+    owner의 개념 삭제·편집 시 옛 파일 제거에 쓴다 — `commit_okf_bundle`이 `CommitRequest`로
+    전달한다(추가만 하던 기존 호출은 빈 튜플이라 무영향·하위호환).
     """
 
     agent_id: str
     owner: str
     files: tuple[OkfFile, ...] = field(default_factory=tuple)
     message: str = ""
+    removed_paths: tuple[str, ...] = ()
 
 
 def commit_okf_bundle(
@@ -401,11 +453,15 @@ def commit_okf_bundle(
 ) -> CommitResult:
     """빌더 OKF 편집을 owner author로 커밋하는 오케스트레이션(ADR 0018 결정 1·3·5).
 
-    절차: ① 파일 존재 검증(빈 파일 리스트 거부) ② 파일 경로 검증(번들 밖 탈출 거부)
+    절차: ① 변경 존재 검증(files·removed_paths 둘 다 비면 거부) ② 경로 검증(번들 밖 탈출 거부)
     ③ `CommitRequest`(author=req.owner) 구성 ④ `gateway.commit_bundle` 호출 → `CommitResult`.
 
     **카드는 건드리지 않는다**(ADR 0018 결정 1 — OKF 번들만 자동 커밋, 카드는 PR 유지).
     스코프 403은 *web 경계*에서(빌더 카드 검증과 같은 규칙) — 이 함수는 통과 후의 커밋만.
+
+    삭제 커밋(ADR 0032 OQ-3): `removed_paths`만 있고 `files`가 비어도 *유효한 변경*이다 —
+    files·removed_paths가 *둘 다* 비었을 때만 거부한다(빈 커밋 방지). removed_paths는
+    `CommitRequest`로 그대로 전달된다(`changed_paths`에는 추가 파일만 실어 기존 의미 보존).
 
     변경 전파 발화(ADR 0019 결정 1): `propagator`가 주입되면(비None) 커밋 성공 직후
     `OkfChangeEvent`를 구성해 `propagator.on_okf_committed(event)`를 1회 호출한다 — 그
@@ -413,13 +469,16 @@ def commit_okf_bundle(
     *기존 동작 그대로*(하위호환 — 기존 호출 무영향·노출 불변식). `parent_sha`는 반드시
     커밋 *전에* `head_sha`를 읽어 얻는다(커밋 후엔 새 SHA가 나오므로).
     """
-    if not req.files:
-        raise ValueError("커밋할 파일이 없습니다 — files가 비어 있습니다.")
+    if not req.files and not req.removed_paths:
+        raise ValueError(
+            "커밋할 변경이 없습니다 — 추가할 파일(files)·삭제할 경로(removed_paths)가 모두 비었습니다."
+        )
     commit_req = CommitRequest(
         agent_id=req.agent_id,
         files=req.files,
         author=req.owner,
         message=req.message,
+        removed_paths=req.removed_paths,
     )
     if propagator is not None:
         try:

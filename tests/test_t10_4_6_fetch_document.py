@@ -326,7 +326,9 @@ def test_resolve_중복_도착은_멱등():
 class _StubRunner:
     """ClaudeRunner Protocol stub — 답 생성은 fetch 테스트와 무관(고정 답)."""
 
-    def __call__(self, prompt: str, *, cwd: str | None = None) -> str:
+    def __call__(
+        self, prompt: str, *, cwd: str | None = None, system_prompt: str | None = None
+    ) -> str:
         return "x"
 
 

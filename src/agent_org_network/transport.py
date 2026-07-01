@@ -44,6 +44,7 @@ from agent_org_network.knowledge_index import KnowledgeIndex
 if TYPE_CHECKING:
     # 어댑터 시그니처 예고용 — 런타임 import 순환을 피해 타입 체크 시에만 끌어온다.
     from agent_org_network.agent_card import AgentCard
+    from agent_org_network.git_gateway import ChangeEventListener
     from agent_org_network.notify import Notifier
     from agent_org_network.registry import Registry
     from agent_org_network.review import BackupReviewStore
@@ -371,6 +372,7 @@ class WebSocketDispatcher:
         notifier: "Notifier | None" = None,
         registry: "Registry | None" = None,
         published_index_store: "PublishedIndexStore | None" = None,
+        propagator: "ChangeEventListener | None" = None,
     ) -> None:
         # 작업 큐 도메인은 합성으로 재사용 — 큐 상태기계·단조 종착·timeout escalation은
         # 이 객체가 소유한다(WS는 그 위 전송층). 주입 가능하게 둬 결정론 테스트가 고정
@@ -413,6 +415,10 @@ class WebSocketDispatcher:
         # 가 갖고, 디스패처는 *연결 세션의 인증 owner*를 묶어 그 함수로 위임한다.
         self._registry = registry
         self._published_index_store = published_index_store
+        # 변경 전파 훅(ADR 0030 S4, T11.7e) — 실 WS 수신 경로(accept_index)가 더 새 인덱스를
+        # 수용할 때 이 propagator에게 OkfChangeEvent를 1회 통지한다(accept_published_index에
+        # 위임). None이면 발화 없음(하위호환 — publish 수용 자체는 그대로 동작).
+        self._propagator = propagator
         # on-demand 문서 fetch correlation(ADR 0028 §15 결정 B): request_id → 1회용 슬롯.
         # web 핸들러가 `fetch_document`로 슬롯을 등록하고 FetchDocument를 push한 뒤 블록,
         # `resolve_fetch`(recv_loop)가 DocumentContent 도착 시 슬롯을 채워 깨운다. 완료/타임
@@ -486,6 +492,19 @@ class WebSocketDispatcher:
         self._registry = registry
         self._published_index_store = store
 
+    def bind_propagator(self, propagator: "ChangeEventListener") -> None:
+        """reeval 변경 전파기를 사후 주입한다(라이브 배선, ADR 0030 S4, T11.7e).
+
+        `bind_published_index`와 대칭인 닭-달걀 해소 seam이다 — `create_central_app`이
+        디스패처를 `create_app`(→`build_demo`)보다 *먼저* 만들어야 하는데, 실 `StalenessPropagator`는
+        `build_demo`가 만드는 실 `precedents`(빈 새 통이 아니라 판례가 실제로 담기는 그 store)를
+        봐야 `find_by_primary`가 영향 판례를 찾는다. 그래서 `create_app`이 `build_demo` 완료
+        *후* propagator를 구성해 이 seam으로 꽂는다 — 생성자 주입(`propagator=`)과 동등하되
+        시점만 나중이다. 미호출이면 `self._propagator`는 생성자 기본값(`None`)에 머물러
+        `accept_index`가 기존 동작 그대로(하위호환·발화 0) 이어간다.
+        """
+        self._propagator = propagator
+
     def accept_index(self, session_owner_id: str, frame: "PublishIndex") -> bool:
         """워커가 보낸 PublishIndex를 수용 처리한다 — 스코핑→필터→put(ADR 0028 §14 결정 F).
 
@@ -494,6 +513,9 @@ class WebSocketDispatcher:
         `accept_published_index`(스코핑[B]·over-claim 필터[D]·staleness put[C])가 갖고, 이
         메서드는 주입된 `registry`·`published_index_store`를 묶어 위임한다. 둘 중 하나라도
         미주입이면 *수용 안 함*(no-op·False — publish 모르는 디스패처는 기존 동작 그대로).
+        `self._propagator`도 함께 전달한다(ADR 0030 S4, T11.7e) — 실 WS 수신 경로에서 reeval
+        인덱스-수용 훅이 발화하려면 이 전달이 있어야 한다(propagator=None이면 발화 없음,
+        `accept_published_index`가 이미 흡수하는 하위호환).
         반환: 스코핑 통과로 put까지 갔으면 True·거부면 False(핸들러는 무시).
         """
         if self._registry is None or self._published_index_store is None:
@@ -501,7 +523,11 @@ class WebSocketDispatcher:
         from agent_org_network.two_stage_router import accept_published_index
 
         return accept_published_index(
-            session_owner_id, frame.index, self._registry, self._published_index_store
+            session_owner_id,
+            frame.index,
+            self._registry,
+            self._published_index_store,
+            propagator=self._propagator,
         )
 
     # ── on-demand 문서 fetch (ADR 0028 §15 결정 B·C·E) ───────────────────────

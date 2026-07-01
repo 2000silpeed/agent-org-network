@@ -100,6 +100,7 @@ from agent_org_network.reeval import (
     ReevalOutcome,
     ReevalService,
     ReevalStore,
+    StalenessPropagator,
     SupersedePrecedent,
 )
 from agent_org_network.index_matcher import relevant_concepts
@@ -932,6 +933,14 @@ def create_app(
     프로덕션 기본 = `LlmAuthor`(owner OAuth 인프로세스 anthropic SDK 실 추출·중앙 토큰 0)**를
     *지연* 생성한다(`_make_default_author` — anthropic 미설치면 명확한 SystemExit). 결정론
     테스트는 `FakeAuthor` 주입으로 실 LLM·실 네트워크를 막는다(`git_gateway`와 같은 seam).
+
+    reeval Precedent 축 라이브 배선(T11.7e minor-1·ADR 0030 S4): `dispatcher`가
+    `WebSocketDispatcher`이고 `reeval_store`가 주입돼 있으면, `build_demo` 완료 후 실
+    `StalenessPropagator`(`bundle.precedents`·`bundle.audit_reader`·그 `reeval_store`·
+    `bundle.registry` 기반 `owner_of`)를 구성해 `dispatcher.bind_propagator`로 사후 주입한다
+    (`bind_published_index`와 대칭인 닭-달걀 해소 — 디스패처가 `build_demo`보다 먼저 만들어져
+    생성자 시점엔 실 precedents가 없다). 미주입 조합(reeval_store 없음 또는 dispatcher가
+    WebSocketDispatcher 아님)이면 배선하지 않아 기존 동작(하위호환·발화 0) 그대로다.
     """
     from starlette.middleware.sessions import SessionMiddleware
 
@@ -962,6 +971,35 @@ def create_app(
         and bundle.published_index_store is not None
     ):
         dispatcher.bind_published_index(bundle.registry, bundle.published_index_store)
+    # reeval 인덱스-수용 훅 라이브 배선(T11.7e minor-1·ADR 0030 S4): 실 `StalenessPropagator`를
+    # `build_demo` 완료 *후* 구성해 디스패처에 사후 주입한다(`bind_propagator` — 위 published
+    # index bind와 대칭인 닭-달걀 해소). `create_central_app`이 디스패처를 이 함수 호출보다
+    # 먼저 만들어야 하므로 생성자 시점엔 실 `precedents`가 없다 — 여기서 그 시점 문제를 푼다.
+    # `bundle.precedents`(build_demo가 실제로 판례를 채우는 그 store — 빈 새 통 아님)와
+    # `bundle.audit_reader`(build_demo가 만든 audit 인스턴스 — `create_app`이 build_demo에
+    # 넘긴 `audit_log`와 같은 것이라 `/ask`가 쓰는 바로 그 로그, Answer 축 정합)를 그대로
+    # 물린다. `owner_of`는 `bundle.registry.get(agent_id).owner`(미등록 agent_id는 방어적으로
+    # None — reeval.py "manager_of 정신"). `reeval_store`가 주입돼 있을 때만 구성한다 —
+    # 미주입(`_ws_demo_app`류 기존 WebSocketDispatcher 단위 테스트)이면 배선하지 않아 기존
+    # 동작(하위호환·발화 0) 그대로 보존된다.
+    if (
+        isinstance(dispatcher, WebSocketDispatcher)
+        and reeval_store is not None
+        and bundle.audit_reader is not None
+    ):
+        def _owner_of(agent_id: str) -> str | None:
+            try:
+                return bundle.registry.get(agent_id).owner
+            except KeyError:
+                return None
+
+        propagator = StalenessPropagator(
+            precedents=bundle.precedents,
+            audit_reader=bundle.audit_reader,
+            reeval_store=reeval_store,
+            owner_of=_owner_of,
+        )
+        dispatcher.bind_propagator(propagator)
     # T9.1(d): 세션 층 래퍼 — AskOrg를 *수정하지 않고* 감싸기로 세션을 붙인다.
     # /ask 엔드포인트만 교체. retrieve·dispatched·mcp_server는 이번 스코프 밖.
     # Phase 9 쿠키 세션 seam: 주입 store가 있으면 그것을, 없으면 새 InMemory 생성(하위호환).

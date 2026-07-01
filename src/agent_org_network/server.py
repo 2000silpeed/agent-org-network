@@ -244,6 +244,21 @@ def create_central_app(
     `generated_at`이 시드를 교체). 디스패처를 store 미배선으로 두면 `accept_index`가 무조건
     no-op이라 publish가 조용히 버려진다(B1) — 배선이 그 회귀를 막는다.
 
+    reeval 인덱스-수용 훅 라이브 배선(ADR 0030 S4, T11.7e E1·minor-1): 실 WS 수신 경로
+    (`accept_index`)가 더 새 인덱스를 수용할 때마다 영향 Precedent·답이 stale 표식·
+    `reeval_store`에 실제로 적재되려면 실 `StalenessPropagator`가 필요하다 — 단 이 함수
+    시점엔 아직 `precedents`가 없다(`build_demo`가 그걸 만드는 게 `create_app` 안이라서,
+    이 함수는 `create_app`보다 *먼저* `dispatcher`를 만들어야 하는 닭-달걀). 그래서 propagator
+    자체는 여기서 만들지 않는다 — `create_app`이 `build_demo` 완료 후 `bundle.precedents`
+    (판례가 실제로 담기는 그 store)·`bundle.audit_reader`(이 함수가 넘긴 `audit_log`와 같은
+    인스턴스)·`bundle.registry` 기반 `owner_of`로 실 propagator를 구성해 `dispatcher.
+    bind_propagator`로 사후 주입한다(`bind_published_index`와 대칭인 seam — T10.4 Blocker
+    B1 해소와 동형). `audit_log`는 이 함수가 자체 소유(`InMemoryAuditLog`)해 `create_app
+    (audit_log=...)`에도 *같은* 인스턴스를 넘긴다 — `/ask`가 남기는 routed 기록과 propagator의
+    Answer 축 판정이 같은 로그를 본다. `reeval_store`를 `create_app`에 넘기는 것 자체가
+    propagator 구성의 신호다(reeval_store 없으면 `create_app`은 배선하지 않는다 — 기존
+    `WebSocketDispatcher` 단위 테스트[`_ws_demo_app`류] 무회귀).
+
     이 앱은 실 owner 워커 프로세스가 붙는 *수동 시연용* 진입점이다(`uvicorn`으로 띄움). 결정론
     테스트는 여전히 `create_worker_app`(주입 디스패처)·`web.create_app`을 따로 쓴다 — 이
     팩토리는 기본 시계·기본 큐로 실제 한 바퀴를 돌리는 조립이라 게이트가 보지 않는다.
@@ -252,6 +267,7 @@ def create_central_app(
     # 있어 순환 위험). 통합 진입점에서만 web을 끌어와 단방향으로 합친다.
     from datetime import timedelta
 
+    from agent_org_network.audit import InMemoryAuditLog
     from agent_org_network.demo import demo_delegations, seed_demo_reeval_items
     from agent_org_network.reeval import InMemoryReevalStore, ReevalService
     from agent_org_network.review import BackupReviewService, InMemoryBackupReviewStore
@@ -264,11 +280,20 @@ def create_central_app(
 
     # 재평가(세 번째 탭·ADR 0019 결정 5) store·service 하나씩 — web(GET `/inbox/reeval`·
     # POST `/reeval/{item_id}/review`)이 같은 인스턴스를 본다. 둘째 탭과 동형. 데모 가시성은
-    # 시드(`seed_demo_reeval_items`)가 댄다 — 실 OKF 커밋→StalenessPropagator 자동 적재는
-    # 이미 설계됐고(게이트 밖), 여긴 owner가 처리함 세 번째 탭에서 볼 항목을 미리 둔다.
+    # 시드(`seed_demo_reeval_items`)가 댄다 — 실 OKF 커밋→StalenessPropagator 자동 적재도
+    # 이제 라이브로 돈다(T11.7e E1, 아래 propagator 배선). 시드는 자동 적재 전이라도 owner가
+    # 처리함 세 번째 탭에서 볼 항목을 미리 둔다(둘 다 공존 — 시드 + 실 적재).
     reeval_store = InMemoryReevalStore()
     reeval_service = ReevalService(reeval_store)
     seed_demo_reeval_items(reeval_store)
+
+    # T11.7e minor-1: 이 함수가 audit_log를 자체 소유(`InMemoryAuditLog`) — `create_app`에도
+    # 같은 인스턴스로 넘겨 `/ask` routed 기록과 Answer 축 판정이 같은 로그를 보게 한다(정합).
+    # precedents는 여기서 만들지 않는다 — `build_demo`가 만드는 실 precedents(판례가 실제로
+    # 담기는 store)를 `create_app`이 `build_demo` 완료 후 propagator 구성에 쓴다(위 docstring
+    # "닭-달걀" 참조). 이 함수는 dispatcher를 propagator 없이 만들고, `create_app`이 reeval_store
+    # 주입을 신호로 사후 `bind_propagator`로 배선한다.
+    audit_log = InMemoryAuditLog()
 
     # staleness 임계 — 데모는 넉넉히(30일). 위임 스냅샷이 이 임계 내 fresh여야 backup이
     # 그 영역을 답한다(결정 9). 데모 스냅샷은 fresh로 등록하므로 backup push가 허용된다.
@@ -285,6 +310,7 @@ def create_central_app(
     app = create_app(
         dispatcher=dispatcher,
         review_store=review_store,
+        audit_log=audit_log,
         review_service=review_service,
         reeval_store=reeval_store,
         reeval_service=reeval_service,

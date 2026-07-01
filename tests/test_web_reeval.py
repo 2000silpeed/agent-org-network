@@ -13,11 +13,14 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any, cast
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
+from starlette.testclient import WebSocketTestSession
 
 from agent_org_network.audit import InMemoryAuditLog
+from agent_org_network.knowledge_index import Concept, KnowledgeIndex
 from agent_org_network.reeval import (
     AnswerSubject,
     InMemoryReevalStore,
@@ -28,6 +31,7 @@ from agent_org_network.reeval import (
 )
 from agent_org_network.registry import Registry
 from agent_org_network.runtime import StubRuntime
+from agent_org_network.transport import PublishIndex
 from agent_org_network.web import create_app, serialize_reeval_item
 
 _SECRET = "test-secret"
@@ -374,3 +378,237 @@ def test_create_central_app이_reeval_시드를_세션_owner에_노출() -> None
     assert status == 200
     assert len(body) >= 1
     assert all(it["owner_id"] == "cs_lead" for it in body)
+
+
+# ── T11.7e E1 — 실 WS publish 경로가 reeval을 실제로 채운다(라이브 배선 통합) ────
+
+
+def _recv(conn: WebSocketTestSession) -> dict[str, Any]:
+    return cast(dict[str, Any], conn.receive_json())
+
+
+def test_create_central_app_실_WS_publish가_reeval에_실제로_적재된다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실 `/worker` WS 경로로 두 차례 publish → 두 번째가 첫 답을 stale로 걸어 reeval 적재.
+
+    T11.7e E1 배선(WebSocketDispatcher.accept_index → propagator 전달, create_central_app이
+    만든 실 StalenessPropagator 주입)이 없으면 dispatcher._propagator가 None이라 발화 자체가
+    0회 — 이 테스트는 red(reeval 항목 0개)로 그 결함을 드러낸다.
+
+    시나리오: register → 1차 publish(라우팅 시드) → /ask로 답 확보(audit에 routed 기록 생성,
+    snapshot_sha=None) → 2차 publish(더 새 generated_at, 같은 agent_id) → Answer 축 과검출로
+    그 답이 stale 판정 → reeval_store에 AnswerSubject 적재 → cs_lead 세션의 /inbox/reeval에서
+    실제로 조회된다.
+    """
+    from agent_org_network.server import create_central_app
+
+    monkeypatch.setenv("AON_ROUTER", "index")
+    app = create_central_app(session_secret=_SECRET)
+    client = TestClient(app)
+    http: Any = client
+
+    t1 = datetime(2026, 6, 29, 0, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 29, 1, 0, 0, tzinfo=timezone.utc)  # t1보다 더 새 것
+
+    with http.websocket_connect("/worker") as conn:
+        ws = cast(WebSocketTestSession, conn)
+        ws.send_json({"type": "register_worker", "owner_id": "cs_lead", "role": "primary"})
+        assert _recv(ws)["type"] == "welcome"
+
+        # 1차 publish — 라우팅용 시드(첫 수용이라 발화는 하지만 아직 답이 없어 Answer 축 무영향).
+        first = KnowledgeIndex(
+            agent_id="cs_ops",
+            version="okf-1",
+            generated_at=t1,
+            concepts=(
+                Concept(id="refund", label="환불 규정", core_question="환불 규정 안내", domain="환불"),
+            ),
+        )
+        ws.send_json(PublishIndex(index=first).model_dump(mode="json"))
+        ws.send_json({"type": "heartbeat"})  # 송신/수신 루프 왕복 펜스(응답 없음, echo 안 함)
+
+        # 질문 → cs_ops로 라우팅 → 워커가 답 회신(snapshot_sha 미실음 → None).
+        r = http.post("/ask", json={"question": "환불 규정 알려줘"})
+        assert r.status_code == 200
+        tracking = r.json()["tracking"]
+
+        push = _recv(ws)
+        assert push["type"] == "push_work"
+        ticket_id = push["ticket"]["ticket_id"]
+        assert push["ticket"]["agent_id"] == "cs_ops"
+
+        ws.send_json(
+            {
+                "type": "submit_answer",
+                "ticket_id": ticket_id,
+                "answer": {"text": "환불은 7일 이내", "sources": [], "mode": "full"},
+            }
+        )
+        ws.send_json({"type": "heartbeat"})  # 펜스(응답 없음)
+
+        answered = http.get(f"/ask/{tracking}").json()
+        assert answered["type"] == "answered"
+
+        # 2차 publish(더 새 generated_at) — 이 수용이 방금 확정된 답을 stale로 건다.
+        second = KnowledgeIndex(
+            agent_id="cs_ops",
+            version="okf-2",
+            generated_at=t2,
+            concepts=(
+                Concept(id="refund-v2", label="환불 규정 v2", core_question="환불 규정 v2", domain="환불"),
+            ),
+        )
+        ws.send_json(PublishIndex(index=second).model_dump(mode="json"))
+        ws.send_json({"type": "heartbeat"})  # 펜스(응답 없음) — 2차 publish 처리 완료 보장
+
+    _login(client, "cs_lead")
+    status, body = _get(client, "/inbox/reeval")
+    assert status == 200
+    answer_items = [it for it in body if it["subject_kind"] == "answer"]
+    assert len(answer_items) >= 1
+    assert all(it["owner_id"] == "cs_lead" for it in answer_items)
+
+
+# ── T11.7e minor-1 — Precedent 축 라이브 배선(precedents 공유·owner_of) ─────────
+
+
+def test_create_central_app_실_판례_합의_후_재publish가_precedent_reeval에_적재된다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실 다툼→합의(`/cases/{case_id}/concur`)로 만든 판례가 재publish로 stale 표식된다.
+
+    T11.7e minor-1이 닫는 두 결함을 이 한 테스트가 동시에 실증한다:
+      ① precedents 공유 — `create_central_app`이 만들던 빈 새 `InMemoryPrecedentStore()`
+         였다면 `/cases/.../concur`로 실제 `build_demo`의 `bundle.precedents`에 기록된
+         판례를 `find_by_primary`가 *영원히 못 찾는다*(별개 인스턴스라 항상 빈 결과).
+      ② owner_of 배선 — 없었다면 ReevalItem.owner_id가 빈 문자열("")로 적재돼 owner
+         `/inbox/reeval`에 안 뜬다. 이 테스트는 owner_id가 실제 owner("cs_lead")로
+         채워지는지(빈 문자열 아님) 직접 단언한다.
+
+    시나리오: cs_lead·finance_lead WS 연결 각각 register → 같은 domain("보상") concept을
+    가진 인덱스를 cs_ops·finance_ops로 publish(1차, 다툼 유도) → "보상" 질문 → Router가
+    둘 다 매칭 → Contested(케이스 열림) → 두 owner 모두 concur(cs_ops 지목) → 전원 합의 →
+    Agreed → 실 `precedents.record(Resolution(intent="보상", primary="cs_ops"))` →
+    cs_ops 재publish(2차, 더 새 generated_at) → 그 판례가 stale 표식 + ReevalItem
+    (subject=PrecedentSubject·owner_id="cs_lead") 적재 → cs_lead 세션의 `/inbox/reeval`에서
+    실제로 조회된다.
+    """
+    from agent_org_network.server import create_central_app
+
+    monkeypatch.setenv("AON_ROUTER", "index")
+    app = create_central_app(session_secret=_SECRET)
+    client = TestClient(app)
+    http: Any = client
+
+    t1 = datetime(2026, 6, 30, 0, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 30, 1, 0, 0, tzinfo=timezone.utc)  # t1보다 더 새 것
+
+    with http.websocket_connect("/worker") as cs_conn, http.websocket_connect(
+        "/worker"
+    ) as finance_conn:
+        cs_ws = cast(WebSocketTestSession, cs_conn)
+        finance_ws = cast(WebSocketTestSession, finance_conn)
+
+        cs_ws.send_json(
+            {"type": "register_worker", "owner_id": "cs_lead", "role": "primary"}
+        )
+        assert _recv(cs_ws)["type"] == "welcome"
+        finance_ws.send_json(
+            {"type": "register_worker", "owner_id": "finance_lead", "role": "primary"}
+        )
+        assert _recv(finance_ws)["type"] == "welcome"
+
+        # 같은 domain("보상")을 가진 인덱스를 각자 publish — 다툼(≥2 authorized) 유도.
+        # domain_authorized는 카드의 domains 필드만 보므로(cs_ops·finance_ops 둘 다
+        # "보상"을 domains에 가짐, demo.py) OKF 파일 내용과 무관하게 안전하게 통과한다.
+        cs_index = KnowledgeIndex(
+            agent_id="cs_ops",
+            version="okf-1",
+            generated_at=t1,
+            concepts=(
+                Concept(
+                    id="compensation",
+                    label="보상 기준",
+                    core_question="보상 기준 안내",
+                    domain="보상",
+                ),
+            ),
+        )
+        cs_ws.send_json(PublishIndex(index=cs_index).model_dump(mode="json"))
+        cs_ws.send_json({"type": "heartbeat"})  # 펜스(응답 없음)
+
+        finance_index = KnowledgeIndex(
+            agent_id="finance_ops",
+            version="okf-1",
+            generated_at=t1,
+            concepts=(
+                Concept(
+                    id="compensation-finance",
+                    label="보상 규정(재무)",
+                    core_question="보상 규정 안내",
+                    domain="보상",
+                ),
+            ),
+        )
+        finance_ws.send_json(
+            PublishIndex(index=finance_index).model_dump(mode="json")
+        )
+        finance_ws.send_json({"type": "heartbeat"})  # 펜스(응답 없음)
+
+        # "보상" 질문 → cs_ops·finance_ops 둘 다 매칭 → Contested(케이스 열림, 판례 아직 없음).
+        r = http.post("/ask", json={"question": "보상 기준이 어떻게 되나요?"})
+        assert r.status_code == 200
+        assert r.json()["type"] == "pending"
+        assert r.json()["kind"] == "contested"
+
+        # cs_lead·finance_lead 둘 다 cs_ops를 primary로 지목 → 전원 합의 → Agreed →
+        # 실 precedents.record(Resolution(intent="보상", primary="cs_ops")).
+        _login(client, "cs_lead")
+        cases_status, cases_body = _get(client, "/inbox/cases")
+        assert cases_status == 200
+        assert len(cases_body) == 1
+        case_id = cases_body[0]["case_id"]
+
+        concur_status, concur_body = _post(
+            client, f"/cases/{case_id}/concur", {"on_agent": "cs_ops"}
+        )
+        assert concur_status == 200
+        assert concur_body["type"] == "still_open"
+
+        _login(client, "finance_lead")
+        concur_status2, concur_body2 = _post(
+            client, f"/cases/{case_id}/concur", {"on_agent": "cs_ops"}
+        )
+        assert concur_status2 == 200
+        assert concur_body2["type"] == "agreed"
+
+        # cs_ops 재publish(더 새 generated_at) — 이 수용이 방금 record된 판례를 stale로 건다.
+        cs_index_v2 = KnowledgeIndex(
+            agent_id="cs_ops",
+            version="okf-2",
+            generated_at=t2,
+            concepts=(
+                Concept(
+                    id="compensation-v2",
+                    label="보상 기준 v2",
+                    core_question="보상 기준 v2",
+                    domain="보상",
+                ),
+            ),
+        )
+        cs_ws.send_json(PublishIndex(index=cs_index_v2).model_dump(mode="json"))
+        cs_ws.send_json({"type": "heartbeat"})  # 펜스(응답 없음) — 2차 publish 처리 완료 보장
+
+    _login(client, "cs_lead")
+    status, body = _get(client, "/inbox/reeval")
+    assert status == 200
+    precedent_items = [it for it in body if it["subject_kind"] == "precedent"]
+    assert len(precedent_items) >= 1
+    matching = [it for it in precedent_items if it["subject_ref"] == "보상"]
+    assert len(matching) == 1
+    # 핵심 단언 — owner_id가 실제 owner로 채워지는지(빈 문자열 아님). owner_of 미배선이면
+    # 이 항목의 owner_id가 ""라 위 pending_for_owner("cs_lead") 조회 자체에 안 잡혀 이
+    # assert 이전에 이미 실패한다(빈 owner_id는 어느 owner 처리함에도 안 뜨므로).
+    assert matching[0]["owner_id"] == "cs_lead"
+    assert matching[0]["owner_id"] != ""

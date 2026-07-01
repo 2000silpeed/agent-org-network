@@ -786,4 +786,92 @@ def test_T11_7a_M1_합성_토큰은_실_snapshot_sha와_안_겹친다() -> None:
     assert synthetic_sha.startswith("index@")
     # 실 git SHA("sha-old" 등)와 문자열이 다름
     assert synthetic_sha != "sha-old"
-    assert synthetic_sha != "sha-new"
+
+
+# ── 11. T11.7e E1 — WebSocketDispatcher propagator 주입 배선(ADR 0030 S4) ───
+#
+# accept_published_index 자체는 T11.7a에서 이미 propagator를 받아 발화한다(위 섹션).
+# 여기선 *실 WS 수신 경로*(WebSocketDispatcher.accept_index)가 그 propagator 파라미터를
+# 실제로 전달하는지를 검증한다 — 이게 빠지면 accept_index 경로는 항상 propagator=None으로
+# 호출돼 reeval 발화가 0으로 조용히 죽는다.
+
+
+def test_T11_7e_dispatcher_accept_index_propagator_발화() -> None:
+    """propagator 주입 dispatcher.accept_index(더_새_generated_at) → 훅 1회 발화.
+
+    accept_index가 accept_published_index에 self._propagator를 전달해야 통과한다.
+    """
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore()
+    propagator = FakeStalenessPropagator()
+    dispatcher = WebSocketDispatcher(
+        registry=reg, published_index_store=store, propagator=propagator
+    )
+    frame = PublishIndex(index=_index("cs_ops", _concept("a", "환불"), generated_at=_T1))
+
+    ok = dispatcher.accept_index("alice", frame)
+
+    assert ok is True
+    assert len(propagator.calls) == 1
+    stored = store.get("cs_ops")
+    assert stored is not None  # reeval 훅뿐 아니라 store 상태도 적재됨
+
+
+def test_T11_7e_dispatcher_accept_index_역행_발화_0회() -> None:
+    """이미 더 새 인덱스가 store에 있는 상태에서 옛 generated_at 프레임 수신 → 발화 0회.
+
+    "더 새 것만 수용"하는 accept_published_index 기존 계약과 accept_index 배선이 정합해야
+    한다 — staleness로 put이 거부되면 propagator도 발화하지 않는다(멱등).
+    """
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore(
+        [_index("cs_ops", _concept("a", "환불"), generated_at=_T1)]
+    )
+    propagator = FakeStalenessPropagator()
+    dispatcher = WebSocketDispatcher(
+        registry=reg, published_index_store=store, propagator=propagator
+    )
+    frame_old = PublishIndex(index=_index("cs_ops", _concept("b", "환불"), generated_at=_T0))
+
+    ok = dispatcher.accept_index("alice", frame_old)
+
+    assert ok is True  # 스코핑은 통과(거부 아님) — put만 no-op
+    assert len(propagator.calls) == 0
+
+
+def test_T11_7e_dispatcher_accept_index_동률_발화_0회() -> None:
+    """동률 generated_at 프레임 수신 → 발화 0회(더 새 것만 수용하는 계약)."""
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore(
+        [_index("cs_ops", _concept("a", "환불"), generated_at=_T0)]
+    )
+    propagator = FakeStalenessPropagator()
+    dispatcher = WebSocketDispatcher(
+        registry=reg, published_index_store=store, propagator=propagator
+    )
+    frame_same = PublishIndex(index=_index("cs_ops", _concept("b", "환불"), generated_at=_T0))
+
+    dispatcher.accept_index("alice", frame_same)
+
+    assert len(propagator.calls) == 0
+
+
+def test_T11_7e_dispatcher_propagator_미주입_발화_0_하위호환() -> None:
+    """propagator 미주입(기존 생성자 호출) → 기존 동작 그대로(발화 0·no-op 아님).
+
+    registry·store만 주입하고 propagator는 생략(T11.7a 이전 생성 방식) — accept_index는
+    여전히 True를 반환하고 store에도 적재되지만, propagator가 없으므로 발화만 없다.
+    """
+    card = _card("cs_ops", owner="alice", domains=["환불"])
+    reg = _registry(card)
+    store = InMemoryPublishedIndexStore()
+    dispatcher = WebSocketDispatcher(registry=reg, published_index_store=store)  # propagator 없음
+    frame = PublishIndex(index=_index("cs_ops", _concept("a", "환불"), generated_at=_T1))
+
+    ok = dispatcher.accept_index("alice", frame)
+
+    assert ok is True
+    assert store.get("cs_ops") is not None  # 수용 자체는 기존 동작 그대로

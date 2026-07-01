@@ -10,8 +10,11 @@ T11.7b(크로스머신 fan-out 배선): ReindexOnCommitListener 결정론 테스
 git gateway·OkfChangeEvent 발화 단일·디스크 재도출 잠금. 실 WS·실 소켓 0.
 """
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.git_gateway import (
@@ -691,3 +694,123 @@ def test_T11_7b_기본_clock_미주입_generated_at_tz_aware(tmp_path: Path) -> 
     for frame in frames:
         accepted = store.put(frame.index)
         assert accepted is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# T11.7e E2 — 커밋-후 재-publish sink 실패 흡수(ReindexOnCommitListener)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 확정 정책(사용자 승인): sink 실패 = 흡수+경고 로그(재시도 큐 없음). 커밋은 이미 디스크
+# 확정이고, 전파 회수는 재연결 백스톱(run_worker가 register 직후 publish_frames 전량
+# 재송신 + 중앙 generated_at 멱등 흡수)에 위임한다. 따라서 sink 예외가 commit_okf_bundle
+# 경계를 넘어가면 안 된다(핵심 단언).
+
+
+class _RaisingReindexSink:
+    """호출 시 항상 예외를 던지는 fake sink — 실 WS 송신 실패(끊김 등)를 흉내."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.call_count = 0
+
+    def __call__(self, frames: list[PublishIndex]) -> None:
+        self.call_count += 1
+        raise self._exc
+
+
+def test_T11_7e_정상_sink는_frames를_전달받는다(tmp_path: Path) -> None:
+    """무회귀: 정상 sink는 예외 없이 frames를 그대로 전달받는다(기존 동작 보존)."""
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불\ndescription: d\ntags: [환불]")
+    worker = _worker_with_okf("alice", "cs_ops", tmp_path)
+    sink = _FakeReindexSink()
+    listener = ReindexOnCommitListener(worker=worker, clock=lambda: _T11B_TS, publish_sink=sink)
+
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="---\ntitle: 환불\n---\n"),),
+        message="커밋",
+    )
+    result = commit_okf_bundle(req, FakeGitGateway(), propagator=listener)
+
+    assert result.agent_id == "cs_ops"
+    assert len(sink.received) == 1
+    assert len(sink.received[0]) >= 1
+
+
+def test_T11_7e_예외를_던지는_sink는_흡수되고_커밋은_정상_완료된다(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """sink가 예외를 던져도 commit_okf_bundle이 예외 없이 CommitResult를 반환한다.
+
+    경계 단언(핵심): sink 예외가 commit_okf_bundle 밖으로 안 나온다. 커밋은 이미 디스크
+    확정(FakeGitGateway가 커밋 결과를 실제로 기록)이고, 경고 로그가 남는다(caplog).
+    """
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불\ndescription: d\ntags: [환불]")
+    worker = _worker_with_okf("alice", "cs_ops", tmp_path)
+    failing_sink = _RaisingReindexSink(ConnectionError("워커 소켓 끊김"))
+    listener = ReindexOnCommitListener(worker=worker, clock=lambda: _T11B_TS, publish_sink=failing_sink)
+
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="---\ntitle: 환불\n---\n"),),
+        message="커밋",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        # 예외 없이 반환돼야 한다 — sink 실패가 commit_okf_bundle 경계를 넘으면 안 됨.
+        result = commit_okf_bundle(req, FakeGitGateway(), propagator=listener)
+
+    # 커밋은 정상 완료(디스크/커밋 로그 확정) — sha·agent_id가 정상적으로 채워짐.
+    assert result.agent_id == "cs_ops"
+    assert result.sha != ""
+
+    # sink는 호출됐지만(흡수 전에 시도는 함) 예외가 삼켜졌다.
+    assert failing_sink.call_count == 1
+
+    # 경고 로그가 남는다.
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+def test_T11_7e_예외_sink여도_last_frames는_갱신되지_않는다(tmp_path: Path) -> None:
+    """sink 호출이 publish_frames 이후이므로, sink 예외와 무관하게 last_frames는 이미 채워진다.
+
+    흡수 지점이 publish_sink 호출만 감싸므로 frames 자체(도출 결과)는 영향받지 않는다 —
+    on_okf_committed 흐름 자체가 깨지지 않는다는 방증.
+    """
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불\ndescription: d\ntags: [환불]")
+    worker = _worker_with_okf("alice", "cs_ops", tmp_path)
+    failing_sink = _RaisingReindexSink(RuntimeError("송신 실패"))
+    listener = ReindexOnCommitListener(worker=worker, clock=lambda: _T11B_TS, publish_sink=failing_sink)
+
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="---\ntitle: 환불\n---\n"),),
+        message="커밋",
+    )
+    commit_okf_bundle(req, FakeGitGateway(), propagator=listener)
+
+    assert len(listener.last_frames) >= 1
+
+
+def test_T11_7e_예외_sink_반복_커밋도_계속_흡수된다(tmp_path: Path) -> None:
+    """연속 커밋 각각에서 sink가 매번 예외를 던져도 매 커밋이 예외 없이 완료된다(재현성)."""
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불\ndescription: d\ntags: [환불]")
+    worker = _worker_with_okf("alice", "cs_ops", tmp_path)
+    failing_sink = _RaisingReindexSink(OSError("연결 거부"))
+    listener = ReindexOnCommitListener(worker=worker, clock=lambda: _T11B_TS, publish_sink=failing_sink)
+    gw = FakeGitGateway()
+
+    req = BuilderCommitRequest(
+        agent_id="cs_ops",
+        owner="alice",
+        files=(OkfFile(path="refund.md", content="---\ntitle: 환불\n---\n"),),
+        message="커밋",
+    )
+    for _ in range(3):
+        result = commit_okf_bundle(req, gw, propagator=listener)
+        assert result.agent_id == "cs_ops"
+
+    assert failing_sink.call_count == 3

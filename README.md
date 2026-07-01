@@ -37,7 +37,7 @@ uv sync                     # 의존성 설치(.venv)
 ## 게이트(테스트·타입·린트)
 
 ```bash
-uv run pytest        # 단위 테스트(결정론) — 1184 passed
+uv run pytest        # 단위 테스트(결정론) — 1747 passed
 uv run pyright       # 타입 검사(strict) — 0 errors
 uv run ruff check    # 린트 — 0
 ```
@@ -59,6 +59,7 @@ uv run uvicorn agent_org_network.web:app --port 8099
 | 운영 모니터링 | `/monitor/view` | 운영자 — 모든 Q&A 절차·답 추적 |
 | Org 그래프 | `/org/view` | 운영자 — 전체 그림(User·Card·엣지) |
 | Agent 빌더 | `/builder` | Owner — 카드 구성·검증·YAML 미리보기 |
+| OKF 저작 | `/author` | Owner — 문서 올리면 LLM이 개념 추출→검토→커밋→목차 publish |
 
 채팅(`/ask`)은 익명이고, **운영 면(처리함·큐·모니터링·그래프·빌더)은 인증**이 필요하다.
 인증을 켜려면 세션 서명 키를 env로 준다(미설정 시 데모 인증 OFF):
@@ -85,6 +86,12 @@ AON_CLASSIFIER=llm uv run uvicorn agent_org_network.web:app --port 8099         
 AON_CLASSIFIER=llm scripts/run_central.sh 8000 0.0.0.0                            # 분산 중앙
 # → "산 지 20일 됐는데 마음 바뀌어 돌려받고 싶어요"처럼 '환불' 단어가 없어도 cs_ops로 라우팅
 ```
+
+**답변 런타임·라우터 선택** — 답변 런타임 기본은 `ClaudeCodeRuntime`(로컬 `claude` CLI). `AON_PROVIDER=claude-api`로 띄우면
+owner OAuth in-process SDK(`ClaudeApiRuntime`·claude-sonnet-5)로 답한다(중앙 API 키·토큰 0은 동일). 라우팅은
+`AON_ROUTER=index`로 published **목차(KnowledgeIndex) 토큰 매칭**(`TwoStageRouter`)을 켜면, owner가 `/author`로 저작·publish한
+개념이 곧바로 라우팅에 반영된다 — **크로스머신 fan-out**(owner 저작→실 git 커밋→실 WS로 중앙에 목차만 전송→중앙 수용→라우팅·판례
+재평가). 중앙은 OKF 본문·모델 토큰을 보관하지 않는다(목차만 — 중앙 토큰 0).
 
 ### 2) 분산 — 중앙 + owner 워커 (WebSocket)
 
@@ -158,9 +165,10 @@ uv run python -m agent_org_network.registry registry        # 5장 카드·6명 
 - 기술 설계: [`docs/trd-v0.md`](docs/trd-v0.md)
 - 작업 목록: [`docs/tasks-v0.md`](docs/tasks-v0.md)
 - 도메인 용어집: [`CONTEXT.md`](CONTEXT.md)
-- 아키텍처 결정: [`docs/adr/`](docs/adr/) (ADR 0001~0027)
+- 아키텍처 결정: [`docs/adr/`](docs/adr/) (ADR 0001~0031)
 
 ## 스택
 
-Python 3.12 · pydantic v2 · FastAPI/uvicorn · pytest · pyright(strict) · ruff · MCP SDK ·
-프론트는 빌드 없는 순수 HTML/CSS/fetch. 답변 런타임은 `claude -p` 헤드리스(중앙 API 키 0).
+Python 3.12 · pydantic v2 · FastAPI/uvicorn · pytest · pyright(strict) · ruff · MCP SDK · anthropic SDK(owner OAuth·선택).
+백엔드 운영 면은 빌드 없는 순수 HTML/CSS/fetch, 별도 사용자 UI는 [`frontend/`](frontend/)(Next.js 14). 답변 런타임은
+`claude -p` 헤드리스(`ClaudeCodeRuntime`) 또는 owner OAuth in-process(`ClaudeApiRuntime`) — 둘 다 중앙 API 키 0.

@@ -24,6 +24,12 @@
 #                           extra: uv sync --extra codex  (AON_PROVIDER=openai도 같은 어댑터)
 #   예: AON_PROVIDER=claude-api scripts/run_worker.sh cs_lead
 #       AON_PROVIDER=codex scripts/run_worker.sh cs_lead
+#
+# owner 초안 검토 웹(env AON_OWNER_UI_PORT, ADR 0025 결정 4·T9.7 S4 — 게이트 밖 수동):
+#   설정 시 워커가 같은 프로세스에서 owner 로컬 검토 웹을 http://127.0.0.1:<PORT>에 띄운다.
+#   HITL on으로 보류된 초안(Pending Draft)을 owner가 보고 승인/수정하면 활성 중앙 연결로
+#   회신된다(owner 검토 루프). bind는 127.0.0.1 고정(외부 미도달). 미설정이면 기존 동작.
+#   예: AON_OWNER_UI_PORT=8790 scripts/run_worker.sh cs_lead
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

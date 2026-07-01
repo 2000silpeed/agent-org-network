@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>초안 검토 — owner 검토 루프(로컬)</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --me: #2563eb;
+      --org: #ffffff;
+      --ink: #1f2933;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+        "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+    }
+    .inbox {
+      width: 100%;
+      max-width: 640px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      background: var(--bg);
+    }
+    header {
+      padding: 16px 20px;
+      font-weight: 700;
+      font-size: 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    header small { display: block; font-weight: 400; color: var(--muted); margin-top: 2px; }
+    .count {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 0 7px;
+      border-radius: 999px;
+      background: #fee2e2;
+      color: #b91c1c;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .count.zero { display: none; }
+    #drafts {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .empty {
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+      padding: 32px 16px;
+    }
+    .case {
+      background: var(--org);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .case .badge {
+      display: inline-block;
+      align-self: flex-start;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      background: #fef3c7;
+      color: #92400e;
+    }
+    .case .meta { font-size: 12px; color: var(--muted); }
+    .case .ask-label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .case .question {
+      font-size: 15px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .case .answer-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .draft-text {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.55;
+      font-family: inherit;
+      outline: none;
+      resize: vertical;
+      min-height: 90px;
+      background: #f9fafb;
+    }
+    .draft-text:focus { border-color: var(--me); background: #fff; }
+    .sources { font-size: 12px; color: var(--muted); display: flex; gap: 4px; flex-wrap: wrap; align-items: baseline; }
+    .sources .src-label { font-weight: 600; white-space: nowrap; }
+    .src-tag {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: #f3f4f6;
+      font-size: 11px;
+    }
+    .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    button {
+      padding: 9px 18px;
+      border: none;
+      border-radius: 999px;
+      background: var(--me);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    button.secondary { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+    button.secondary:hover { border-color: var(--me); color: var(--me); }
+    .result { font-size: 13px; font-weight: 600; }
+    .result.sent { color: #166534; }
+    .result.error { color: #b91c1c; }
+    .foot { padding: 12px 16px; font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="inbox">
+    <header>
+      초안 검토<span class="count zero" id="draft-count">0</span>
+      <small>내 워커가 만든 답을 보내기 전에 승인하거나 고친다(owner 검토 루프 · 로컬).</small>
+    </header>
+    <div id="drafts"></div>
+    <div class="foot">
+      이 화면은 내 PC 로컬(127.0.0.1)에서만 열린다. 승인/수정 전송은 활성 중앙 연결로 회신된다.
+    </div>
+  </div>
+
+  <script>
+    const draftsEl = document.getElementById("drafts");
+    const countEl = document.getElementById("draft-count");
+
+    function el(tag, cls, text) {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      return isNaN(d) ? iso : d.toLocaleString();
+    }
+
+    async function fetchDrafts() {
+      const res = await fetch("/drafts");
+      if (!res.ok) throw new Error("요청 실패: " + res.status);
+      return res.json();
+    }
+
+    async function postSubmit(ticketId, body) {
+      const res = await fetch("/drafts/" + encodeURIComponent(ticketId) + "/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data && data.detail ? data.detail : "요청 실패: " + res.status;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    function renderDraft(d) {
+      const wrap = el("div", "case");
+      wrap.appendChild(el("span", "badge", "검토 대기 초안"));
+      wrap.appendChild(
+        el("div", "meta", d.agent_id + " · " + d.mode + " · " + fmtTime(d.made_at))
+      );
+      wrap.appendChild(el("div", "ask-label", "원문 질문"));
+      wrap.appendChild(el("div", "question", d.question));
+
+      wrap.appendChild(el("div", "answer-label", "워커가 만든 답 (고쳐서 보낼 수 있음)"));
+      const textArea = el("textarea", "draft-text");
+      textArea.value = d.draft_answer;
+      wrap.appendChild(textArea);
+
+      if (d.sources && d.sources.length) {
+        const row = el("div", "sources");
+        row.appendChild(el("span", "src-label", "출처:"));
+        for (const s of d.sources) row.appendChild(el("span", "src-tag", s));
+        wrap.appendChild(row);
+      }
+
+      const result = el("div", "result");
+      const actions = el("div", "actions");
+      const approveBtn = el("button", null, "승인 전송");
+      const editBtn = el("button", "secondary", "수정 전송");
+      actions.appendChild(approveBtn);
+      actions.appendChild(editBtn);
+      actions.appendChild(result);
+      wrap.appendChild(actions);
+
+      function disableAll(v) {
+        approveBtn.disabled = v;
+        editBtn.disabled = v;
+      }
+
+      async function submit(body, label) {
+        disableAll(true);
+        try {
+          await postSubmit(d.ticket_id, body);
+          result.className = "result sent";
+          result.textContent = label + " 완료 — 재조회합니다.";
+          setTimeout(load, 1000);
+        } catch (err) {
+          result.className = "result error";
+          result.textContent = err.message || "전송 실패";
+          disableAll(false);
+        }
+      }
+
+      // 승인: 원문 그대로 — edited_text 없이(null) 보낸다(도메인이 승인으로 처분).
+      approveBtn.addEventListener("click", () => submit({ edited_text: null }, "승인"));
+      // 수정: textarea 현재 값을 실어 보낸다. 원문과 같아도 명시 수정으로 취급.
+      editBtn.addEventListener("click", () => {
+        const text = textArea.value;
+        if (!text.trim()) {
+          result.className = "result error";
+          result.textContent = "보낼 답 내용이 비어 있습니다.";
+          return;
+        }
+        submit({ edited_text: text }, "수정");
+      });
+
+      return wrap;
+    }
+
+    async function load() {
+      let drafts;
+      try {
+        drafts = await fetchDrafts();
+      } catch (err) {
+        draftsEl.innerHTML = "";
+        draftsEl.appendChild(el("div", "empty", "초안 목록을 불러오지 못했습니다."));
+        countEl.classList.add("zero");
+        return;
+      }
+      draftsEl.innerHTML = "";
+      countEl.textContent = String(drafts.length);
+      countEl.classList.toggle("zero", drafts.length === 0);
+      if (!drafts.length) {
+        draftsEl.appendChild(el("div", "empty", "검토할 초안이 없습니다."));
+        return;
+      }
+      for (const d of drafts) {
+        draftsEl.appendChild(renderDraft(d));
+      }
+    }
+
+    // 간단 폴링 — 워커가 새 초안을 보류하면 다음 주기에 나타난다.
+    load();
+    setInterval(load, 4000);
+  </script>
+</body>
+</html>

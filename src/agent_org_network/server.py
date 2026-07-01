@@ -21,7 +21,7 @@ escalation)는 합성한 `WebSocketDispatcher`(→`InMemoryWorkQueueDispatcher`)
 import asyncio
 import logging
 import os
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -40,6 +40,9 @@ from agent_org_network.transport import (
     WorkerFrame,
     from_answer_frame,
 )
+
+if TYPE_CHECKING:
+    from agent_org_network.token import TokenStore
 
 _log = logging.getLogger("agent_org_network.server")
 
@@ -201,6 +204,7 @@ def _mount_worker_endpoint(app: FastAPI, dispatcher: WebSocketDispatcher) -> Non
 def create_central_app(
     session_secret: str | None = None,
     oidc_provider: OidcProvider | None = None,
+    token_store: "TokenStore | None" = None,
 ) -> FastAPI:
     """end-to-end 한 프로세스 중앙 앱 — 사용자 web 라우트 + owner 워커 WS를 *한 dispatcher*로.
 
@@ -235,6 +239,15 @@ def create_central_app(
     `oidc_provider`(T7.1·ADR 0021): SSO 신원 검증 포트. 주입 시 SSO 모드(`POST /login/sso`
     활성·무비밀번호 `POST /login` 403 거부). 미주입이면 기존 동작(OFF/무비밀번호). 실 IdP
     연동(`HttpOidcProvider`)은 게이트 밖 수동 — 모듈 기본 앱은 미주입(env 분기는 후속).
+
+    `token_store`(T9.2(b)·T9.5(c)·ADR 0026): 워커 admission 토큰 포트. **주입 시에만** 콘솔이
+    발급한 토큰으로 워커가 실제 register되는 단일 원천이 된다 — 이 함수가 받은 *같은 인스턴스*를
+    `WebSocketDispatcher(token_store=)`와 `create_app(token_store=)` 양쪽에 물린다. **미주입이면
+    `token_store=None`을 그대로 양쪽에 물린다**(하위호환 최우선 — 기존 `create_central_app()`
+    호출·테스트가 `RegisterWorker(token=None)`으로 register하는 관행을 절대 깨면 안 된다.
+    `_authenticate`는 `token_store=None`이면 owner_id만 있어도 통과하는 T9.5(b) stub 동작으로
+    폴백한다). 실 콘솔 발급 토큰 검증을 켜려면 호출자가 `TokenStore` 인스턴스를 명시 주입해야
+    한다(프로덕션 진입점이 켤 자리 — 이 함수 자체는 기본을 강제하지 않는다).
 
     published 인덱스 라이브 배선(T10.4·ADR 0028 §14 결정 F): `AON_ROUTER=index`면 `create_app`
     안의 `build_demo`가 `TwoStageRouter`가 보는 published 인덱스 스토어를 만들어 `DemoBundle`로
@@ -298,9 +311,14 @@ def create_central_app(
     # staleness 임계 — 데모는 넉넉히(30일). 위임 스냅샷이 이 임계 내 fresh여야 backup이
     # 그 영역을 답한다(결정 9). 데모 스냅샷은 fresh로 등록하므로 backup push가 허용된다.
     staleness_threshold = timedelta(days=30)
+    # 콘솔 발급 토큰으로 워커가 실제 register되는 단일 원천(T9.2(b)·T9.5(c)·ADR 0026) —
+    # *주입받은 그대로*(None 포함) dispatcher·create_app 양쪽에 물린다. 이 함수가 기본값을
+    # 강제 생성하지 않는다 — 강제하면 기존 `create_central_app()`(무인자) 호출의
+    # `RegisterWorker(token=None)` register가 전부 AuthError로 깨진다(하위호환 위반).
     dispatcher = WebSocketDispatcher(
         staleness_threshold=staleness_threshold,
         review_store=review_store,
+        token_store=token_store,
     )
     # 데모 owner들의 위임 스냅샷을 주입(opt-in 위임 — owner가 자기 영역을 백업에 위임).
     # 없으면 staleness_threshold가 설정된 상태에서 backup push가 거부된다(결정 9).
@@ -316,6 +334,7 @@ def create_central_app(
         reeval_service=reeval_service,
         session_secret=session_secret,
         oidc_provider=oidc_provider,
+        token_store=token_store,
     )
     _mount_worker_endpoint(app, dispatcher)
     return app

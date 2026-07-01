@@ -21,6 +21,7 @@ from agent_org_network.user import User
 
 if TYPE_CHECKING:
     from datetime import datetime
+    from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.notify import Notifier
     from agent_org_network.review import BackupReview, BackupReviewItem, BackupReviewStore
@@ -239,6 +240,7 @@ class AskOrg:
         manager_of: "Callable[[str], str | None] | None" = None,
         manager_root: str = "root",
         notifier: "Notifier | None" = None,
+        hitl_toggles: "HitlToggleMap | None" = None,
     ) -> None:
         # [Minor 2] manager_root 기본값 "root" 주의: 데모의 실제 root는 "root_manager".
         # manager_queue_store 를 주입할 때 manager_root 도 함께 주입하지 않으면
@@ -264,6 +266,9 @@ class AskOrg:
         # 기존 동작(하위호환·게이트 보존 — push는 pull을 *추가*하지 대체하지 않는다). MVP 슬라이스
         # 발화 지점은 ConflictCase open(Contested arm)·Manager escalation 적재(나머지 확장은 후속).
         self._notifier = notifier
+        # HITL 런타임 토글(T9.3(b)·ADR 0025) — 콘솔이 set, `_apply_approval_gate`가 read.
+        # 미주입이면 기존 동작(카드 approval_when만 봄) 100% 보존(하위호환).
+        self._hitl_toggles = hitl_toggles
         # 답 회수용 불투명 추적 토큰 → WorkTicket 매핑(ADR 0011 결정 6-5). 서버가
         # ticket을 보관하고 사용자엔 *불투명 토큰만* 준다 — 사용자向 응답에 ticket_id·
         # owner 등 내부 구조가 새지 않게 한다(노출 불변식). 토큰은 uuid4 hex(미인코딩).
@@ -315,13 +320,19 @@ class AskOrg:
         워커 자기보고가 아니라 라우팅이 강제(디스패처가 backup을 강제 하향하는 정신).
         `dataclasses.replace`로 mode만 갈아끼운 새 Answered를 돌려준다(frozen 보존).
 
+        HITL 런타임 토글 반영(T9.3(b)·ADR 0025): `hitl_toggles` 주입 시 카드 approval
+        정책(`decision.requires_approval`)과 그 에이전트의 HITL on/off 토글을
+        `resolve_mode`(OR 결합·backup 보존·under-claim 단조성)로 함께 반영한다 —
+        운영자 토글이 신뢰 게이트를 조이는 것이지 Authority(누가 담당인지) 선언이 아니다.
+        미주입이면 기존 동작(카드 approval_when만 봄) 100% 보존(하위호환).
+
         적용 범위:
           - Answered(=Delivered 투영)에만 적용한다. Pending(dispatched, 아직 답 없음)엔 무관 —
             답 자체가 없으니 mode도 없다(답이 회신될 때 retrieve가 같은 게이트를 다시 적용).
           - mode 우선순위(ADR 0012): `backup`은 draft_only로 *덮지 않는다*(backup이 더 강한
             하향 — owner 미검토 답이라 승인 대기보다 약한 신뢰가 맞다). `full`→`draft_only`만
             격상. `draft_only`는 그대로(이미 게이트).
-          - `requires_approval`이 False면 reply 그대로.
+          - `hitl_toggles` 미주입이고 `requires_approval`이 False면 reply 그대로.
 
         collaborators는 여기서 다루지 않는다 — Answered에 싣지 않으므로(노출 불변식: 담당·
         승인·출처만, collaborator는 조직 내부 협업 구조). audit이 decision 원형으로 보관한다.
@@ -331,13 +342,27 @@ class AskOrg:
         """
         import dataclasses
 
-        if not decision.requires_approval:
-            return reply
         if not isinstance(reply, Answered):
             return reply
-        if reply.mode == "backup":
+
+        if self._hitl_toggles is None:
+            if not decision.requires_approval:
+                return reply
+            if reply.mode == "backup":
+                return reply
+            return dataclasses.replace(reply, mode="draft_only")
+
+        from agent_org_network.hitl import resolve_mode
+
+        hitl_on = self._hitl_toggles.is_on(decision.primary.agent_id)
+        new_mode = resolve_mode(
+            requires_approval=decision.requires_approval,
+            hitl_on=hitl_on,
+            current_mode=reply.mode,
+        )
+        if new_mode == reply.mode:
             return reply
-        return dataclasses.replace(reply, mode="draft_only")
+        return dataclasses.replace(reply, mode=new_mode)
 
     def retrieve(self, tracking: str) -> OrgReply | None:
         """불투명 추적 토큰으로 답을 *조회*한다(ADR 0011 결정 6-5, pull 한정).

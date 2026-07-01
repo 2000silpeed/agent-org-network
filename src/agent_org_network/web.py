@@ -45,6 +45,8 @@ from agent_org_network.ask_org import (
 from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog, action_record
 
 if TYPE_CHECKING:
+    from datetime import datetime as _DateTime
+
     from agent_org_network.agent_card import AgentCard
     from agent_org_network.audit import AuditReader
 from agent_org_network.conflict import (
@@ -123,7 +125,9 @@ from agent_org_network.two_stage_router import (
     PublishedIndexStore,
     accept_published_index,
 )
+from agent_org_network.hitl import HitlToggleMap
 from agent_org_network.session import InMemorySessionStore, SessionAskOrg, SessionStore
+from agent_org_network.token import InMemoryTokenStore, TokenStore
 from agent_org_network.user import User
 
 _WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
@@ -933,6 +937,26 @@ def _parse_reeval_outcome(req: ReevalReviewRequest, by_owner: str) -> ReevalOutc
         return ReAnswer(by_owner=by_owner, rationale=req.rationale)
 
 
+# ── 운영자 콘솔 명령 요청 바디 (T9.2(b)·T9.3(b)·T9.5(c)) ───────────────────
+
+
+class HitlToggleRequest(BaseModel):
+    """POST /console/hitl/{agent_id} 요청 바디 — HITL 토글 set(ADR 0025)."""
+
+    on: bool
+
+
+class TokenIssueRequest(BaseModel):
+    """POST /console/tokens 요청 바디 — 워커 admission 토큰 발급(ADR 0026).
+
+    `owner_id`는 Registry에 실재하는 User여야 한다(없으면 404). `role`은
+    `primary`|`backup`(ADR 0012 등급).
+    """
+
+    owner_id: str
+    role: Literal["primary", "backup"] = "primary"
+
+
 def create_app(
     runtime: AgentRuntime | None = None,
     dispatcher: RuntimeDispatcher | None = None,
@@ -947,6 +971,8 @@ def create_app(
     oidc_provider: OidcProvider | None = None,
     session_store: SessionStore | None = None,
     author: OkfAuthor | None = None,
+    token_store: TokenStore | None = None,
+    hitl_toggles: HitlToggleMap | None = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -974,6 +1000,14 @@ def create_app(
     (`bind_published_index`와 대칭인 닭-달걀 해소 — 디스패처가 `build_demo`보다 먼저 만들어져
     생성자 시점엔 실 precedents가 없다). 미주입 조합(reeval_store 없음 또는 dispatcher가
     WebSocketDispatcher 아님)이면 배선하지 않아 기존 동작(하위호환·발화 0) 그대로다.
+
+    `token_store`(T9.2(b)·T9.5(c)·ADR 0026): 워커 admission 토큰 포트. 콘솔 `/console/tokens*`
+    라우트가 이 인스턴스를 발급/조회/revoke한다. 미주입이면 `InMemoryTokenStore()` 내부 생성
+    (하위호환). `create_central_app`은 이 인스턴스를 `WebSocketDispatcher(token_store=)`에도
+    같이 물려 콘솔 발급 토큰으로 워커가 실제 register되게 한다(단일 원천).
+    `hitl_toggles`(T9.2(b)·T9.3(b)·ADR 0025): HITL 런타임 토글 맵. 콘솔 `/console/hitl/{agent_id}`
+    라우트가 set/get하고, `build_demo`가 만드는 `AskOrg`에 *같은 인스턴스*로 전달돼 다음 답의
+    mode에 반영된다. 미주입이면 `HitlToggleMap()` 내부 생성(하위호환 — 기존 동작 100% 보존).
     """
     from starlette.middleware.sessions import SessionMiddleware
 
@@ -985,12 +1019,23 @@ def create_app(
     if _auth_enabled:
         app.add_middleware(SessionMiddleware, secret_key=session_secret)
 
+    # 콘솔 seam(T9.2(b)·T9.3(b)·T9.5(c)): 미주입이면 각각 내부 생성(하위호환).
+    _token_store: TokenStore = token_store if token_store is not None else InMemoryTokenStore()
+    _hitl_toggles: HitlToggleMap = (
+        hitl_toggles if hitl_toggles is not None else HitlToggleMap()
+    )
+    # GET /console/hitl/{agent_id}가 "명시 set된 적 있는가"를 구분해 카드 시드 해석값을
+    # 낼 수 있게 하는 보조 집합(HitlToggleMap.is_on 자체는 미설정을 False로 다뤄 카드
+    # approval_when이 있는 카드도 시드 전엔 off로 보이는 걸 막는다).
+    _hitl_toggles_explicit: set[str] = set()
+
     bundle = build_demo(
         runtime=runtime,
         dispatcher=dispatcher,
         review_store=review_store,
         manager_queue_store=manager_queue_store,
         audit_log=audit_log,
+        hitl_toggles=_hitl_toggles,
     )
     # 라이브 publish 배선(T10.4 Blocker B1·ADR 0028 §14 결정 F): index 모드면 라우터가
     # 보는 *바로 그* published 인덱스 스토어를 디스패처에 같이 꽂는다 — 그래야 워커
@@ -1498,6 +1543,114 @@ def create_app(
     @app.get("/org/view")
     def org_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
         return FileResponse(_ORG_HTML)
+
+    # ── 운영자 콘솔 POST 명령 (T9.2(b)·T9.3(b)·T9.5(c)) ─────────────────────
+    #
+    # 각 명령은 도메인 서비스(SessionStore.end·HitlToggleMap.set·TokenStore)를 부르는
+    # 얇은 어댑터다. 운영자 인증은 /monitor·/org/graph와 같은 결(인증 활성 시 로그인
+    # 필요, 세분 역할 없이 인증만 — ADR 0016 결정 5). 인증 OFF면 기존 데모 관용대로 통과.
+
+    def _console_now() -> "_DateTime":
+        from datetime import UTC, datetime
+
+        return datetime.now(UTC)
+
+    @app.post("/console/sessions/{session_id}/end")
+    def console_end_session(session_id: str, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """운영자 세션 종료(ADR 0024 결정 4) — `SessionStore.end`를 그대로 부른다."""
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+        ended = _session_store.end(session_id)
+        if ended is None:
+            raise HTTPException(status_code=404, detail=f"미존재 세션: {session_id!r}")
+        return {
+            "session_id": ended.session_id,
+            "user_id": ended.user_id,
+            "status": ended.status,
+        }
+
+    @app.get("/console/hitl/{agent_id}")
+    def console_get_hitl(agent_id: str, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """HITL 토글 현재 상태 조회 — 카드 시드 포함 해석값(ADR 0025).
+
+        토글맵에 명시 set이 없으면 카드 approval_when 시드(`seed_from_card`)로 해석한다
+        (`HitlToggleMap.is_on` 자체 기본값 False와 달리, 여기선 *카드 정책 시드*를 우선
+        반영해 운영자가 "이 카드는 원래 어떤 기본값인가"를 볼 수 있게 한다). 카드 미존재
+        시 404.
+        """
+        try:
+            card = bundle.registry.get(agent_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"미존재 agent_id: {agent_id!r}")
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+        from agent_org_network.hitl import seed_from_card
+
+        on = _hitl_toggles.is_on(agent_id) if agent_id in _hitl_toggles_explicit else seed_from_card(card)
+        return {"agent_id": agent_id, "on": on}
+
+    @app.post("/console/hitl/{agent_id}")
+    def console_set_hitl(  # pyright: ignore[reportUnusedFunction]
+        agent_id: str, req: HitlToggleRequest, request: Request
+    ) -> dict[str, Any]:
+        """HITL 토글 set — `HitlToggleMap.set`을 그대로 부른다(ADR 0025). 카드 미존재 404."""
+        try:
+            bundle.registry.get(agent_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"미존재 agent_id: {agent_id!r}")
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+        _hitl_toggles.set(agent_id, req.on)
+        _hitl_toggles_explicit.add(agent_id)
+        return {"agent_id": agent_id, "on": req.on}
+
+    @app.post("/console/tokens")
+    def console_issue_token(req: TokenIssueRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """워커 admission 토큰 발급 — 평문 raw token은 이 응답 1회만(ADR 0026).
+
+        `owner_id`는 Registry 실재 User여야 한다(없으면 404). 저장은 해시만
+        (`TokenStore.issue` 계약) — 이후 `GET /console/tokens`는 절대 평문을 다시 보여주지
+        않는다.
+        """
+        if req.owner_id not in bundle.registry.user_ids():
+            raise HTTPException(status_code=404, detail=f"미존재 owner_id: {req.owner_id!r}")
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+        raw, token = _token_store.issue(req.owner_id, req.role, now=_console_now())
+        return {
+            "token_id": token.token_id,
+            "owner_id": token.owner_id,
+            "role": token.role,
+            "token": raw,  # 평문 — 이 응답 1회만
+            "issued_at": token.issued_at.isoformat(),
+            "expires_at": token.expires_at.isoformat() if token.expires_at is not None else None,
+        }
+
+    @app.get("/console/tokens")
+    def console_list_tokens(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+        """활성 토큰 목록 — token_hash·평문 미노출(운영 면이어도 비밀은 렌더 규율)."""
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+        return [
+            {
+                "token_id": t.token_id,
+                "owner_id": t.owner_id,
+                "role": t.role,
+                "issued_at": t.issued_at.isoformat(),
+                "expires_at": t.expires_at.isoformat() if t.expires_at is not None else None,
+            }
+            for t in _token_store.list_active(now=_console_now())
+        ]
+
+    @app.post("/console/tokens/{token_id}/revoke")
+    def console_revoke_token(token_id: str, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        """토큰 취소(revoke) — append-only(삭제 X), 미존재는 404."""
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+        revoked = _token_store.revoke(token_id, now=_console_now())
+        if revoked is None:
+            raise HTTPException(status_code=404, detail=f"미존재 token_id: {token_id!r}")
+        return {"token_id": revoked.token_id, "revoked": revoked.revoked}
 
     # ── T5.3: Agent 빌더(Owner 면 — 카드 구성·검증·YAML 미리보기) ────────────────
 

@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from agent_org_network.registry import Registry
     from agent_org_network.review import BackupReviewStore
     from agent_org_network.runtime import Answer
+    from agent_org_network.token import TokenStore
     from agent_org_network.two_stage_router import PublishedIndexStore
 
 
@@ -373,6 +374,7 @@ class WebSocketDispatcher:
         registry: "Registry | None" = None,
         published_index_store: "PublishedIndexStore | None" = None,
         propagator: "ChangeEventListener | None" = None,
+        token_store: "TokenStore | None" = None,
     ) -> None:
         # 작업 큐 도메인은 합성으로 재사용 — 큐 상태기계·단조 종착·timeout escalation은
         # 이 객체가 소유한다(WS는 그 위 전송층). 주입 가능하게 둬 결정론 테스트가 고정
@@ -427,6 +429,10 @@ class WebSocketDispatcher:
         # (스레드풀 핸들러 ↔ 이벤트 루프 recv_loop).
         self._fetch_slots: dict[str, _FetchSlot] = {}
         self._fetch_lock = threading.Lock()
+        # 워커 admission 실 검증(T9.5(b), ADR 0026 결정 2) — `RegisterWorker.token`을
+        # `TokenStore.verify`로 검증한다. 미주입이면 `_authenticate`가 기존 stub 동작
+        # (빈 owner_id만 거부)을 그대로 유지한다(하위호환 — 기존 WS 테스트 전부 보존).
+        self._token_store = token_store
 
     # ── 중앙측(질문 측): 내부 큐에 위임 ──────────────────────────────────────
 
@@ -791,12 +797,26 @@ class WebSocketDispatcher:
     # ── 내부 전송 헬퍼 ───────────────────────────────────────────────────────
 
     def _authenticate(self, frame: RegisterWorker) -> bool:
-        """owner 신원 인증 hook(ADR 0009 연결점, 6-5).
+        """owner 신원 인증 — `TokenStore.verify` 실 검증(T9.5(b), ADR 0026 결정 2).
 
-        실 토큰 검증은 T6.5 몫 — 지금은 *거부 지점만* 둔다. 빈 owner_id는 신원 미선언이라
-        거부한다(미인증/익명 연결 차단의 최소 형태). token 검증 로직이 붙을 자리가 여기다.
+        빈 owner_id는 신원 미선언이라 항상 거부(기존 stub 동작 보존). `_token_store`가
+        미주입이면 이후 토큰 검증을 하지 않는다(하위호환 — 기존 WS 테스트 전부 보존).
+
+        주입돼 있으면 실 검증: `frame.token`이 None이면 즉시 거부(`TokenStore.verify`는
+        None 방어를 하지 않으므로 호출 전 가드 필수 — code-reviewer T9.5a Minor 1 인계).
+        `verify`가 None을 돌리면(만료·revoke·위조·미지) 거부. 통과해도 토큰의 owner_id·
+        role이 `RegisterWorker` 선언과 *일치*해야 admission(owner 가장·등급 위조 차단).
         """
-        return bool(frame.owner_id)
+        if not frame.owner_id:
+            return False
+        if self._token_store is None:
+            return True
+        if frame.token is None:
+            return False
+        token = self._token_store.verify(frame.token, now=self._queue.now())
+        if token is None:
+            return False
+        return token.owner_id == frame.owner_id and token.role == frame.role
 
     def _push_pending(self, owner_id: str) -> None:
         """그 owner의 큐 대기 작업을 *ticket별* 우선순위 연결로 claim해 PushWork로 내보낸다.

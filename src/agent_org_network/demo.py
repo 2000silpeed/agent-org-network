@@ -51,6 +51,7 @@ from agent_org_network.two_stage_router import (
 from agent_org_network.user import User
 
 if TYPE_CHECKING:
+    from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.review import BackupReviewStore
 
@@ -270,6 +271,7 @@ def build_demo(
     manager_queue_store: "ManagerQueueStore | None" = None,
     audit_log: "JsonlAuditLog | InMemoryAuditLog | None" = None,
     classifier: Classifier | None = None,
+    hitl_toggles: "HitlToggleMap | None" = None,
 ) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
@@ -286,6 +288,11 @@ def build_demo(
     `precedents`·`case_store`를 하나씩 만들어 Router·AskOrg·ConsensusService에
     같은 인스턴스로 주입한다 — 처리함 합의(Agreed→Precedent 기록)가 곧바로
     채팅 라우팅(판례 자동 적용)에 반영되도록.
+
+    `hitl_toggles`(T9.3(b)·ADR 0025): 콘솔이 set하는 HITL 토글 맵을 `AskOrg`에 그대로
+    전달한다 — 미주입이면 `AskOrg`도 `None`을 받아 기존 동작(카드 approval_when만 봄)
+    100% 보존(하위호환). `create_app`이 이 인스턴스를 콘솔 라우트와 공유해야 토글 변경이
+    *다음 답*의 mode에 반영된다.
     """
     registry = Registry()
     for user in _USERS:
@@ -361,6 +368,7 @@ def build_demo(
         manager_queue_store=manager_queue_store,
         manager_of=_manager_of,
         manager_root=ROOT_USER,
+        hitl_toggles=hitl_toggles,
     )
     consensus = ConsensusService(case_store=case_store, precedents=precedents)
     # 재평가(세 번째 탭) store/service — review_store(둘째 탭)와 동형으로 항상 구성해

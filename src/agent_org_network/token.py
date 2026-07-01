@@ -96,11 +96,16 @@ class TokenStore(Protocol):
         """워커 토큰을 검증한다 — 미만료·미revoke·해시 일치면 AdmissionToken, 아니면 None."""
         ...
 
-    def revoke(self, token_id: str) -> AdmissionToken | None:
+    def revoke(self, token_id: str, *, now: datetime | None = None) -> AdmissionToken | None:
         """토큰을 취소한다 — append-only(삭제 X·revoked=True 표식).
 
         revoke된 토큰은 verify에서 None. 멱등(이미 revoked면 그대로 반환).
         없으면 None.
+
+        now: revoked_at 로 찍을 시각(주입 결정론 seam). None이면 구현체의 clock.
+        issue/verify 의 `now` 파라미터와 대칭 — durable(Sqlite) 재현성을 위해 seam을
+        통일하되, 선택 파라미터라 기존 호출처는 무변경(ADR 0026 결정 1 시그니처엔
+        여전히 필수 `now` 없음 — 위반 아님·되돌리기 쉬움).
         """
         ...
 
@@ -165,8 +170,12 @@ class InMemoryTokenStore:
             return None
         return token
 
-    def revoke(self, token_id: str) -> AdmissionToken | None:
-        """append-only revoke — 삭제 X·revoked=True 표식·멱등."""
+    def revoke(self, token_id: str, *, now: datetime | None = None) -> AdmissionToken | None:
+        """append-only revoke — 삭제 X·revoked=True 표식·멱등.
+
+        now 주입 시 그 시각을 revoked_at 으로 찍는다(issue/verify seam 대칭·durable
+        재현성). None이면 생성자 clock — 기존 호출처 무변경.
+        """
         token = self._by_id.get(token_id)
         if token is None:
             return None
@@ -178,7 +187,7 @@ class InMemoryTokenStore:
         revoked = dataclasses.replace(
             token,
             revoked=True,
-            revoked_at=self._clock(),
+            revoked_at=now if now is not None else self._clock(),
         )
         self._by_hash[token.token_hash] = revoked
         self._by_id[token_id] = revoked

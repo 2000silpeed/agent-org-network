@@ -36,7 +36,7 @@ export const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/builder",
-    label: "카드 빌더",
+    label: "에이전트 빌더",
     surface: "Builder",
     description: "카드 구성 · 검증 · YAML",
     icon: IdCard,

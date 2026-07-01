@@ -1,6 +1,8 @@
 # OKF 자동 저작의 owner측 토폴로지 — 실 어댑터·저작면·크로스머신 fan-out·reeval 인덱스-수용 훅을 게이트 밖에서 실체화한다
 
-상태: accepted (2026-06-30) · **사용자 grill 확정 5개 결정 명문화**(① 포트 경계[공개 레포 `LlmAuthor`·`SemanticOsAuthor`는 owner 확장점] · ② 저작 전체 owner측[카드 빌더=중앙 / OKF 저작면=owner측] · ③ OKF git owner-로컬·크로스머신 변경 전파 · ④ 얇은 수직 슬라이스 먼저 · ⑤ T10.5 미룸) · **ADR 0029(OKF 자동 저작 게이트 경계·T11.7 슬라이스)가 *게이트 밖*으로 미룬 실 어댑터·실 인프라를 토폴로지로 실체화** — 0029가 *계약*(`OkfAuthor` 포트·`FakeAuthor`·staged·HITL·증분·admission)을 게이트 내로 잠갔고, 이 ADR은 그 게이트 밖(실 OAuth·실 git·실 WS·owner 검토 UI·크로스머신 전파)이 *어디서 어떻게* 도는지를 못박는다 · **확장/재해석이지 supersede 아님** — 0018(카드 빌더=중앙·OKF 커밋이 owner측으로 re-home·이 분할 명시)·0019(발화 단일 지점 → 머신별 단일로 재해석)·0027(owner OAuth 멀티-LLM의 *저작* 새 사용·LlmAuthor가 답변 런타임과 같은 인프라)·0028 §14(`PublishIndex`·`accept_published_index`에 reeval 트리거 훅 추가)·0029(게이트 밖 실체화)와 정합 · CONTEXT(신규 `LlmAuthor`·owner측 저작면·OKF git owner-로컬·머신별 단일 발화·reeval 인덱스-수용 훅·카드빌더 vs OKF저작면 분할)·tasks(T11.7 얇은 수직 슬라이스 재구성·T10.5 미룸 사유) 갱신 대상
+> **개명 주석**: 이 ADR이 "카드 빌더"로 부르던 면은 이후 **"에이전트 빌더"로 개명**한다(사용자 결정·2026-07-01). 의미 동일 — Agent Card(에이전트 뼈대)를 구성하는 중앙 면이다. 여기서 결정한 "에이전트 빌더=중앙 / OKF 저작면=owner측" 분할의 *구분·의미는 불변*이며, 오히려 "① 에이전트 빌더로 에이전트(Agent Card) 생성 → ② OKF 저작면으로 그 에이전트에 지식 주입"의 2단계 서사로 또렷해진다. 아래 본문은 새 명칭으로 갱신했다.
+
+상태: accepted (2026-06-30) · **사용자 grill 확정 5개 결정 명문화**(① 포트 경계[공개 레포 `LlmAuthor`·`SemanticOsAuthor`는 owner 확장점] · ② 저작 전체 owner측[에이전트 빌더=에이전트(Agent Card) 생성·중앙 / OKF 저작면=그 에이전트에 지식 주입·owner측] · ③ OKF git owner-로컬·크로스머신 변경 전파 · ④ 얇은 수직 슬라이스 먼저 · ⑤ T10.5 미룸) · **ADR 0029(OKF 자동 저작 게이트 경계·T11.7 슬라이스)가 *게이트 밖*으로 미룬 실 어댑터·실 인프라를 토폴로지로 실체화** — 0029가 *계약*(`OkfAuthor` 포트·`FakeAuthor`·staged·HITL·증분·admission)을 게이트 내로 잠갔고, 이 ADR은 그 게이트 밖(실 OAuth·실 git·실 WS·owner 검토 UI·크로스머신 전파)이 *어디서 어떻게* 도는지를 못박는다 · **확장/재해석이지 supersede 아님** — 0018(에이전트 빌더=중앙·OKF 커밋이 owner측으로 re-home·이 분할 명시)·0019(발화 단일 지점 → 머신별 단일로 재해석)·0027(owner OAuth 멀티-LLM의 *저작* 새 사용·LlmAuthor가 답변 런타임과 같은 인프라)·0028 §14(`PublishIndex`·`accept_published_index`에 reeval 트리거 훅 추가)·0029(게이트 밖 실체화)와 정합 · CONTEXT(신규 `LlmAuthor`·owner측 저작면·OKF git owner-로컬·머신별 단일 발화·reeval 인덱스-수용 훅·에이전트 빌더 vs OKF저작면 분할)·tasks(T11.7 얇은 수직 슬라이스 재구성·T10.5 미룸 사유) 갱신 대상
 
 ---
 
@@ -30,9 +32,9 @@ ADR 0029는 이들을 *목록*으로만 뒀다(§게이트 밖·슬라이스 7).
 - **core에 *안* 싣는 것**: `SemanticOsAuthor`는 **owner측 확장점**이다 — 같은 `OkfAuthor` 포트를 구현하는 *별 패키지/플러그인*으로, semantic-os 깊이(RDF/OWL 온톨로지·seed_nodes/seed_edges·Named Graph)를 원하는 owner가 *자기 배포에서 주입*한다. **core는 semantic-os를 *모른다*** — import 0·의존 0. ADR 0029가 `SemanticOsAuthor`를 "옵션 백엔드"로 둔 것을 *패키징 축*에서 닫는다: core 레포는 그 어댑터를 *담지 않고*, owner가 자기 환경에서 끼운다.
 - **`ClaudeApiRuntime`/`ClaudeCodeRuntime`이 같은 `AgentRuntime` 포트의 다른 어댑터인 정신.** `LlmAuthor`(core 기본)·`SemanticOsAuthor`(owner 확장)·`FakeAuthor`(테스트)는 같은 `OkfAuthor` 포트의 N개 어댑터다. 어떤 백엔드도 1급이 아니되, *core가 강제하는 의존*은 `LlmAuthor`의 owner OAuth(이미 ADR 0027 선택 extra)뿐 — RDF는 강제 0(`NotificationChannel` 채널 중립·`KnowledgeIndexMatcher`의 `ConceptOverlapMatcher`[core]/`EmbeddingAnnMatcher`[확장] 분할 정신).
 
-### 2. 저작 전체 owner측 — 카드 빌더(중앙) / OKF 저작면(owner측)의 깔끔한 분할
+### 2. 저작 전체 owner측 — 에이전트 빌더(중앙) / OKF 저작면(owner측)의 깔끔한 분할
 
-**비소유·중앙 토큰 0의 실체.** 저작의 *모든 단계*가 owner측에서 돈다 — 중앙은 raw도·초안도·LLM 토큰도 0이다:
+**에이전트 한 대를 세우는 2단계.** ① **에이전트 빌더**로 *에이전트(=`Agent Card`·뼈대)를 생성*하고(중앙) → ② **OKF 저작면**으로 *그 에이전트에 지식(OKF)을 주입*한다(owner측). **비소유·중앙 토큰 0의 실체.** 지식 주입(②)의 *모든 단계*가 owner측에서 돈다 — 중앙은 raw도·초안도·LLM 토큰도 0이다:
 
 - **`LlmAuthor`는 owner 워커 프로세스에서 돈다** — 답변 런타임 `ClaudeApiRuntime`과 *같은 경계*(owner OAuth·provider transport 재사용·`worker.py`). 저작 LLM 호출이 owner OAuth 토큰으로 owner 환경에서 일어난다(중앙 토큰 0·ADR 0027 보존·강화).
 - **raw 자료·단계별 초안은 중앙을 통과하지 않는다.** owner의 기존 문서·노트·위키(raw)는 owner 환경에 있고, staged 초안(②split·③derive·④link 산출)도 owner 환경(working tree·검토 면)에 머문다. **중앙 WS로 흘리면 비소유 위반** — 중앙은 *승인·publish된 목차*(`KnowledgeIndex`·`PublishIndex`)만 받는다(ADR 0028 §14·결정 3). raw·초안을 중앙 WS에 싣는 프레임은 *만들지 않는다*.
@@ -41,10 +43,10 @@ ADR 0029는 이들을 *목록*으로만 뒀다(§게이트 밖·슬라이스 7).
 
   | 면 | 무엇 | 어디 | 코드 |
   |---|---|:---:|---|
-  | **카드 빌더** | 라우팅 메타(domains·can/cannot_answer·admission 단위) | **중앙** | `web.py`(`/builder/validate`·`validate_card_for_builder`) 유지 |
-  | **OKF 저작면** | raw→LLM 초안→단계 diff 검토→승인 | **owner측 신규** | owner 환경(빌더 패턴 `builder.html` 재사용·신규) |
+  | **에이전트 빌더** (① 에이전트 생성) | 라우팅 메타(domains·can/cannot_answer·admission 단위) = 에이전트 뼈대인 `Agent Card` 구성 | **중앙** | `web.py`(`/builder/validate`·`validate_card_for_builder`) 유지 |
+  | **OKF 저작면** (② 지식 주입) | raw→LLM 초안→단계 diff 검토→승인 = 그 에이전트에 지식(OKF) 주입 | **owner측 신규** | owner 환경(빌더 패턴 `builder.html` 재사용·신규) |
 
-  - **카드 빌더가 중앙인 이유**: 카드는 *admission 경계*(유효하지 않은 카드는 등록 안 됨·Authority 중앙·ADR 0004·0018 결정 1)다. 검증→YAML→수동 PR이 중앙 운영 면에 남는다(ADR 0018 결정 1·CONTEXT Card composer 절 무변경). 라우팅 메타·domains 선언은 중앙 권위라 중앙면이 자연.
+  - **에이전트 빌더가 중앙인 이유**: 카드는 *admission 경계*(유효하지 않은 카드는 등록 안 됨·Authority 중앙·ADR 0004·0018 결정 1)다. 검증→YAML→수동 PR이 중앙 운영 면에 남는다(ADR 0018 결정 1·CONTEXT Card composer 절 무변경). 라우팅 메타·domains 선언은 중앙 권위라 중앙면이 자연.
   - **OKF 저작면이 owner측인 이유**: OKF 번들은 *답변 지식*이지 권한 선언이 아니고(ADR 0013 안 B), raw·초안·LLM 호출이 모두 owner측이라(결정 위) 그 저작·검토 면도 owner측에 있어야 비소유가 성립한다. **중앙 토큰 0·비소유 보존** — 이 분할이 그 보존의 구조적 보장이다.
 
 ### 3. OKF git owner-로컬 · 크로스머신 변경 전파
@@ -129,7 +131,7 @@ class LlmAuthor:                          # OkfAuthor 구현 — owner OAuth 멀
 
 owner 환경에서 도는 검토 면. raw 입력 → `LlmAuthor` staged 산출 → 단계별 diff → owner 처분(`set_disposition`·T11.3 green) → 승인분 `commit_okf_bundle`(T11.3 seam).
 
-- **빌더 패턴 재사용**: ADR 0018 `builder.html`(카드 빌더·OKF 편집 면)의 폼/검증/커밋 패턴을 owner측에 재현한다. 단 *owner 환경*에 산다(중앙 `web.py`가 아니라 owner 워커 측 면 — 결정 2). 커밋 author=owner·스코프 card.owner(ADR 0018 결정 5)는 그대로.
+- **빌더 패턴 재사용**: ADR 0018 `builder.html`(에이전트 빌더·OKF 편집 면)의 폼/검증/커밋 패턴을 owner측에 재현한다. 단 *owner 환경*에 산다(중앙 `web.py`가 아니라 owner 워커 측 면 — 결정 2). 커밋 author=owner·스코프 card.owner(ADR 0018 결정 5)는 그대로.
 - **단계 diff 상태기계(게이트 내 결정론·이미 green)**: `StageReview`·`StageDisposition`(`Approved`/`Edited`/`Rejected`)·`set_disposition`(T11.3)이 그 면의 *상태 전이 로직*이다. UI 조작(클릭·폼)은 게이트 밖(수동), 그 아래 상태기계는 게이트 내(결정론·T11.3 green).
 - **게이트 밖**: 실 UI 면·실 raw 입력·단계 diff 시각화·owner 조작은 수동(ADR 0029 빌더 UI가 게이트 밖인 정신).
 
@@ -174,11 +176,11 @@ accept_published_index(session_owner_id, index, registry, store, propagator=None
 
 이 ADR은 **게이트 밖 실체화·토폴로지 결정이지 충돌이 아니다 — 새 ADR감**이다. 기존 ADR들과의 관계를 명시한다(supersede 아님·확장/재해석).
 
-### (a) ADR 0018(카드 빌더·OKF git 커밋) — *재해석(OKF 커밋 owner측 re-home·카드 빌더 중앙 유지·이 분할 명시)*
+### (a) ADR 0018(에이전트 빌더·OKF git 커밋) — *재해석(OKF 커밋 owner측 re-home·에이전트 빌더 중앙 유지·이 분할 명시)*
 
 0018은 OKF 번들을 *모노repo 하위폴더 `okf/{agent_id}/`*(MVP)에 두고 빌더가 owner 대신 커밋(`commit_okf_bundle`·author=owner·스코프 card.owner)까지 닫았다. 이 ADR은:
 - **OKF git을 owner-로컬 repo로 re-home**(0018 결정 2가 "owner별 repo는 후속 옵션"으로 예고한 자리·실 데이터 격리가 진짜 요구일 때). 중앙 모노repo 가정을 owner-로컬로 진화.
-- **카드 빌더는 중앙 유지**(0018 결정 1 — 카드는 admission 경계라 검증→YAML→PR·중앙면). 카드 빌더 vs OKF 저작면 분할을 *명시*한다(결정 2 표).
+- **에이전트 빌더는 중앙 유지**(0018 결정 1 — 카드는 admission 경계라 검증→YAML→PR·중앙면). 에이전트 빌더 vs OKF 저작면 분할을 *명시*한다(결정 2 표).
 - **커밋 메커니즘 무변경**: `GitGateway`·`commit_okf_bundle`·author=owner·`OkfChangeEvent` 발화(0018 결정 6)는 그대로. 바뀌는 건 *repo가 owner-로컬*이고 *OKF 저작면이 owner측*인 것뿐(커밋 본체는 여전히 OKF 번들 마크다운·카드 YAML 아님).
 
 ### (b) ADR 0019(OkfChangeEvent 단일 발화) — *재해석(머신별 단일로)*

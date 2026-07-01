@@ -1,6 +1,6 @@
 # OKF 번들을 git에 저장하고 빌더 UI가 owner 대신 커밋한다 — 답 실행은 커밋 스냅샷을 cwd로 읽는다
 
-상태: accepted (2026-06-21) · **구현 완료(T7.2 슬라이스 1~4 — 결정론 게이트; T8.1 (a)(b) — `SubprocessGitGateway` 실 git CLI 어댑터 3메서드 + tmp repo 통합 테스트 27개, 게이트 795 passed/pyright 0/ruff 0; 슬라이스 5의 (c) 실 claude end-to-end·(d) OKF 에디터 UI·(e) 중앙 최신 읽기 pull/webhook은 후속)** · **ADR 0017 결정 3의 구체화**(살아있는 지식 = git 저장 + 빌더 UI 편집 + 커밋 스냅샷 실행) · ADR 0013(OKF·카드/번들 분리·cwd 소비)·ADR 0012(`DelegationSnapshot.snapshot_at` 신선도)와 정합 · T6.7(`ClaudeCodeRuntime` OKF cwd 소비)의 *저장·편집·스냅샷 축*을 닫는다. · **ADR 0029(OKF 자동 저작)가 이 위에 "자동 초안 채우기"를 얹음**(커밋 메커니즘[`GitGateway`·`commit_okf_bundle`·author=owner·스코프 card.owner] 무변경·편집 대상[OKF 마크다운]을 LLM 초안으로 미리 채우는 입력 자동 생성만 추가·커밋 본체가 OKF 번들이지 카드 YAML 아닌 것[결정 1]·`OkfChangeEvent` 발화[결정 6]가 증분 재인덱싱 트리거인 것 보존). · **ADR 0030(owner측 저작 토폴로지)이 이 ADR을 *재해석***(supersede 아님·확장): OKF git을 *owner-로컬 repo*로 re-home(결정 2의 "owner별 repo 후속 옵션" 실체화·중앙 모노repo 아님), **카드 빌더(라우팅 메타)=중앙 유지**(결정 1·`web.py`)/**OKF 저작면(raw→LLM 초안→diff 검토)=owner측 신규**의 분할을 명시, 커밋 메커니즘·author=owner·스코프·`OkfChangeEvent` 발화는 무변경(이 ADR 결정 전부 보존).
+상태: accepted (2026-06-21) · **구현 완료(T7.2 슬라이스 1~4 — 결정론 게이트; T8.1 (a)(b) — `SubprocessGitGateway` 실 git CLI 어댑터 3메서드 + tmp repo 통합 테스트 27개, 게이트 795 passed/pyright 0/ruff 0; 슬라이스 5의 (c) 실 claude end-to-end·(d) OKF 에디터 UI·(e) 중앙 최신 읽기 pull/webhook은 후속)** · **ADR 0017 결정 3의 구체화**(살아있는 지식 = git 저장 + 빌더 UI 편집 + 커밋 스냅샷 실행) · ADR 0013(OKF·카드/번들 분리·cwd 소비)·ADR 0012(`DelegationSnapshot.snapshot_at` 신선도)와 정합 · T6.7(`ClaudeCodeRuntime` OKF cwd 소비)의 *저장·편집·스냅샷 축*을 닫는다. · **ADR 0029(OKF 자동 저작)가 이 위에 "자동 초안 채우기"를 얹음**(커밋 메커니즘[`GitGateway`·`commit_okf_bundle`·author=owner·스코프 card.owner] 무변경·편집 대상[OKF 마크다운]을 LLM 초안으로 미리 채우는 입력 자동 생성만 추가·커밋 본체가 OKF 번들이지 카드 YAML 아닌 것[결정 1]·`OkfChangeEvent` 발화[결정 6]가 증분 재인덱싱 트리거인 것 보존). · **ADR 0030(owner측 저작 토폴로지)이 이 ADR을 *재해석***(supersede 아님·확장): OKF git을 *owner-로컬 repo*로 re-home(결정 2의 "owner별 repo 후속 옵션" 실체화·중앙 모노repo 아님), **에이전트 빌더(라우팅 메타)=중앙 유지**(결정 1·`web.py`)/**OKF 저작면(raw→LLM 초안→diff 검토)=owner측 신규**의 분할을 명시, 커밋 메커니즘·author=owner·스코프·`OkfChangeEvent` 발화는 무변경(이 ADR 결정 전부 보존).
 
 ## 맥락 — 끊어진 고리 둘
 
@@ -24,7 +24,7 @@ T6.7(ADR 0013)은 OKF 번들을 *워커가 cwd로 읽어 답한다*까지 닫았
 
 **왜 OKF가 자동 커밋의 1순위인가.** ADR 0017 결정 3이 "빌더가 owner 대신 커밋"을 부른 *동기*는 **비개발자 owner의 잦은 지식 업데이트**다. 잦게 바뀌는 것은 지식(환불 정책 금액, 표준 약관 문구)이지 라우팅 메타(담당 도메인)가 아니다. 그리고 OKF 번들은 admission 불변식의 *경계가 아니다*(중앙은 번들 내용을 검증하지 않는다 — 마크다운은 자유, ADR 0013) — 그래서 *안전하게 자동 커밋*할 수 있다. 반대로 카드는 등록 무결성 경계라(유효하지 않은 카드는 등록 안 됨), 자동 커밋이 그 경계를 우회할 위험이 있어 *검증→YAML→PR*을 유지한다.
 
-**그래서 MVP 한 바퀴 = OKF 번들 편집·커밋·스냅샷 실행.** 카드 빌더는 손대지 않는다(검증→YAML 미리보기 그대로). 빌더 UI에 *OKF 번들 편집 면*을 하나 더한다(카드 면과 분리). 한 owner의 한 번 편집 = 그 owner의 번들에 *마크다운 파일 1개 쓰기 + 커밋 1개* — 가장 작은 닫힌 루프.
+**그래서 MVP 한 바퀴 = OKF 번들 편집·커밋·스냅샷 실행.** 에이전트 빌더는 손대지 않는다(검증→YAML 미리보기 그대로). 빌더 UI에 *OKF 번들 편집 면*을 하나 더한다(카드 면과 분리). 한 owner의 한 번 편집 = 그 owner의 번들에 *마크다운 파일 1개 쓰기 + 커밋 1개* — 가장 작은 닫힌 루프.
 
 ### 2. 저장소 구조 = 모노repo 하위폴더 `okf/{agent_id}/`, owner별 repo는 후속 옵션
 

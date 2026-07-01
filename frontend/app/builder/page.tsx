@@ -30,10 +30,10 @@ export default function BuilderPage() {
       <PageHeader
         surface="Builder"
         persona="Owner"
-        title="카드 빌더"
+        title="에이전트 빌더"
         description="자기 카드를 폼으로 구성해 검증합니다. 통과한 YAML을 registry/agents/에 커밋(PR)하면 실제로 등록됩니다 — 이 화면은 라이브 등록을 하지 않습니다."
       />
-      <LoginGate surface="카드 빌더" requiredRole="owner">
+      <LoginGate surface="에이전트 빌더" requiredRole="owner">
         <BuilderWorkspace />
       </LoginGate>
     </div>

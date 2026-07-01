@@ -157,26 +157,72 @@
   }
   .theme-toggle:hover { border-color: var(--ds-color-border-strong); color: var(--ds-color-ink); }
 
-  /* ---- sticky nav.toc ------------------------------------------------ */
+  /* ---- sticky nav.toc — 실 SaaS 문서 상단 바(그룹 헤더 + 하위 항목) --------- */
   nav.toc {
     position: sticky; top: 0; z-index: 20;
-    background: color-mix(in srgb, var(--ds-color-surface) 90%, transparent);
-    backdrop-filter: blur(8px);
+    background: color-mix(in srgb, var(--ds-color-surface) 92%, transparent);
+    backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--ds-color-border);
-    padding: 9px 0;
   }
   nav.toc .inner {
-    max-width: 1000px; margin: 0 auto; padding: 0 24px;
-    display: flex; gap: 5px; flex-wrap: wrap; font-size: 12px;
+    max-width: 1000px; margin: 0 auto; padding: 8px 24px;
+    display: flex; align-items: stretch; gap: 4px;
   }
+  /* 데스크톱: 그룹을 가로로 나열 — 각 그룹은 라벨(상단) + 항목 행(하단) */
+  nav.toc .grp {
+    display: flex; flex-direction: column; gap: 3px;
+    padding: 2px 8px; flex: 1 1 0; min-width: 0;
+  }
+  nav.toc .grp + .grp { border-left: 1px solid var(--ds-color-border); }
+  nav.toc .grp-label {
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase;
+    color: var(--ds-color-ink-subtle); padding: 0 4px; white-space: nowrap;
+  }
+  nav.toc .grp-items { display: flex; flex-wrap: wrap; gap: 2px; }
   nav.toc a {
-    color: var(--ds-color-ink-subtle); text-decoration: none;
-    padding: 3px 9px; border-radius: var(--ds-radius-sm);
+    color: var(--ds-color-ink-muted); text-decoration: none;
+    font-size: 11.5px; line-height: 1.3;
+    padding: 2px 7px; border-radius: var(--ds-radius-sm);
     border: 1px solid transparent; white-space: nowrap;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
   }
   nav.toc a:hover {
     color: var(--ds-color-ink); border-color: var(--ds-color-border);
     background: var(--ds-color-surface-muted);
+  }
+  /* scrollspy 현재 위치 하이라이트 */
+  nav.toc a.active {
+    color: var(--ds-color-primary); font-weight: 700;
+    background: var(--ds-color-surface-tint);
+    border-color: color-mix(in srgb, var(--ds-color-primary) 30%, transparent);
+  }
+  [data-theme='dark'] nav.toc a.active { color: var(--ds-color-link); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) nav.toc a.active { color: var(--ds-color-link); }
+  }
+  /* 모바일: 접이식 — 그룹을 세로로 쌓고 스크롤 */
+  nav.toc details.toc-m { display: none; }
+  @media (max-width: 860px) {
+    nav.toc .inner.toc-d { display: none; }
+    nav.toc details.toc-m {
+      display: block; max-width: 1000px; margin: 0 auto; padding: 0;
+    }
+    nav.toc details.toc-m > summary {
+      list-style: none; cursor: pointer; user-select: none;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 16px; font-size: 12.5px; font-weight: 700;
+      color: var(--ds-color-ink);
+    }
+    nav.toc details.toc-m > summary::-webkit-details-marker { display: none; }
+    nav.toc details.toc-m > summary .chev { color: var(--ds-color-ink-subtle); font-size: 11px; transition: transform 160ms ease; }
+    nav.toc details.toc-m[open] > summary .chev { transform: rotate(180deg); }
+    nav.toc .toc-m-body {
+      padding: 2px 16px 12px; max-height: 60vh; overflow-y: auto;
+      border-top: 1px solid var(--ds-color-border);
+    }
+    nav.toc .toc-m-body .grp { padding: 8px 0 2px; }
+    nav.toc .toc-m-body .grp-items { gap: 4px; }
+    nav.toc .toc-m-body a { font-size: 12.5px; padding: 4px 9px; }
   }
 
   /* ---- section heading ---------------------------------------------- */
@@ -331,6 +377,57 @@
   .v-keep { color: var(--ds-color-success); font-weight: 700; }
   .v-drop { color: var(--ds-color-danger); font-weight: 700; }
 
+  /* ---- real UI screenshots (figure) ---------------------------------- */
+  /* 실제 앱 화면 — 다크 UI라 라이트 문서에서도 튀지 않게 프레임(테두리+여백+미묘한 배경). */
+  figure.shot {
+    margin: 18px 0 4px;
+    padding: 10px;
+    background: var(--ds-color-surface-muted);
+    border: 1px solid var(--ds-color-border);
+    border-radius: var(--ds-radius-lg);
+  }
+  figure.shot .frame {
+    border: 1px solid var(--ds-color-border-strong);
+    border-radius: var(--ds-radius-md);
+    overflow: hidden;
+    background: var(--ds-color-canvas);
+    box-shadow: 0 6px 18px rgba(17, 17, 17, 0.10), 0 1px 3px rgba(17, 17, 17, 0.06);
+  }
+  [data-theme='dark'] figure.shot .frame { box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) figure.shot .frame { box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); }
+  }
+  figure.shot img {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+  }
+  figure.shot figcaption {
+    margin-top: 9px;
+    padding: 0 4px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--ds-color-ink-subtle);
+  }
+  figure.shot figcaption .tag-shot {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+    color: var(--ds-color-info); background: var(--ds-color-surface-tint);
+    border: 1px solid color-mix(in srgb, var(--ds-color-info) 24%, transparent);
+    padding: 1px 7px; border-radius: 999px; margin-right: 7px; vertical-align: 1px;
+  }
+  [data-theme='dark'] figure.shot figcaption .tag-shot { color: var(--ds-color-link); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) figure.shot figcaption .tag-shot { color: var(--ds-color-link); }
+  }
+  figure.shot figcaption b { color: var(--ds-color-ink-muted); font-weight: 700; }
+  figure.shot figcaption code {
+    font-family: var(--ds-font-mono); font-size: 0.86em;
+    background: color-mix(in srgb, var(--ds-color-ink) 6%, transparent);
+    padding: 1px 5px; border-radius: var(--ds-radius-sm);
+  }
+
   /* ---- footer -------------------------------------------------------- */
   footer {
     margin-top: 64px; padding: 26px 28px;
@@ -369,6 +466,10 @@
     pre { background: #f4f4f4; color: #111; border-color: #ccc; }
     pre .c, pre .k, pre .s, pre .o { color: #333; }
     a { color: #000; text-decoration: underline; }
+    figure.shot { background: #fff; border-color: #ccc; break-inside: avoid; }
+    figure.shot .frame { box-shadow: none; border-color: #999; }
+    figure.shot figcaption { color: #333; }
+    figure.shot figcaption .tag-shot { color: #333; background: #eee; border-color: #ccc; }
   }
 </style>
 <script>
@@ -417,14 +518,53 @@
   </div>
 </header>
 
-<nav class="toc"><div class="inner">
-  <a href="#cast">등장</a><a href="#inv">불변식</a>
-  <a href="#s1">1·등록</a><a href="#s2">2·OKF 저작</a><a href="#s3">3·답변</a><a href="#s4">4·무지식</a>
-  <a href="#s5">5·금지</a><a href="#s6">6·승인</a><a href="#s7">7·다툼·판례</a><a href="#s8">8·reeval</a>
-  <a href="#s9">9·미아</a><a href="#s10">10·Manager</a><a href="#s11">11·분산</a><a href="#s12">12·fan-out</a>
-  <a href="#s13">13·백업</a><a href="#s14">14·인증</a><a href="#s15">15·모니터링</a><a href="#s16">16·그래프</a>
-  <a href="#s17">17·MCP</a><a href="#s18">18·eval</a>
-</div></nav>
+<nav class="toc" aria-label="시나리오 목차">
+  <!-- 데스크톱: 그룹 헤더 + 하위 항목이 가로로 나열된 상단 바 -->
+  <div class="inner toc-d">
+    <div class="grp">
+      <span class="grp-label">기초</span>
+      <div class="grp-items"><a href="#cast">등장</a><a href="#inv">불변식</a></div>
+    </div>
+    <div class="grp">
+      <span class="grp-label">저작</span>
+      <div class="grp-items"><a href="#s1">1·에이전트 빌더</a><a href="#s2">2·OKF 저작</a></div>
+    </div>
+    <div class="grp">
+      <span class="grp-label">소비·라우팅</span>
+      <div class="grp-items"><a href="#s3">3·답변</a><a href="#s4">4·무지식</a><a href="#s5">5·금지</a><a href="#s6">6·승인</a><a href="#s9">9·미아</a></div>
+    </div>
+    <div class="grp">
+      <span class="grp-label">협업·거버넌스</span>
+      <div class="grp-items"><a href="#s7">7·다툼·판례</a><a href="#s8">8·reeval</a><a href="#s10">10·Manager</a><a href="#s13">13·백업</a></div>
+    </div>
+    <div class="grp">
+      <span class="grp-label">분산·전파</span>
+      <div class="grp-items"><a href="#s11">11·분산</a><a href="#s12">12·크로스머신</a></div>
+    </div>
+    <div class="grp">
+      <span class="grp-label">운영·플랫폼</span>
+      <div class="grp-items"><a href="#s14">14·인증</a><a href="#s15">15·모니터링</a><a href="#s16">16·그래프</a><a href="#s17">17·MCP</a><a href="#s18">18·eval</a></div>
+    </div>
+  </div>
+  <!-- 모바일: 접이식(그룹 세로 스택) -->
+  <details class="toc-m">
+    <summary><span>시나리오 목차 — 18 scene</span><span class="chev" aria-hidden="true">▾</span></summary>
+    <div class="toc-m-body">
+      <div class="grp"><span class="grp-label">기초</span>
+        <div class="grp-items"><a href="#cast">등장</a><a href="#inv">불변식</a></div></div>
+      <div class="grp"><span class="grp-label">저작</span>
+        <div class="grp-items"><a href="#s1">1·에이전트 빌더</a><a href="#s2">2·OKF 저작</a></div></div>
+      <div class="grp"><span class="grp-label">소비·라우팅</span>
+        <div class="grp-items"><a href="#s3">3·답변</a><a href="#s4">4·무지식</a><a href="#s5">5·금지</a><a href="#s6">6·승인</a><a href="#s9">9·미아</a></div></div>
+      <div class="grp"><span class="grp-label">협업·거버넌스</span>
+        <div class="grp-items"><a href="#s7">7·다툼·판례</a><a href="#s8">8·reeval</a><a href="#s10">10·Manager</a><a href="#s13">13·백업</a></div></div>
+      <div class="grp"><span class="grp-label">분산·전파</span>
+        <div class="grp-items"><a href="#s11">11·분산</a><a href="#s12">12·크로스머신</a></div></div>
+      <div class="grp"><span class="grp-label">운영·플랫폼</span>
+        <div class="grp-items"><a href="#s14">14·인증</a><a href="#s15">15·모니터링</a><a href="#s16">16·그래프</a><a href="#s17">17·MCP</a><a href="#s18">18·eval</a></div></div>
+    </div>
+  </details>
+</nav>
 
 <div class="wrap">
 
@@ -434,7 +574,7 @@
     <div class="persona"><div class="who"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span></div>
       <div class="what">채팅(웹)·또는 자기 MCP 클라이언트에서 묻고 답받는다. 내부는 숨김 — 담당·승인·출처만 본다.</div></div>
     <div class="persona"><div class="who"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>개인 Owner</span></div>
-      <div class="what">자기 카드를 깎고(빌더), 자기 지식(OKF)을 만들고, 자기에게 온 후보 합의·재검토·부재 중 백업 답을 검토한다(처리함).</div></div>
+      <div class="what">에이전트(카드)를 세우고(에이전트 빌더), 그 에이전트에 지식(OKF)을 주입하고, 자기에게 온 후보 합의·재검토·부재 중 백업 답을 검토한다(처리함).</div></div>
     <div class="persona"><div class="who"><span class="badge b-manager"><span class="ic" aria-hidden="true">▲</span>Manager</span></div>
       <div class="what">승인 요청·escalation·합의 실패를 처리한다(Manager 큐).</div></div>
     <div class="persona"><div class="who"><span class="badge b-ops"><span class="ic" aria-hidden="true">■</span>운영자</span></div>
@@ -470,15 +610,19 @@
   <section class="scene" id="s1">
     <div class="head"><div class="num">1</div><h3>업무 에이전트를 등록한다</h3>
       <div class="tags"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ②③</span></div></div>
-    <div class="sub">담당 영역을 선언한 카드를 <b>코드 밖 YAML</b>로 등록한다. Owner는 <b>빌더 화면</b>(디자인 시스템 UI)에서
+    <div class="sub">담당 영역을 선언한 카드를 <b>코드 밖 YAML</b>로 등록한다. Owner는 <b>에이전트 빌더</b>(디자인 시스템 UI)에서
       카드를 폼으로 구성·검증한 뒤, 미리보기된 YAML을 <b>git/PR로 커밋</b>한다 — 라이브 레지스트리 쓰기는 없다.</div>
-    <div class="step"><div class="lbl">① 행동 — 빌더 UI(<code>/builder</code>)에서 카드 폼 구성·검증</div>
+    <figure class="shot">
+      <div class="frame"><img src="screenshots/builder.png" alt="에이전트 빌더 화면 — 카드 구성 폼(agent_id·owner·team·domains·선택 필드)과 git/PR 안내 배너" loading="lazy" /></div>
+      <figcaption><span class="tag-shot">실제 화면</span><b>에이전트 빌더</b> — <code>agent_id</code>·<code>owner</code>(로그인 신원 <code>cs_lead</code>로 고정)·<code>team</code>·<code>domains</code>를 폼으로 채우고, 상단 배너가 "검증·미리보기만 하고 통과한 YAML을 <code>registry/agents/{agent_id}.yaml</code>에 커밋(PR)하라"고 안내한다. 선택 필드로 maintainer·knowledge_sources·can/cannot_answer.</figcaption>
+    </figure>
+    <div class="step"><div class="lbl">① 행동 — 에이전트 빌더(<code>/builder</code>)에서 카드 폼 구성·검증</div>
       <pre><span class="k">POST</span> /builder/validate  <span class="s">{"agent_id":"cs_ops","team":"cs","domains":["환불","보상"], …}</span>
 <span class="c"># 통과 → {ok:true, yaml} 미리보기 · 실패 → {ok:false, errors} · 세션≠owner → 403(자기 카드만)</span></pre></div>
     <div class="step"><div class="lbl">② 행동 — 전체 레지스트리 참조 무결성 검증(CLI)</div>
       <pre><span class="k">uv run</span> python -m agent_org_network.registry registry</pre></div>
     <div class="step"><div class="lbl">결과</div>
-      <div class="result"><span class="arrow">→</span> 빌더 화면(Next.js·라이트/다크)이 카드 필드 폼 → admission 검증 →
+      <div class="result"><span class="arrow">→</span> 에이전트 빌더(Next.js·라이트/다크)가 카드 필드 폼 → admission 검증 →
         <b>YAML 미리보기(복사)</b> → "registry/agents/{agent_id}.yaml에 커밋(PR)" 3단 안내. 라이브 등록이 아니라 <b>git/PR이 편집 채널</b>.<br>
         <span class="arrow">→</span> CLI는 contract_ops·cs_ops·finance_ops·hr_ops·it_ops 5장의 owner/manager 참조 무결성 <span class="o">검증 통과</span>.</div></div>
     <div class="proves"><span class="lead">증명</span> — 카드는 <b>코드 밖 데이터</b>다. 5장을 YAML 추가만으로 등록. 미등록 owner를 단 카드는
@@ -493,6 +637,10 @@
     <div class="sub">카드로 담당을 <b>선언</b>했으면, 이제 그 담당 <b>지식(OKF)</b>을 만든다. owner가 문서를 올리면 실
       LLM(<code>claude-sonnet-5</code>)이 개념(Concept·core_question)으로 추출하고, owner가 검토·승인하면
       <b>owner-로컬 git에 커밋</b>되고 <b>목차(KnowledgeIndex)만 중앙에 publish</b>된다 — 본문은 중앙에 가지 않는다(ADR 0029·0030).</div>
+    <figure class="shot">
+      <div class="frame"><img src="screenshots/author.png" alt="지식 작성 화면 — 인사·복리후생 규정 원문 입력과 개념 추출 버튼" loading="lazy" /></div>
+      <figcaption><span class="tag-shot">실제 화면</span><b>지식 작성</b> — owner가 원본 문서(2026 인사·복리후생 규정: 연차 이월·경조 휴가·표준 NDA)를 붙여넣고 <b>"개념 추출"</b>을 누르면 실 LLM이 개념으로 나눈다. 카드 우상단에 <b>담당 <code>cs_ops</code> · raw는 로컬에만</b> — 원문은 중앙에 올라가지 않음을 화면이 명시한다.</figcaption>
+    </figure>
     <div class="step"><div class="lbl">① 행동 — raw 문서 → staged 개념 추출(실 LlmAuthor)</div>
       <pre><span class="k">POST</span> /author/run  <span class="s">{"agent_id":"cs_ops","document":"…교환 정책 원문…"}</span>
 <span class="c"># 카드 권한 domain을 split 힌트로 주입 — LLM이 core_question·domain으로 추출</span></pre></div>
@@ -517,6 +665,10 @@
       <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="tag-inv">불변식 ⑤</span></div></div>
     <div class="sub">"환불" 질문 → <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>(cs_ops).
       담당 owner의 답변 런타임이 <code>okf/cs_ops/</code> 번들을 읽어 계산한다. 벡터DB·RAG 없이 — cwd의 마크다운을 직접 읽는다.</div>
+    <figure class="shot">
+      <div class="frame"><img src="screenshots/ask.png" alt="질문하기 화면 — 환불 질문에 대한 라우팅 결과와 담당·승인·출처 표시" loading="lazy" /></div>
+      <figcaption><span class="tag-shot">실제 화면</span><b>질문하기</b> — 사용자가 "20일 전 결제한 상품을 단순 변심으로 환불하면 10만원 중 얼마…"라 묻자, 답변 흐름 배지(<b>담당 찾는 중 → 담당에게 전달됨 — 답변 대기</b>)가 뜨고 <b>담당 <code>cs_lead</code> · <code>cs_ops</code> · 승인 완료</b>와 출처(<b>환불정책</b>)가 함께 표시된다. 라우팅 내부값(점수·후보)은 사용자에게 숨겨진다.</figcaption>
+    </figure>
     <div class="step"><div class="lbl">행동 — 실 답변(런타임은 owner가 고른다)</div>
       <pre><span class="k">curl</span> -X POST :8099/ask -d <span class="s">'{"question":"20일 전 결제한 상품을 단순
       변심으로 환불하면 10만원 중 얼마 돌려받나요?"}'</span></pre></div>
@@ -603,6 +755,10 @@
       <div class="tags"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ① 놓침 0 · ④ 전이≠기록</span></div></div>
     <div class="sub">owner가 지식을 <b>개정·재publish</b>하면, 그 지식에 기대던 <b>과거 것들</b>을 owner 처리함에 "다시 보라"고
       올린다 — <b>두 축</b>: ① 옛 지식(옛 SHA)으로 답한 과거 답변(<b>Answer 축</b>) ② 그 담당을 근거로 쌓인 과거 판례(<b>Precedent 축</b>).</div>
+    <figure class="shot">
+      <div class="frame"><img src="screenshots/inbox.png" alt="처리함 재평가 탭 — stale 표시된 환불 판례와 유지·재답변·무효화 처분 버튼" loading="lazy" /></div>
+      <figcaption><span class="tag-shot">실제 화면</span><b>처리함 · 재평가 탭</b> — cs_ops 지식이 바뀌자 <b>'환불' 판례</b>가 <b>stale · 재평가 필요</b>로 뜬다. 변경 번들(<code>cs_ops</code>)과 함께, owner가 <b>유지 · 재답변 · 무효화</b> 중 하나로 1인칭 처분한다. 무효화가 아니라 "재검토" 신호로 남긴다(놓침 0).</figcaption>
+    </figure>
     <div class="step"><div class="lbl">행동 — cs_ops 지식 개정·재publish → 중앙 수용 훅 발화</div>
       <pre><span class="c"># cs_ops OKF 개정 → /author/publish 재배포 → 중앙 accept_published_index 훅</span>
 <span class="k">GET</span> /inbox/reeval          <span class="c"># 재검토 큐 — 양축 항목이 owner_id로 귀속돼 뜬다</span></pre></div>
@@ -712,7 +868,7 @@
   <section class="scene" id="s14">
     <div class="head"><div class="num">14</div><h3>페르소나 인증 — 분리된 공간, 자기 것만</h3>
       <div class="tags"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="badge b-ops"><span class="ic" aria-hidden="true">■</span>운영자</span><span class="tag-inv">ADR 0009·0016</span></div></div>
-    <div class="sub">실 사용자(채팅)는 익명. 운영 면(처리함·큐·모니터링·그래프·빌더)은 <b>세션 인증</b>으로 분리되고,
+    <div class="sub">실 사용자(채팅)는 익명. 운영 면(처리함·큐·모니터링·그래프·에이전트 빌더)은 <b>세션 인증</b>으로 분리되고,
       신원은 path/body가 아니라 <b>세션</b>에서 와 가장이 불가능하다.</div>
     <div class="step"><div class="lbl">행동 — 인증 ON으로 기동 후 스코프 확인</div>
       <pre>OPERATOR_SESSION_SECRET=<span class="s">$(openssl rand -hex 32)</span> uv run uvicorn agent_org_network.web:app --port 8099</pre>
@@ -733,6 +889,10 @@
       <div class="tags"><span class="badge b-ops"><span class="ic" aria-hidden="true">■</span>운영자</span><span class="tag-inv">불변식 ④</span></div></div>
     <div class="sub">append-only 감사 로그를 <b>순수 읽기</b>로 투영. 운영 면이라 내부값(confidence·candidates·escalation 대상)까지 본다 —
       채팅의 노출 불변식과 정반대.</div>
+    <figure class="shot">
+      <div class="frame"><img src="screenshots/console.png" alt="운영 콘솔 — 라우팅 메트릭 카드, 최근 라우팅 활동, 매니저 큐, 조직 맵" loading="lazy" /></div>
+      <figcaption><span class="tag-shot">실제 화면</span><b>운영 콘솔</b> — 상단 메트릭 카드(<b>총 1 · Routed 100% · Contested 0 · Unowned 0</b>)로 라우팅 건전성을 한눈에 본다. <b>최근 라우팅 활동</b>에 환불 질문이 <code>Routed · intent 환불</code>로 남고, <b>매니저 큐</b>와 <b>조직 맵</b>(User 6 · Card 5)이 한 화면에 붙는다.</figcaption>
+    </figure>
     <div class="step"><div class="lbl">행동 (운영자 로그인 후)</div>
       <pre><span class="k">GET</span> /monitor          <span class="c"># 모든 질문의 요약 목록</span>
 <span class="k">GET</span> /monitor/&lt;index&gt;  <span class="c"># 한 건의 전체 절차 — 질문→intent→라우팅 처분→디스패치→답</span>
@@ -800,5 +960,39 @@
   </footer>
 
 </div>
+
+<script>
+  // scrollspy — 현재 보이는 섹션의 목차 항목에 .active. IntersectionObserver 최소 구현.
+  (function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a[href^="#"]'));
+    if (!links.length || !('IntersectionObserver' in window)) return;
+    var byId = {};
+    links.forEach(function (a) {
+      var id = a.getAttribute('href').slice(1);
+      (byId[id] = byId[id] || []).push(a);
+    });
+    var targets = Object.keys(byId)
+      .map(function (id) { return document.getElementById(id); })
+      .filter(Boolean);
+    var visible = {};
+    function setActive(id) {
+      links.forEach(function (a) { a.classList.remove('active'); });
+      (byId[id] || []).forEach(function (a) { a.classList.add('active'); });
+    }
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) visible[e.target.id] = e.intersectionRatio;
+        else delete visible[e.target.id];
+      });
+      // 화면에 걸친 섹션 중 문서 순서상 맨 위 것을 현재로 본다.
+      var current = null;
+      for (var i = 0; i < targets.length; i++) {
+        if (visible[targets[i].id] != null) { current = targets[i].id; break; }
+      }
+      if (current) setActive(current);
+    }, { rootMargin: '-45% 0px -50% 0px', threshold: [0, 1] });
+    targets.forEach(function (t) { obs.observe(t); });
+  })();
+</script>
 </body>
 </html>

@@ -426,7 +426,10 @@ def test_create_central_app_실_WS_publish가_reeval에_실제로_적재된다(
             ),
         )
         ws.send_json(PublishIndex(index=first).model_dump(mode="json"))
-        ws.send_json({"type": "heartbeat"})  # 송신/수신 루프 왕복 펜스(응답 없음, echo 안 함)
+        # 펜스 — TestClient WS는 동기 큐라 heartbeat가 앞 PublishIndex send 뒤에 순차 수신된다.
+        # 서버 recv_loop가 heartbeat를 처리하는 시점엔 앞선 PublishIndex의 accept_index→put이
+        # 이미 끝나 있다(순서 보장). heartbeat는 생존 신호라 응답/echo가 없다(ADR 0011 6-4).
+        ws.send_json({"type": "heartbeat"})
 
         # 질문 → cs_ops로 라우팅 → 워커가 답 회신(snapshot_sha 미실음 → None).
         r = http.post("/ask", json={"question": "환불 규정 알려줘"})

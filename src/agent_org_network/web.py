@@ -126,8 +126,9 @@ from agent_org_network.two_stage_router import (
     accept_published_index,
 )
 from agent_org_network.hitl import HitlToggleMap
-from agent_org_network.session import InMemorySessionStore, SessionAskOrg, SessionStore
-from agent_org_network.token import InMemoryTokenStore, TokenStore
+from agent_org_network.session import SessionAskOrg, SessionStore
+from agent_org_network.storage_select import select_session_store, select_token_store
+from agent_org_network.token import TokenStore
 from agent_org_network.user import User
 
 _WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
@@ -987,7 +988,9 @@ def create_app(
     (인증 모드 3단 중 OFF/무비밀번호 — ADR 0021 결정 4). 결정론 테스트는 `FakeOidcProvider` 주입.
     `session_store`(Phase 9·ADR 0024 결정 A): 채팅 세션 저장소 관찰 seam. 주입 시
     그 store를 쓴다(테스트가 active_for_user 등으로 세션 상태를 직접 검사). 미주입이면
-    `InMemorySessionStore()` 내부 생성(하위호환 — 기존 동작).
+    `select_session_store()`(`storage_select.py`)가 고른다 — `AON_DB`(SQLite 파일 경로)
+    env 설정 시 `SqliteSessionStore(path)`(durable, T9.8), 미설정 시 기존
+    `InMemorySessionStore()`(하위호환 — 기존 동작 무변경). 명시 주입이 항상 env보다 우선.
     `author`(T11.7d 실 배선·ADR 0030 S1): `/author/run`이 쓰는 OKF 저작 포트. **미주입이면
     프로덕션 기본 = `LlmAuthor`(owner OAuth 인프로세스 anthropic SDK 실 추출·중앙 토큰 0)**를
     *지연* 생성한다(`_make_default_author` — anthropic 미설치면 명확한 SystemExit). 결정론
@@ -1002,8 +1005,11 @@ def create_app(
     WebSocketDispatcher 아님)이면 배선하지 않아 기존 동작(하위호환·발화 0) 그대로다.
 
     `token_store`(T9.2(b)·T9.5(c)·ADR 0026): 워커 admission 토큰 포트. 콘솔 `/console/tokens*`
-    라우트가 이 인스턴스를 발급/조회/revoke한다. 미주입이면 `InMemoryTokenStore()` 내부 생성
-    (하위호환). `create_central_app`은 이 인스턴스를 `WebSocketDispatcher(token_store=)`에도
+    라우트가 이 인스턴스를 발급/조회/revoke한다. 미주입이면 `select_token_store()`가 고른다
+    (`AON_DB` 설정 시 `SqliteTokenStore(path)` durable, 미설정 시 기존 `InMemoryTokenStore()`
+    — 하위호환. `session_store`와 같은 `AON_DB` 경로면 한 DB 파일을 공유한다 — 세션은
+    `sessions`/`session_turns` 테이블, 토큰은 `tokens` 테이블이라 이름 충돌 없음).
+    `create_central_app`은 이 인스턴스를 `WebSocketDispatcher(token_store=)`에도
     같이 물려 콘솔 발급 토큰으로 워커가 실제 register되게 한다(단일 원천).
     `hitl_toggles`(T9.2(b)·T9.3(b)·ADR 0025): HITL 런타임 토글 맵. 콘솔 `/console/hitl/{agent_id}`
     라우트가 set/get하고, `build_demo`가 만드는 `AskOrg`에 *같은 인스턴스*로 전달돼 다음 답의
@@ -1019,8 +1025,9 @@ def create_app(
     if _auth_enabled:
         app.add_middleware(SessionMiddleware, secret_key=session_secret)
 
-    # 콘솔 seam(T9.2(b)·T9.3(b)·T9.5(c)): 미주입이면 각각 내부 생성(하위호환).
-    _token_store: TokenStore = token_store if token_store is not None else InMemoryTokenStore()
+    # 콘솔 seam(T9.2(b)·T9.3(b)·T9.5(c)): 미주입이면 `select_token_store()`로 결정
+    # (`AON_DB` 설정 시 SqliteTokenStore, 미설정 시 기존 InMemoryTokenStore — 하위호환).
+    _token_store: TokenStore = token_store if token_store is not None else select_token_store()
     _hitl_toggles: HitlToggleMap = (
         hitl_toggles if hitl_toggles is not None else HitlToggleMap()
     )
@@ -1080,8 +1087,14 @@ def create_app(
         dispatcher.bind_propagator(propagator)
     # T9.1(d): 세션 층 래퍼 — AskOrg를 *수정하지 않고* 감싸기로 세션을 붙인다.
     # /ask 엔드포인트만 교체. retrieve·dispatched·mcp_server는 이번 스코프 밖.
-    # Phase 9 쿠키 세션 seam: 주입 store가 있으면 그것을, 없으면 새 InMemory 생성(하위호환).
-    _session_store: SessionStore = session_store if session_store is not None else InMemorySessionStore()
+    # Phase 9 쿠키 세션 seam: 주입 store가 있으면 그것을, 없으면 `select_session_store()`로
+    # 결정(`AON_DB` 설정 시 SqliteSessionStore, 미설정 시 기존 InMemorySessionStore — 하위호환).
+    _session_store: SessionStore = session_store if session_store is not None else select_session_store()
+    # app.state 노출 — 어떤 store가 실제로 선택됐는지(InMemory/Sqlite) 배선을 관찰하는
+    # seam(FastAPI 표준 확장점). 라우트는 여전히 클로저 변수 `_session_store`/`_token_store`를
+    # 쓴다(무변경) — 이 노출은 순수 관찰용.
+    app.state.session_store = _session_store
+    app.state.token_store = _token_store
     _session_ask = SessionAskOrg(ask=bundle.ask, session_store=_session_store)
     _review_store = review_store
     _review_service = review_service

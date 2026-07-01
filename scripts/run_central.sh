@@ -8,6 +8,8 @@
 #   주의(보안): 0.0.0.0은 포트를 네트워크에 연다 — 워커 등록 인증은 아직 stub(T6.5 전)이라
 #   신뢰된 LAN에서만 쓰고 방화벽으로 포트를 통제한다.
 # 워커는 ws://<HOST>:<PORT>/worker, 사용자는 http://<HOST>:<PORT>/ask 로 붙는다.
+# 세션/토큰 영속화(T9.8): AON_DB=/path/to/aon.db 를 export 하면 재시작에도 세션·admission
+# 토큰이 보존된다(SqliteSessionStore·SqliteTokenStore, 미설정 시 기존 InMemory 기본).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

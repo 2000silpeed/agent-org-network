@@ -125,7 +125,7 @@ def read_okf_bundle(okf_root: str | Path | None, agent_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-_DEFAULT_MODEL = "claude-3-5-haiku-20241022"
+_DEFAULT_MODEL = "claude-haiku-4-5"
 
 
 def build_provider_request(
@@ -263,7 +263,7 @@ class ClaudeApiRuntime(ProviderApiRuntime):
     okf_root 주입 시 A(ii) OKF 접지 활성(ClaudeCodeRuntime cwd 접지 대칭).
     """
 
-    _DEFAULT_CLAUDE_MODEL = _DEFAULT_MODEL  # 기존 placeholder 유지(기존 테스트 무회귀)
+    _DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"  # adaptive thinking 지원(답변 실 LLM)·저작(LlmAuthor)과 통일
 
     def __init__(
         self,

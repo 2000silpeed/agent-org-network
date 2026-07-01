@@ -29,14 +29,41 @@ from agent_org_network.knowledge_index import Concept, KnowledgeIndex
 _TOKEN_RE = re.compile(r"[A-Za-z0-9가-힣]+")
 
 
+# 한국어 조사 접미사 — 토큰 끝에서 떼어 명사↔조사결합의 오버랩을 살린다("환불은"↔"환불").
+# 긴 조사 우선(그리디)으로 "으로"를 "로"로 잘못 떼지 않게 한다. 조사를 뗀 나머지가
+# 2글자 이상일 때만 제거해 짧은 명사("국가"·"휴가"의 "가")를 조사로 오인하지 않는다.
+_JOSA: tuple[str, ...] = (
+    "으로서", "으로써", "에서도", "에게서", "에서는", "에게는",
+    "으로", "에서", "에게", "한테", "께서", "까지", "부터", "보다",
+    "처럼", "마다", "조차", "밖에", "이나", "라도", "이란", "이라", "라는",
+    "은", "는", "이", "가", "을", "를", "에", "의", "와", "과", "로", "도", "만", "나",
+)
+
+
+def _strip_josa(tok: str) -> str:
+    """한글 토큰 끝의 조사를 제거한다(나머지 2글자+ 보존·긴 조사 우선·결정론)."""
+    for j in _JOSA:
+        if tok.endswith(j) and len(tok) - len(j) >= 2:
+            return tok[: -len(j)]
+    return tok
+
+
 def _tokenize(text: str) -> frozenset[str]:
     """text를 소문자 토큰 집합으로 변환.
 
     - 소문자 정규화(영문·숫자는 lower, 한글은 그대로).
     - 알파벳·숫자·한글 연속 단위로 토큰 추출 — 문장부호·공백 버림.
+    - 한글 포함 토큰은 조사 접미사를 정규화("환불은"→"환불") — 자연어 질문의 조사가
+      개념 core_question 토큰과 오버랩되게 한다(v1 거친 매칭의 한국어 대응).
     - frozenset 반환 → 교집합·Jaccard 계산에 적합·결정론.
     """
-    return frozenset(m.group().lower() for m in _TOKEN_RE.finditer(text))
+    toks: set[str] = set()
+    for m in _TOKEN_RE.finditer(text):
+        t = m.group().lower()
+        if any("가" <= ch <= "힣" for ch in t):
+            t = _strip_josa(t)
+        toks.add(t)
+    return frozenset(toks)
 
 
 def _overlap_score(q_tokens: frozenset[str], concept_tokens: frozenset[str]) -> float:

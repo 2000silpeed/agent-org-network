@@ -1,7 +1,7 @@
 ---
 type: policy
 title: 보상 기준
-description: 서비스 장애·상품 하자에 대한 추가 보상(환불과 별도).
+description: 서비스 장애·상품 하자에 대한 추가 보상 기준.
 resource: 위키/환불정책
 tags: [보상, cs]
 timestamp: 2026-06-21T00:00:00Z

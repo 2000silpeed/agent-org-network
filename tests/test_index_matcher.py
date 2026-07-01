@@ -312,6 +312,20 @@ class TestConceptOverlapMatcherTokenization:
         result = self.matcher.match("환불정책", [idx])
         assert len(result) == 1
 
+    def test_한국어_조사_정규화_자연어_질문_매칭(self) -> None:
+        """조사 붙은 자연어 질문도 매칭 — '환불은'↔개념 '환불'(v1 한국어 대응·실측 회귀)."""
+        c = _concept("c1", "환불", "환불 정책이 궁금합니다")
+        idx = _index("cs_agent", c)
+        assert len(self.matcher.match("환불은 어떻게 받을 수 있나요?", [idx])) == 1
+        assert len(self.matcher.match("환불도 받을 수 있나요?", [idx])) == 1
+
+    def test_조사_정규화_짧은_명사_오검출_방지(self) -> None:
+        """'가'로 끝나는 짧은 명사(국가)는 조사로 오인하지 않는다(나머지 2글자+ 보존)."""
+        c = _concept("c1", "국가", "국가 정책")
+        idx = _index("agent_a", c)
+        # '국가'(2)에서 '가'를 조사로 오인해 떼면 '국'만 남아 불일치했을 것 — 보존되어 매칭
+        assert len(self.matcher.match("국가는 무엇인가요?", [idx])) == 1
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # 7. FakeMatcher — 테스트 더블

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 import pytest
@@ -455,3 +456,226 @@ class TestRelevantConcepts:
         r1 = relevant_concepts(question, idx)
         r2 = relevant_concepts(question, idx)
         assert r1 == r2
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 4. EmbeddingAnnMatcher — 스케일 어댑터(FakeEmbedder 주입 결정론)
+# ════════════════════════════════════════════════════════════════════════════
+
+from agent_org_network.index_matcher import (  # noqa: E402
+    DEFAULT_EMBED_TAU,
+    EmbeddingAnnMatcher,
+    select_matcher,
+)
+
+
+class _CountingEmbedder:
+    """호출 수를 세는 Embedder 테스트 더블 — 고정 텍스트→벡터 dict + embed 콜/텍스트 카운터.
+
+    FakeEmbedder(okf_dedup) 정신이나 캐시 적중을 단언하려 호출 계측을 얹었다. 사전에 없는
+    텍스트는 KeyError로 fail-loud(테스트가 입력을 정확히 통제하게 강제).
+    """
+
+    def __init__(self, fixed: dict[str, tuple[float, ...]]) -> None:
+        self._fixed = fixed
+        self.embed_calls = 0
+        self.embedded_texts = 0
+
+    def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        self.embed_calls += 1
+        text_list = list(texts)
+        self.embedded_texts += len(text_list)
+        return tuple(self._fixed[t] for t in text_list)
+
+
+# 2차원 단위벡터 — cosine이 자명하게 계산되게(L2 정규화 가정 충족).
+_V_A = (1.0, 0.0)  # 개념 A 방향
+_V_B = (0.0, 1.0)  # 개념 B 방향(A와 직교 → cosine 0)
+_V_Q_A = (1.0, 0.0)  # 질의 = A와 완전 일치(cosine 1.0)
+_V_MID = (0.6, 0.8)  # A와 cosine 0.6, B와 cosine 0.8
+
+
+def _doc(concept: Concept) -> str:
+    return f"{concept.label} {concept.core_question} {concept.domain}"
+
+
+class TestEmbeddingAnnMatcher:
+    """EmbeddingAnnMatcher — 로컬 임베딩 cosine 매칭(FakeEmbedder 결정론 주입)."""
+
+    def _concepts(self) -> tuple[Concept, Concept]:
+        ca = _concept("c_a", "A라벨", "A질문", domain="A도메인")
+        cb = _concept("c_b", "B라벨", "B질문", domain="B도메인")
+        return ca, cb
+
+    def _fixed_for(
+        self, question: str, ca: Concept, cb: Concept, q_vec: tuple[float, ...]
+    ) -> dict[str, tuple[float, ...]]:
+        return {question: q_vec, _doc(ca): _V_A, _doc(cb): _V_B}
+
+    def test_Protocol_만족(self) -> None:
+        matcher: KnowledgeIndexMatcher = EmbeddingAnnMatcher(_CountingEmbedder({}))
+        assert hasattr(matcher, "match")
+
+    def test_cosine_후보_산출_최고개념_1건(self) -> None:
+        ca, cb = self._concepts()
+        q = "질의문"
+        emb = _CountingEmbedder(self._fixed_for(q, ca, cb, _V_Q_A))
+        m = EmbeddingAnnMatcher(emb, tau=0.5)
+        idx = _index("agent_a", ca, cb)
+        result = m.match(q, [idx])
+        assert len(result) == 1
+        assert result[0].agent_id == "agent_a"
+        assert result[0].matched_concept_id == "c_a"  # cosine 1.0 > c_b cosine 0
+        assert result[0].score == pytest.approx(1.0)
+
+    def test_τ_경계_미만_제외_이상_채택(self) -> None:
+        ca, cb = self._concepts()
+        q = "질의문"
+        # q=_V_MID: c_a cosine 0.6, c_b cosine 0.8.
+        emb = _CountingEmbedder(self._fixed_for(q, ca, cb, _V_MID))
+        idx = _index("agent_a", ca, cb)
+        # τ=0.7 → c_b(0.8)만 채택, c_a(0.6) 제외.
+        m_high = EmbeddingAnnMatcher(emb, tau=0.7)
+        r_high = m_high.match(q, [idx])
+        assert len(r_high) == 1
+        assert r_high[0].matched_concept_id == "c_b"
+        assert r_high[0].score == pytest.approx(0.8)
+        # τ=0.9 → 둘 다 미만 → 0 후보(빈 튜플).
+        m_none = EmbeddingAnnMatcher(_CountingEmbedder(self._fixed_for(q, ca, cb, _V_MID)), tau=0.9)
+        assert m_none.match(q, [idx]) == ()
+
+    def test_0후보_전부_τ_미만_빈목록(self) -> None:
+        ca, cb = self._concepts()
+        q = "질의문"
+        emb = _CountingEmbedder(self._fixed_for(q, ca, cb, _V_MID))
+        m = EmbeddingAnnMatcher(emb, tau=0.95)
+        idx = _index("agent_a", ca, cb)
+        assert m.match(q, [idx]) == ()
+
+    def test_인덱스측_캐시_적중_재질의_재임베딩_0(self) -> None:
+        ca, cb = self._concepts()
+        q1, q2 = "질의1", "질의2"
+        fixed = {_doc(ca): _V_A, _doc(cb): _V_B, q1: _V_Q_A, q2: _V_B}
+        emb = _CountingEmbedder(fixed)
+        m = EmbeddingAnnMatcher(emb, tau=0.5)
+        idx = _index("agent_a", ca, cb)
+
+        m.match(q1, [idx])
+        # 첫 질의: 개념 2개(1콜) + 질의 1개(1콜) = embed 콜 2회·텍스트 3개.
+        assert emb.embed_calls == 2
+        assert emb.embedded_texts == 3
+
+        m.match(q2, [idx])
+        # 재질의: 인덱스 벡터 캐시 적중 → 질의 1개만 추가 임베딩.
+        assert emb.embed_calls == 3
+        assert emb.embedded_texts == 4  # 3 + 질의1개
+
+    def test_인덱스_갱신_generated_at_변경_재임베딩(self) -> None:
+        ca, cb = self._concepts()
+        q = "질의1"
+        fixed = {_doc(ca): _V_A, _doc(cb): _V_B, q: _V_Q_A}
+        emb = _CountingEmbedder(fixed)
+        m = EmbeddingAnnMatcher(emb, tau=0.5)
+
+        idx_v1 = KnowledgeIndex(
+            agent_id="agent_a", version="v1", generated_at=_NOW, concepts=(ca, cb)
+        )
+        m.match(q, [idx_v1])
+        assert emb.embedded_texts == 3
+
+        # generated_at 변경 → 캐시 키 달라짐 → 개념 재임베딩.
+        newer = datetime(2026, 6, 28, tzinfo=timezone.utc)
+        idx_v2 = KnowledgeIndex(
+            agent_id="agent_a", version="v2", generated_at=newer, concepts=(ca, cb)
+        )
+        m.match(q, [idx_v2])
+        # 질의(캐시 없음·매 호출 임베딩) 2개 + 개념 2 batch 2회 = 6.
+        assert emb.embedded_texts == 6
+
+    def test_개념_0개_인덱스_임베딩_0_후보_0(self) -> None:
+        q = "질의문"
+        emb = _CountingEmbedder({q: _V_Q_A})
+        m = EmbeddingAnnMatcher(emb, tau=0.5)
+        empty_idx = _index("agent_empty")  # concepts 없음
+        result = m.match(q, [empty_idx])
+        assert result == ()
+        # 질의 1콜만 — 개념 임베딩 0.
+        assert emb.embed_calls == 1
+        assert emb.embedded_texts == 1
+
+    def test_다중_에이전트_score_내림차순_동점_agent_id_오름차순(self) -> None:
+        ca, _ = self._concepts()
+        q = "질의문"
+        # 같은 개념 c_a를 두 에이전트가 갖게 해 동점(cosine 1.0)을 만든다.
+        fixed = {_doc(ca): _V_A, q: _V_Q_A}
+        emb = _CountingEmbedder(fixed)
+        m = EmbeddingAnnMatcher(emb, tau=0.5)
+        idx_b = _index("z_agent", ca)
+        idx_a = _index("a_agent", ca)
+        result = m.match(q, [idx_b, idx_a])
+        # 둘 다 cosine 1.0 동점 → agent_id 오름차순.
+        assert [r.agent_id for r in result] == ["a_agent", "z_agent"]
+
+    def test_결정론_같은_입력_같은_출력(self) -> None:
+        ca, cb = self._concepts()
+        q = "질의문"
+        idx = _index("agent_a", ca, cb)
+        m1 = EmbeddingAnnMatcher(_CountingEmbedder(self._fixed_for(q, ca, cb, _V_MID)), tau=0.5)
+        m2 = EmbeddingAnnMatcher(_CountingEmbedder(self._fixed_for(q, ca, cb, _V_MID)), tau=0.5)
+        assert m1.match(q, [idx]) == m2.match(q, [idx])
+
+    def test_기본_τ_상수_노출(self) -> None:
+        assert DEFAULT_EMBED_TAU == pytest.approx(0.85)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 5. select_matcher — AON_MATCHER env 시임(select_embedder 대칭)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestSelectMatcher:
+    """select_matcher env 분기 — 기본 overlap 무변경·embedding 지연 import·미지 SystemExit."""
+
+    def test_미설정_ConceptOverlapMatcher_기본(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AON_MATCHER", raising=False)
+        assert isinstance(select_matcher(), ConceptOverlapMatcher)
+
+    def test_overlap_ConceptOverlapMatcher(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AON_MATCHER", "overlap")
+        assert isinstance(select_matcher(), ConceptOverlapMatcher)
+
+    def test_빈문자열_ConceptOverlapMatcher(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AON_MATCHER", "  ")
+        assert isinstance(select_matcher(), ConceptOverlapMatcher)
+
+    def test_미지값_SystemExit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AON_MATCHER", "nonsense")
+        with pytest.raises(SystemExit):
+            select_matcher()
+
+    def test_embedding_지연import_시임(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """embedding 분기가 FastEmbedEmbedder를 지연 import해 EmbeddingAnnMatcher를 만든다.
+
+        실 ONNX 로드를 피하려 provider_embed_fastembed.FastEmbedEmbedder를 스텁으로 갈아끼운다.
+        """
+        import agent_org_network.provider_embed_fastembed as pef
+
+        class _StubFastEmbed:
+            def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+                return tuple((1.0, 0.0) for _ in texts)
+
+        monkeypatch.setattr(pef, "FastEmbedEmbedder", _StubFastEmbed)
+        monkeypatch.setenv("AON_MATCHER", "embedding")
+        m = select_matcher()
+        assert isinstance(m, EmbeddingAnnMatcher)
+
+    def test_fastembed_별칭_지연import_시임(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import agent_org_network.provider_embed_fastembed as pef
+
+        class _StubFastEmbed:
+            def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+                return tuple((1.0, 0.0) for _ in texts)
+
+        monkeypatch.setattr(pef, "FastEmbedEmbedder", _StubFastEmbed)
+        monkeypatch.setenv("AON_MATCHER", "fastembed")
+        assert isinstance(select_matcher(), EmbeddingAnnMatcher)

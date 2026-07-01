@@ -197,7 +197,7 @@ class KnowledgeIndexMatcher(Protocol):
 ```
 
 - **`ConceptOverlapMatcher`**(v1 결정론 어댑터) — 토큰 오버랩·LLM 0·벡터 0.
-- **`EmbeddingAnnMatcher`**(스케일 어댑터·게이트 밖) — 로컬 임베딩 + ANN.
+- **`EmbeddingAnnMatcher`**(스케일 어댑터·게이트 밖) — 로컬 임베딩 + ANN. **→ 구현·채택 완료(2026-07-02·T10.5(a))**: 10-에이전트 실 자료 시나리오 실측(docs/scale-eval-2026-07-02.md)으로 토큰 오버랩 한계(top-1 20.8%·오라우팅 15.3%) 확인 후 구현 — `Embedder` 포트(ADR 0032) 재사용·브루트포스 cosine(70~수백 규모·ANN 라이브러리 후속)·τ=0.85·인덱스 임베딩 캐시·`AON_MATCHER` 시임(기본 overlap 무변경). A/B: 매처 순수 top-1 36.9%→67.7%·오라우팅→1.4%. 잔존 contested는 §6 stage-2 몫.
 - **`FakeMatcher`**(테스트) — 고정 후보 반환(결정론 경계).
 
 **stage-2 신뢰도 포트**(owner 워커 수행 — 접지된 self-assess):

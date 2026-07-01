@@ -13,13 +13,18 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Sequence
-from typing import Protocol
+from datetime import datetime
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel
 
 from agent_org_network.knowledge_index import Concept, KnowledgeIndex
+
+if TYPE_CHECKING:
+    from agent_org_network.okf_dedup import Embedder
 
 # ── 토큰화 ────────────────────────────────────────────────────────────────────
 # 형태소 분석 없이 정규식으로 근사 — ADR 0028 §7 v1 정책:
@@ -220,3 +225,163 @@ class FakeMatcher:
     ) -> tuple[IndexMatch, ...]:
         """질문·인덱스 무관하게 고정 후보를 그대로 반환."""
         return self._fixed
+
+
+# ── 스케일 어댑터: 로컬 임베딩 매처 (ADR 0028 §7·게이트 밖) ────────────────────
+
+# 후보 채택 cosine 임계 τ 기본값 — e5-small 대칭 cosine 분포 기준. S8 A/B 스윕(0.75/
+# 0.80/0.85) 실측으로 조정 가능하게 상수 한 곳에 둔다. τ 미만은 후보에서 제외(0 후보는
+# 정상 반환 — Unowned 투영은 라우터 층 책임, 미아 없음 불변식은 매처 밖).
+# 실측 근거(docs/scale-eval-2026-07-02.md A/B): e5-small cosine top-1 분포가 [0.814, 0.918]로
+# 압축돼 0.80~0.82는 전 후보 통과(contested 붕괴), 0.85가 유일하게 분리를 시작한다.
+# 남는 다후보 해소는 stage-2(ConfidenceAssessor·ADR 0028 §6) 몫 — τ를 더 올려 풀지 않는다.
+DEFAULT_EMBED_TAU = 0.85
+
+
+def _concept_doc_text(concept: Concept) -> str:
+    """개념을 문서측 임베딩 텍스트로 결합 — label + core_question + domain.
+
+    stage-1 토큰 오버랩(_tokenize)이 core_question·label·type을 봤듯, 임베딩 문서측은
+    사람이 읽는 자연어 필드(label·core_question·domain)를 결합한다. type은 태그성이라
+    제외(자연어 신호 희석 방지). 결합 순서·구분자는 결정론(같은 개념→같은 문서 텍스트).
+    """
+    return f"{concept.label} {concept.core_question} {concept.domain}"
+
+
+class EmbeddingAnnMatcher:
+    """KnowledgeIndexMatcher Protocol의 스케일 어댑터 — 로컬 임베딩 cosine 매칭 [게이트 밖].
+
+    ADR 0028 §7 스케일 어댑터:
+    - 개념 텍스트(label+core_question+domain)를 *문서측*으로 임베딩하고, 질의를 *질의측*으로
+      임베딩해 cosine 유사도로 후보를 산출한다. 어휘 표면 불일치(조사·동의어·구어)를 의미
+      공간에서 흡수 — ConceptOverlapMatcher 실패 모드(어휘 공백 0매칭·동점 노이즈·교차
+      매칭)의 대안(docs/scale-eval-2026-07-02.md).
+    - **인덱스측 임베딩 캐시**: (agent_id, generated_at) 키로 개념 벡터를 재사용한다. 질의마다
+      전 개념을 재임베딩하지 않고, 인덱스가 갱신(generated_at 변경)되면 키가 달라져 자연
+      무효화된다.
+    - 후보 임계 τ(주입 정책값·기본 DEFAULT_EMBED_TAU): cosine ≥ τ 개념만 후보. 에이전트당
+      최고 cosine 개념 1건. score = cosine 그대로.
+    - 규모 70~수백은 브루트포스 cosine으로 충분 — ANN 라이브러리 0(과설계·후속).
+
+    **중앙 토큰 0**: Embedder는 owner측 로컬 ONNX(FastEmbedEmbedder) — 외부 API·키 0.
+    **결정론**: 같은 질문+같은 인덱스(같은 벡터)→같은 순서·같은 결과(score 내림차순, 동점
+    agent_id 오름차순). 단, cosine 부동소수라 float 동일성은 임베더 결정성에 의존한다.
+    벡터는 L2 정규화 가정(Embedder 어댑터 책임)이라 dot product가 곧 cosine.
+    """
+
+    def __init__(self, embedder: Embedder, *, tau: float = DEFAULT_EMBED_TAU) -> None:
+        self._embedder = embedder
+        self._tau = tau
+        # (agent_id, generated_at) → ((concept_id, vector), ...) 인덱스측 임베딩 캐시.
+        self._cache: dict[
+            tuple[str, datetime], tuple[tuple[str, tuple[float, ...]], ...]
+        ] = {}
+
+    def _index_vectors(
+        self, index: KnowledgeIndex
+    ) -> tuple[tuple[str, tuple[float, ...]], ...]:
+        """인덱스 개념 벡터를 (agent_id, generated_at) 캐시로 얻는다(적중 시 재임베딩 0).
+
+        캐시 미스면 전 개념을 한 번 임베딩해 채운다. 인덱스 갱신(generated_at 변경)은
+        새 키라 자동 무효화된다. 개념 0개면 빈 튜플(임베더 호출 0).
+        """
+        key = (index.agent_id, index.generated_at)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        if not index.concepts:
+            self._cache[key] = ()
+            return ()
+        texts = [_concept_doc_text(c) for c in index.concepts]
+        vectors = self._embedder.embed(texts)
+        entry = tuple(
+            (c.id, vec) for c, vec in zip(index.concepts, vectors)
+        )
+        self._cache[key] = entry
+        return entry
+
+    def match(
+        self, question: str, indexes: Sequence[KnowledgeIndex]
+    ) -> tuple[IndexMatch, ...]:
+        """질의 임베딩과 각 인덱스 개념 벡터의 cosine으로 후보를 산출한다.
+
+        질의는 질의측으로 1회 임베딩. 각 인덱스는 캐시된 개념 벡터와 cosine을 재고,
+        cosine ≥ τ 중 최고 개념 1건을 에이전트 후보로 담는다. 전부 τ 미만이면 그
+        에이전트는 후보에서 빠진다(0 후보는 빈 튜플로 정상 반환).
+
+        반환: score(cosine) 내림차순, 동점 agent_id 오름차순 결정론 정렬.
+        """
+        query_vecs = self._embedder.embed([question])
+        if not query_vecs:
+            return ()
+        q_vec = query_vecs[0]
+
+        candidates: list[IndexMatch] = []
+        for index in indexes:
+            best_score: float | None = None
+            best_concept_id = ""
+            for concept_id, vec in self._index_vectors(index):
+                sim = _cosine(q_vec, vec)
+                if sim >= self._tau and (best_score is None or sim > best_score):
+                    best_score = sim
+                    best_concept_id = concept_id
+            if best_score is not None:
+                candidates.append(
+                    IndexMatch(
+                        agent_id=index.agent_id,
+                        score=best_score,
+                        matched_concept_id=best_concept_id,
+                    )
+                )
+
+        candidates.sort(key=lambda m: (-m.score, m.agent_id))
+        return tuple(candidates)
+
+
+def _cosine(u: tuple[float, ...], v: tuple[float, ...]) -> float:
+    """cosine(u, v) = dot / (||u|| * ||v||). 차원 불일치·0벡터는 ValueError(fail-loud).
+
+    okf_dedup._cosine_similarity와 같은 계산 — 임베딩 도메인 결합을 피해 매처 모듈에
+    작은 순수 함수로 둔다(포트 계약상 벡터는 L2 정규화 가정이나, 방어적으로 norm 나눔).
+    """
+    if len(u) != len(v):
+        raise ValueError(f"벡터 차원 불일치: {len(u)} != {len(v)}")
+    norm_u = math.sqrt(sum(x * x for x in u))
+    norm_v = math.sqrt(sum(x * x for x in v))
+    if norm_u == 0.0 or norm_v == 0.0:
+        raise ValueError("0벡터의 cosine 유사도는 정의되지 않습니다.")
+    return sum(x * y for x, y in zip(u, v)) / (norm_u * norm_v)
+
+
+# ── select_matcher env 시임 (AON_MATCHER·embedder_select 대칭) ────────────────
+
+_OVERLAP_ALIASES = frozenset({"", "overlap"})
+_EMBEDDING_ALIASES = frozenset({"embedding", "fastembed"})
+
+
+def select_matcher() -> KnowledgeIndexMatcher:
+    """env 플래그로 stage-1 매처를 고른다 — select_embedder·select_runtime과 대칭.
+
+    `AON_MATCHER`(소문자 trim):
+      - 미설정/`overlap` → `ConceptOverlapMatcher()`(**기본·무변경**·게이트 결정론).
+      - `embedding`/`fastembed` → `EmbeddingAnnMatcher(FastEmbedEmbedder())`(실 ONNX·게이트
+        밖·dedup extra 필요). 실 어댑터는 이 분기에서만 지연 import(기본 경로 무접촉).
+      - 알 수 없는 값 → 명시 실패(SystemExit — 조용히 기본으로 안 떨어진다).
+    """
+    import os
+
+    flag = (os.environ.get("AON_MATCHER") or "").strip().lower()
+    if flag in _OVERLAP_ALIASES:
+        return ConceptOverlapMatcher()
+    if flag in _EMBEDDING_ALIASES:
+        # 실 어댑터는 이 분기에서만 지연 import(기본 overlap 경로는 fastembed 무접촉).
+        from agent_org_network.provider_embed_fastembed import FastEmbedEmbedder
+
+        print(
+            f"[select_matcher] AON_MATCHER={flag} → EmbeddingAnnMatcher(FastEmbedEmbedder) "
+            "— owner측 로컬 ONNX 임베딩·중앙 토큰 0(게이트 밖)."
+        )
+        return EmbeddingAnnMatcher(FastEmbedEmbedder())
+    raise SystemExit(
+        f"알 수 없는 AON_MATCHER={flag!r} — 지원: overlap(기본), embedding/fastembed"
+    )

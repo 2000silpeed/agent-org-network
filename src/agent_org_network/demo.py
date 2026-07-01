@@ -31,7 +31,7 @@ from agent_org_network.dispatch import (
     LocalStreamingDispatcher,
     RuntimeDispatcher,
 )
-from agent_org_network.index_matcher import ConceptOverlapMatcher
+from agent_org_network.index_matcher import select_matcher
 from agent_org_network.okf_index import build_knowledge_index_from_okf
 from agent_org_network.reeval import (
     Clock,
@@ -252,7 +252,9 @@ def select_router(
             if published_index_store is not None
             else seed_published_index_store(registry)
         )
-        matcher = ConceptOverlapMatcher()
+        # AON_MATCHER 시임 — 미설정/overlap이면 ConceptOverlapMatcher(기본·무변경),
+        # embedding/fastembed면 EmbeddingAnnMatcher(실 ONNX·게이트 밖). 기본 경로 100% 무변경.
+        matcher = select_matcher()
         return TwoStageRouter(
             registry,
             matcher,

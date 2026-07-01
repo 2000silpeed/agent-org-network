@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from agent_org_network.conflict import PrecedentStore
 from agent_org_network.decision import Contested, Routed, RoutingDecision
 from agent_org_network.golden import SampleQuestion
-from agent_org_network.index_matcher import ConceptOverlapMatcher
+from agent_org_network.index_matcher import ConceptOverlapMatcher, KnowledgeIndexMatcher
 from agent_org_network.okf_index import build_knowledge_index_from_okf
 from agent_org_network.registry import Registry
 from agent_org_network.two_stage_router import InMemoryPublishedIndexStore, TwoStageRouter
@@ -69,14 +69,18 @@ def build_scale_router(
     *,
     root_user: str = "desk_root",
     precedents: PrecedentStore | None = None,
+    matcher: KnowledgeIndexMatcher | None = None,
 ) -> TwoStageRouter:
-    """ConceptOverlapMatcher(v1 결정론) + assessor=None인 TwoStageRouter를 조립한다.
+    """매처(기본 ConceptOverlapMatcher) + assessor=None인 TwoStageRouter를 조립한다.
+
+    matcher 미주입이면 ConceptOverlapMatcher(v1 결정론·기존 테스트 무변경). S8 A/B는
+    EmbeddingAnnMatcher를 주입해 같은 조립·같은 골든셋에 대조한다.
 
     assessor=None 고정 — stage-2 자동해소 없음(현 한계 실측 목적, 모듈 docstring 참조).
     """
     return TwoStageRouter(
         registry,
-        ConceptOverlapMatcher(),
+        matcher if matcher is not None else ConceptOverlapMatcher(),
         index_store,
         root_user,
         precedents=precedents,

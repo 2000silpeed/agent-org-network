@@ -60,6 +60,26 @@ def _parse_frontmatter(text: str) -> dict[str, Any]:
     return {}
 
 
+def parse_okf_document(text: str) -> tuple[dict[str, Any], str]:
+    """OKF 마크다운을 (프론트매터 dict, 본문) 튜플로 역파싱한다(공개 API·순수).
+
+    `render_okf_markdown`(`---\\n{block}---\\n\\n{body}`)의 역 — owner 게시 개념을 편집 전에
+    읽을 때 쓴다(web.py author concept 라우트). 프론트매터는 `_parse_frontmatter`로 파싱하고,
+    본문은 닫는 `---` 이후 텍스트(앞 빈 줄 제거)다. 프론트매터가 없으면 ({}, text.strip()).
+
+    도출 단일 권위를 web에서 사적 함수로 끌어쓰지 않도록 공개 함수로 노출한다.
+    """
+    front = _parse_frontmatter(text)
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return front, text.strip()
+    for end in range(1, len(lines)):
+        if lines[end].strip() == "---":
+            body = "\n".join(lines[end + 1 :])
+            return front, body.lstrip("\n").rstrip()
+    return front, text.strip()
+
+
 def _pick_domain(tags: Sequence[str], card_domains: Sequence[str]) -> str | None:
     """tags 중 card_domains에 든 첫 태그를 고른다(없으면 domains[0] 폴백).
 

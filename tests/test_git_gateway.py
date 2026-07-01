@@ -377,6 +377,101 @@ class TestFakeGitGatewayExtractSnapshot:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# removed_paths — OKF 개념 삭제 커밋 (ADR 0032 OQ-3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestFakeGitGatewayRemovedPaths:
+    """ADR 0032 OQ-3 — `CommitRequest.removed_paths`로 working tree에서 파일 제거.
+
+    삭제 커밋: working tree에서 removed_paths를 빼고 files를 적용한 새 스냅샷을 만든다.
+    extract_snapshot으로 삭제 반영(빠진 파일)·다른 파일 보존·없는 path 무시(idempotent)를 단언.
+    """
+
+    def _commit(
+        self,
+        gw: FakeGitGateway,
+        files: tuple[OkfFile, ...] = (),
+        removed_paths: tuple[str, ...] = (),
+        agent_id: str = "cs_ops",
+    ) -> str:
+        req = CommitRequest(
+            agent_id=agent_id,
+            files=files,
+            author="cs_lead",
+            message="삭제 테스트",
+            removed_paths=removed_paths,
+        )
+        return gw.commit_bundle(req).sha
+
+    def test_removed_paths_기본값_빈튜플(self) -> None:
+        """removed_paths 미지정 시 기본 빈 튜플(하위호환 — 기존 커밋 무영향)."""
+        req = CommitRequest(
+            agent_id="cs_ops",
+            files=(OkfFile(path="a.md", content="A"),),
+            author="cs_lead",
+            message="기본",
+        )
+        assert req.removed_paths == ()
+
+    def test_삭제된_파일은_스냅샷에서_빠진다(self, tmp_path: Path) -> None:
+        gw = FakeGitGateway()
+        self._commit(
+            gw,
+            files=(OkfFile(path="a.md", content="A"), OkfFile(path="b.md", content="B")),
+        )
+        sha = self._commit(gw, removed_paths=("a.md",))
+        gw.extract_snapshot(sha, "cs_ops", tmp_path)
+        assert not (tmp_path / "a.md").exists()
+
+    def test_다른_파일은_삭제_커밋_후에도_보존된다(self, tmp_path: Path) -> None:
+        gw = FakeGitGateway()
+        self._commit(
+            gw,
+            files=(OkfFile(path="a.md", content="A"), OkfFile(path="b.md", content="B")),
+        )
+        sha = self._commit(gw, removed_paths=("a.md",))
+        gw.extract_snapshot(sha, "cs_ops", tmp_path)
+        assert (tmp_path / "b.md").read_text(encoding="utf-8") == "B"
+
+    def test_없는_path_삭제는_무시_idempotent(self, tmp_path: Path) -> None:
+        """removed_paths에 있는데 working tree에 없는 path는 무시(idempotent·에러 없음)."""
+        gw = FakeGitGateway()
+        self._commit(gw, files=(OkfFile(path="a.md", content="A"),))
+        sha = self._commit(gw, removed_paths=("nonexistent.md",))
+        gw.extract_snapshot(sha, "cs_ops", tmp_path)
+        assert (tmp_path / "a.md").read_text(encoding="utf-8") == "A"
+
+    def test_files와_removed_paths_동시_적용(self, tmp_path: Path) -> None:
+        """삭제+추가 한 커밋 — removed_paths 제거 후 files 적용."""
+        gw = FakeGitGateway()
+        self._commit(gw, files=(OkfFile(path="a.md", content="A"),))
+        sha = self._commit(
+            gw,
+            files=(OkfFile(path="b.md", content="B"),),
+            removed_paths=("a.md",),
+        )
+        gw.extract_snapshot(sha, "cs_ops", tmp_path)
+        assert not (tmp_path / "a.md").exists()
+        assert (tmp_path / "b.md").read_text(encoding="utf-8") == "B"
+
+    def test_마지막_파일_삭제하면_빈_스냅샷(self, tmp_path: Path) -> None:
+        gw = FakeGitGateway()
+        self._commit(gw, files=(OkfFile(path="only.md", content="X"),))
+        sha = self._commit(gw, removed_paths=("only.md",))
+        gw.extract_snapshot(sha, "cs_ops", tmp_path)
+        assert not (tmp_path / "only.md").exists()
+        assert list(tmp_path.glob("*.md")) == []
+
+    def test_removed_paths_경로탈출_거부(self) -> None:
+        """removed_paths도 files와 같은 traversal 방어(절대경로·`..`·빈 값 거부)."""
+        gw = FakeGitGateway()
+        for bad in ("/etc/passwd", "../outside.md", "sub/../../evil.md", ""):
+            with pytest.raises(ValueError):
+                self._commit(gw, removed_paths=(bad,))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 슬라이스 3 — ClaudeCodeRuntime 커밋 스냅샷 모드
 # ═══════════════════════════════════════════════════════════════════════════
 

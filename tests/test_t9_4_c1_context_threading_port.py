@@ -88,7 +88,9 @@ class TestAgentRuntimeProtocolShape:
     def test_ClaudeCodeRuntime은_context_인자를_받는다(self, card: AgentCard) -> None:
         """ClaudeCodeRuntime이 context 파라미터를 수락한다(이번 증분에서 무시)."""
 
-        def _fake_runner(prompt: str, /, *, cwd: str | None = None) -> str:
+        def _fake_runner(
+            prompt: str, /, *, cwd: str | None = None, system_prompt: str | None = None
+        ) -> str:
             return "fake 답"
 
         runtime = ClaudeCodeRuntime(runner=_fake_runner)
@@ -96,7 +98,9 @@ class TestAgentRuntimeProtocolShape:
         assert isinstance(answer, Answer)
 
     def test_ClaudeCodeRuntime_context_None이면_기존_동작(self, card: AgentCard) -> None:
-        def _fake_runner(prompt: str, /, *, cwd: str | None = None) -> str:
+        def _fake_runner(
+            prompt: str, /, *, cwd: str | None = None, system_prompt: str | None = None
+        ) -> str:
             return "fake 답"
 
         runtime = ClaudeCodeRuntime(runner=_fake_runner)

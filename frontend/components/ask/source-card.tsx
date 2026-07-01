@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { FileText, ChevronDown, ExternalLink } from "lucide-react";
+import { FileText, ChevronDown, Lock } from "lucide-react";
 import type { SourceCard as SourceCardData } from "@/lib/mock-data";
 import { Tag } from "@/components/ui/tag";
 
@@ -46,17 +46,16 @@ export function SourceCard({ source }: { source: SourceCardData }) {
             <span aria-hidden className="text-[var(--ds-color-ink-subtle)]">
               ·
             </span>
-            <span className="text-[var(--ds-color-ink-subtle)]">
-              {source.updatedAt}
+            <span className="font-mono text-[var(--ds-color-ink-subtle)]">
+              {source.conceptId}
             </span>
           </div>
-          <a
-            href="#"
-            className="mt-ds-8 inline-flex items-center gap-ds-4 text-xs font-medium text-[var(--ds-color-link)] hover:underline"
-          >
-            <ExternalLink aria-hidden className="h-[13px] w-[13px]" />
-            원문 개념 카드 열기
-          </a>
+          {/* 중앙은 비소유 — 원문(raw 문서·본문)은 담당자 환경에 있고 중앙은 출처·목차만 보관한다.
+              그래서 익명 질문 화면에 "원문 열기"를 제공하지 않는다(노출/비소유 불변식). */}
+          <p className="mt-ds-8 flex items-start gap-ds-4 text-xs text-[var(--ds-color-ink-subtle)]">
+            <Lock aria-hidden className="mt-[2px] h-[12px] w-[12px] shrink-0" />
+            원문은 담당자({source.owner}) 환경에 있습니다. 중앙은 출처와 목차만 보관합니다.
+          </p>
         </div>
       )}
     </div>

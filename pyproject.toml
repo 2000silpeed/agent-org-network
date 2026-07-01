@@ -19,6 +19,10 @@ dependencies = [
 claude-api = ["anthropic>=0.112.0"]
 codex = ["openai>=2.0.0"]
 # 후속(공급자 추가 시 대칭 확장): gemini = ["google-genai>=..."]
+# near-dup 임베딩(ADR 0032 OQ-4). owner측 로컬·온디맨드 단발 — fastembed(onnxruntime·
+# tokenizers·numpy를 transitive로·torch 없음). 미설치 owner는 dedup이 무력(빈 후보)일 뿐
+# 코어·다른 extra·기본 CI는 무영향(공급자 SDK extra 격리 패턴).
+dedup = ["fastembed>=0.4.0"]
 
 [dependency-groups]
 dev = [
@@ -29,6 +33,10 @@ dev = [
     # 게이트 타입검사용 — 전 공급자 어댑터를 pyright로 검사하려 dev에만 둔다(런타임 코어 의존 아님).
     "anthropic>=0.112.0",
     "openai>=2.0.0",
+    # dedup 임베딩 어댑터(provider_embed_fastembed)도 같은 정신 — pyright가 타입을 보게 dev에
+    # 둔다(런타임 코어 의존 아님·실 사용은 dedup extra). 미설치 시 pyright가 fastembed 타입을
+    # unknown으로 떨어뜨리지 않게 게이트 환경엔 항상 둔다.
+    "fastembed>=0.4.0",
 ]
 
 [build-system]

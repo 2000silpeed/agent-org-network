@@ -187,6 +187,68 @@ class TestCommitBundle경로탈출거부:
         assert head.returncode != 0
 
 
+class TestCommitBundleRemovedPaths:
+    """ADR 0032 OQ-3 — removed_paths로 실 git에서 파일 제거(`git rm`) 통합 단언."""
+
+    def _req_rm(
+        self,
+        files: tuple[OkfFile, ...] = (),
+        removed_paths: tuple[str, ...] = (),
+        message: str = "삭제 커밋",
+    ) -> CommitRequest:
+        return CommitRequest(
+            agent_id="cs_ops",
+            files=files,
+            author="cs_lead",
+            message=message,
+            removed_paths=removed_paths,
+        )
+
+    def test_삭제된_파일이_working_tree에서_사라진다(
+        self, gateway: SubprocessGitGateway, repo: Path
+    ) -> None:
+        gateway.commit_bundle(
+            self._req_rm(
+                files=(OkfFile("a.md", "A"), OkfFile("b.md", "B")), message="초기"
+            )
+        )
+        gateway.commit_bundle(self._req_rm(removed_paths=("a.md",), message="a 삭제"))
+        assert not (repo / "cs_ops" / "a.md").exists()
+        assert (repo / "cs_ops" / "b.md").read_text(encoding="utf-8") == "B"
+
+    def test_삭제_전용_커밋이_생긴다(
+        self, gateway: SubprocessGitGateway, repo: Path
+    ) -> None:
+        gateway.commit_bundle(self._req_rm(files=(OkfFile("a.md", "A"),), message="초기"))
+        result = gateway.commit_bundle(
+            self._req_rm(removed_paths=("a.md",), message="a 삭제")
+        )
+        assert _SHA_RE.match(result.sha)
+        log = _git(repo, "log", "--oneline")
+        assert len(log.splitlines()) == 2
+
+    def test_없는_path_삭제는_무시되고_커밋_성립(
+        self, gateway: SubprocessGitGateway, repo: Path
+    ) -> None:
+        """working tree에 없는 path 삭제 + 새 파일 추가 → 에러 없이 커밋(idempotent)."""
+        gateway.commit_bundle(self._req_rm(files=(OkfFile("a.md", "A"),), message="초기"))
+        result = gateway.commit_bundle(
+            self._req_rm(
+                files=(OkfFile("b.md", "B"),),
+                removed_paths=("nonexistent.md",),
+                message="없는 것 삭제 + b 추가",
+            )
+        )
+        assert _SHA_RE.match(result.sha)
+        assert (repo / "cs_ops" / "b.md").exists()
+        assert (repo / "cs_ops" / "a.md").exists()
+
+    def test_removed_paths_경로탈출_거부(self, gateway: SubprocessGitGateway) -> None:
+        for bad in ("/etc/passwd", "../outside.md", "sub/../../evil.md", ""):
+            with pytest.raises(ValueError):
+                gateway.commit_bundle(self._req_rm(removed_paths=(bad,)))
+
+
 class TestCommitBundleAgentId탈출거부:
     """B1: agent_id 경로 탈출 차단 — okf_root 밖에 실 파일이 안 써진다(실 파일시스템 확인)."""
 

@@ -13,8 +13,12 @@ SDK를 건드린다(미설치 owner는 무접촉·중앙 의존 0). `runtime`은
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent_org_network.runtime import AgentRuntime, ClaudeCodeRuntime
+
+if TYPE_CHECKING:
+    from agent_org_network.git_gateway import GitGateway
 
 # ── 공급자 레지스트리 (ADR 0027 결정 1·11 — 공급자 중립) ──────────────────────────
 # AON_PROVIDER 값(별칭) → 공급자 어댑터. 각 공급자는 *대칭*: 자기 SDK extra + 자기 OAuth 프로필
@@ -73,7 +77,10 @@ _PROVIDER_FACTORIES: dict[str, Callable[[str | Path | None], AgentRuntime]] = {
 }
 
 
-def select_runtime(okf_root: str | Path | None) -> AgentRuntime:
+def select_runtime(
+    okf_root: str | Path | None,
+    git_gateway: "GitGateway | None" = None,
+) -> AgentRuntime:
     """env 플래그로 답 생성 런타임을 고른다 — 공급자 중립 레지스트리(ADR 0027 결정 1·11).
 
     `AON_PROVIDER`(또는 `AON_RUNTIME`):
@@ -85,6 +92,11 @@ def select_runtime(okf_root: str | Path | None) -> AgentRuntime:
         공급자 SDK는 *그 공급자를 고를 때만* import(미설치면 extra 설치 안내).
       - 알 수 없는 값 → 명시 실패(조용히 claude로 안 떨어진다 — owner 의도 보존).
 
+    `git_gateway`(선택, ADR 0018 결정 4): 주입 시 **claude-code 분기에서만** `ClaudeCodeRuntime`에
+    넘겨 커밋 스냅샷 모드를 켠다 — 답 생성이 그 게이트웨이의 `head_sha` 번들(시드+저작)을 cwd로
+    접지한다. 다른 공급자 분기(`claude-api`·`codex` 등)는 자기 SDK가 owner OKF를 직접 접지하므로
+    게이트웨이를 *쓰지 않는다*(무영향). 미주입이면 기존 동작(working tree 직독·하위호환).
+
     모든 어댑터가 같은 `AgentRuntime` 포트라 호출 측(`WorkerLogic`·`build_demo`) 무변경(런타임
     교체가 종착·라우팅·노출 불변식을 안 바꿈). 자격증명은 owner측·**중앙은 키/토큰 0**.
     """
@@ -92,7 +104,7 @@ def select_runtime(okf_root: str | Path | None) -> AgentRuntime:
 
     flag = (os.environ.get("AON_PROVIDER") or os.environ.get("AON_RUNTIME") or "").strip().lower()
     if not flag or flag == "claude-code":
-        return ClaudeCodeRuntime(okf_root=okf_root)
+        return ClaudeCodeRuntime(okf_root=okf_root, git_gateway=git_gateway)
     provider = _PROVIDER_ALIASES.get(flag)
     factory = _PROVIDER_FACTORIES.get(provider) if provider is not None else None
     if factory is None:

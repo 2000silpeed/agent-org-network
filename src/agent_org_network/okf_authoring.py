@@ -16,6 +16,9 @@ superset*이다 — okf_index는 파일시스템이 stem을 보증해 별도 거
 
 from __future__ import annotations
 
+import hashlib
+import re
+import unicodedata
 from dataclasses import dataclass
 from collections.abc import Sequence
 from datetime import datetime
@@ -590,9 +593,15 @@ def reindex_incrementally(req: ReindexRequest, author: OkfAuthor) -> ReindexResu
     split_drafts = author.split(req.changed_sources, ())
     reprocessed = author.derive_core_questions(split_drafts)
 
-    # ③ 합치기: 재도출분이 충돌 concept_id에서 승
+    # ③ 합치기: 재도출분이 충돌 concept_id에서 승. 정규화 키로 매칭해(ADR 0032 B2 층2)
+    # layer-1 도입 전 기존 파일·외부 유입 슬러그의 미세 변동을 흡수한다.
     reprocessed_ids = {d.concept_id for d in reprocessed}
-    preserved = [d for d in prior.draft.documents if d.concept_id not in reprocessed_ids]
+    reprocessed_match_keys = {_concept_match_key(d.concept_id) for d in reprocessed}
+    preserved = [
+        d
+        for d in prior.draft.documents
+        if _concept_match_key(d.concept_id) not in reprocessed_match_keys
+    ]
     merged_docs = tuple(reprocessed) + tuple(preserved)
 
     # ④ link 전체 재호출(부분 패치 아님·전체 집합 → dangling 구조적 방지)
@@ -698,12 +707,42 @@ from agent_org_network.provider_runtime import (  # noqa: E402
     assemble_stream,
 )
 
-_SPLIT_SYSTEM = (
-    "원본 소스를 개념 단위로 분할해 JSON 배열만 반환하라. 코드펜스·산문 금지.\n"
-    '스키마: [{"concept_id": "파일명 안전 슬러그·소문자/하이픈만·구분자/`..`/공백 금지",'
-    ' "title": "str", "body": "str", "core_question": "str",'
+# 범위 밖(어느 owned-domain에도 안 맞는) 개념의 over-claim placeholder domain. 어느 카드도
+# owned로 갖지 않을 일반 라벨이라 admit_okf의 domain_authorized 검사에서 자연 드롭된다.
+_SPLIT_OVERCLAIM_DOMAIN = "기타"
+
+_SPLIT_SYSTEM_HEADER = "원본 소스를 개념 단위로 분할해 JSON 배열만 반환하라. 코드펜스·산문 금지.\n"
+
+# domain 제약 — link 프롬프트의 concept_id 화이트리스트 패턴 모방. LLM이 owned-domain을 모르면
+# domain을 추측(예: agent_id)해 admit_okf가 전부 over-claim으로 떨군다(치명 갭·E2E 확인).
+# in-scope 개념이 정확한 owned-domain을 받게 하고, 범위 밖은 명시 over-claim 라벨로 둔다.
+_SPLIT_DOMAIN_HEADER = (
+    "각 개념의 domain은 반드시 아래 유효 domain 목록 중 하나여야 한다.\n"
+    "유효 domain 목록:\n"
+)
+_SPLIT_DOMAIN_FOOTER = (
+    f'\n위 목록 중 어느 것에도 맞지 않는 범위 밖 개념은 domain을 "{_SPLIT_OVERCLAIM_DOMAIN}"로 둔다'
+    "(권한 밖 표식 — 검증 게이트가 떨군다). 유효 목록에 맞는 개념은 절대 이 표식을 쓰지 마라.\n"
+)
+
+_SPLIT_SCHEMA = (
+    '스키마: [{"title": "str", "body": "str", "core_question": "str",'
     ' "domain": "str", "type": null}]'
 )
+
+
+def _build_split_system(allowed_domains: Sequence[str]) -> str:
+    """split 시스템 프롬프트 조립 — allowed_domains가 있으면 domain 제약 절을 끼운다(순수·IO 0).
+
+    빈 목록이면 제약 절을 생략한다(하위호환·"제약 없음"). 실 추출 경로
+    (`run_authoring_pipeline`)는 card.domains를 넘기므로 항상 제약이 실린다.
+    """
+    parts = [_SPLIT_SYSTEM_HEADER]
+    if allowed_domains:
+        whitelist = "\n".join(f"- {d}" for d in allowed_domains)
+        parts.append(_SPLIT_DOMAIN_HEADER + whitelist + _SPLIT_DOMAIN_FOOTER)
+    parts.append(_SPLIT_SCHEMA)
+    return "".join(parts)
 
 _DERIVE_SYSTEM = (
     "각 개념의 core_question을 정련해 JSON 배열만 반환하라. 코드펜스·산문 금지.\n"
@@ -720,26 +759,6 @@ _LINK_SYSTEM_FOOTER = (
 )
 
 
-def _split_system_for(allowed_domains: Sequence[str]) -> str:
-    """allowed_domains가 비어있지 않으면 _SPLIT_SYSTEM에 권한 domain 절을 덧댄다.
-
-    권한 목록은 *힌트/컨텍스트*다(강제 분류 아님): 개념이 권한 domain 중 하나에 해당하면
-    그 라벨을 정확히 그대로 쓰게 유도(매칭률↑), 어디에도 안 맞으면 실제 주제를 domain으로
-    쓰게 둔다(over-claim 필터가 정상 drop). 빈 시퀀스면 권한 절을 안 넣는다(하위호환).
-    """
-    if not allowed_domains:
-        return _SPLIT_SYSTEM
-    listed = ", ".join(allowed_domains)
-    clause = (
-        f"\n이 작성자의 권한 도메인: [{listed}].\n"
-        "각 개념이 이 권한 도메인 중 하나에 해당하면 그 라벨을 정확히 그대로 "
-        '"domain"에 쓰라(글자 그대로·임의 변형 금지).\n'
-        '어느 것에도 해당하지 않으면 개념의 실제 주제를 "domain"으로 쓰라'
-        "(권한 밖으로 분류될 수 있음 — 강제로 권한 도메인에 끼워 넣지 마라)."
-    )
-    return _SPLIT_SYSTEM + clause
-
-
 def build_split_request(
     sources: Sequence[RawSource],
     *,
@@ -748,15 +767,16 @@ def build_split_request(
 ) -> ProviderRequest:
     """raw sources → 개념 분할 요청(순수·IO 0).
 
-    allowed_domains: 작성자 권한 domain 힌트. 비어있지 않으면 system 프롬프트에 권한 절을
-        주입해 domain 라벨링을 권한과 정렬한다(힌트지 강제 아님 — over-claim 필터 보존).
-        빈 시퀀스면 기존 자유 분류(하위호환).
+    allowed_domains: 작성자 권한 domain 목록(card.domains). 비어있지 않으면 system 프롬프트에
+        유효 domain 화이트리스트 절을 실어 in-scope 개념이 정확한 owned-domain 라벨을 받게
+        한다. 범위 밖 개념은 over-claim 표식 domain("기타")으로 두게 지시해 admit_okf가
+        정상 drop한다(권한 중앙 선언 보존). 빈 시퀀스면 제약 절 생략(하위호환·자유 분류).
     """
     lines = [f"[{src.source_id}] {src.content}" for src in sources]
     user_content = "\n\n".join(lines)
     return ProviderRequest(
         model=model,
-        system=_split_system_for(allowed_domains),
+        system=_build_split_system(allowed_domains),
         messages=[{"role": "user", "content": user_content}],
     )
 
@@ -796,22 +816,6 @@ def build_link_request(
     )
 
 
-def _strip_code_fence(text: str) -> str:
-    """LLM 응답의 마크다운 코드펜스(```json … ```)를 벗긴다(순수·IO 0).
-
-    프롬프트로 "코드펜스 금지"를 지시해도 LLM이 간헐적으로 펜스를 붙이므로,
-    JSON 파싱 전 방어적으로 제거한다(parse_split/derive/link 공통 전처리).
-    """
-    t = text.strip()
-    if t.startswith("```"):
-        first_nl = t.find("\n")
-        if first_nl != -1:
-            t = t[first_nl + 1 :]
-        if t.endswith("```"):
-            t = t[:-3]
-    return t.strip()
-
-
 def _require_str(item: dict[str, object], key: str) -> str:
     """dict에서 key를 꺼내 str로 반환. 누락·None이면 ValueError."""
     if key not in item:
@@ -822,11 +826,95 @@ def _require_str(item: dict[str, object], key: str) -> str:
     return str(value)
 
 
+def _strip_code_fence(text: str) -> str:
+    """LLM이 JSON을 ```json … ``` 코드펜스로 감싸 낸 경우를 벗긴다(순수·IO 0).
+
+    프롬프트로 "코드펜스 금지"를 지시해도 모델 출력은 비결정이라 종종 펜스로 감싼다.
+    펜스가 없으면 trim만 한다. 있으면 첫 ``` 줄(``` 또는 ```json 등)과 끝 ``` 펜스를
+    제거하고 안쪽 텍스트를 반환한다 — 내용 자체 검증은 호출자의 json.loads에 맡긴다(fail-loud).
+    """
+    s = text.strip()
+    if not s.startswith("```"):
+        return s
+    newline = s.find("\n")
+    if newline == -1:
+        return s  # 펜스 마커만 있고 개행 없음 — 그대로(호출자 json.loads가 fail-loud)
+    inner = s[newline + 1 :].rstrip()
+    if inner.endswith("```"):
+        inner = inner[: inner.rfind("```")]
+    return inner.strip()
+
+
+_CONCEPT_KEY_MAX_LENGTH = 80
+_CONCEPT_KEY_INVALID_RE = re.compile(r"[^a-z0-9-]+")
+_CONCEPT_KEY_MULTI_HYPHEN_RE = re.compile(r"-+")
+
+
+def _normalize_slug_component(value: str) -> str:
+    """문자열 한 조각을 path-safe 슬러그로 정규화한다(ADR 0032 B2 — NFKC·소문자·
+    공백→하이픈·영숫자/하이픈 외 제거·연속 하이픈 축약).
+
+    derive_concept_key의 정규화 규칙을 분리해, 층 2(reindex_incrementally의 정규화 키
+    매칭)와 같은 규칙을 공유할 수 있게 한다.
+
+    한글 등 정규화 후 영숫자/하이픈이 전부 사라지는 입력은 빈 문자열을 반환한다
+    (빈 폴백 처리는 호출자 책임 — derive_concept_key 참고).
+    """
+    normalized = unicodedata.normalize("NFKC", value).strip().lower()
+    normalized = re.sub(r"\s+", "-", normalized)
+    normalized = _CONCEPT_KEY_INVALID_RE.sub("", normalized)
+    normalized = _CONCEPT_KEY_MULTI_HYPHEN_RE.sub("-", normalized)
+    return normalized.strip("-")
+
+
+def _concept_match_key(concept_id: str) -> str:
+    """concept_id를 reindex_incrementally 병합 비교용 정규화 키로 변환한다
+    (ADR 0032 B2 층2 — 정규화 키로 매칭해 layer-1 도입 전 기존 파일·외부 유입 슬러그의
+    미세 변동을 흡수).
+
+    _normalize_slug_component가 빈 문자열을 낼 수 있는 concept_id(예: `"---"`처럼 영숫자가
+    전혀 없는 값)는 정규화 충돌(서로 다른 concept_id가 모두 빈 키로 뭉개짐)을 피하기 위해
+    원래 concept_id를 그대로 키로 쓴다.
+    """
+    return _normalize_slug_component(concept_id) or concept_id
+
+
+def derive_concept_key(domain: str, title: str) -> str:
+    """domain·title에서 concept_id를 결정론 도출한다(ADR 0032 B2 층1·순수·IO 0).
+
+    같은 (domain, title) → 같은 키 → commit_okf_bundle의 파일-경로 멱등이 성립.
+    LLM은 여전히 domain·title을 자유롭게 내되, concept_id는 그 둘에서 항상 결정론
+    파생한다(LLM이 concept_id를 직접 내지 않는다 — parse_split_response가 이 함수로
+    덮어쓴다).
+
+    알고리즘(ADR 0032 결정 B2): slugify(normalize(domain) + "-" + normalize(title)).
+    normalize는 _normalize_slug_component(NFKC·소문자·공백→하이픈·영숫자/하이픈 외 제거·
+    연속 하이픈 축약)이고, 합친 결과를 80자로 캡한다.
+
+    한글 등 비-ASCII 문자만으로 된 domain·title은 정규화 후 빈 문자열이 될 수 있다
+    (영숫자/하이픈만 남기는 규칙 탓 — 우리 도메인 텍스트는 한국어가 대부분이라 흔한
+    케이스). 그 경우 빈 concept_id는 validate_safe_path_component(빈 문자열 거부)를
+    통과하지 못하므로, (domain, title) 원문의 결정론 해시로 폴백한다(같은 입력 → 같은
+    폴백 키 — 멱등 보존).
+    """
+    domain_part = _normalize_slug_component(domain)
+    title_part = _normalize_slug_component(title)
+    combined = "-".join(part for part in (domain_part, title_part) if part)
+    truncated = combined[:_CONCEPT_KEY_MAX_LENGTH].strip("-")
+    if truncated:
+        return truncated
+    digest = hashlib.sha256(f"{domain}\x1f{title}".encode("utf-8")).hexdigest()[:16]
+    return f"concept-{digest}"
+
+
 def parse_split_response(text: str) -> tuple[OkfDocumentDraft, ...]:
     """split 응답 JSON → OkfDocumentDraft tuple(순수·IO 0).
 
     JSON 깨짐·배열 아님 → ValueError(fail-loud).
-    값 객체 생성자에 검증 위임(빈 body·unsafe concept_id 등).
+    concept_id는 LLM이 낸 값을 쓰지 않고 derive_concept_key(domain, title)로 항상
+    덮어쓴다(ADR 0032 B2 층1 — 재추출마다 슬러그가 미세 변동해 git에 중복 누적되는
+    것을 막는다). JSON에 concept_id 필드가 있어도/없어도/null이어도 무시된다.
+    값 객체 생성자에 검증 위임(빈 body 등).
     """
     try:
         raw = _json.loads(_strip_code_fence(text))
@@ -836,17 +924,21 @@ def parse_split_response(text: str) -> tuple[OkfDocumentDraft, ...]:
         raise ValueError(f"split 응답이 JSON 배열이 아닙니다: {type(raw).__name__}")
     data = cast(list[dict[str, object]], raw)
     try:
-        return tuple(
-            OkfDocumentDraft(
-                concept_id=_require_str(item, "concept_id"),
-                title=_require_str(item, "title"),
-                body=_require_str(item, "body"),
-                core_question=_require_str(item, "core_question"),
-                domain=_require_str(item, "domain"),
-                type=str(item["type"]) if item.get("type") is not None else None,
+        results: list[OkfDocumentDraft] = []
+        for item in data:
+            title = _require_str(item, "title")
+            domain = _require_str(item, "domain")
+            results.append(
+                OkfDocumentDraft(
+                    concept_id=derive_concept_key(domain, title),
+                    title=title,
+                    body=_require_str(item, "body"),
+                    core_question=_require_str(item, "core_question"),
+                    domain=domain,
+                    type=str(item["type"]) if item.get("type") is not None else None,
+                )
             )
-            for item in data
-        )
+        return tuple(results)
     except (KeyError, TypeError) as exc:
         raise ValueError(f"split 응답 필드 누락/타입 오류: {exc}") from exc
 
@@ -922,15 +1014,23 @@ class LlmAuthor:
     """OkfAuthor 포트 구현 — transport 주입·공급자 중립(ADR 0029).
 
     model은 필수 키워드 인자(공급자별 기본 모델은 게이트 밖 팩토리가 주입).
+    owned_domains는 카드 owned-domain 상태 — split 프롬프트에 유효 domain 제약으로 실어 LLM이
+    in-scope 개념에 정확한 domain을 고르게 한다(없으면 admit_okf가 전부 over-claim 드롭·치명 갭).
+    `OkfAuthor.split(sources)` Protocol 시그니처는 불변(owned_domains는 생성자 상태).
     파이프라인: build_*_request → transport → assemble_stream → parse_*_response.
     """
 
-    def __init__(self, transport: ProviderTransport, *, model: str) -> None:
+    def __init__(
+        self,
+        transport: ProviderTransport,
+        *,
+        model: str,
+    ) -> None:
         self._transport = transport
         self._model = model
 
     def split(
-        self, sources: Sequence[RawSource], allowed_domains: Sequence[str]
+        self, sources: Sequence[RawSource], allowed_domains: Sequence[str] = ()
     ) -> tuple[OkfDocumentDraft, ...]:
         """2단계: 원본 소스를 개념 단위로 분할한다.
 

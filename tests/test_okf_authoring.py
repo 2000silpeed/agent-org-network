@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from agent_org_network.agent_card import AgentCard, is_safe_path_component
+from agent_org_network.agent_card import (
+    AgentCard,
+    is_safe_path_component,
+    validate_safe_path_component,
+)
 from agent_org_network.knowledge_index import ConceptEdge
 from agent_org_network.okf_authoring import (
     AdmissionResult,
@@ -1794,6 +1798,43 @@ def test_T11_5_concept_id_충돌_재도출_승():
     assert refund_doc.title == "환불 정책(갱신)"
 
 
+# ── (T11.5-5b) 층2: 정규화 키 매칭으로 레거시 슬러그 변형 흡수(ADR 0032 B2 층2) ─
+
+
+def test_T11_5_층2_정규화_키_매칭_레거시_슬러그_흡수():
+    """prior의 레거시 concept_id가 대소문자만 다른 변형이어도(예: "Refund-Policy" vs
+    "refund-policy") 정규화 키로 매칭해 같은 개념으로 흡수한다 — layer-1 도입 전 기존
+    파일·외부 유입 슬러그가 새로 도출된 concept_id와 나란히 중복 보존되지 않는다."""
+    prior = _make_authored_okf(concept_ids=("Refund-Policy", "pricing-v2"))
+    reprocessed_doc = OkfDocumentDraft(
+        concept_id="refund-policy",  # 정규화하면 prior의 "Refund-Policy"와 동일 키
+        title="환불 정책(갱신)",
+        body="갱신된 본문.",
+        core_question="환불 정책이 바뀌었나요?",
+        domain="환불",
+    )
+    fake = _make_reindex_fake_author(
+        split_result=(reprocessed_doc,),
+        derive_result=(reprocessed_doc,),
+        link_result=(),
+    )
+    changed = (RawSource(source_id="src-001", content="갱신 내용"),)
+    req = ReindexRequest(
+        agent_id="cs-ops",
+        changed_sources=changed,
+        prior=prior,
+        generated_at=_dt(),
+    )
+    result = reindex_incrementally(req, fake)
+
+    all_ids = [d.concept_id for d in result.reauthored.draft.documents]
+    # 레거시 "Refund-Policy"가 별도로 보존되지 않고 "refund-policy"로 흡수돼야 함
+    assert "Refund-Policy" not in all_ids
+    assert all_ids.count("refund-policy") == 1
+    assert "pricing-v2" in all_ids
+    assert len(all_ids) == 2
+
+
 # ── (T11.5-6) edges: link 전체 재호출(merged_docs 전체) ─────────────────────
 
 
@@ -2169,6 +2210,7 @@ from agent_org_network.okf_authoring import (  # noqa: E402
     build_split_request,
     build_derive_request,
     build_link_request,
+    derive_concept_key,
     parse_split_response,
     parse_derive_response,
     parse_link_response,
@@ -2190,12 +2232,12 @@ def test_T11_7c_build_split_request_결정론():
         RawSource(source_id="src-001", content="환불 정책 내용"),
         RawSource(source_id="src-002", content="배송 정책 내용"),
     )
-    req = build_split_request(sources, model="test-model")
+    req = build_split_request(sources, model="test-model", allowed_domains=("환불", "배송"))
 
     assert isinstance(req, ProviderRequest)
     assert req.model == "test-model"
-    # system에 JSON 스키마 힌트가 있어야 함
-    assert "concept_id" in req.system
+    # system에 JSON 스키마 힌트가 있어야 함(concept_id는 LLM이 안 내므로 스키마에 없다 — ADR 0032 B2)
+    assert "concept_id" not in req.system
     assert "core_question" in req.system
     # user 메시지에 source 직렬화
     assert len(req.messages) >= 1
@@ -2209,10 +2251,11 @@ def test_T11_7c_build_split_request_결정론():
 
 
 def test_T11_7c_build_split_request_allowed_domains_프롬프트_주입():
-    """비어있지 않은 allowed_domains가 system 프롬프트에 권한 라벨로 실린다(매칭률↑).
+    """비어있지 않은 allowed_domains가 system 프롬프트에 유효 domain 화이트리스트로 실린다.
 
     이 절이 빠지면 LLM이 입력 source_id에서 domain을 추측해(agent_id 등) admit_okf가
-    전부 over-claim drop한다 — 결함 회귀 가드.
+    전부 over-claim drop한다 — 결함 회귀 가드. 범위 밖 개념은 over-claim 표식("기타")으로
+    두게 지시한다(ADR 0032 — 강제 오분류 대신 검증 게이트가 떨군다).
     """
     sources = (RawSource(source_id="cs_ops-src", content="14일 내 전액 환불"),)
     req = build_split_request(
@@ -2222,24 +2265,25 @@ def test_T11_7c_build_split_request_allowed_domains_프롬프트_주입():
     # 권한 라벨이 글자 그대로 system에 등장
     assert "환불" in req.system
     assert "보상" in req.system
-    # 권한 절 취지(권한 도메인 컨텍스트)가 명시됨
-    assert "권한 도메인" in req.system
-    # 스키마 힌트는 그대로 보존(권한 절은 덧대기지 교체가 아님)
-    assert "concept_id" in req.system
+    # 화이트리스트 절 취지(유효 domain 목록)와 over-claim 표식이 명시됨
+    assert "유효 domain 목록" in req.system
+    assert "기타" in req.system
+    # concept_id는 LLM이 내지 않는다(ADR 0032 B2 — derive_concept_key가 결정론 부여)
+    assert "concept_id" not in req.system
 
 
 def test_T11_7c_build_split_request_빈_allowed_domains_권한절_없음():
-    """빈 allowed_domains면 권한 절을 안 넣는다(하위호환·자유 분류).
+    """빈 allowed_domains면 화이트리스트 절을 안 넣는다(하위호환·자유 분류).
 
-    기본 인자(미지정)와 명시적 빈 tuple 둘 다 기존 _SPLIT_SYSTEM과 동일해야 한다.
+    기본 인자(미지정)와 명시적 빈 tuple 둘 다 제약 절 없는 동일 system이어야 한다.
     """
     sources = (RawSource(source_id="src-001", content="내용"),)
     default_req = build_split_request(sources, model="test-model")
     empty_req = build_split_request(sources, model="test-model", allowed_domains=())
 
-    assert "권한 도메인" not in default_req.system
-    assert "권한 도메인" not in empty_req.system
-    # 둘 다 권한 절 없는 동일 system
+    assert "유효 domain 목록" not in default_req.system
+    assert "유효 domain 목록" not in empty_req.system
+    # 둘 다 제약 절 없는 동일 system
     assert default_req.system == empty_req.system
 
 
@@ -2303,11 +2347,79 @@ def test_T11_7c_build_link_request_화이트리스트_포함():
     assert "relation" in req.system
 
 
+# ── (B2) derive_concept_key — 결정론 concept_id 도출(ADR 0032 결정 B2 층1) ───
+
+
+def test_derive_concept_key_결정론_동일_입력_동일_출력():
+    """같은 (domain, title) → 항상 같은 결과(여러 번 호출해도 동일)."""
+    key1 = derive_concept_key("환불", "환불 정책")
+    key2 = derive_concept_key("환불", "환불 정책")
+    assert key1 == key2
+
+
+def test_derive_concept_key_영문_정규화_슬러그():
+    """영문 domain·title → NFKC·소문자·공백→하이픈 정규화 슬러그(읽을 수 있는 결과 확인)."""
+    assert derive_concept_key("Billing", "Refund Policy") == "billing-refund-policy"
+
+
+def test_derive_concept_key_특수문자_제거_연속하이픈_축약():
+    """공백·특수문자가 섞여도 영숫자/하이픈만 남고 연속 하이픈은 하나로 축약된다."""
+    assert (
+        derive_concept_key("Billing  Dept!!", "Refund   Policy???")
+        == "billing-dept-refund-policy"
+    )
+
+
+def test_derive_concept_key_한글_전용_빈슬러그_폴백():
+    """domain·title이 한글뿐이면 정규화 후 영숫자/하이픈이 전부 사라질 수 있다 —
+    빈 concept_id가 되지 않도록 결정론 해시로 폴백한다(우리 도메인 텍스트는 한국어가
+    대부분이라 실전에서 자주 부딪히는 케이스)."""
+    key = derive_concept_key("환불", "환불 정책")
+
+    assert key != ""
+    validate_safe_path_component(key)  # path-safe 슈퍼셋 통과(예외 없으면 통과)
+    # 폴백도 결정론 — 같은 입력은 같은 폴백 키
+    assert key == derive_concept_key("환불", "환불 정책")
+
+
+def test_derive_concept_key_한글_전용_서로_다른_입력은_다른_폴백_키():
+    """한글 전용 폴백이라도 (domain, title)이 다르면 다른 키가 나온다(충돌 회피)."""
+    key1 = derive_concept_key("환불", "환불 정책")
+    key2 = derive_concept_key("환불", "배송 정책")
+    assert key1 != key2
+
+
+def test_derive_concept_key_길이_캡_80자():
+    """과도하게 긴 domain·title도 80자 이하로 캡되고 여전히 path-safe하다."""
+    long_domain = "billing " * 20
+    long_title = "refund policy " * 20
+    key = derive_concept_key(long_domain, long_title)
+
+    assert len(key) <= 80
+    validate_safe_path_component(key)
+
+
+def test_derive_concept_key_모든_결과는_validate_safe_path_component_통과():
+    """다양한 입력 조합 전부 OkfDocumentDraft.concept_id의 path-safe 검증을 통과한다."""
+    cases = [
+        ("Billing", "Refund Policy"),
+        ("환불", "환불 정책"),
+        ("billing", "Refund 환불"),
+        ("", "Refund Policy"),
+        ("Billing", ""),
+        ("", ""),
+        ("../escape", "../../etc/passwd"),
+    ]
+    for domain, title in cases:
+        key = derive_concept_key(domain, title)
+        validate_safe_path_component(key)
+
+
 # ── (T11.7c-4) split 파싱: 고정 JSON → OkfDocumentDraft tuple ───────────────
 
 
 def test_T11_7c_parse_split_response_정상():
-    """고정 JSON 텍스트 → OkfDocumentDraft tuple."""
+    """고정 JSON 텍스트 → OkfDocumentDraft tuple. concept_id는 derive_concept_key(domain, title)로 도출(ADR 0032 B2)."""
     text = _json.dumps([
         {
             "concept_id": "refund-policy",
@@ -2322,9 +2434,29 @@ def test_T11_7c_parse_split_response_정상():
 
     assert isinstance(result, tuple)
     assert len(result) == 1
-    assert result[0].concept_id == "refund-policy"
+    assert result[0].concept_id == derive_concept_key("환불", "환불 정책")
     assert result[0].title == "환불 정책"
     assert result[0].body == "7일 이내 환불 가능합니다."
+
+
+def test_T11_7c_parse_split_response_코드펜스_벗김():
+    """LLM이 ```json … ``` 코드펜스로 감싸 내도 파싱한다(프롬프트 금지해도 비결정)."""
+    inner = _json.dumps([
+        {
+            "concept_id": "refund-policy",
+            "title": "환불 정책",
+            "body": "7일 이내 환불 가능합니다.",
+            "core_question": "환불이 가능한가요?",
+            "domain": "환불",
+            "type": None,
+        }
+    ])
+    fenced = f"```json\n{inner}\n```"
+    result = parse_split_response(fenced)
+
+    assert len(result) == 1
+    assert result[0].concept_id == derive_concept_key("환불", "환불 정책")
+    assert result[0].domain == "환불"
 
 
 # ── (T11.7c-5) derive: core_question만 갱신·title/body/domain 보존 ────────────
@@ -2454,11 +2586,13 @@ def test_T11_7c_parse_split_response_빈_title_ValueError():
         parse_split_response(text)
 
 
-# ── (T11.7c-9) concept_id="../x" JSON → ValueError (validate_safe_path_component) ─
+# ── (T11.7c-9) LLM이 unsafe/임의 concept_id를 내도 무시·derive_concept_key로 대체(ADR 0032 B2) ─
 
 
-def test_T11_7c_parse_split_response_unsafe_concept_id_ValueError():
-    """unsafe concept_id → OkfDocumentDraft 생성자가 ValueError(단일 권위)."""
+def test_T11_7c_parse_split_response_LLM_concept_id_무시되고_derive로_대체():
+    """LLM이 path-traversal 슬러그(`../escape`)를 내도 거부되지 않고 무시된다 —
+    concept_id는 항상 derive_concept_key(domain, title)로 덮어써지므로 unsafe 값이
+    OkfDocumentDraft에 도달하지 않는다(ADR 0032 B2 층1)."""
     text = _json.dumps([
         {
             "concept_id": "../escape",
@@ -2469,15 +2603,53 @@ def test_T11_7c_parse_split_response_unsafe_concept_id_ValueError():
             "type": None,
         }
     ])
-    with pytest.raises(Exception):
-        parse_split_response(text)
+    result = parse_split_response(text)
+
+    assert len(result) == 1
+    assert result[0].concept_id == derive_concept_key("환불", "제목")
+    assert result[0].concept_id != "../escape"
+
+
+def test_T11_7c_parse_split_response_재추출_LLM_슬러그_변동에도_같은_concept_id():
+    """같은 문서를 재추출(re-extraction)한 두 LLM 응답이 서로 다른 concept_id 슬러그를
+    내도(`refund-policy` vs `refund-policy-overview`), (domain, title)이 같으면
+    parse_split_response가 항상 같은 concept_id를 도출한다 — commit_okf_bundle의
+    파일-경로 멱등(ADR 0032 결정 B1)이 성립하는 전제(ADR 0032 결정 B2 층1)."""
+    first_run = _json.dumps([
+        {
+            "concept_id": "refund-policy",
+            "title": "환불 정책",
+            "body": "7일 이내 환불 가능합니다.",
+            "core_question": "환불이 가능한가요?",
+            "domain": "환불",
+            "type": None,
+        }
+    ])
+    second_run = _json.dumps([
+        {
+            "concept_id": "refund-policy-overview",  # 재추출 시 LLM이 미세하게 다르게 냄
+            "title": "환불 정책",  # 같은 (domain, title)
+            "body": "7일 이내 전액 환불 가능합니다.",  # 본문은 미세하게 다를 수 있음
+            "core_question": "환불 조건은?",
+            "domain": "환불",
+            "type": None,
+        }
+    ])
+
+    first_result = parse_split_response(first_run)
+    second_result = parse_split_response(second_run)
+
+    assert first_result[0].concept_id == second_result[0].concept_id
+    assert first_result[0].concept_id == derive_concept_key("환불", "환불 정책")
 
 
 # ── (T11.7c-10) 중복 concept_id split → run_authoring_pipeline이 거부 ──────────
 
 
 def test_T11_7c_중복_concept_id_split_pipeline_거부():
-    """LlmAuthor.split이 중복 concept_id 반환 → run_authoring_pipeline이 OkfDraft 생성에서 거부."""
+    """같은 (domain, title)을 가진 split 항목 두 건 → derive_concept_key가 같은 concept_id를
+    도출 → run_authoring_pipeline이 OkfDraft 생성에서 거부(ADR 0032 B2 — LLM이 낸
+    concept_id 값 자체는 더는 의미 없으므로 충돌은 (domain, title) 동일로 유발한다)."""
     dup_json = _json.dumps([
         {
             "concept_id": "refund-policy",
@@ -2488,11 +2660,11 @@ def test_T11_7c_중복_concept_id_split_pipeline_거부():
             "type": None,
         },
         {
-            "concept_id": "refund-policy",  # 중복
-            "title": "환불 정책2",
+            "concept_id": "pricing-v2",  # concept_id 자체는 달라도 derive 결과는 동일
+            "title": "환불 정책",  # 같은 title
             "body": "내용2",
             "core_question": "질문2?",
-            "domain": "환불",
+            "domain": "환불",  # 같은 domain
             "type": None,
         },
     ])
@@ -2549,7 +2721,9 @@ class _SequentialStubTransport:
 
 
 def test_T11_7c_staged_관통_split_derive_link_AuthoredOkf():
-    """split→derive→link 순차 호출 → AuthoredOkf 정상 구성(StubTransport 고정 JSON)."""
+    """split→derive→link 순차 호출 → AuthoredOkf 정상 구성(StubTransport 고정 JSON).
+    concept_id는 derive_concept_key(domain, title)로 도출되므로 derive_json도 그 값을 키로 쓴다."""
+    expected_concept_id = derive_concept_key("환불", "환불 정책")
     split_json = _json.dumps([
         {
             "concept_id": "refund-policy",
@@ -2561,7 +2735,7 @@ def test_T11_7c_staged_관통_split_derive_link_AuthoredOkf():
         }
     ])
     derive_json = _json.dumps([
-        {"concept_id": "refund-policy", "core_question": "환불 조건은 무엇인가요?"}
+        {"concept_id": expected_concept_id, "core_question": "환불 조건은 무엇인가요?"}
     ])
     link_json = _json.dumps([])
 
@@ -2573,7 +2747,7 @@ def test_T11_7c_staged_관통_split_derive_link_AuthoredOkf():
 
     assert isinstance(result, AuthoredOkf)
     assert len(result.draft.documents) == 1
-    assert result.draft.documents[0].concept_id == "refund-policy"
+    assert result.draft.documents[0].concept_id == expected_concept_id
     assert result.draft.documents[0].core_question == "환불 조건은 무엇인가요?"
     assert result.draft.edges == ()
 
@@ -2592,6 +2766,43 @@ def test_T11_7c_공급자_중립_다른_model():
     assert type(author1) is type(author2)
     assert author1._model == "gpt-5.5"  # pyright: ignore[reportPrivateUsage]
     assert author2._model == "claude-3-5-haiku-20241022"  # pyright: ignore[reportPrivateUsage]
+
+
+class _CapturingTransport:
+    """split 호출의 ProviderRequest를 관측하는 테스트 transport(첫 호출만 캡처·빈 배열 반환)."""
+
+    def __init__(self) -> None:
+        self.split_request: ProviderRequest | None = None
+        self._call_count = 0
+
+    def __call__(self, request: ProviderRequest) -> list[str]:
+        if self._call_count == 0:
+            self.split_request = request
+        self._call_count += 1
+        return ["[]"]
+
+
+def test_T11_7c_LlmAuthor_allowed_domains를_split_요청에_전달():
+    """LlmAuthor.split(sources, allowed_domains)가 split 프롬프트에 유효 domain 목록을 싣는다(치명 갭 교정)."""
+    transport = _CapturingTransport()
+    author = LlmAuthor(transport, model="m")
+    author.split(
+        [RawSource(source_id="src", content="계약 검토 본문")],
+        ("계약 검토", "법무 자문"),
+    )
+
+    assert transport.split_request is not None
+    assert "계약 검토" in transport.split_request.system
+    assert "법무 자문" in transport.split_request.system
+
+
+def test_T11_7c_LlmAuthor_allowed_domains_기본_빈튜플_하위호환():
+    """allowed_domains 생략 시 빈 튜플(제약 없음) — 기존 split(sources) 1-인자 호출 보존."""
+    transport = _CapturingTransport()
+    author = LlmAuthor(transport, model="m")
+    author.split([RawSource(source_id="src", content="본문")])
+    assert transport.split_request is not None
+    assert "유효 domain 목록" not in transport.split_request.system
 
 
 # ── (T11.7c-14) SDK import 0 가드 ───────────────────────────────────────────
@@ -2626,8 +2837,10 @@ def test_M1_parse_split_response_누락_필드_ValueError():
         parse_split_response(text)
 
 
-def test_M1_parse_split_response_concept_id_None_ValueError():
-    """split JSON에 concept_id가 null → ValueError(N1: "None" 슬러그 방지)."""
+def test_M1_parse_split_response_concept_id_필드_null이어도_무시되고_파싱_성공():
+    """split JSON의 concept_id가 null이어도 무시된다(ADR 0032 B2 — concept_id는 항상
+    derive_concept_key(domain, title)로 도출되므로 JSON concept_id 필드 자체가
+    더는 파싱 성공/실패를 좌우하지 않는다)."""
     text = _json.dumps([
         {
             "concept_id": None,
@@ -2637,8 +2850,10 @@ def test_M1_parse_split_response_concept_id_None_ValueError():
             "domain": "환불",
         }
     ])
-    with pytest.raises(ValueError):
-        parse_split_response(text)
+    result = parse_split_response(text)
+
+    assert len(result) == 1
+    assert result[0].concept_id == derive_concept_key("환불", "환불 정책")
 
 
 def test_M1_parse_derive_response_누락_필드_ValueError():

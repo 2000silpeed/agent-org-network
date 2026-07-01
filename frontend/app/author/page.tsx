@@ -6,7 +6,6 @@ import {
   GitCommitHorizontal,
   Check,
   Ban,
-  Loader2,
   AlertTriangle,
   CheckCircle2,
   Sparkles,

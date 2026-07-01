@@ -1,115 +1,417 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="ko" data-theme="light">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Agent Org Network — 전 기능 시나리오 투어</title>
+<!-- Pretendard(heading/body) + Source Code Pro(mono) — design-system 토큰 폰트 (globals.css CDN @import) -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@400;500;600&display=swap" />
 <style>
+  /* ===================================================================
+     Design tokens — dashboard--corporate-trust preset (globals.css 이식)
+     라이트 기본(:root) + prefers-color-scheme 자동 + data-theme 토글.
+     상태는 색만으로 표시하지 않는다 — 아이콘/기호 + 단어 병기(디자인 시스템 원칙).
+     =================================================================== */
   :root {
-    --bg: #0f1220; --panel: #181c2e; --panel2: #1f2438; --ink: #e7e9f3; --muted: #9aa0b8;
-    --line: #2a3050; --accent: #7c8cff; --code-bg: #0b0e1a;
-    --user: #34d399; --owner: #60a5fa; --manager: #fbbf24; --ops: #c084fc;
-    --ok: #34d399; --warn: #fbbf24; --bad: #f87171;
+    --ds-color-accent: #F59E0B;
+    --ds-color-border: #D6DDE6;
+    --ds-color-border-strong: #B0BAC7;
+    --ds-color-canvas: #F7F8FA;
+    --ds-color-danger: #E2725B;
+    --ds-color-info: #0F4C81;
+    --ds-color-ink: #111111;
+    --ds-color-ink-inverse: #FFFFFF;
+    --ds-color-ink-muted: #4B5563;
+    --ds-color-ink-subtle: #6B7280;
+    --ds-color-link: #2563EB;
+    --ds-color-primary: #2563EB;
+    --ds-color-success: #006A4E;
+    --ds-color-surface: #FFFFFF;
+    --ds-color-surface-elevated: #FFFFFF;
+    --ds-color-surface-muted: #EEF1F6;
+    --ds-color-surface-tint: #E0E7FF;
+    --ds-color-warning: #FFB27F;
+    --ds-font-heading: Pretendard, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --ds-font-body: Pretendard, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --ds-font-mono: "Source Code Pro", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --ds-radius-sm: 4px;
+    --ds-radius-md: 8px;
+    --ds-radius-lg: 12px;
+    /* code surface — success 계열의 딥 톤(라이트에선 잉크 표면, 다크에선 그대로 어둡게) */
+    --ds-code-bg: #0F1720;
+    --ds-code-ink: #E8EDF4;
+    --ds-code-line: #23303F;
   }
+
+  [data-theme='dark'] {
+    --ds-color-accent: #F9C163;
+    --ds-color-border: #2D3239;
+    --ds-color-border-strong: #3F4650;
+    --ds-color-canvas: #0D0F11;
+    --ds-color-danger: #EA9786;
+    --ds-color-info: #197CD3;
+    --ds-color-ink: #F0F0F0;
+    --ds-color-ink-inverse: #1A1A1A;
+    --ds-color-ink-muted: #AFB6C0;
+    --ds-color-ink-subtle: #858B99;
+    --ds-color-link: #799FF3;
+    --ds-color-primary: #799FF3;
+    --ds-color-success: #00D69E;
+    --ds-color-surface: #171717;
+    --ds-color-surface-elevated: #1C1C1C;
+    --ds-color-surface-muted: #1D2025;
+    --ds-color-surface-tint: #31343F;
+    --ds-color-warning: #FFA970;
+    --ds-code-bg: #0A0C0E;
+    --ds-code-ink: #E8EDF4;
+    --ds-code-line: #23272E;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --ds-color-accent: #F9C163;
+      --ds-color-border: #2D3239;
+      --ds-color-border-strong: #3F4650;
+      --ds-color-canvas: #0D0F11;
+      --ds-color-danger: #EA9786;
+      --ds-color-info: #197CD3;
+      --ds-color-ink: #F0F0F0;
+      --ds-color-ink-inverse: #1A1A1A;
+      --ds-color-ink-muted: #AFB6C0;
+      --ds-color-ink-subtle: #858B99;
+      --ds-color-link: #799FF3;
+      --ds-color-primary: #799FF3;
+      --ds-color-success: #00D69E;
+      --ds-color-surface: #171717;
+      --ds-color-surface-elevated: #1C1C1C;
+      --ds-color-surface-muted: #1D2025;
+      --ds-color-surface-tint: #31343F;
+      --ds-color-warning: #FFA970;
+      --ds-code-bg: #0A0C0E;
+      --ds-code-ink: #E8EDF4;
+      --ds-code-line: #23272E;
+    }
+  }
+
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
-    line-height: 1.7; font-size: 15px; }
-  code, pre, .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
-  a { color: var(--accent); }
-  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px 120px; }
 
-  /* hero */
-  header.hero { padding: 64px 20px 40px; text-align: center;
-    background: radial-gradient(1200px 400px at 50% -120px, #2a2f55 0%, transparent 70%); }
-  header.hero h1 { font-size: 34px; margin: 0 0 10px; letter-spacing: -0.5px; }
-  header.hero .tag { color: var(--muted); font-size: 17px; max-width: 720px; margin: 0 auto; }
-  .thesis { max-width: 760px; margin: 28px auto 0; padding: 18px 22px; background: var(--panel);
-    border: 1px solid var(--line); border-radius: 14px; text-align: left; }
-  .thesis b { color: var(--accent); }
+  /* Korean line-breaking (globals.css) — 어절 경계에서 줄바꿈, 글자 중간 금지 */
+  html, body {
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+  body {
+    margin: 0;
+    background: var(--ds-color-canvas);
+    color: var(--ds-color-ink);
+    font-family: var(--ds-font-body);
+    font-feature-settings: "cv11", "ss01";
+    text-rendering: optimizeLegibility;
+    line-height: 1.6;
+    font-size: 16px;
+  }
+  code, pre, .mono, kbd { font-family: var(--ds-font-mono); }
+  a { color: var(--ds-color-link); text-underline-offset: 2px; }
 
-  /* nav */
-  nav.toc { position: sticky; top: 0; z-index: 10; background: rgba(15,18,32,0.92);
-    backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); padding: 10px 0; margin-bottom: 8px; }
-  nav.toc .inner { max-width: 980px; margin: 0 auto; padding: 0 20px; display: flex; gap: 6px;
-    flex-wrap: wrap; font-size: 12px; }
-  nav.toc a { color: var(--muted); text-decoration: none; padding: 3px 8px; border-radius: 7px;
-    border: 1px solid transparent; }
-  nav.toc a:hover { color: var(--ink); border-color: var(--line); background: var(--panel); }
+  ::selection { background: var(--ds-color-surface-tint); color: var(--ds-color-ink); }
+  :focus-visible { outline: 2px solid var(--ds-color-primary); outline-offset: 2px; }
 
-  h2.sec { font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted);
-    margin: 48px 0 16px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 24px 96px; }
 
-  /* personas + cards table */
+  /* ---- hero ---------------------------------------------------------- */
+  header.hero {
+    padding: 72px 24px 40px; text-align: center;
+    border-bottom: 1px solid var(--ds-color-border);
+    background:
+      linear-gradient(180deg, var(--ds-color-surface-muted) 0%, var(--ds-color-canvas) 100%);
+  }
+  header.hero .kicker {
+    display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--ds-color-info);
+    background: var(--ds-color-surface-tint);
+    padding: 4px 12px; border-radius: var(--ds-radius-sm); margin-bottom: 18px;
+  }
+  header.hero h1 { font-size: 44px; line-height: 1.15; margin: 0 0 12px; letter-spacing: -0.6px; }
+  header.hero .tag { color: var(--ds-color-ink-muted); font-size: 18px; max-width: 740px; margin: 0 auto; }
+  .thesis {
+    max-width: 780px; margin: 28px auto 0; padding: 20px 24px;
+    background: var(--ds-color-surface); border: 1px solid var(--ds-color-border);
+    border-left: 3px solid var(--ds-color-primary);
+    border-radius: var(--ds-radius-lg); text-align: left; color: var(--ds-color-ink-muted);
+    box-shadow: 0 1px 2px rgba(17,17,17,0.04);
+  }
+  .thesis b { color: var(--ds-color-ink); font-weight: 700; }
+
+  /* theme toggle (우상단·최소) */
+  .theme-toggle {
+    position: fixed; top: 12px; right: 14px; z-index: 30;
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--ds-font-body); font-size: 12.5px; font-weight: 600;
+    color: var(--ds-color-ink-muted);
+    background: var(--ds-color-surface); border: 1px solid var(--ds-color-border);
+    border-radius: var(--ds-radius-md); padding: 7px 11px; cursor: pointer;
+    box-shadow: 0 1px 3px rgba(17,17,17,0.06);
+  }
+  .theme-toggle:hover { border-color: var(--ds-color-border-strong); color: var(--ds-color-ink); }
+
+  /* ---- sticky nav.toc ------------------------------------------------ */
+  nav.toc {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--ds-color-surface) 90%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--ds-color-border);
+    padding: 9px 0;
+  }
+  nav.toc .inner {
+    max-width: 1000px; margin: 0 auto; padding: 0 24px;
+    display: flex; gap: 5px; flex-wrap: wrap; font-size: 12px;
+  }
+  nav.toc a {
+    color: var(--ds-color-ink-subtle); text-decoration: none;
+    padding: 3px 9px; border-radius: var(--ds-radius-sm);
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  nav.toc a:hover {
+    color: var(--ds-color-ink); border-color: var(--ds-color-border);
+    background: var(--ds-color-surface-muted);
+  }
+
+  /* ---- section heading ---------------------------------------------- */
+  h2.sec {
+    font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--ds-color-ink-subtle);
+    margin: 56px 0 18px; border-bottom: 1px solid var(--ds-color-border); padding-bottom: 9px;
+  }
+
+  /* ---- personas + org table ----------------------------------------- */
   .grid { display: grid; gap: 14px; }
   .grid.p4 { grid-template-columns: repeat(2, 1fr); }
-  .persona { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
-  .persona .who { font-weight: 700; margin-bottom: 2px; }
-  .persona .what { color: var(--muted); font-size: 13.5px; }
-  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px;
-    vertical-align: middle; }
-  .b-user { background: rgba(52,211,153,.16); color: var(--user); }
-  .b-owner { background: rgba(96,165,250,.16); color: var(--owner); }
-  .b-manager { background: rgba(251,191,36,.16); color: var(--manager); }
-  .b-ops { background: rgba(192,132,252,.16); color: var(--ops); }
+  .persona {
+    background: var(--ds-color-surface); border: 1px solid var(--ds-color-border);
+    border-radius: var(--ds-radius-md); padding: 16px 18px;
+  }
+  .persona .who { font-weight: 700; margin-bottom: 4px; }
+  .persona .what { color: var(--ds-color-ink-muted); font-size: 14px; }
 
-  table.org { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-  table.org th, table.org td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); }
-  table.org th { color: var(--muted); font-weight: 600; }
-  table.org .mono { color: var(--accent); }
+  /* role badges — 색 + 아이콘 + 단어 (색만으로 구분하지 않는다) */
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11.5px; font-weight: 700; padding: 2px 10px; border-radius: 999px;
+    vertical-align: middle; border: 1px solid transparent;
+  }
+  .badge .ic { font-size: 11px; }
+  .b-user { background: color-mix(in srgb, var(--ds-color-success) 12%, transparent); color: var(--ds-color-success); border-color: color-mix(in srgb, var(--ds-color-success) 30%, transparent); }
+  .b-owner { background: var(--ds-color-surface-tint); color: var(--ds-color-info); border-color: color-mix(in srgb, var(--ds-color-info) 26%, transparent); }
+  .b-manager { background: color-mix(in srgb, var(--ds-color-accent) 16%, transparent); color: #9A6600; border-color: color-mix(in srgb, var(--ds-color-accent) 42%, transparent); }
+  .b-ops { background: var(--ds-color-surface-muted); color: var(--ds-color-ink-muted); border-color: var(--ds-color-border-strong); }
+  [data-theme='dark'] .b-manager { color: var(--ds-color-accent); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .b-manager { color: var(--ds-color-accent); } }
 
-  /* invariants */
-  .inv { display: grid; grid-template-columns: repeat(1,1fr); gap: 8px; }
-  .inv .pill { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
-    border-radius: 8px; padding: 10px 14px; font-size: 14px; }
-  .inv .pill b { color: var(--ink); }
+  table.org { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.org th, table.org td {
+    text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--ds-color-border);
+  }
+  table.org thead th {
+    color: var(--ds-color-ink-subtle); font-weight: 600; font-size: 12px;
+    letter-spacing: 0.3px; text-transform: uppercase;
+    border-bottom: 1px solid var(--ds-color-border-strong);
+  }
+  table.org tbody tr:hover { background: var(--ds-color-surface-muted); }
+  table.org .mono { font-family: var(--ds-font-mono); color: var(--ds-color-primary); font-size: 13px; }
+  .note { color: var(--ds-color-ink-subtle); font-size: 13.5px; }
 
-  /* scenes */
-  .scene { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 22px 24px;
-    margin: 18px 0; }
-  .scene .head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
-  .scene .num { font-size: 13px; font-weight: 800; color: var(--bg); background: var(--accent);
-    width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; flex: none; }
-  .scene h3 { margin: 0; font-size: 19px; }
-  .scene .sub { color: var(--muted); font-size: 14px; margin: 2px 0 14px; }
-  .step { margin: 12px 0; }
-  .step .lbl { font-size: 11px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase;
-    color: var(--muted); margin-bottom: 5px; }
-  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px;
-    overflow-x: auto; font-size: 13px; margin: 0; color: #cdd3f0; }
-  pre .c { color: #6b7299; }            /* comment */
-  pre .k { color: #ff9e64; }            /* keyword/verb */
-  pre .s { color: #9ece6a; }            /* string */
-  pre .o { color: var(--user); }        /* output */
-  .result { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 15px;
-    font-size: 14px; }
-  .result .arrow { color: var(--accent); font-weight: 700; }
-  .proves { margin-top: 12px; font-size: 13.5px; color: var(--muted);
-    border-top: 1px dashed var(--line); padding-top: 10px; }
-  .proves b { color: var(--ink); }
-  .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
-  .tag-inv { font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px;
-    padding: 1px 8px; }
-  .disp { font-weight: 700; }
-  .disp.routed { color: var(--ok); } .disp.contested { color: var(--warn); } .disp.unowned { color: var(--bad); }
+  /* ---- invariants ---------------------------------------------------- */
+  .inv { display: grid; grid-template-columns: repeat(1, 1fr); gap: 10px; }
+  .inv .pill {
+    background: var(--ds-color-surface); border: 1px solid var(--ds-color-border);
+    border-left: 3px solid var(--ds-color-primary);
+    border-radius: var(--ds-radius-md); padding: 12px 16px; font-size: 14.5px;
+    color: var(--ds-color-ink-muted);
+  }
+  .inv .pill b { color: var(--ds-color-ink); }
+  .inv .pill .n {
+    display: inline-grid; place-items: center; width: 20px; height: 20px;
+    font-size: 12px; font-weight: 800; color: var(--ds-color-ink-inverse);
+    background: var(--ds-color-primary); border-radius: 999px; margin-right: 6px;
+    vertical-align: baseline;
+  }
 
-  footer { margin-top: 56px; padding: 24px; background: var(--panel); border: 1px solid var(--line);
-    border-radius: 16px; color: var(--muted); font-size: 13.5px; }
-  footer a { color: var(--accent); }
-  .gate { display: inline-block; background: rgba(52,211,153,.14); color: var(--ok); font-weight: 700;
-    padding: 2px 10px; border-radius: 8px; font-size: 13px; }
-  @media (max-width: 680px) { .grid.p4 { grid-template-columns: 1fr; } header.hero h1 { font-size: 27px; } }
+  /* ---- scenes -------------------------------------------------------- */
+  .scene {
+    background: var(--ds-color-surface); border: 1px solid var(--ds-color-border);
+    border-radius: var(--ds-radius-lg); padding: 24px 26px; margin: 18px 0;
+    box-shadow: 0 1px 2px rgba(17,17,17,0.04);
+  }
+  .scene .head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+  .scene .num {
+    font-size: 14px; font-weight: 800; color: var(--ds-color-ink-inverse);
+    background: var(--ds-color-primary);
+    width: 32px; height: 32px; display: grid; place-items: center;
+    border-radius: var(--ds-radius-md); flex: none;
+  }
+  .scene h3 { margin: 0; font-size: 21px; letter-spacing: -0.3px; }
+  .scene .sub { color: var(--ds-color-ink-muted); font-size: 14.5px; margin: 4px 0 16px; }
+  .scene .sub code, .scene h3 code { font-size: 0.86em; }
+
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; align-items: center; }
+  .tag-inv {
+    font-size: 11px; color: var(--ds-color-ink-subtle);
+    border: 1px solid var(--ds-color-border); border-radius: 999px; padding: 2px 9px;
+    background: var(--ds-color-surface-muted);
+  }
+
+  .step { margin: 14px 0; }
+  .step .lbl {
+    font-size: 11px; font-weight: 800; letter-spacing: 0.8px; text-transform: uppercase;
+    color: var(--ds-color-ink-subtle); margin-bottom: 6px;
+  }
+
+  /* code block — deep ink surface both themes; syntax via classes */
+  pre {
+    background: var(--ds-code-bg); border: 1px solid var(--ds-code-line);
+    border-radius: var(--ds-radius-md); padding: 14px 16px; overflow-x: auto;
+    font-size: 13px; line-height: 1.65; margin: 0; color: var(--ds-code-ink);
+  }
+  pre .c { color: #7C8AA0; }        /* comment */
+  pre .k { color: var(--ds-color-accent); }  /* keyword / verb */
+  pre .s { color: #86C06A; }        /* string */
+  pre .o { color: #6BE3B8; }        /* output value */
+
+  .result {
+    background: var(--ds-color-surface-muted); border: 1px solid var(--ds-color-border);
+    border-radius: var(--ds-radius-md); padding: 13px 16px; font-size: 14.5px;
+    color: var(--ds-color-ink);
+  }
+  .result + .result { margin-top: 8px; }
+  .result .arrow { color: var(--ds-color-primary); font-weight: 700; }
+  .result .muted { color: var(--ds-color-ink-muted); }
+  .result code, .proves code, .sub code, .note code, .thesis code, table.org td code {
+    font-family: var(--ds-font-mono); font-size: 0.85em;
+    background: color-mix(in srgb, var(--ds-color-ink) 6%, transparent);
+    padding: 1px 5px; border-radius: var(--ds-radius-sm);
+  }
+
+  .proves {
+    margin-top: 14px; font-size: 14px; color: var(--ds-color-ink-muted);
+    border-top: 1px dashed var(--ds-color-border-strong); padding-top: 12px;
+  }
+  .proves b { color: var(--ds-color-ink); }
+  .proves .lead { color: var(--ds-color-info); font-weight: 700; }
+  [data-theme='dark'] .proves .lead { color: var(--ds-color-link); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .proves .lead { color: var(--ds-color-link); } }
+
+  /* routing outcome status tags — 기호 + 단어 + 색 (non-color status encoding) */
+  .disp {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-weight: 700; font-size: 0.95em; padding: 1px 8px; border-radius: var(--ds-radius-sm);
+    border: 1px solid transparent;
+  }
+  .disp .ic { font-weight: 800; }
+  .disp.routed {
+    color: var(--ds-color-success);
+    background: color-mix(in srgb, var(--ds-color-success) 12%, transparent);
+    border-color: color-mix(in srgb, var(--ds-color-success) 32%, transparent);
+  }
+  .disp.contested {
+    color: #8A5A00;
+    background: color-mix(in srgb, var(--ds-color-warning) 32%, transparent);
+    border-color: color-mix(in srgb, var(--ds-color-warning) 60%, transparent);
+  }
+  [data-theme='dark'] .disp.contested { color: var(--ds-color-warning); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme='light']) .disp.contested { color: var(--ds-color-warning); } }
+  .disp.unowned {
+    color: var(--ds-color-danger);
+    background: color-mix(in srgb, var(--ds-color-danger) 14%, transparent);
+    border-color: color-mix(in srgb, var(--ds-color-danger) 36%, transparent);
+  }
+  /* inline verdict words for kept/dropped etc */
+  .v-keep { color: var(--ds-color-success); font-weight: 700; }
+  .v-drop { color: var(--ds-color-danger); font-weight: 700; }
+
+  /* ---- footer -------------------------------------------------------- */
+  footer {
+    margin-top: 64px; padding: 26px 28px;
+    background: var(--ds-color-surface); border: 1px solid var(--ds-color-border);
+    border-radius: var(--ds-radius-lg); color: var(--ds-color-ink-muted); font-size: 14px;
+  }
+  footer a { color: var(--ds-color-link); }
+  footer b { color: var(--ds-color-ink); }
+  footer .row { margin-bottom: 10px; }
+  .gate {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: color-mix(in srgb, var(--ds-color-success) 12%, transparent);
+    color: var(--ds-color-success); font-weight: 700; font-family: var(--ds-font-mono);
+    padding: 3px 11px; border-radius: var(--ds-radius-sm); font-size: 13px;
+    border: 1px solid color-mix(in srgb, var(--ds-color-success) 30%, transparent);
+  }
+
+  /* ---- responsive ---------------------------------------------------- */
+  @media (max-width: 720px) {
+    .wrap { padding: 0 16px 72px; }
+    .grid.p4 { grid-template-columns: 1fr; }
+    header.hero { padding: 56px 18px 32px; }
+    header.hero h1 { font-size: 32px; }
+    header.hero .tag { font-size: 16px; }
+    .scene { padding: 20px 18px; }
+    .scene h3 { font-size: 19px; }
+    table.org { font-size: 13px; }
+    table.org th, table.org td { padding: 8px 9px; }
+  }
+
+  /* ---- print --------------------------------------------------------- */
+  @media print {
+    .theme-toggle, nav.toc { display: none; }
+    body { background: #fff; color: #000; font-size: 12px; }
+    .scene, .persona, footer, .thesis, .inv .pill { box-shadow: none; break-inside: avoid; }
+    pre { background: #f4f4f4; color: #111; border-color: #ccc; }
+    pre .c, pre .k, pre .s, pre .o { color: #333; }
+    a { color: #000; text-decoration: underline; }
+  }
 </style>
+<script>
+  // 테마 토글 — data-theme 세팅(flash 방지: 이 스크립트는 head에서 body 페인트 전 실행).
+  (function () {
+    try {
+      var saved = localStorage.getItem("aon-theme");
+      if (saved === "light" || saved === "dark") {
+        document.documentElement.setAttribute("data-theme", saved);
+      } else {
+        // 저장값 없으면 시스템 선호를 따른다(prefers-color-scheme).
+        document.documentElement.removeAttribute("data-theme");
+      }
+    } catch (e) {}
+    window.__toggleTheme = function () {
+      var el = document.documentElement;
+      var cur = el.getAttribute("data-theme");
+      if (!cur) {
+        cur = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      var next = cur === "dark" ? "light" : "dark";
+      el.setAttribute("data-theme", next);
+      try { localStorage.setItem("aon-theme", next); } catch (e) {}
+      var lbl = document.getElementById("theme-label");
+      if (lbl) lbl.textContent = next === "dark" ? "라이트" : "다크";
+    };
+  })();
+</script>
 </head>
 <body>
 
+<button class="theme-toggle" type="button" onclick="window.__toggleTheme()" aria-label="라이트/다크 테마 전환">
+  <span aria-hidden="true">◐</span><span id="theme-label">테마</span>
+</button>
+
 <header class="hero">
+  <span class="kicker">전 기능 시나리오 투어</span>
   <h1>Agent Org Network</h1>
   <div class="tag">조직 구성원이 자기 업무 에이전트를 만들어 <em>자기 지식으로 답하게</em> 하고,
-    중앙이 담당·권한·판례로 질문을 연결하는 협업형 AI 조직 — 전 기능 시나리오 투어.</div>
+    중앙이 담당·권한·판례로 질문을 연결하는 협업형 AI 조직.</div>
   <div class="thesis">
     중앙 AI가 모든 걸 아는 구조가 아니다. 중앙은 <b>연결자</b>다 — "누가 무엇을 담당하는가"와
-    그 연결·기록만 안다. 답은 <b>담당자(owner)의 Claude Code</b>가 자기 <b>OKF 지식 번들</b>을 읽어서 한다.
+    그 연결·기록만 안다. 답은 <b>담당자(owner)의 Claude</b>가 자기 <b>OKF 지식 번들</b>을 읽어서 한다.
     모르면 지어내지 않고 사람(Manager)에게 넘긴다. 다툼은 사람이 합의하고, 그 합의가 <b>판례</b>로 쌓여
     라우터가 학습한다.
   </div>
@@ -117,10 +419,11 @@
 
 <nav class="toc"><div class="inner">
   <a href="#cast">등장</a><a href="#inv">불변식</a>
-  <a href="#s1">1·등록</a><a href="#s2">2·라우팅</a><a href="#s3">3·무지식</a><a href="#s4">4·금지</a>
-  <a href="#s5">5·승인</a><a href="#s6">6·다툼·판례</a><a href="#s7">7·미아</a><a href="#s8">8·Manager</a>
-  <a href="#s9">9·분산</a><a href="#s10">10·백업</a><a href="#s11">11·인증</a><a href="#s12">12·모니터링</a>
-  <a href="#s13">13·그래프</a><a href="#s14">14·MCP</a><a href="#s15">15·eval</a>
+  <a href="#s1">1·등록</a><a href="#s2">2·OKF 저작</a><a href="#s3">3·답변</a><a href="#s4">4·무지식</a>
+  <a href="#s5">5·금지</a><a href="#s6">6·승인</a><a href="#s7">7·다툼·판례</a><a href="#s8">8·reeval</a>
+  <a href="#s9">9·미아</a><a href="#s10">10·Manager</a><a href="#s11">11·분산</a><a href="#s12">12·fan-out</a>
+  <a href="#s13">13·백업</a><a href="#s14">14·인증</a><a href="#s15">15·모니터링</a><a href="#s16">16·그래프</a>
+  <a href="#s17">17·MCP</a><a href="#s18">18·eval</a>
 </div></nav>
 
 <div class="wrap">
@@ -128,121 +431,156 @@
   <!-- CAST -->
   <h2 class="sec" id="cast">등장 — 데모 조직과 네 페르소나</h2>
   <div class="grid p4">
-    <div class="persona"><div class="who"><span class="badge b-user">실 사용자</span></div>
+    <div class="persona"><div class="who"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span></div>
       <div class="what">채팅(웹)·또는 자기 MCP 클라이언트에서 묻고 답받는다. 내부는 숨김 — 담당·승인·출처만 본다.</div></div>
-    <div class="persona"><div class="who"><span class="badge b-owner">개인 Owner</span></div>
-      <div class="what">자기 카드를 깎고(빌더), 자기에게 온 후보 합의 + 부재 중 백업이 낸 답을 검토한다(처리함).</div></div>
-    <div class="persona"><div class="who"><span class="badge b-manager">Manager</span></div>
+    <div class="persona"><div class="who"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>개인 Owner</span></div>
+      <div class="what">자기 카드를 깎고(빌더), 자기 지식(OKF)을 만들고, 자기에게 온 후보 합의·재검토·부재 중 백업 답을 검토한다(처리함).</div></div>
+    <div class="persona"><div class="who"><span class="badge b-manager"><span class="ic" aria-hidden="true">▲</span>Manager</span></div>
       <div class="what">승인 요청·escalation·합의 실패를 처리한다(Manager 큐).</div></div>
-    <div class="persona"><div class="who"><span class="badge b-ops">운영자</span></div>
+    <div class="persona"><div class="who"><span class="badge b-ops"><span class="ic" aria-hidden="true">■</span>운영자</span></div>
       <div class="what">모니터링 로그·상세·Org 그래프로 전체 그림과 모든 Q&amp;A의 절차·답을 추적한다.</div></div>
   </div>
 
-  <p style="color:var(--muted);font-size:13.5px;margin:18px 0 8px">샘플 조직 — 유저 6명, Agent Card 5장
+  <p class="note" style="margin:18px 0 8px">샘플 조직 — 유저 6명, Agent Card 5장
     (<code>registry/</code>). <b>보상</b>은 cs_ops·finance_ops가 공유(다툼), <b>급여이체</b>는 hr_ops가
     cannot_answer로 차감(미아).</p>
   <table class="org">
-    <tr><th>Agent Card</th><th>Owner</th><th>팀</th><th>담당(domains)</th></tr>
+    <thead><tr><th>Agent Card</th><th>Owner</th><th>팀</th><th>담당(domains)</th></tr></thead>
+    <tbody>
     <tr><td class="mono">contract_ops</td><td class="mono">legal_lead</td><td>legal</td><td>계약 검토</td></tr>
     <tr><td class="mono">cs_ops</td><td class="mono">cs_lead</td><td>cs</td><td>환불, <b>보상</b></td></tr>
     <tr><td class="mono">finance_ops</td><td class="mono">finance_lead</td><td>finance</td><td>가격, <b>보상</b></td></tr>
     <tr><td class="mono">hr_ops</td><td class="mono">hr_lead</td><td>hr</td><td>채용·휴가·평가·<b>급여이체</b>(cannot_answer)</td></tr>
     <tr><td class="mono">it_ops</td><td class="mono">it_lead</td><td>it</td><td>계정·접근권한·보안</td></tr>
+    </tbody>
   </table>
-  <p style="color:var(--muted);font-size:13px;margin-top:8px">사람 위계: 다섯 lead는 모두
-    <code class="mono">root_manager</code>가 manages.</p>
+  <p class="note" style="margin-top:8px">사람 위계: 다섯 lead는 모두 <code>root_manager</code>가 manages.</p>
 
   <!-- INVARIANTS -->
   <h2 class="sec" id="inv">절대 깨지지 않는 5가지 불변식</h2>
   <div class="inv">
-    <div class="pill"><b>① 미아 없음</b> — 어떤 질문도 담당 없이 버려지지 않는다. 0매칭이면 반드시 사람(Manager)에게 종착.</div>
-    <div class="pill"><b>② 등록 무결성</b> — 유효하지 않은 카드는 등록되지 않는다(admission).</div>
-    <div class="pill"><b>③ Authority 중앙</b> — 권한·관할은 중앙 규칙만 선언한다. 카드가 자기 권한을 단정하지 않는다(under-claim만).</div>
-    <div class="pill"><b>④ 전이 ≠ 기록</b> — 상태 전이(도메인)와 감사 기록(로그)은 다른 것.</div>
-    <div class="pill"><b>⑤ 답엔 담당·신뢰가 붙는다</b> — 사용자에게 가는 답엔 항상 담당·신뢰 상태(full/draft_only/backup)·출처가 붙는다.</div>
+    <div class="pill"><span class="n">1</span><b>미아 없음</b> — 어떤 질문도 담당 없이 버려지지 않는다. 0매칭이면 반드시 사람(Manager)에게 종착.</div>
+    <div class="pill"><span class="n">2</span><b>등록 무결성</b> — 유효하지 않은 카드는 등록되지 않는다(admission).</div>
+    <div class="pill"><span class="n">3</span><b>Authority 중앙</b> — 권한·관할은 중앙 규칙만 선언한다. 카드가 자기 권한을 단정하지 않는다(under-claim만).</div>
+    <div class="pill"><span class="n">4</span><b>전이 ≠ 기록</b> — 상태 전이(도메인)와 감사 기록(로그)은 다른 것.</div>
+    <div class="pill"><span class="n">5</span><b>답엔 담당·신뢰가 붙는다</b> — 사용자에게 가는 답엔 항상 담당·신뢰 상태(full/draft_only/backup)·출처가 붙는다.</div>
   </div>
 
-  <!-- SCENE 1 -->
+  <!-- SCENE 1 — 등록 -->
   <section class="scene" id="s1">
     <div class="head"><div class="num">1</div><h3>업무 에이전트를 등록한다</h3>
-      <div class="tags"><span class="badge b-owner">Owner</span><span class="tag-inv">불변식 ②③</span></div></div>
-    <div class="sub">담당 영역을 선언한 카드를 <b>코드 밖 YAML</b>로 등록한다. Owner는 빌더에서 구성·검증한 뒤 git/PR로 커밋한다.</div>
-    <div class="step"><div class="lbl">행동 — 코드 수정 없이 YAML 5장 등록·검증</div>
+      <div class="tags"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ②③</span></div></div>
+    <div class="sub">담당 영역을 선언한 카드를 <b>코드 밖 YAML</b>로 등록한다. Owner는 <b>빌더 화면</b>(디자인 시스템 UI)에서
+      카드를 폼으로 구성·검증한 뒤, 미리보기된 YAML을 <b>git/PR로 커밋</b>한다 — 라이브 레지스트리 쓰기는 없다.</div>
+    <div class="step"><div class="lbl">① 행동 — 빌더 UI(<code>/builder</code>)에서 카드 폼 구성·검증</div>
+      <pre><span class="k">POST</span> /builder/validate  <span class="s">{"agent_id":"cs_ops","team":"cs","domains":["환불","보상"], …}</span>
+<span class="c"># 통과 → {ok:true, yaml} 미리보기 · 실패 → {ok:false, errors} · 세션≠owner → 403(자기 카드만)</span></pre></div>
+    <div class="step"><div class="lbl">② 행동 — 전체 레지스트리 참조 무결성 검증(CLI)</div>
       <pre><span class="k">uv run</span> python -m agent_org_network.registry registry</pre></div>
     <div class="step"><div class="lbl">결과</div>
-      <div class="result"><span class="arrow">→</span> contract_ops·cs_ops·finance_ops·hr_ops·it_ops 5장 등록,
-        owner/manager 참조 무결성 <span class="o">검증 통과</span>. 빌더(<code>/builder</code>)는 폼→
-        <code>POST /builder/validate</code>로 admission 검증 후 YAML 미리보기를 낸다(라이브 등록이 아니라 git/PR이 편집 채널).</div></div>
-    <div class="proves"><b>증명:</b> 카드는 <b>코드 밖 데이터</b>다 — 5장을 YAML 추가만으로 등록. 미등록 owner를 단 카드는
-      <span class="disp unowned">거부</span>된다(불변식 ②). 카드는 담당 영역(domains)만 under-claim으로 선언하고
+      <div class="result"><span class="arrow">→</span> 빌더 화면(Next.js·라이트/다크)이 카드 필드 폼 → admission 검증 →
+        <b>YAML 미리보기(복사)</b> → "registry/agents/{agent_id}.yaml에 커밋(PR)" 3단 안내. 라이브 등록이 아니라 <b>git/PR이 편집 채널</b>.<br>
+        <span class="arrow">→</span> CLI는 contract_ops·cs_ops·finance_ops·hr_ops·it_ops 5장의 owner/manager 참조 무결성 <span class="o">검증 통과</span>.</div></div>
+    <div class="proves"><span class="lead">증명</span> — 카드는 <b>코드 밖 데이터</b>다. 5장을 YAML 추가만으로 등록. 미등록 owner를 단 카드는
+      <span class="disp unowned"><span class="ic" aria-hidden="true">⚠</span>거부</span>된다(불변식 ②). 카드는 담당 영역(domains)만 under-claim으로 선언하고
       권한은 declare하지 않는다(불변식 ③).</div>
   </section>
 
-  <!-- SCENE 2 -->
+  <!-- SCENE 2 — OKF 저작 (신규 A) -->
   <section class="scene" id="s2">
-    <div class="head"><div class="num">2</div><h3>단일 담당 — owner가 자기 지식으로 진짜 답한다</h3>
-      <div class="tags"><span class="badge b-user">실 사용자</span><span class="tag-inv">불변식 ⑤</span></div></div>
-    <div class="sub">"환불" 질문 → <span class="disp routed">Routed</span>(cs_ops). 담당 owner의 Claude Code가
-      <code>okf/cs_ops/</code> 번들을 읽어 계산한다. 벡터DB·RAG 없이 — cwd의 마크다운을 직접 읽는다.</div>
-    <div class="step"><div class="lbl">행동 — 실 claude 답(웹 기본 런타임 = ClaudeCodeRuntime + OKF)</div>
-      <pre><span class="k">curl</span> -X POST :8099/ask -d <span class="s">'{"question":"20일 전 결제한 상품을 단순
-      변심으로 환불하면 10만원 중 얼마 돌려받나요?"}'</span></pre></div>
-    <div class="step"><div class="lbl">결과 — okf/cs_ops/refund-policy.md 를 읽고 계산</div>
-      <div class="result"><span class="o">"최종 환불액: <b>45,000원</b>"</span><br>
-        <span style="color:var(--muted)">근거: 20일 → 8~30일 구간 50% = 50,000원 → 단순 변심 10% 수수료 차감 → 45,000원.</span><br>
-        <code>answered_by: cs_lead/cs_ops · mode: <b>full</b> · sources: 위키/환불정책</code></div></div>
-    <div class="proves"><b>증명:</b> "owner가 자기 지식으로 답한다"의 실체 — 답은 중앙이 아니라
-      <b>cs_ops가 자기 OKF 번들을 읽어</b> 만든다(환각이 아니라 정책 계산). 답엔 담당·신뢰(full)·출처가 붙는다(불변식 ⑤).</div>
+    <div class="head"><div class="num">2</div><h3>OKF 저작 — owner가 지식을 만든다</h3>
+      <div class="tags"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ③ · 중앙 토큰 0</span></div></div>
+    <div class="sub">카드로 담당을 <b>선언</b>했으면, 이제 그 담당 <b>지식(OKF)</b>을 만든다. owner가 문서를 올리면 실
+      LLM(<code>claude-sonnet-5</code>)이 개념(Concept·core_question)으로 추출하고, owner가 검토·승인하면
+      <b>owner-로컬 git에 커밋</b>되고 <b>목차(KnowledgeIndex)만 중앙에 publish</b>된다 — 본문은 중앙에 가지 않는다(ADR 0029·0030).</div>
+    <div class="step"><div class="lbl">① 행동 — raw 문서 → staged 개념 추출(실 LlmAuthor)</div>
+      <pre><span class="k">POST</span> /author/run  <span class="s">{"agent_id":"cs_ops","document":"…교환 정책 원문…"}</span>
+<span class="c"># 카드 권한 domain을 split 힌트로 주입 — LLM이 core_question·domain으로 추출</span></pre></div>
+    <div class="step"><div class="lbl">② 행동 — 승인 개념 배포(owner git 커밋 + 목차만 publish)</div>
+      <pre><span class="k">POST</span> /author/publish  <span class="s">{"agent_id":"cs_ops","concepts":[{승인 개념…}]}</span>
+<span class="c"># admit_okf 재필터 → render_okf_markdown → commit_okf_bundle(owner git·실 SHA)</span></pre></div>
+    <div class="step"><div class="lbl">결과 — over-claim 필터가 권한 밖 domain을 떨군다</div>
+      <div class="result"><span class="arrow">→</span> 실 LLM이 교환정책 원문에서 <b>4개념</b> 추출.
+        <code>admit_okf</code>의 <b>over-claim 필터</b>가 권한 밖 domain(<code>교환</code>) <b>3건</b>을
+        <span class="v-drop">drop</span>(<code>dropped_concepts</code>), 권한 안(<code>환불</code>) <b>1건</b>만
+        <span class="v-keep">수용</span>(<code>in_domain</code>).</div>
+      <div class="result"><span class="arrow">→</span> 수용분은 owner git에 실 커밋(실 SHA). 중앙엔 목차만 남는다 —
+        <code>KnowledgeIndex</code>(concept_id·title·core_question·domain, <b>본문 0</b>).</div></div>
+    <div class="proves"><span class="lead">증명</span> — 지식을 <b>owner가 만든다</b>(실 LLM 추출·입력 기반·고정 아님). 권한 밖 domain은
+      <b>중앙이 강제로 떨군다</b>(불변식 ③ — 카드가 자기 권한을 못 넓힌다). 중앙은 raw·본문·모델 토큰 0,
+      <b>목차만 보관</b>한다(중앙 토큰 0).</div>
   </section>
 
-  <!-- SCENE 3 -->
+  <!-- SCENE 3 — 단일 담당 답 (기존 2, 갱신 1: 두 런타임) -->
   <section class="scene" id="s3">
-    <div class="head"><div class="num">3</div><h3>중앙은 무지식 — 모르면 지어내지 않는다</h3>
-      <div class="tags"><span class="badge b-user">실 사용자</span></div></div>
-    <div class="sub">대조 실험: 번들이 <b>없는</b> 담당(finance_ops, <code>okf/finance_ops/</code> 부재)에게 물으면?</div>
+    <div class="head"><div class="num">3</div><h3>단일 담당 — owner가 자기 지식으로 진짜 답한다</h3>
+      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="tag-inv">불변식 ⑤</span></div></div>
+    <div class="sub">"환불" 질문 → <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>(cs_ops).
+      담당 owner의 답변 런타임이 <code>okf/cs_ops/</code> 번들을 읽어 계산한다. 벡터DB·RAG 없이 — cwd의 마크다운을 직접 읽는다.</div>
+    <div class="step"><div class="lbl">행동 — 실 답변(런타임은 owner가 고른다)</div>
+      <pre><span class="k">curl</span> -X POST :8099/ask -d <span class="s">'{"question":"20일 전 결제한 상품을 단순
+      변심으로 환불하면 10만원 중 얼마 돌려받나요?"}'</span></pre></div>
+    <div class="step"><div class="lbl">런타임 — 두 가지, 둘 다 중앙 API 키·토큰 0</div>
+      <div class="result"><span class="muted">기본</span> <code>ClaudeCodeRuntime</code> — owner 로컬 <code>claude</code> CLI가 OKF 번들을 읽어 답한다.<br>
+        <span class="muted">토글</span> <code>AON_PROVIDER=claude-api</code>이면 <code>ClaudeApiRuntime</code> — owner OAuth 인프로세스
+        anthropic SDK(<code>claude-sonnet-5</code>)로 교체(<code>select_runtime</code>). 어느 쪽이든 <b>중앙 키 주입 0</b>.</div></div>
+    <div class="step"><div class="lbl">결과 — okf/cs_ops/refund-policy.md 를 읽고 계산</div>
+      <div class="result"><span class="o">"최종 환불액: <b>45,000원</b>"</span><br>
+        <span class="muted">근거: 20일 → 8~30일 구간 50% = 50,000원 → 단순 변심 10% 수수료 차감 → 45,000원.</span><br>
+        <code>answered_by: cs_lead/cs_ops · mode: full · sources: 위키/환불정책</code></div></div>
+    <div class="proves"><span class="lead">증명</span> — "owner가 자기 지식으로 답한다"의 실체. 답은 중앙이 아니라
+      <b>cs_ops가 자기 OKF 번들을 읽어</b> 만든다(환각이 아니라 정책 계산). 런타임(CLI·in-process SDK)이 달라도
+      <b>owner 경계·중앙 토큰 0</b>은 같다. 답엔 담당·신뢰(full)·출처가 붙는다(불변식 ⑤).</div>
+  </section>
+
+  <!-- SCENE 4 — 무지식 (기존 3) -->
+  <section class="scene" id="s4">
+    <div class="head"><div class="num">4</div><h3>중앙은 무지식 — 모르면 지어내지 않는다</h3>
+      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span></div></div>
+    <div class="sub">대조 실험 — 번들이 <b>없는</b> 담당(finance_ops, <code>okf/finance_ops/</code> 부재)에게 물으면?</div>
     <div class="step"><div class="lbl">행동</div>
       <pre><span class="k">curl</span> -X POST :8099/ask -d <span class="s">'{"question":"연간 결제하면 가격 할인 얼마나 되나요?"}'</span></pre></div>
     <div class="step"><div class="lbl">결과</div>
       <div class="result"><span class="o">"근거로 삼을 가격표·할인규정 문서가 없어 정확히 답변드릴 수 없습니다.
         추정해서 알려드리면 잘못된 견적 기준이 될 수 있어, 임의 수치는 안내하지 않겠습니다."</span></div></div>
-    <div class="proves"><b>증명:</b> 같은 시스템·같은 claude인데 <b>cs_ops는 45,000원, finance_ops는 "모른다"</b> —
+    <div class="proves"><span class="lead">증명</span> — 같은 시스템·같은 런타임인데 <b>cs_ops는 45,000원, finance_ops는 "모른다"</b>.
       차이는 오직 <b>owner OKF 번들의 유무</b>다. 중앙은 지식을 소유하지 않고, "모르면 안전하게 넘긴다"는 원칙이 살아 있다.</div>
   </section>
 
-  <!-- SCENE 4 -->
-  <section class="scene" id="s4">
-    <div class="head"><div class="num">4</div><h3>금지(cannot_answer) — 담당 영역이어도 거부하면 처분한다</h3>
-      <div class="tags"><span class="badge b-user">실 사용자</span><span class="tag-inv">불변식 ①</span></div></div>
+  <!-- SCENE 5 — 금지 (기존 4) -->
+  <section class="scene" id="s5">
+    <div class="head"><div class="num">5</div><h3>금지(cannot_answer) — 담당 영역이어도 거부하면 처분한다</h3>
+      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="tag-inv">불변식 ①</span></div></div>
     <div class="sub">hr_ops는 <code>급여이체</code>를 domains에 두지만 <code>cannot_answer</code>로도 선언 — "내 영역이나 실행은 거부".
       라우터가 후보에서 <b>차감</b>한다.</div>
     <div class="step"><div class="lbl">행동</div>
       <pre><span class="k">curl</span> -X POST :8099/ask -d <span class="s">'{"question":"급여이체 좀 처리해 주세요"}'</span></pre></div>
     <div class="step"><div class="lbl">결과</div>
-      <div class="result"><span class="arrow">→</span> <span class="disp unowned">Unowned</span> — hr_ops가 차감돼 0매칭 →
+      <div class="result"><span class="arrow">→</span> <span class="disp unowned"><span class="ic" aria-hidden="true">⚠</span>Unowned</span> — hr_ops가 차감돼 0매칭 →
         "아직 담당이 없어 매니저에게 전달했어요."</div></div>
-    <div class="proves"><b>증명:</b> cannot_answer는 라우터가 <b>실제로 후보에서 빼</b>(TRD §6) 금지 영역을 답하지 않고
+    <div class="proves"><span class="lead">증명</span> — cannot_answer는 라우터가 <b>실제로 후보에서 빼</b>(TRD §6) 금지 영역을 답하지 않고
       처분한다. 0매칭이 됐지만 버려지지 않고 Manager로 종착한다(불변식 ①).</div>
   </section>
 
-  <!-- SCENE 5 -->
-  <section class="scene" id="s5">
-    <div class="head"><div class="num">5</div><h3>민감/고액 — Approval 게이트(초안·승인 대기)</h3>
-      <div class="tags"><span class="badge b-user">실 사용자</span><span class="tag-inv">불변식 ⑤</span></div></div>
+  <!-- SCENE 6 — 승인 (기존 5) -->
+  <section class="scene" id="s6">
+    <div class="head"><div class="num">6</div><h3>민감/고액 — Approval 게이트(초안·승인 대기)</h3>
+      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="tag-inv">불변식 ⑤</span></div></div>
     <div class="sub">hr_ops는 <code>평가</code>를 <code>approval_when</code>에 둔다 — 라우팅은 되지만 사람 사인 전엔 초안.</div>
     <div class="step"><div class="lbl">행동</div>
       <pre><span class="k">curl</span> -X POST :8099/ask -d <span class="s">'{"question":"이번 반기 인사평가 기준이 어떻게 바뀌었나요?"}'</span></pre></div>
     <div class="step"><div class="lbl">결과</div>
-      <div class="result"><span class="arrow">→</span> <span class="disp routed">Routed</span>(hr_ops),
-        <code>mode: <b>draft_only</b></code> — 담당은 정해졌고 답도 났지만 "초안·승인 대기"로 표시된다.</div></div>
-    <div class="proves"><b>증명:</b> 승인은 게이트일 뿐 담당은 정해졌다(Escalation과 구분). 신뢰 상태(draft_only)가
+      <div class="result"><span class="arrow">→</span> <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>(hr_ops),
+        <code>mode: draft_only</code> — 담당은 정해졌고 답도 났지만 "초안·승인 대기"로 표시된다.</div></div>
+    <div class="proves"><span class="lead">증명</span> — 승인은 게이트일 뿐 담당은 정해졌다(Escalation과 구분). 신뢰 상태(draft_only)가
       <b>라우팅 결정에 의해 강제</b>되어 답에 붙는다 — 워커 자기보고가 아니다(불변식 ⑤).</div>
   </section>
 
-  <!-- SCENE 6 -->
-  <section class="scene" id="s6">
-    <div class="head"><div class="num">6</div><h3>그레이 영역 — 다툼을 사람이 합의하고, 판례로 학습한다</h3>
-      <div class="tags"><span class="badge b-user">실 사용자</span><span class="badge b-owner">Owner</span><span class="tag-inv">불변식 ④</span></div></div>
-    <div class="sub"><code>보상</code>은 cs_ops·finance_ops 둘 다의 영역 → <span class="disp contested">Contested</span>.
+  <!-- SCENE 7 — 다툼·판례 (기존 6) -->
+  <section class="scene" id="s7">
+    <div class="head"><div class="num">7</div><h3>그레이 영역 — 다툼을 사람이 합의하고, 판례로 학습한다</h3>
+      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ④</span></div></div>
+    <div class="sub"><code>보상</code>은 cs_ops·finance_ops 둘 다의 영역 → <span class="disp contested"><span class="ic" aria-hidden="true">◑</span>Contested</span>.
       후보 Owner들이 각자 처리함에서 <b>1인칭</b>으로 담당을 합의한다.</div>
     <div class="step"><div class="lbl">① 사용자가 보상 질문 → Contested</div>
       <div class="result"><span class="arrow">→</span> "담당을 확인하고 있어요." (사용자에겐 <b>다툼이라는 사실조차 감춤</b>) —
@@ -254,30 +592,49 @@
     <div class="step"><div class="lbl">③ 결과 — 합의 → 판례 학습</div>
       <div class="result"><span class="arrow">→</span> <span class="o">Agreed</span> → <code>Resolution(보상→cs_ops)</code>가
         <b>Precedent</b>로 기록. 케이스 closed. <b>다음 "보상" 질문은 자동으로</b>
-        <span class="disp routed">Routed</span>(cs_ops) — 라우터가 학습했다.</div></div>
-    <div class="proves"><b>증명:</b> 충돌을 한 번에 닫지 않는다 — 당사자들이 1인칭으로 합의하고, 그 합의가 판례로 쌓여
+        <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>(cs_ops) — 라우터가 학습했다.</div></div>
+    <div class="proves"><span class="lead">증명</span> — 충돌을 한 번에 닫지 않는다. 당사자들이 1인칭으로 합의하고, 그 합의가 판례로 쌓여
       라우터가 점점 똑똑해진다. 합의는 <b>전이</b>(처리함 상태), 판례는 <b>기록</b>(append-only) — 둘은 다르다(불변식 ④).</div>
   </section>
 
-  <!-- SCENE 7 -->
-  <section class="scene" id="s7">
-    <div class="head"><div class="num">7</div><h3>미아(Gap) — 담당 공백은 Manager 큐로 종착</h3>
-      <div class="tags"><span class="badge b-user">실 사용자</span><span class="tag-inv">불변식 ①</span></div></div>
-    <div class="sub">어느 카드의 domains에도 없는 주제(주차·복지·시설…) → <span class="disp unowned">Unowned</span>.</div>
+  <!-- SCENE 8 — reeval 인덱스-수용 훅 (신규 C) -->
+  <section class="scene" id="s8">
+    <div class="head"><div class="num">8</div><h3>reeval — 지식이 바뀌면 과거를 다시 본다</h3>
+      <div class="tags"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ① 놓침 0 · ④ 전이≠기록</span></div></div>
+    <div class="sub">owner가 지식을 <b>개정·재publish</b>하면, 그 지식에 기대던 <b>과거 것들</b>을 owner 처리함에 "다시 보라"고
+      올린다 — <b>두 축</b>: ① 옛 지식(옛 SHA)으로 답한 과거 답변(<b>Answer 축</b>) ② 그 담당을 근거로 쌓인 과거 판례(<b>Precedent 축</b>).</div>
+    <div class="step"><div class="lbl">행동 — cs_ops 지식 개정·재publish → 중앙 수용 훅 발화</div>
+      <pre><span class="c"># cs_ops OKF 개정 → /author/publish 재배포 → 중앙 accept_published_index 훅</span>
+<span class="k">GET</span> /inbox/reeval          <span class="c"># 재검토 큐 — 양축 항목이 owner_id로 귀속돼 뜬다</span></pre></div>
+    <div class="step"><div class="lbl">결과 — 양축 항목이 처리함에 적재</div>
+      <div class="result"><span class="arrow">→</span> <b>Answer 축</b>(<code>subject_kind=answer</code>) — 옛 SHA(<code>answer.snapshot_sha</code>)로
+        답한 routed 답이 "재검토" 대상으로.<br>
+        <span class="arrow">→</span> <b>Precedent 축</b>(<code>subject_ref=보상</code>) — 그 agent를 primary로 둔 과거 판례가
+        "재검토" 대상으로.<br>
+        각 항목은 실제 <code>owner_id</code>(예: cs_lead)로 귀속돼 그 owner 처리함에 뜬다(<code>reeval_flagged</code> 통지 1회).</div></div>
+    <div class="proves"><span class="lead">증명</span> — 지식 변경이 과거를 무효화하지 않고 <b>"재검토" 신호</b>로 남긴다(놓침 0·과검출 허용).
+      발화는 중앙 수용 시점(<b>전이</b>), 적재는 처리함(<b>기록</b>) — 전이 ≠ 기록(불변식 ④).</div>
+  </section>
+
+  <!-- SCENE 9 — 미아 (기존 7) -->
+  <section class="scene" id="s9">
+    <div class="head"><div class="num">9</div><h3>미아(Gap) — 담당 공백은 Manager 큐로 종착</h3>
+      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="tag-inv">불변식 ①</span></div></div>
+    <div class="sub">어느 카드의 domains에도 없는 주제(주차·복지·시설…) → <span class="disp unowned"><span class="ic" aria-hidden="true">⚠</span>Unowned</span>.</div>
     <div class="step"><div class="lbl">행동</div>
       <pre><span class="k">curl</span> -X POST :8099/ask -d <span class="s">'{"question":"주차장 정기권은 어떻게 갱신해요?"}'</span></pre></div>
     <div class="step"><div class="lbl">결과</div>
-      <div class="result"><span class="arrow">→</span> <span class="disp unowned">Unowned</span> →
+      <div class="result"><span class="arrow">→</span> <span class="disp unowned"><span class="ic" aria-hidden="true">⚠</span>Unowned</span> →
         "아직 담당이 없어 매니저에게 전달했어요." — <code>root_manager</code>의 Manager 큐에
         <code>ManagerItem</code>(출처 <code>FromUnowned</code>)이 적재된다.</div></div>
-    <div class="proves"><b>증명:</b> 미아 없음(불변식 ①)의 최종 종착 — 담당이 없어도 질문은 버려지지 않고 반드시
+    <div class="proves"><span class="lead">증명</span> — 미아 없음(불변식 ①)의 최종 종착. 담당이 없어도 질문은 버려지지 않고 반드시
       누군가의(여기선 root) 큐에 닿는다.</div>
   </section>
 
-  <!-- SCENE 8 -->
-  <section class="scene" id="s8">
-    <div class="head"><div class="num">8</div><h3>Manager 큐 — 세 escalation이 한 곳으로 수렴, 사람이 처분</h3>
-      <div class="tags"><span class="badge b-manager">Manager</span><span class="tag-inv">불변식 ①④</span></div></div>
+  <!-- SCENE 10 — Manager 큐 (기존 8) -->
+  <section class="scene" id="s10">
+    <div class="head"><div class="num">10</div><h3>Manager 큐 — 세 escalation이 한 곳으로 수렴, 사람이 처분</h3>
+      <div class="tags"><span class="badge b-manager"><span class="ic" aria-hidden="true">▲</span>Manager</span><span class="tag-inv">불변식 ①④</span></div></div>
     <div class="sub">미아(Unowned)·합의 교착(Deadlocked)·owner 부재(EscalatedToManager) 세 출처가
       하나의 <code>ManagerItem</code>으로 수렴한다(ADR 0014). Manager가 1인칭으로 처분한다.</div>
     <div class="step"><div class="lbl">행동 — Manager가 자기 큐 조회 → 담당 지정 (세션 로그인 후)</div>
@@ -288,53 +645,73 @@
         <b>AssignOwner</b> → 담당 지정 + <code>Precedent</code> 학습(교착이면 그 ConflictCase도 종결) ·
         <b>Reroute</b> → 재지정(Transfer, 판례 X) · <b>Dismiss</b> → 종결.
         <span class="arrow">→</span> 처분되면 큐에서 사라진다.</div></div>
-    <div class="proves"><b>증명:</b> 미아·합의실패·부재가 흩어지지 않고 한 큐로 모여(미아 없음의 마지막 칸) 사람이 닫는다.
+    <div class="proves"><span class="lead">증명</span> — 미아·합의실패·부재가 흩어지지 않고 한 큐로 모여(미아 없음의 마지막 칸) 사람이 닫는다.
       escalation은 audit에 이미 남으므로 큐는 전이만 담는다(전이 ≠ 기록, 불변식 ④). 권한은 owner가 아니라
       그 위 manager에게 귀속.</div>
   </section>
 
-  <!-- SCENE 9 -->
-  <section class="scene" id="s9">
-    <div class="head"><div class="num">9</div><h3>분산 전송 — 답은 각 owner PC에서, 역방향 연결로</h3>
-      <div class="tags"><span class="badge b-user">실 사용자</span><span class="badge b-owner">Owner</span></div></div>
+  <!-- SCENE 11 — 분산 전송 (기존 9) -->
+  <section class="scene" id="s11">
+    <div class="head"><div class="num">11</div><h3>분산 전송 — 답은 각 owner PC에서, 역방향 연결로</h3>
+      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span></div></div>
     <div class="sub">owner PC는 서버를 노출하지 않는다(NAT 뒤·상시가동 X). owner PC의 <b>워커</b>가 중앙에
-      <b>아웃바운드 WebSocket</b>으로 붙어 작업을 가져가 로컬 claude로 답한다(ADR 0011).</div>
+      <b>아웃바운드 WebSocket</b>으로 붙어 작업을 가져가 로컬로 답한다(ADR 0011).</div>
     <div class="step"><div class="lbl">행동 — 중앙 + owner 워커 기동, 사용자는 비동기로 답 회수</div>
       <pre><span class="k">scripts/run_central.sh</span> 8000          <span class="c"># web /ask + 워커 ws /worker (한 dispatcher)</span>
 <span class="k">scripts/run_worker.sh</span> cs_lead ws://127.0.0.1:8000/worker primary
 <span class="c"># 사용자:</span> POST /ask <span class="c">→</span> <span class="o">Pending(dispatched, tracking)</span>
-<span class="c"># 잠시 후:</span> GET /ask/&lt;tracking&gt; <span class="c">→</span> <span class="o">Answered</span> (워커가 회신한 실 claude 답)</pre></div>
+<span class="c"># 잠시 후:</span> GET /ask/&lt;tracking&gt; <span class="c">→</span> <span class="o">Answered</span> (워커가 회신한 실 답)</pre></div>
     <div class="step"><div class="lbl">결과</div>
       <div class="result"><span class="arrow">→</span> 논리적 호출(중앙→owner)과 물리적 연결(소켓 owner→중앙)이 분리.
         중앙은 owner별 <b>작업 큐</b>에 적재하고 워커가 끊겨도 작업은 대기·재push(끊김·재연결·중복 전달이 본체).
         사용자엔 불투명 <b>추적 토큰</b> 1개만 노출(내부 구조 미노출).</div></div>
-    <div class="proves"><b>증명:</b> 답변 주체가 진짜 그 owner 환경이 된다 — owner별 지식 격리(각 워커가 자기 OKF 번들만 cwd).
-      미회신·timeout은 <span class="disp unowned">Pending</span>으로 표면화하지 동기 답으로 위장하지 않는다.</div>
+    <div class="proves"><span class="lead">증명</span> — 답변 주체가 진짜 그 owner 환경이 된다(각 워커가 자기 OKF 번들만 cwd).
+      미회신·timeout은 <span class="disp unowned"><span class="ic" aria-hidden="true">⋯</span>Pending</span>으로 표면화하지 동기 답으로 위장하지 않는다.</div>
   </section>
 
-  <!-- SCENE 10 -->
-  <section class="scene" id="s10">
-    <div class="head"><div class="num">10</div><h3>가용성 — owner 부재 시 위임 백업이 답하고, owner가 복귀해 검토</h3>
-      <div class="tags"><span class="badge b-owner">Owner</span><span class="tag-inv">불변식 ①⑤</span></div></div>
+  <!-- SCENE 12 — 크로스머신 fan-out (신규 B) -->
+  <section class="scene" id="s12">
+    <div class="head"><div class="num">12</div><h3>크로스머신 fan-out — 저작이 실 소켓으로 전파돼 라우팅에 반영</h3>
+      <div class="tags"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ① · 발화 머신별 단일 · 중앙 토큰 0</span></div></div>
+    <div class="sub">owner가 자기 PC에서 저작·커밋하면 그 <b>목차가 실 WebSocket으로 중앙에 전파</b>돼 라우팅에 즉시 반영된다
+      (<code>AON_ROUTER=index</code>·<code>TwoStageRouter</code>가 published 목차 토큰 매칭). owner PC와 중앙은
+      <b>별도 프로세스·실 소켓</b>이다(ADR 0028·0030).</div>
+    <div class="step"><div class="lbl">행동 — owner PC 커밋 → 실 WS로 목차 전파 → 중앙 수용</div>
+      <pre><span class="c"># owner PC: SubprocessGitGateway 실 커밋(실 SHA) → run_worker가 실 WS로 PublishIndex 송신</span>
+<span class="c"># 중앙: accept_published_index(더 새 목차만 수용) → TwoStageRouter 라우팅 반영</span></pre></div>
+    <div class="step"><div class="lbl">결과 — publish 전/후로 같은 질문의 처분이 바뀐다</div>
+      <div class="result"><span class="muted">publish 전</span> <span class="disp unowned"><span class="ic" aria-hidden="true">⚠</span>Unowned</span> —
+        0매칭 → Manager 종착(미아 없음).<br>
+        <span class="muted">publish 후</span> <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>(cs_ops) —
+        새 지식이 실 소켓으로 전파돼 라우팅이 바뀐다. 중앙은 <b>목차만</b> 받는다(본문·git·모델 토큰 0).</div></div>
+    <div class="proves"><span class="lead">증명</span> — owner가 <b>자기 머신에서 만든 지식</b>이 중앙의 지식 소유 없이 라우팅에 반영된다(중앙=연결자).
+      <b>발화 머신별 단일</b> — owner 커밋=재인덱싱만, 중앙 수용=라우팅·재평가만. 저작 지연 중 질문은 Unowned로
+      안전 종착(미아 없음).</div>
+  </section>
+
+  <!-- SCENE 13 — 백업 (기존 10) -->
+  <section class="scene" id="s13">
+    <div class="head"><div class="num">13</div><h3>가용성 — owner 부재 시 위임 백업이 답하고, owner가 복귀해 검토</h3>
+      <div class="tags"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ①⑤</span></div></div>
     <div class="sub">owner PC 워커가 부재면 owner가 <b>명시적으로 위임한</b> 백업 워커(자기 데이터·자기 신원의 격리 인스턴스)가
       답한다 — 여전히 owner가 답하되 신뢰 하향(ADR 0012). 중앙 공용 LLM이 대신 답하지 않는다.</div>
     <div class="step"><div class="lbl">행동 — 백업 워커 기동(primary 부재 시 폴백)</div>
       <pre><span class="k">scripts/run_worker.sh</span> cs_lead ws://127.0.0.1:8000/worker <span class="k">backup</span></pre></div>
     <div class="step"><div class="lbl">결과 — 폴백 사슬 + 검토 루프</div>
-      <div class="result">primary 부재 → <b>backup</b>이 답(<code>mode: <b>backup</b></code> 강제 하향, <code>answered_by</code>=owner) →
+      <div class="result">primary 부재 → <b>backup</b>이 답(<code>mode: backup</code> 강제 하향, <code>answered_by</code>=owner) →
         둘 다 부재면 Manager escalation(미아 없음). owner 복귀 시 처리함 <b>백업 검토 탭</b>에 미검토 답이 쌓이고,
         <b>승인/정정/무시</b>로 1인칭 처분한다.
-        <pre style="margin-top:8px"><span class="k">curl</span> -X POST :8099/backup-reviews/&lt;item_id&gt; -d <span class="s">'{"type":"approve"}'</span>
+        <pre style="margin-top:10px"><span class="k">curl</span> -X POST :8099/backup-reviews/&lt;item_id&gt; -d <span class="s">'{"type":"approve"}'</span>
 <span class="c"># approve/correct → mode backup→full 신뢰 복원 · dismiss → 검토 완료</span></pre></div></div>
-    <div class="proves"><b>증명:</b> 자리를 비워도 자동으로 잇되 <b>여전히 owner가 답한다</b>. 백업 답은 미검토라 신뢰가
+    <div class="proves"><span class="lead">증명</span> — 자리를 비워도 자동으로 잇되 <b>여전히 owner가 답한다</b>. 백업 답은 미검토라 신뢰가
       하향돼 표시되고(불변식 ⑤), owner가 복귀해 검토함으로써 책임이 명목에서 실질로 바뀐다. 너무 오래된(stale)
       위임이면 백업은 거부→escalation("모르면 넘긴다").</div>
   </section>
 
-  <!-- SCENE 11 -->
-  <section class="scene" id="s11">
-    <div class="head"><div class="num">11</div><h3>페르소나 인증 — 분리된 공간, 자기 것만</h3>
-      <div class="tags"><span class="badge b-owner">Owner</span><span class="badge b-ops">운영자</span><span class="tag-inv">ADR 0009·0016</span></div></div>
+  <!-- SCENE 14 — 인증 (기존 11) -->
+  <section class="scene" id="s14">
+    <div class="head"><div class="num">14</div><h3>페르소나 인증 — 분리된 공간, 자기 것만</h3>
+      <div class="tags"><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="badge b-ops"><span class="ic" aria-hidden="true">■</span>운영자</span><span class="tag-inv">ADR 0009·0016</span></div></div>
     <div class="sub">실 사용자(채팅)는 익명. 운영 면(처리함·큐·모니터링·그래프·빌더)은 <b>세션 인증</b>으로 분리되고,
       신원은 path/body가 아니라 <b>세션</b>에서 와 가장이 불가능하다.</div>
     <div class="step"><div class="lbl">행동 — 인증 ON으로 기동 후 스코프 확인</div>
@@ -346,14 +723,14 @@
     <div class="step"><div class="lbl">결과</div>
       <div class="result"><span class="arrow">→</span> 한 세션은 신원 1개로 고정(per-request 가장 불가). Owner는 <b>자기</b> 처리함만,
         남의 것 처분 시 <span class="o">403</span>. 채팅(<code>/ask</code>)은 인증 ON/OFF 양쪽에서 익명 유지.</div></div>
-    <div class="proves"><b>증명:</b> 페르소나별 면은 분리된 별개 공간이다(ADR 0009) — 인증이 접근 주체를 가르되 라우팅·답 도메인은
+    <div class="proves"><span class="lead">증명</span> — 페르소나별 면은 분리된 별개 공간이다(ADR 0009). 인증이 접근 주체를 가르되 라우팅·답 도메인은
       건드리지 않는다. 무비밀번호 세션은 v0 최소(SSO·자격증명은 후속).</div>
   </section>
 
-  <!-- SCENE 12 -->
-  <section class="scene" id="s12">
-    <div class="head"><div class="num">12</div><h3>운영 모니터링 — 모든 Q&amp;A의 절차·답을 추적</h3>
-      <div class="tags"><span class="badge b-ops">운영자</span><span class="tag-inv">불변식 ④</span></div></div>
+  <!-- SCENE 15 — 모니터링 (기존 12) -->
+  <section class="scene" id="s15">
+    <div class="head"><div class="num">15</div><h3>운영 모니터링 — 모든 Q&amp;A의 절차·답을 추적</h3>
+      <div class="tags"><span class="badge b-ops"><span class="ic" aria-hidden="true">■</span>운영자</span><span class="tag-inv">불변식 ④</span></div></div>
     <div class="sub">append-only 감사 로그를 <b>순수 읽기</b>로 투영. 운영 면이라 내부값(confidence·candidates·escalation 대상)까지 본다 —
       채팅의 노출 불변식과 정반대.</div>
     <div class="step"><div class="lbl">행동 (운영자 로그인 후)</div>
@@ -361,16 +738,16 @@
 <span class="k">GET</span> /monitor/&lt;index&gt;  <span class="c"># 한 건의 전체 절차 — 질문→intent→라우팅 처분→디스패치→답</span>
 <span class="k">GET</span> /monitor/view     <span class="c"># 브라우저 화면(목록→클릭→상세)</span></pre></div>
     <div class="step"><div class="lbl">결과</div>
-      <div class="result"><span class="arrow">→</span> 각 줄에 질문·intent·처분(routed/contested/unowned)·답·신뢰가 원형으로 남는다.
+      <div class="result"><span class="arrow">→</span> 각 줄에 질문·intent·처분(<span class="disp routed"><span class="ic" aria-hidden="true">✓</span>routed</span>/<span class="disp contested"><span class="ic" aria-hidden="true">◑</span>contested</span>/<span class="disp unowned"><span class="ic" aria-hidden="true">⚠</span>unowned</span>)·답·신뢰가 원형으로 남는다.
         승인 대기·미아·판례를 한눈에.</div></div>
-    <div class="proves"><b>증명:</b> 감사 로그는 <b>기록</b>이지 전이가 아니다(불변식 ④). 모니터링은 그 기록을 읽기만 하고
+    <div class="proves"><span class="lead">증명</span> — 감사 로그는 <b>기록</b>이지 전이가 아니다(불변식 ④). 모니터링은 그 기록을 읽기만 하고
       새 상태를 만들지 않는다 — 운영자가 전체 그림을 본다.</div>
   </section>
 
-  <!-- SCENE 13 -->
-  <section class="scene" id="s13">
-    <div class="head"><div class="num">13</div><h3>Org 그래프 — 전체 그림(누가 무엇을 담당·관리하나)</h3>
-      <div class="tags"><span class="badge b-ops">운영자</span></div></div>
+  <!-- SCENE 16 — Org 그래프 (기존 13) -->
+  <section class="scene" id="s16">
+    <div class="head"><div class="num">16</div><h3>Org 그래프 — 전체 그림(누가 무엇을 담당·관리하나)</h3>
+      <div class="tags"><span class="badge b-ops"><span class="ic" aria-hidden="true">■</span>운영자</span></div></div>
     <div class="sub">Registry를 노드(User·Agent Card) + 엣지(owns·manages·maintains)로 <b>순수 파생</b>해 보여준다.</div>
     <div class="step"><div class="lbl">행동 (운영자 로그인 후)</div>
       <pre><span class="k">GET</span> /org/graph   <span class="c"># {nodes, edges} JSON</span>
@@ -378,27 +755,27 @@
     <div class="step"><div class="lbl">결과</div>
       <div class="result"><span class="arrow">→</span> 노드 user 6·card 5, 엣지 <code>owns</code> 5(owner→card)·<code>manages</code> 5
         (lead→root). 역할(Owner/Manager/Maintainer)은 노드가 아니라 <b>엣지에서 파생</b>된다.</div></div>
-    <div class="proves"><b>증명:</b> 조직 구조가 코드가 아니라 등록된 그래프로 드러난다 — 읽기 파생이라 새 상태·전이 0.</div>
+    <div class="proves"><span class="lead">증명</span> — 조직 구조가 코드가 아니라 등록된 그래프로 드러난다 — 읽기 파생이라 새 상태·전이 0.</div>
   </section>
 
-  <!-- SCENE 14 -->
-  <section class="scene" id="s14">
-    <div class="head"><div class="num">14</div><h3>MCP 클라이언트 — 어디서든 같은 백엔드에 묻는다</h3>
-      <div class="tags"><span class="badge b-user">실 사용자</span><span class="tag-inv">ADR 0006</span></div></div>
+  <!-- SCENE 17 — MCP (기존 14) -->
+  <section class="scene" id="s17">
+    <div class="head"><div class="num">17</div><h3>MCP 클라이언트 — 어디서든 같은 백엔드에 묻는다</h3>
+      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="tag-inv">ADR 0006</span></div></div>
     <div class="sub">웹챗만이 아니라 사용자의 MCP 클라이언트(Claude Desktop·IDE)에서도 <code>ask_org</code> 도구로 같은 조직에 묻는다.</div>
     <div class="step"><div class="lbl">행동</div>
       <pre><span class="k">uv run</span> python -m agent_org_network.mcp_server   <span class="c"># stdio 서버 — 도구 ask_org(question)</span></pre></div>
     <div class="step"><div class="lbl">결과 — 일반 클라이언트엔 텍스트로 신뢰 표식이 붙는다</div>
       <div class="result"><span class="o">[contract_ops] 계약 검토와 조건 변경 가능 여부를 안내합니다.</span><br>
         <code>담당: legal_lead/contract_ops · 신뢰: full · 출처: 위키/계약가이드 …</code></div></div>
-    <div class="proves"><b>증명:</b> 중앙은 단일 MCP 서버, UI는 여러 클라이언트 중 하나(ADR 0006). 노출 불변식은 그대로 —
+    <div class="proves"><span class="lead">증명</span> — 중앙은 단일 MCP 서버, UI는 여러 클라이언트 중 하나(ADR 0006). 노출 불변식은 그대로 —
       담당·신뢰·출처만 텍스트로 나가고 조직 내부값(confidence·후보 등)은 새지 않는다.</div>
   </section>
 
-  <!-- SCENE 15 -->
-  <section class="scene" id="s15">
-    <div class="head"><div class="num">15</div><h3>학습 검증 — 골든셋 eval로 라우팅 품질을 잰다</h3>
-      <div class="tags"><span class="badge b-ops">운영자</span></div></div>
+  <!-- SCENE 18 — eval (기존 15) -->
+  <section class="scene" id="s18">
+    <div class="head"><div class="num">18</div><h3>학습 검증 — 골든셋 eval로 라우팅 품질을 잰다</h3>
+      <div class="tags"><span class="badge b-ops"><span class="ic" aria-hidden="true">■</span>운영자</span></div></div>
     <div class="sub">샘플 질문 30개(<code>samples/questions.jsonl</code>)에 대해 분류·라우팅 정확도를 임계값으로 측정한다.
       규칙 분류기(결정론)와 LLM 분류기(실 claude) 둘 다의 공통 타깃.</div>
     <div class="step"><div class="lbl">행동</div>
@@ -407,19 +784,19 @@
     <div class="step"><div class="lbl">결과</div>
       <div class="result"><span class="arrow">→</span> 규칙 분류기는 자연어 표현에 취약(분류 0.60 / 라우팅 0.73) —
         <b>바로 이 한계가 LLM 분류기를 도입한 이유</b>다. 같은 골든셋이 두 분류기의 회귀 게이트가 된다.</div></div>
-    <div class="proves"><b>증명:</b> 분류 품질은 "한 예제 틀림"이 아니라 <b>집계 비율 vs 임계</b>로 본다(통계 eval).
+    <div class="proves"><span class="lead">증명</span> — 분류 품질은 "한 예제 틀림"이 아니라 <b>집계 비율 vs 임계</b>로 본다(통계 eval).
       판례가 쌓이면 골든셋의 라우팅 정확도가 오른다 — 시스템이 학습한다.</div>
   </section>
 
   <!-- FOOTER -->
   <footer>
-    <div style="margin-bottom:10px"><span class="gate">게이트 584 passed · pyright 0 · ruff 0</span>
+    <div class="row"><span class="gate"><span aria-hidden="true">✓</span> 게이트 1747 passed · pyright 0 · ruff 0</span>
       — 모든 핵심 로직은 결정론 단위 테스트(FakeClassifier·StubRuntime 주입). 실 claude·실 WS는 수동 시연 경계.</div>
-    <div style="margin-bottom:6px"><b style="color:var(--ink)">직접 돌려보기</b> — 설치·실행은
+    <div class="row"><b>직접 돌려보기</b> — 설치·실행은
       <a href="../README.md">README</a> 참고. 웹: <code>uv run uvicorn agent_org_network.web:app --port 8099</code>.</div>
-    <div><b style="color:var(--ink)">더 깊이</b> — 제품 <a href="prd-v0.md">PRD</a> ·
+    <div><b>더 깊이</b> — 제품 <a href="prd-v0.md">PRD</a> ·
       기술 <a href="trd-v0.md">TRD</a> · 용어집 <a href="../CONTEXT.md">CONTEXT</a> ·
-      결정 <a href="adr/">ADR 0001~0016</a> · 작업 <a href="tasks-v0.md">tasks</a>.</div>
+      결정 <a href="adr/">ADR 0001~0031</a> · 작업 <a href="tasks-v0.md">tasks</a>.</div>
   </footer>
 
 </div>

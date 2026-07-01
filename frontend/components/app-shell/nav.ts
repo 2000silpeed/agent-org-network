@@ -1,6 +1,7 @@
 import {
   MessagesSquare,
   PenLine,
+  IdCard,
   Inbox,
   MonitorDot,
   type LucideIcon,
@@ -15,7 +16,7 @@ export interface NavItem {
   persona: string;
 }
 
-// The four product surfaces of the question-routing org.
+// The product surfaces of the question-routing org.
 export const NAV_ITEMS: NavItem[] = [
   {
     href: "/ask",
@@ -31,6 +32,14 @@ export const NAV_ITEMS: NavItem[] = [
     surface: "Author",
     description: "문서를 지식으로 정리",
     icon: PenLine,
+    persona: "Owner",
+  },
+  {
+    href: "/builder",
+    label: "카드 빌더",
+    surface: "Builder",
+    description: "카드 구성 · 검증 · YAML",
+    icon: IdCard,
     persona: "Owner",
   },
   {

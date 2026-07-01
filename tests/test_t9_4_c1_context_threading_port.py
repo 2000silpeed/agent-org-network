@@ -9,7 +9,8 @@ ADR 0027 결정 6·7·8.
 - ClaudeCodeRuntime: context 받되 이번 증분에서 무시(기존 동작 보존).
 - dispatcher 5곳 Protocol 정합: dispatch(question, card, context=None) 시그니처.
 - 로컬 경로만 즉시 전달(LocalRuntimeDispatcher → runtime.answer(context=)).
-- WS 계열 3종은 context 흡수만·미전파(T9.7 후속).
+- WS 계열 dispatcher: 이 시점(T9.4 c-1)엔 흡수만·미전파였으나 T9.7 S1(ADR 0027 결정 13)이
+  후속으로 전파를 실체화했다 — 상세는 test_transport_context_hitl.py, 여기는 회귀 방어만.
 - Answer 계약 보존: text·sources·mode·snapshot_sha.
 - Authority 중앙 불변.
 """
@@ -348,23 +349,30 @@ class TestLocalDispatcherContextDelivery:
 # ---------------------------------------------------------------------------
 
 
-class TestWSDispatchersContextAbsorption:
-    """WS 계열 dispatcher는 context 인자를 받되 큐·WorkTicket에 싣지 않는다."""
+class TestWSDispatchersContextThreading:
+    """WS 계열 dispatcher — T9.7 S1(ADR 0027 결정 13)이 흡수(미전파)를 전파로 대체했다.
 
-    def test_InMemoryWorkQueueDispatcher_context_흡수_WorkTicket에_context_없음(
+    이 클래스는 T9.4(c-1) 시점의 "흡수만·미전파(T9.7 후속)" 결정을 문서화했던 자리다.
+    T9.7이 그 후속을 실체화했으므로(`WorkTicket.context`·`TicketFrame.context` 옵셔널
+    필드·왕복), 이제 context는 WS 경로에서도 *실린다* — 상세 결정론 테스트는
+    `test_transport_context_hitl.py`(S1)가 갖는다. 여기서는 "T9.4 이전 흡수 동작으로
+    되돌아가지 않았다"는 회귀만 얇게 고정한다.
+    """
+
+    def test_InMemoryWorkQueueDispatcher_context가_WorkTicket에_실린다(
         self, card: AgentCard
     ) -> None:
         from agent_org_network.dispatch import InMemoryWorkQueueDispatcher
 
         disp = InMemoryWorkQueueDispatcher()
-        ticket = disp.dispatch("질문", card, context="흡수할 맥락")
-        assert not hasattr(ticket, "context"), "WorkTicket에 context 필드가 없어야 한다"
+        ticket = disp.dispatch("질문", card, context="전파할 맥락")
+        assert ticket.context == "전파할 맥락"
 
-    def test_WebSocketDispatcher_context_흡수_WorkTicket에_context_없음(
+    def test_WebSocketDispatcher_context가_WorkTicket에_실린다(
         self, card: AgentCard
     ) -> None:
         from agent_org_network.transport import WebSocketDispatcher
 
         disp = WebSocketDispatcher()
-        ticket = disp.dispatch("질문", card, context="흡수할 맥락")
-        assert not hasattr(ticket, "context"), "WorkTicket에 context 필드가 없어야 한다"
+        ticket = disp.dispatch("질문", card, context="전파할 맥락")
+        assert ticket.context == "전파할 맥락"

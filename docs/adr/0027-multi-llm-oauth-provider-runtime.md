@@ -218,3 +218,22 @@ SessionAskOrg.handle(question, user)            # 세션 보유
 - **주입 지점 = `build_provider_request(..., okf="")`** — `okf` 비면 기존과 100% 동일(무회귀), 있으면 system 프롬프트에 "## 지식 베이스(OKF) — 아래 내용에만 근거해 답하라. 여기에 없으면 모른다고 말하라" 섹션. OKF는 *공급자 프롬프트(system)*에만 들어가고 사용자向 Answer엔 안 샌다(노출 불변식). `ProviderApiRuntime(okf_root=)`·워커 팩토리(`_make_codex_runtime(okf_root)` 등)가 okf_root를 받아 배선.
 - **실 시연 입증(2026-06-27)** — codex 워커가 `okf/cs_ops/refund-policy.md`를 접지해 "7일 전액·8~30일 50%·30일 초과 불가·단순변심 10% 수수료"를 정확히 답함(이전 일반론 → OKF 접지 답). 게이트 1203 passed·pyright 0·ruff 0.
 - **남은 결정(후속·B·C)**: 전체 번들 주입 → 큰 OKF엔 RAG 검색이 필요할 수 있음(B). 라우팅 입도(단일 flat intent-라벨 매칭)·인덱스 갱신 방법론은 별도 ADR(domain-architect)로 — *라우팅 인덱스(owner 선언 메타·중앙 권위)와 지식 인덱스(중앙 비소유) 분리* 원칙 위에서.
+
+### 13. `TicketFrame.context` 와이어 투영 — 결정 8이 T9.7로 연기한 WS 프레임 맥락 전파의 실체화 (✅ 확정 2026-07-02·T9.7 S1·되돌리기 어려움[와이어])
+
+**맥락**: 결정 8이 "분산 WS 경로의 맥락 전파는 `WorkTicket`·`TicketFrame` 와이어 진화라 되돌리기 어렵고 실 워커가 게이트 밖이라 T9.7로 명시 연기"라 못박았다. T9.7 owner 클라이언트 슬라이스에서 그 연기를 실체화한다. 결정 6·7이 *로컬 경로*(`LocalRuntimeDispatcher`→`runtime.answer(context=)`)로 맥락을 이미 흘렸고, 이 결정은 *분산 WS 경로*에서 같은 맥락을 owner 워커의 런타임까지 나른다 — 로컬 경로와 분산 경로의 멀티턴 대칭을 완성한다.
+
+- **옵셔널 필드 추가(하위호환)** — `WorkTicket`(dispatch.py `@dataclass(frozen=True)`)과 `TicketFrame`(transport.py `_Frame` 상속·pydantic v2)에 `context: str | None = None`을 *마지막 필드로* 추가한다. 미주입이면 기존 동작 100% 보존(`answer(context=None)`·`notifier=None` 동형). `to_ticket_frame`/`from_ticket_frame`이 context를 실어 나른다(`owner_id`가 연결 귀속이라 생략되는 것과 달리 context는 프레임에 *싣는다* — 맥락은 그 사용자 스레드라 연결로부터 복원 불가).
+- **디스패처 진화** — `WebSocketDispatcher.dispatch(question, card, context=None)`가 결정 8에서 "인자 흡수(미전파)"였던 것을 이제 `self._queue.dispatch(question, card, context=context)`로 *전파*한다. `InMemoryWorkQueueDispatcher.dispatch`가 `WorkTicket`에 context를 실어 큐에 넣고, `_push_pending`이 `to_ticket_frame`으로 프레임에 실어 `PushWork`로 push한다. 큐 상태기계(queued↔claimed↔answered↔expired·단조 종착·미아 없음)는 *무변경* — context는 운반 페이로드일 뿐 큐 도메인이 아니다.
+- **워커 소비** — `handle_push_work`(worker.py)가 `from_ticket_frame`으로 복원한 `ticket.context`를 `self._runtime.answer(ticket.question, card, context=ticket.context)`로 전달한다(현재는 context 미전달·`answer(question, card)`). owner 워커의 `ClaudeApiRuntime`이 결정 6대로 `build_provider_request(context=)`로 실 소비한다.
+- **라우팅 정합 보존(결정 6·7 재확인)** — 맥락은 *디스패치 페이로드*로만 흐른다. 분산 경로에서도 분류(`Router.route(question)`)는 중앙에서 *맨 질문*으로 이미 끝났고, 워커는 라우팅을 다시 하지 않고 *받은 카드로 답만* 만든다 — 맥락이 분류를 흔들 경로가 분산에서도 구조상 없다(워커는 route를 안 부른다).
+- **⚠️ 와이어 진화 규율 — `extra="forbid"`의 비대칭 함정(실측 확인 2026-07-02)** — `_Frame`이 `extra="forbid"`(미지 필드 거부·봉투 무회귀)라 프레임 진화가 *비대칭*이다:
+  - **구버전 중앙 × 신버전 워커 = 안전** — 구버전 wire엔 `context` 키가 없고, 신버전 `TicketFrame`은 `context: str | None = None` 기본값이 채운다(파싱 성공·context=None).
+  - **신버전 중앙 × 구버전 워커 = 위험** — 신버전 중앙이 `context`를 실은 wire를 보내면 구버전 워커의 `extra="forbid"` 파서가 *그 미지 필드를 거부*해 프레임 파싱이 실패한다. **게다가 `model_dump(mode="json")`(server.py 현 호출·`exclude_none` 없음)은 `context=None`도 항상 직렬화**하므로, 맥락이 없는 턴조차 `{"context": null}`을 실어 구버전 워커가 파싱 실패한다(실측: `extra_forbidden`). 즉 *맥락 유무와 무관하게* 신버전 중앙의 모든 프레임이 구버전 워커를 깬다.
+  - **결정 — 롤아웃은 워커 선행(forward-compatible first)**: 구버전 워커가 미지 필드에 깨지므로, **워커를 먼저 신버전으로 올린 뒤 중앙을 올린다**. 신버전 워커는 구버전 중앙의 프레임도 받고(context 없으면 None) 신버전 중앙의 프레임도 받으므로 롤아웃 창 내내 안전하다. (단일 머신 데모/루프백은 중앙·워커가 같은 배포라 순서 무관 — 이 규율은 실 크로스머신 롤아웃용.)
+  - **직렬화 규율 — `exclude_none`은 완화이지 해결이 아니다**: `model_dump_json(exclude_none=True)`를 쓰면 `context=None` 턴은 wire에서 키가 빠져 구버전 워커가 파싱한다(맥락 있는 턴만 깨짐). 하지만 이는 *부분 완화*일 뿐 — 맥락이 실제 있는 멀티턴은 여전히 구버전 워커를 깬다. 근본 안전은 워커 선행 롤아웃이고, `exclude_none`은 롤아웃 창을 좁히는 보조다. 어느 쪽을 택하든 tdd가 두 방향 파싱을 결정론 테스트로 잠근다(아래).
+- **게이트 경계** — 프레임 필드 추가·변환 함수(`to/from_ticket_frame`) context 왕복·디스패처 전파·`handle_push_work` 소비·두 방향 파싱 호환은 *게이트 내 결정론*(FakeRunner·주입 프레임). 실 WS 소켓·실 owner OAuth 런타임·실 크로스머신 롤아웃은 게이트 밖(T9.7 (b)·수동 시연·`run_worker`).
+
+### 14. owner 워커측 HITL 검토 루프는 이 ADR이 아니라 ADR 0025 — 답 생성 경로와 검토 게이트의 분리
+
+owner 클라이언트(T9.7)가 HITL on일 때 즉시 `SubmitAnswer` 하지 않고 초안을 보류하는 *워커측 상태*는 **ADR 0025(HITL 토글)의 owner 워커 확장**으로 다룬다(이 ADR 아님). 이 ADR(0027)은 *답을 어떻게 생성하나*(공급자 어댑터·인프로세스 스트리밍·맥락 소비)이고, 초안을 *보류·검토·전송하는 신뢰 게이트*는 0025의 도메인이다 — 답 생성(0027)과 답 검토(0025)의 축 분리(결정 6의 "맥락 소비는 0027, 검토는 별 축"과 정합). 상세는 ADR 0025 결정 4·5.

@@ -63,6 +63,10 @@ class WorkTicket:
     question: str
     enqueued_at: datetime
     ticket_id: str = field(default_factory=_new_ticket_id)
+    # 그 사용자의 발화 스레드(멀티턴 맥락, ADR 0027 결정 13·T9.7 S1) — 분산 WS 경로에서
+    # owner 워커의 런타임까지 나른다. 마지막 필드(하위호환·기본값 None — 기존 dispatch
+    # 호출·테스트가 이 필드 없이도 그대로 동작).
+    context: str | None = None
 
 
 # ── 위임 스냅샷: DelegationSnapshot ──────────────────────────────────────
@@ -257,6 +261,7 @@ class InMemoryWorkQueueDispatcher:
             agent_id=card.agent_id,
             question=question,
             enqueued_at=self._clock(),
+            context=context,
         )
         self._queues.setdefault(card.owner, []).append(ticket)
         self._status[ticket.ticket_id] = "queued"

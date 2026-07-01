@@ -143,6 +143,8 @@ def test_답의_sources와_mode가_카드에서_보존된다():
 
     submit = logic.handle_push_work(_push())
 
+    # hitl 힌트 기본값 False(기존 동작) — 즉시 SubmitAnswer(None 아님).
+    assert submit is not None
     # ClaudeCodeRuntime이 카드 knowledge_sources를 Answer.sources로 싣고, to_answer_frame이
     # 그대로 전송 프레임에 보존한다(레이블 출처).
     assert submit.answer.sources == ("위키/환불정책", "Notion/보상표")
@@ -161,6 +163,7 @@ def test_빈_응답이면_ClaudeCodeRuntime_폴백이_회신된다():
 
     submit = logic.handle_push_work(_push(ticket_id="tkt-x"))
 
+    assert submit is not None
     assert submit.ticket_id == "tkt-x"
     assert "cs_ops" in submit.answer.text  # 폴백 본문(미아 아님)
 
@@ -357,6 +360,7 @@ def test_submit_answer가_와이어_왕복으로_보존된다():
     logic, _ = _logic(reply="회신 본문")
     submit = logic.handle_push_work(_push(ticket_id="tkt-rt"))
 
+    assert submit is not None
     wire = submit.model_dump_json()
     restored = SubmitAnswer.model_validate(json.loads(wire))
 

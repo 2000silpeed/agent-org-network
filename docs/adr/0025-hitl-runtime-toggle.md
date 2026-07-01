@@ -1,6 +1,6 @@
 # HITL 런타임 토글 — LLM 초안→owner 검토·전송은 *기존 draft_only/Approval 재사용*이다(새 기계 아님)
 
-상태: accepted (2026-06-26) · **Phase 9의 ADR-B** · ADR 0012 결정 4(`Answer.mode` 신뢰 상태)·T2.5(`Routed.requires_approval`→`AskOrg._apply_approval_gate`→`mode="draft_only"`)의 *런타임 토글 확장* — 새 도메인 기계 0 · ADR 0014 결정 4(Approval은 게이트지 escalation 아님)와 정합 · CONTEXT(Approval·Answer 절에 런타임 토글 추가)·PRD §3·§5·TRD §4·§6 갱신 · **ADR 0029(OKF 자동 저작)가 정신 재사용**: 이 ADR의 "LLM 초안→owner 검토→확정"을 *지식 저작*에 본뜸(자동 산출=초안·owner 검토 거쳐 commit/publish — 단 저작은 답 mode 토글과 다른 축이라 `hitl_to_mode` 그대로 안 쓰고 staged 상태기계 패턴만 본뜸).
+상태: accepted (2026-06-26) · **결정 4·5 추가(2026-07-02·T9.7 owner 워커측 검토 루프·D3 토글 진실 위치 판정)** · **Phase 9의 ADR-B** · ADR 0012 결정 4(`Answer.mode` 신뢰 상태)·T2.5(`Routed.requires_approval`→`AskOrg._apply_approval_gate`→`mode="draft_only"`)의 *런타임 토글 확장* — 새 도메인 기계 0 · ADR 0014 결정 4(Approval은 게이트지 escalation 아님)와 정합 · **ADR 0027 결정 13·14와 연계**(T9.7 S1 `TicketFrame.context` 와이어 투영·S2 워커측 보류의 답 생성/검토 축 분리) · CONTEXT(Approval·Answer 절에 런타임 토글 추가·신규 "초안 보류(Pending Draft)"·"owner 검토 루프" 용어)·PRD §3·§5·TRD §4·§6 갱신 · **ADR 0029(OKF 자동 저작)가 정신 재사용**: 이 ADR의 "LLM 초안→owner 검토→확정"을 *지식 저작*에 본뜸(자동 산출=초안·owner 검토 거쳐 commit/publish — 단 저작은 답 mode 토글과 다른 축이라 `hitl_to_mode` 그대로 안 쓰고 staged 상태기계 패턴만 본뜸).
 
 ## 맥락 — 새 기계가 아니라 기존 게이트의 런타임 토글
 
@@ -43,9 +43,33 @@ def hitl_to_mode(hitl_on: bool) -> AnswerMode:
 
 T2.5 경계를 그대로 유지한다 — 이건 *게이트 표시*(답을 draft_only로 보이기)까지다. owner가 로컬 UI에서 초안을 검토·수정·전송하는 실 행위(draft→full 풀기)는 owner 클라이언트(T9.7·게이트 밖 수동)·Manager 큐 별 탭(ADR 0014 결정 4)의 영역이다. 이 ADR은 *mode를 어떻게 내리고 누가 토글하나*까지.
 
+### 4. owner 워커측 검토·전송 루프 — 중앙 `draft_only` 표시와 구분되는 *워커측 초안 보류* (✅ 확정 2026-07-02·T9.7 S2)
+
+**맥락 — 결정 3까지는 *표시*였다. T9.7이 *실 검토 행위*를 owner 클라이언트에 실체화한다.** 결정 3이 "이 ADR은 게이트 *표시*(답을 draft_only로 보이기)까지"라 못박고 실 owner 검토·전송을 T9.7 게이트 밖으로 넘겼다. T9.7 owner 분산 클라이언트가 그 실 행위를 구현하며, *워커측에 초안 보류 상태*가 처음으로 생긴다. 이는 중앙의 `Answer.mode="draft_only"` 표시와 **다른 층**이라 구분해 명문화한다.
+
+- **두 층은 다른 축이다(핵심 구분)**:
+  - **중앙 `draft_only`(결정 2·3, 기존)** — `ask_org._apply_approval_gate`가 회신된 `Answer`의 *mode*를 `draft_only`로 내려 *사용자에게* "이건 초안"이라 표시하는 신뢰 상태. 사용자向 노출값이다.
+  - **owner 워커측 초안 보류(결정 4, 신규)** — owner 워커가 LLM 초안을 만든 뒤 HITL on이면 *즉시 `SubmitAnswer` 하지 않고* owner 검토를 기다리는 *워커 로컬 상태*. 이건 사용자에 안 나가는 owner측 in-flight 상태이고, owner 승인/수정 후에야 답이 중앙에 회신된다.
+  - 관계: 워커측 보류가 *풀려서* 회신된 답이 여전히 중앙에서 `draft_only`로 표시될 수 있다(둘은 독립 — 하나는 회신 타이밍, 하나는 노출 mode). 정상 케이스는 owner가 검토·전송하면 owner 실답이므로 `full`로 회신(자기 답 확정)하되, 카드 approval_when이 걸린 담당은 중앙이 `draft_only`로 다시 격상(under-claim 단조성·결정 2 OR 결합 그대로).
+
+- **워커측 상태 shape(frozen 값 객체 + 워커 로컬 store)** — `PendingDraft` frozen 값 객체(`ticket_id`·`question`·`draft_answer`·`agent_id`·`context: str|None`·`made_at`)를 owner 워커 로컬 인메모리 store(`WorkerLogic`의 기존 `_cards` 같은 워커측 상태 그릇 정신)에 보관한다. 상태 전이:
+  - **HITL off** — 수신(`PushWork`)→LLM 초안→*즉시* `SubmitAnswer`(기존 `handle_push_work` 무변경).
+  - **HITL on** — 수신→LLM 초안→**보류(`PendingDraft` store에 put)**→owner가 로컬 UI에서 승인/수정→*별 진입점*이 (수정된) draft를 `SubmitAnswer`. 즉 `handle_push_work`가 HITL on이면 `SubmitAnswer`를 *반환하지 않고* pending으로 전이하고, `submit_pending_draft(ticket_id, edited_text?)`가 나중에 회신 프레임을 만든다.
+  - **전이 ≠ 기록** — 보류→승인/수정→전송은 워커측 도메인 전이다. `frozen` 값 객체라 수정은 새 인스턴스를 낳는다(`ConflictCase.resolve()`·`BackupReviewItem.review_with()` 정신). 감사·트랜스크립트 적재는 중앙 몫(무관).
+
+- **미아 없음 보존 — 워커측 TTL 불필요(판정)** — owner가 초안을 보류한 채 방치해도(owner 부재·검토 지연), *중앙 큐의 그 ticket은 이미 claimed 상태로 timeout을 향해 흐른다*. 워커가 `SubmitAnswer` 안 하면 `t1` 경과→`stale_claims` 회수→backup 전환, 그도 없으면 전체 timeout→`EscalatedToManager` 종착(ADR 0012·0014). 즉 **방치된 초안 보류의 종착은 기존 중앙 escalation 사슬이 이미 떠받친다** — 워커측에 별도 TTL을 두면 *같은 종착을 두 곳에서* 판정해 이중 관리·불일치 위험만 는다. 워커측 보류는 순수 로컬 편의 상태이고 미아 없음의 진실은 중앙 큐 timeout 하나다(판정: 워커 TTL 두지 않음). 단 owner가 *너무 늦게* 전송하면 그 ticket은 이미 expired(멱등 무시·`submit`이 `expired` 재submit 거부)라 답이 버려질 수 있음을 UI가 owner에 알리는 건 게이트 밖 UX 몫.
+
+### 5. HITL 토글의 진실 위치 — 중앙 보유(D3 판정: 중앙, 프레임 내려받기 아님)
+
+**판정: HITL 토글의 진실은 중앙(`HitlToggleMap`)에 남기고, owner 워커가 로컬 보유하지 않는다.** T9.7 배경의 D3(owner 워커 로컬 보유 vs 중앙에서 프레임으로 내려받기)를 이렇게 가른다.
+
+**근거(한 문단)**: HITL 토글은 이미 중앙(`hitl.py:HitlToggleMap`·콘솔 `/console/hitl/{agent_id}`가 set)이 진실이고, 운영자가 *런타임에* 조이는 신뢰 게이트다(결정 1 — "운영자가 콘솔에서 런타임에 바꾼다·중앙 권위"). 이걸 owner 워커 로컬로 옮기면 운영자 콘솔 토글과 워커 로컬 상태가 *갈라져*(두 진실) 운영자가 조인 걸 워커가 안 지키거나 그 반대가 나고, "조이기는 운영자만·풀기는 카드 정책만"의 under-claim 단조성(결정 2)이 워커 자기보고로 새어 Authority 중앙 정신을 흔든다. 그러니 진실은 중앙 하나로 두고 — **중앙이 그 ticket의 HITL 판정을 내려 프레임에 실어 보내는** 얇은 전파가 맞다: 중앙 디스패처가 dispatch 시점에 `HitlToggleMap.is_on(agent_id)`(+카드 approval_when OR 결합, `resolve_mode` 정신)를 계산해 `PushWork`의 프레임에 `hitl: bool` 힌트로 실으면, 워커는 *그 힌트만 보고* 보류/즉시 전송을 가른다(워커는 토글을 *소유*하지 않고 *지시받는다*). owner 거버넌스 정신(owner가 자기 답 검토 주체·ADR 0025 헤더)은 *보류·검토·수정 행위*를 owner가 하는 것으로 온전히 지켜지고, *언제 보류할지의 정책(토글)*은 중앙이 선언한다 — "owner가 검토 주체"와 "중앙이 게이트 정책 선언"은 양립한다(HITL은 권한 선언이 아니라 신뢰 게이트라 Authority 중앙 불변식과 무관·ADR 0025 불변식). **와이어 함의**: 이 `hitl: bool`은 결정 13(0027)의 `context: str|None`과 *같은 프레임 진화 규율*을 탄다(옵셔널 추가·`_Frame extra="forbid"` 비대칭·워커 선행 롤아웃) — 두 필드를 한 슬라이스로 프레임에 얹는 게 자연스럽다. (MVP 단순화 옵션: 실 검토 UI가 게이트 밖 수동이므로, 첫 T9.7 슬라이스는 워커를 *항상 HITL off*(기존 즉시 전송)로 두고 보류 경로는 shape만 두는 증분도 허용 — 단 그 경우에도 토글 진실은 중앙이라는 이 판정은 불변.)
+
 ## 근거
 
 - **새 기계 0** — HITL은 이미 있는 `draft_only`/`full` 두 신뢰 상태에 *런타임 토글*만 얹는다. 새 타입·새 store·새 전이를 안 만든다(tasks line 256 — "새 기계가 아니라 기존 draft_only/Approval 재사용").
+- **워커측 보류는 배송 타이밍·중앙 draft_only는 노출 mode(축 분리)** — 결정 4의 두 층 구분은 "전이 ≠ 기록"과 같은 결의 축 분리다: *언제 회신하나*(워커 보류)와 *어떻게 표시하나*(중앙 mode)는 서로 다른 축이라 한 값으로 뭉치지 않는다. 미아 없음은 중앙 큐 timeout 하나가 두 축 모두의 종착을 떠받친다(워커 TTL 불요).
+- **토글 진실 단일(결정 5)** — 두 진실(중앙 콘솔 vs 워커 로컬)은 운영자 의도와 워커 동작을 갈라 under-claim 단조성·Authority 중앙을 흔든다. 진실은 중앙 하나·워커는 프레임 힌트를 *지시받아* 따른다(owner는 검토 *행위* 주체이되 *정책* 선언 주체 아님).
 - **mode 강제 패턴 정합** — `_apply_approval_gate`가 라우팅 강제로 mode를 내리는 그 자리에 런타임 토글을 합류시킨다(같은 함수·같은 우선순위). 디스패처 backup 하향·라우팅 draft_only 강제와 한 패턴.
 - **under-claim 단조성** — owner가 카드로 좁힌 보수 신호(approval_when)는 운영자가 *풀 수 없고*(안전), 운영자는 *조일 수만* 있다(상향). Authority 중앙(중앙이 권한 선언)과 under-claim 자기보고(ADR 0004 — 카드는 자기를 좁히기만)가 토글에서도 일관된다.
 
@@ -64,3 +88,5 @@ T2.5 경계를 그대로 유지한다 — 이건 *게이트 표시*(답을 draft
 ## 결정 대기
 
 이 ADR은 **외부 결정 0**이다(tasks line 261 — 기존 draft_only/Approval 재사용이라 외부 결정 없음·권장 조기 진입). 6개 결정 대기 항목 중 ADR-B에 걸리는 것은 없다. 토글 상태의 영속(in-memory vs store 승격)은 *요구가 관측될 때* 당기는 후속 판단이지 게이트 진입 전 확정 사항이 아니다.
+
+**결정 4·5 추가분(2026-07-02·T9.7)의 결정 대기**: 워커측 `PendingDraft` store의 영속(워커 로컬 인메모리 MVP·durable은 요구 관측 시 후속)·실 owner 검토 UI·프레임 `hitl: bool` 힌트의 실 크로스머신 롤아웃은 게이트 밖(T9.7 (b) 수동). 게이트 내는 워커측 보류 상태 전이·`handle_push_work` HITL 분기·`submit_pending_draft` 진입점의 결정론(FakeRunner·주입 프레임)까지.

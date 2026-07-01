@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     # 어댑터 시그니처 예고용 — 런타임 import 순환을 피해 타입 체크 시에만 끌어온다.
     from agent_org_network.agent_card import AgentCard
     from agent_org_network.git_gateway import ChangeEventListener
+    from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.notify import Notifier
     from agent_org_network.registry import Registry
     from agent_org_network.review import BackupReviewStore
@@ -73,12 +74,24 @@ class TicketFrame(_Frame):
 
     `owner_id`는 *연결 귀속*이라 싣지 않는다 — 그 소켓이 곧 그 owner(6-3). 경계에서
     `WorkTicket`으로 복원할 때 연결의 owner_id를 붙인다.
+
+    `context`(ADR 0027 결정 13·T9.7 S1, 옵셔널 필드 추가·하위호환): 그 사용자의 발화
+    스레드 — `owner_id`와 달리 연결로부터 복원 불가라 프레임에 *싣는다*. 미주입이면
+    None(구버전 wire·단일턴 동형). ⚠️ 와이어 진화 규율(0027 결정 13) — `_Frame`이
+    `extra="forbid"`라 *신버전 중앙 × 구버전 워커*는 이 필드가 실린 프레임을 거부한다
+    (`ValidationError`). 롤아웃은 워커 선행(forward-compatible first)이어야 안전하다.
+
+    `hitl`(ADR 0025 결정 4·5, T9.7 S2, 같은 옵셔널 진화 규율): 중앙 `HitlToggleMap`이
+    dispatch 시점에 계산한 힌트 — 워커는 이 힌트를 *지시받아* 초안 즉시 전송/보류를
+    가른다(토글 진실은 중앙, 워커는 소유하지 않음). 기본 False = 기존 즉시 전송 동작.
     """
 
     ticket_id: str
     agent_id: str
     question: str
     enqueued_at: datetime
+    context: str | None = None
+    hitl: bool = False
 
 
 class AnswerFrame(_Frame):
@@ -256,24 +269,32 @@ CentralFrame = Welcome | AuthError | PushWork | Ping | FetchDocument
 # 도메인 객체가 와이어 포맷에 오염되지 않게(전이 ≠ 전송) 변환을 한곳에 모은다.
 
 
-def to_ticket_frame(ticket: WorkTicket) -> TicketFrame:
-    """`WorkTicket` → `TicketFrame`(push 전 와이어 투영, owner_id는 연결 귀속이라 생략)."""
+def to_ticket_frame(ticket: WorkTicket, hitl: bool = False) -> TicketFrame:
+    """`WorkTicket` → `TicketFrame`(push 전 와이어 투영, owner_id는 연결 귀속이라 생략).
+
+    `context`는 `WorkTicket.context`를 그대로 싣는다(ADR 0027 결정 13). `hitl`은 큐 도메인
+    밖의 값이라 `WorkTicket`엔 없다 — 호출자(디스패처)가 dispatch 시점에 계산해 주입한다
+    (ADR 0025 결정 5, 토글 진실은 중앙). 기본 False = 기존 동작(하위호환).
+    """
     return TicketFrame(
         ticket_id=ticket.ticket_id,
         agent_id=ticket.agent_id,
         question=ticket.question,
         enqueued_at=ticket.enqueued_at,
+        context=ticket.context,
+        hitl=hitl,
     )
 
 
 def from_ticket_frame(frame: TicketFrame, owner_id: str) -> WorkTicket:
-    """`TicketFrame` + 연결 owner_id → `WorkTicket`(워커 측 복원)."""
+    """`TicketFrame` + 연결 owner_id → `WorkTicket`(워커 측 복원, context 왕복)."""
     return WorkTicket(
         owner_id=owner_id,
         agent_id=frame.agent_id,
         question=frame.question,
         enqueued_at=frame.enqueued_at,
         ticket_id=frame.ticket_id,
+        context=frame.context,
     )
 
 
@@ -375,6 +396,7 @@ class WebSocketDispatcher:
         published_index_store: "PublishedIndexStore | None" = None,
         propagator: "ChangeEventListener | None" = None,
         token_store: "TokenStore | None" = None,
+        hitl_toggles: "HitlToggleMap | None" = None,
     ) -> None:
         # 작업 큐 도메인은 합성으로 재사용 — 큐 상태기계·단조 종착·timeout escalation은
         # 이 객체가 소유한다(WS는 그 위 전송층). 주입 가능하게 둬 결정론 테스트가 고정
@@ -433,6 +455,11 @@ class WebSocketDispatcher:
         # `TokenStore.verify`로 검증한다. 미주입이면 `_authenticate`가 기존 stub 동작
         # (빈 owner_id만 거부)을 그대로 유지한다(하위호환 — 기존 WS 테스트 전부 보존).
         self._token_store = token_store
+        # HITL 토글 진실 — 중앙 보유(ADR 0025 결정 5·T9.7 S2). `_push_pending`이 push 직전
+        # `hitl.resolve_mode`(+`seed_from_card`)로 그 ticket의 hitl 힌트를 계산해 프레임에
+        # 싣는다. 미주입이면 `is_on`이 항상 False인 것과 동형(힌트 항상 False = 기존 즉시
+        # 전송 동작, 하위호환). 워커는 이 힌트를 *지시받아* 따를 뿐 토글을 소유하지 않는다.
+        self._hitl_toggles = hitl_toggles
 
     # ── 중앙측(질문 측): 내부 큐에 위임 ──────────────────────────────────────
 
@@ -441,10 +468,10 @@ class WebSocketDispatcher:
 
         큐 적재는 합성한 `_queue.dispatch`에 위임(도메인). 연결된 워커가 있으면 claim해
         PushWork를 send 콜백으로 내보낸다. 미연결이면 큐에 대기(기존 AwaitingWorker).
-        context는 인자로 흡수하되 이번 증분에서 큐·WorkTicket에 싣지 않는다(ADR 0027 결정 8
-        — WS 프레임 맥락 전파는 T9.7 후속).
+        context는 `_queue.dispatch(context=)`로 전파된다(ADR 0027 결정 13·T9.7 S1 — WS
+        프레임 맥락 전파 실체화. 결정 8의 "인자 흡수(미전파)"를 이 슬라이스가 대체한다).
         """
-        ticket = self._queue.dispatch(question, card)
+        ticket = self._queue.dispatch(question, card, context=context)
         self._push_pending(card.owner)
         return ticket
 
@@ -871,7 +898,29 @@ class WebSocketDispatcher:
             # 어느 등급으로든 push했으면 그 ticket의 primary 회수 표식은 소진(이번 push가
             # 최신 라우팅 — 다음 회수 전까지 이 등급이 진실, "1회 한정 제외"의 정상 소비).
             self._primary_exhausted.discard(tid)
-            send(PushWork(ticket=to_ticket_frame(ticket)))
+            send(PushWork(ticket=to_ticket_frame(ticket, hitl=self._resolve_hitl_hint(ticket))))
+
+    def _resolve_hitl_hint(self, ticket: WorkTicket) -> bool:
+        """이 ticket의 HITL 힌트(보류 여부)를 push 직전에 계산한다(ADR 0025 결정 5·T9.7 S2).
+
+        토글 진실은 중앙(`HitlToggleMap`)에만 있다 — 워커는 이 힌트를 *지시받아* 따를 뿐
+        소유하지 않는다. `hitl.resolve_mode`(+`seed_from_card`) 재사용: 카드 `approval_when`
+        시드(있으면 True) OR 콘솔 토글(`is_on`)로 최종 힌트를 낸다. `_hitl_toggles`나
+        `_registry`가 미주입이면 그 항목은 False로 본다(하위호환 — 기존 즉시 전송 동작).
+        """
+        if self._hitl_toggles is None:
+            return False
+        seeded = False
+        if self._registry is not None:
+            try:
+                card = self._registry.get(ticket.agent_id)
+            except KeyError:
+                card = None
+            if card is not None:
+                from agent_org_network.hitl import seed_from_card
+
+                seeded = seed_from_card(card)
+        return seeded or self._hitl_toggles.is_on(ticket.agent_id)
 
     def _select_connection(
         self, owner_id: str, ticket: WorkTicket, exclude_primary: bool = False

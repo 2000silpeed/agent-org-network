@@ -42,6 +42,7 @@ from agent_org_network.transport import (
 )
 
 if TYPE_CHECKING:
+    from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.token import TokenStore
 
 _log = logging.getLogger("agent_org_network.server")
@@ -205,6 +206,7 @@ def create_central_app(
     session_secret: str | None = None,
     oidc_provider: OidcProvider | None = None,
     token_store: "TokenStore | None" = None,
+    hitl_toggles: "HitlToggleMap | None" = None,
 ) -> FastAPI:
     """end-to-end 한 프로세스 중앙 앱 — 사용자 web 라우트 + owner 워커 WS를 *한 dispatcher*로.
 
@@ -274,6 +276,15 @@ def create_central_app(
     propagator 구성의 신호다(reeval_store 없으면 `create_app`은 배선하지 않는다 — 기존
     `WebSocketDispatcher` 단위 테스트[`_ws_demo_app`류] 무회귀).
 
+    `hitl_toggles`(T9.3(b)·ADR 0025 결정 5·T9.7 S2): HITL 런타임 토글 맵. **콘솔이 set하는
+    그 인스턴스가 디스패처가 push 힌트 계산에 read하는 인스턴스와 같아야** 콘솔 토글 변경이
+    다음 dispatch의 `TicketFrame.hitl` 힌트에 반영된다(e2e). 이 함수가 받은 *같은 인스턴스*를
+    `WebSocketDispatcher(hitl_toggles=)`와 `create_app(hitl_toggles=)` 양쪽에 물린다
+    (`token_store`와 동일 패턴 — 콘솔 라우트는 `create_app`이 물린 인스턴스를 set한다).
+    미주입이면 이 함수가 `HitlToggleMap()`을 새로 만들어 양쪽에 물린다(하위호환 — 미주입
+    `create_app()` 단독 호출과 달리 이 통합 조립은 dispatcher가 힌트를 계산해야 하므로 기본값이
+    필요하다. 힌트는 미set 상태면 항상 False = 기존 즉시 전송 동작 그대로 보존).
+
     이 앱은 실 owner 워커 프로세스가 붙는 *수동 시연용* 진입점이다(`uvicorn`으로 띄움). 결정론
     테스트는 여전히 `create_worker_app`(주입 디스패처)·`web.create_app`을 따로 쓴다 — 이
     팩토리는 기본 시계·기본 큐로 실제 한 바퀴를 돌리는 조립이라 게이트가 보지 않는다.
@@ -284,6 +295,7 @@ def create_central_app(
 
     from agent_org_network.audit import InMemoryAuditLog
     from agent_org_network.demo import demo_delegations, seed_demo_reeval_items
+    from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.reeval import InMemoryReevalStore, ReevalService
     from agent_org_network.review import BackupReviewService, InMemoryBackupReviewStore
     from agent_org_network.storage_select import select_token_store_or_none
@@ -325,10 +337,15 @@ def create_central_app(
     _resolved_token_store = (
         token_store if token_store is not None else select_token_store_or_none()
     )
+    # 콘솔 set·디스패처 read가 *같은* HitlToggleMap 인스턴스를 봐야 콘솔 토글 변경이 다음
+    # dispatch 힌트에 반영된다(e2e, ADR 0025 결정 5). token_store와 동일 패턴 — 이 함수가
+    # 받은 그대로(또는 새로 만든 기본값)를 dispatcher·create_app 양쪽에 물린다.
+    _resolved_hitl_toggles = hitl_toggles if hitl_toggles is not None else HitlToggleMap()
     dispatcher = WebSocketDispatcher(
         staleness_threshold=staleness_threshold,
         review_store=review_store,
         token_store=_resolved_token_store,
+        hitl_toggles=_resolved_hitl_toggles,
     )
     # 데모 owner들의 위임 스냅샷을 주입(opt-in 위임 — owner가 자기 영역을 백업에 위임).
     # 없으면 staleness_threshold가 설정된 상태에서 backup push가 거부된다(결정 9).
@@ -345,6 +362,7 @@ def create_central_app(
         session_secret=session_secret,
         oidc_provider=oidc_provider,
         token_store=_resolved_token_store,
+        hitl_toggles=_resolved_hitl_toggles,
     )
     _mount_worker_endpoint(app, dispatcher)
     return app

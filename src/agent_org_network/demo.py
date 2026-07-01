@@ -190,6 +190,11 @@ class DemoBundle:
     registry: Registry
     review_store: "BackupReviewStore | None" = None
     audit_reader: AuditReader | None = None
+    # audit_reader와 *같은 인스턴스*의 쓰기 손잡이 — 처리함 처분 *행위* 기록용(전이 ≠ 기록:
+    # 전이는 store/service, 행위의 절차 기록은 호출자[web 라우트]가 record_action으로 남긴다
+    # — ADR 0019·ADR 0012 결정 7). ask의 질문 라우팅 기록(record)과 같은 append-only 로그에
+    # 쌓여 한 질문의 수명(라우팅→답→처분)이 한 audit trail로 이어진다.
+    audit: "JsonlAuditLog | InMemoryAuditLog | None" = None
     published_index_store: InMemoryPublishedIndexStore | None = None
     reeval_store: ReevalStore | None = None
     reeval_service: ReevalService | None = None
@@ -373,6 +378,7 @@ def build_demo(
         registry=registry,
         review_store=review_store,
         audit_reader=audit_impl,
+        audit=audit_impl,
         published_index_store=published_index_store,
         reeval_store=reeval_store,
         reeval_service=reeval_service,

@@ -615,3 +615,59 @@ def test_create_central_app_실_판례_합의_후_재publish가_precedent_reeval
     # assert 이전에 이미 실패한다(빈 owner_id는 어느 owner 처리함에도 안 뜨므로).
     assert matching[0]["owner_id"] == "cs_lead"
     assert matching[0]["owner_id"] != ""
+
+# ── 처분 *행위*의 audit 기록(전이 ≠ 기록 — 기록 주체는 호출자[web 라우트]) ────────
+
+
+def _auth_app_with_reeval_audit() -> tuple[FastAPI, InMemoryReevalStore, InMemoryAuditLog]:
+    """`_auth_app_with_reeval` + audit_log 주입판 — 라우트가 남긴 행위 기록을 직접 검사."""
+    reeval_store = InMemoryReevalStore()
+    reeval_svc = ReevalService(reeval_store, clock=_fixed_clock)
+    audit = InMemoryAuditLog()
+    app = create_app(
+        runtime=StubRuntime(),
+        session_secret=_SECRET,
+        reeval_store=reeval_store,
+        reeval_service=reeval_svc,
+        audit_log=audit,
+    )
+    return app, reeval_store, audit
+
+
+def _action_records(audit: InMemoryAuditLog) -> list[dict[str, Any]]:
+    return [r for r in audit.records() if r.get("action") is not None]
+
+
+def test_reeval_처분_성공시_행위가_audit에_남는다() -> None:
+    """재평가 처분 성공 → 라우트가 행위 레코드 1건을 audit에 append(둘째 탭과 동형).
+
+    "이 판례가 왜 무효화/유지됐나"를 audit trail로 추적 가능해진다(ADR 0019·전이 ≠ 기록).
+    """
+    app, store, audit = _auth_app_with_reeval_audit()
+    store.add(_precedent_item(owner_id="cs_lead"))
+    client = TestClient(app)
+    _login(client, "cs_lead")
+
+    status, _ = _post(client, "/reeval/reeval-precedent-001/review", {"kind": "keep"})
+    assert status == 200
+
+    actions = _action_records(audit)
+    assert len(actions) == 1
+    act = actions[0]["action"]
+    assert act["kind"] == "reeval.keep"
+    assert act["subject_id"] == "reeval-precedent-001"
+    assert act["by"] == "cs_lead"
+
+
+def test_reeval_처분_실패시_행위_기록_없다() -> None:
+    """4xx(1인칭 위반·미존재·형식 오류)는 행위 미발생 — audit 기록 없음."""
+    app, store, audit = _auth_app_with_reeval_audit()
+    store.add(_precedent_item(owner_id="cs_lead"))
+    client = TestClient(app)
+
+    _login(client, "legal_lead")  # 1인칭 위반 403
+    assert _post(client, "/reeval/reeval-precedent-001/review", {"kind": "keep"})[0] == 403
+    _login(client, "cs_lead")
+    assert _post(client, "/reeval/nonexistent/review", {"kind": "keep"})[0] == 404
+    assert _post(client, "/reeval/reeval-precedent-001/review", {"kind": "supersede"})[0] == 400
+    assert _action_records(audit) == []

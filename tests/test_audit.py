@@ -5,7 +5,7 @@ from typing import Callable
 
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.ask_org import AskOrg, Pending
-from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog
+from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog, action_record
 from agent_org_network.classifier import FakeClassifier
 from agent_org_network.decision import Contested, Routed, Unowned
 from agent_org_network.dispatch import (
@@ -426,3 +426,112 @@ def test_snapshot_sha_JSONL_직렬화_왕복() -> None:
 
     roundtripped = json.loads(entry.to_jsonl())
     assert roundtripped["answer"]["snapshot_sha"] == sha
+
+
+# ── 처분 행위 기록: action_record + AuditLog.record_action ───────────────────
+# BackupReview·Reeval 처분(호출자 책임) 행위 기록의 스키마·소비자 무회귀 검증.
+
+
+def test_action_record_모양() -> None:
+    ts = _FIXED_DT
+    rec = action_record(
+        timestamp=ts,
+        action="backup_review.approve",
+        subject_id="item-001",
+        by="cs_lead",
+        detail={"rationale": "그대로 승인"},
+    )
+
+    assert rec["timestamp"] == ts.isoformat()
+    assert rec["decision"] is None
+    assert rec["answer"] is None
+    assert rec["dispatch"] is None
+    assert rec["tracking"] is None
+    assert rec["action"]["kind"] == "backup_review.approve"
+    assert rec["action"]["subject_id"] == "item-001"
+    assert rec["action"]["by"] == "cs_lead"
+    assert rec["action"]["rationale"] == "그대로 승인"
+
+
+def test_InMemoryAuditLog_record_action이_records에_append된다() -> None:
+    audit = InMemoryAuditLog()
+    rec = action_record(
+        timestamp=_FIXED_DT, action="reeval.invalidate_precedent", subject_id="환불", by="cs_lead"
+    )
+
+    audit.record_action(rec)
+
+    assert audit.records() == [rec]
+    assert audit.record_at(0) == rec
+
+
+def test_InMemoryAuditLog_record_action은_entries에_안_쌓인다() -> None:
+    """`entries`(AuditEntry 전용 하위호환 속성)는 raw action 레코드로 오염되지 않는다."""
+    audit = InMemoryAuditLog()
+    audit.record_action(
+        action_record(timestamp=_FIXED_DT, action="backup_review.dismiss", subject_id="i1", by="a")
+    )
+
+    assert audit.entries == []
+
+
+def test_InMemoryAuditLog_record와_record_action이_기록_순서대로_섞인다() -> None:
+    """append-only 순서 — record()·record_action() 호출 순서가 records()/record_at 인덱스다."""
+    c = _card("contract_ops", ["계약 검토"])
+    audit = InMemoryAuditLog()
+    ask = _ask_org_with([c], "계약 검토", audit)
+    ask.handle("계약 조건 확인", User(id="u1"))  # index 0 — 질문 라우팅 기록
+
+    action = action_record(
+        timestamp=_FIXED_DT, action="backup_review.approve", subject_id="item-1", by="D"
+    )
+    audit.record_action(action)  # index 1 — 행위 기록
+
+    records = audit.records()
+    assert len(records) == 2
+    assert records[0]["decision"]["disposition"] == "routed"
+    assert records[1] == action
+    assert audit.record_at(1) == action
+
+
+def test_JsonlAuditLog_record_action이_records에_append된다(tmp_path: Path) -> None:
+    audit = JsonlAuditLog(tmp_path / "audit.jsonl")
+    rec = action_record(
+        timestamp=_FIXED_DT, action="reeval.keep_precedent", subject_id="환불", by="cs_lead"
+    )
+
+    audit.record_action(rec)
+
+    assert audit.records() == [rec]
+    assert audit.record_at(0) == rec
+
+
+def test_action_record이_summarize_audit_record와_호환된다() -> None:
+    """web.summarize_audit_record가 action 레코드를 만나도 안전(자연 폴백)해야 한다."""
+    from agent_org_network.web import summarize_audit_record
+
+    rec = action_record(
+        timestamp=_FIXED_DT, action="backup_review.approve", subject_id="item-1", by="cs_lead"
+    )
+
+    summary = summarize_audit_record(0, rec)
+
+    assert summary["disposition"] is None
+    assert summary["answered"] is False
+    assert summary["question"] is None
+
+
+def test_action_record이_dedupe_audit_records와_호환된다() -> None:
+    """web.dedupe_audit_records가 action 레코드(tracking=None)를 그대로 유지해야 한다."""
+    from agent_org_network.web import dedupe_audit_records
+
+    rec1 = action_record(
+        timestamp=_FIXED_DT, action="backup_review.approve", subject_id="item-1", by="cs_lead"
+    )
+    rec2 = action_record(
+        timestamp=_FIXED_DT, action="reeval.keep_precedent", subject_id="환불", by="cs_lead"
+    )
+
+    result = dedupe_audit_records([rec1, rec2])
+
+    assert result == [(0, rec1), (1, rec2)]

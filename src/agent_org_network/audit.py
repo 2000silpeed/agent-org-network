@@ -142,8 +142,55 @@ def _dispatch_record(o: DispatchOutcome | None) -> dict[str, Any] | None:
             assert_never(never)
 
 
+def action_record(
+    *,
+    timestamp: datetime,
+    action: str,
+    subject_id: str,
+    by: str,
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """처분 *행위* 하나를 기존 audit 레코드 모양과 어울리는 dict로 만든다.
+
+    `AuditEntry.as_record()`(질문 라우팅/디스패치 기록)와는 담는 사건이 다르다 — 이건
+    BackupReview·Reeval 같은 *owner 처리함 처분 행위*의 절차 기록이다(전이 ≠ 기록,
+    전이는 각 store/service·기록은 호출자가 여기로 남긴다 — ADR 0019·ADR 0012 결정 7).
+
+    기존 소비자 무회귀가 핵심 계약: `decision`·`answer`·`dispatch`·`tracking`을 전부
+    `None`으로 채워 `summarize_audit_record`(`decision.get("disposition")` 등 `.get()`
+    안전 접근)·`dedupe_audit_records`(`tracking` None은 dedup 대상 아님·그대로 유지)가
+    안전하게 통과한다. 행위 고유 정보는 최상위 `action` 키(dict) 하나에 둔다 —
+    `{"kind": action, "subject_id": subject_id, "by": by, **(detail or {})}`.
+    """
+    return {
+        "timestamp": timestamp.isoformat(),
+        "user_id": by,
+        "question": None,
+        "intent": None,
+        "decision": None,
+        "answer": None,
+        "dispatch": None,
+        "tracking": None,
+        "action": {
+            "kind": action,
+            "subject_id": subject_id,
+            "by": by,
+            **(detail or {}),
+        },
+    }
+
+
 class AuditLog(Protocol):
     def record(self, entry: AuditEntry) -> None: ...
+
+    def record_action(self, record: dict[str, Any]) -> None:
+        """처분 행위 레코드(`action_record()` 모양의 dict)를 append-only로 남긴다.
+
+        `record()`(`AuditEntry` 객체 변환)와 달리 이미 직렬화된 dict를 그대로
+        받는다 — 행위 기록은 `RoutingDecision`/`DispatchOutcome` 원형이 없어
+        `AuditEntry`에 억지로 태우면 어색하다(호출자는 `action_record()`로 만든다).
+        """
+        ...
 
 
 class AuditReader(Protocol):
@@ -195,6 +242,12 @@ class JsonlAuditLog:
         with self._path.open("a", encoding="utf-8") as f:
             f.write(entry.to_jsonl() + "\n")
 
+    def record_action(self, record: dict[str, Any]) -> None:
+        """`action_record()` 모양의 dict를 그대로 한 줄 append한다(append-only)."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with self._path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     def records(self) -> list[dict[str, Any]]:
         if not self._path.exists():
             return []
@@ -217,14 +270,22 @@ class JsonlAuditLog:
 class InMemoryAuditLog:
     def __init__(self) -> None:
         self.entries: list[AuditEntry] = []
+        # append-only 기록 순서 원천 — AuditEntry.as_record() 또는 raw action dict를
+        # 기록 순서 그대로 담는다(entries는 하위호환 공개 속성으로 그대로 유지).
+        self._records: list[dict[str, Any]] = []
 
     def record(self, entry: AuditEntry) -> None:
         self.entries.append(entry)
+        self._records.append(entry.as_record())
+
+    def record_action(self, record: dict[str, Any]) -> None:
+        """`action_record()` 모양의 dict를 그대로 append한다(append-only)."""
+        self._records.append(record)
 
     def records(self) -> list[dict[str, Any]]:
-        return [e.as_record() for e in self.entries]
+        return list(self._records)
 
     def record_at(self, index: int) -> dict[str, Any] | None:
-        if index < 0 or index >= len(self.entries):
+        if index < 0 or index >= len(self._records):
             return None
-        return self.entries[index].as_record()
+        return self._records[index]

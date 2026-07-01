@@ -28,6 +28,7 @@ from agent_org_network.provider_runtime import (
     build_provider_request,
     map_response_to_answer,
 )
+from agent_org_network.provider_retry import ProviderAuthError, RetryPolicy
 from agent_org_network.runtime import Answer, AnswerChunk, StreamingRuntime
 
 
@@ -509,3 +510,150 @@ class TestAnswerContractInvariant:
         runtime = ClaudeApiRuntime(transport=transport)
         answer = runtime.answer("질문", card)
         assert answer.mode in ("draft_only", "full", "backup")
+
+
+# ---------------------------------------------------------------------------
+# 일시 장애 재시도 — ProviderApiRuntime.answer/answer_stream (provider_retry 통합)
+# ---------------------------------------------------------------------------
+
+
+class _FakeStatusError(Exception):
+    """anthropic APIStatusError의 status_code 규약 흉내(SDK import 0)."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+
+
+class _RecordingSleeper:
+    """호출된 지연을 기록하는 no-op sleeper — 실 sleep 0."""
+
+    def __init__(self) -> None:
+        self.calls: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.calls.append(seconds)
+
+
+class _FlakyTransport:
+    """지정 횟수만큼 예외를 던진 뒤 청크를 내는 fake transport(재시도 복구 검증)."""
+
+    def __init__(self, *, fail_times: int, exc: Exception, chunks: list[str]) -> None:
+        self._fail_times = fail_times
+        self._exc = exc
+        self._chunks = chunks
+        self.calls = 0
+
+    def __call__(self, request: ProviderRequest) -> Iterable[str]:
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            raise self._exc
+        return iter(self._chunks)
+
+
+class _MidStreamFailTransport:
+    """첫 청크는 내고 그 다음에 예외를 던지는 fake transport(스트림 중간 실패)."""
+
+    def __init__(self, *, first: str, exc: Exception) -> None:
+        self._first = first
+        self._exc = exc
+        self.calls = 0
+
+    def __call__(self, request: ProviderRequest) -> Iterable[str]:
+        self.calls += 1
+        yield self._first
+        raise self._exc
+
+
+class TestProviderRuntimeRetry:
+    def test_answer는_일시_실패_후_재시도로_복구한다(self, card: AgentCard) -> None:
+        transport = _FlakyTransport(
+            fail_times=2, exc=_FakeStatusError(503), chunks=["복구된 ", "답변"]
+        )
+        sleeper = _RecordingSleeper()
+        runtime = ClaudeApiRuntime(
+            transport=transport,
+            retry_policy=RetryPolicy(max_attempts=3, backoff_base_s=0.5),
+            sleeper=sleeper,
+        )
+        answer = runtime.answer("질문", card)
+        assert answer.text == "복구된 답변"
+        assert transport.calls == 3  # 2회 실패 + 1회 성공
+        assert sleeper.calls == [0.5, 1.0]  # 지수 백오프·실 sleep 0
+
+    def test_answer_401은_ProviderAuthError로_승격한다(self, card: AgentCard) -> None:
+        transport = _FlakyTransport(fail_times=5, exc=_FakeStatusError(401), chunks=["never"])
+        sleeper = _RecordingSleeper()
+        runtime = ClaudeApiRuntime(transport=transport, sleeper=sleeper)
+        with pytest.raises(ProviderAuthError):
+            runtime.answer("질문", card)
+        assert transport.calls == 1  # 재시도 없음
+        assert sleeper.calls == []
+
+    def test_answer_재시도_소진은_원_예외_그대로_재던진다(self, card: AgentCard) -> None:
+        transport = _FlakyTransport(fail_times=99, exc=_FakeStatusError(503), chunks=[])
+        runtime = ClaudeApiRuntime(
+            transport=transport,
+            retry_policy=RetryPolicy(max_attempts=2, backoff_base_s=0.1),
+            sleeper=_RecordingSleeper(),
+        )
+        with pytest.raises(_FakeStatusError) as excinfo:
+            runtime.answer("질문", card)
+        assert excinfo.value.status_code == 503  # ProviderAuthError로 뭉개지 않음
+
+    def test_answer_400은_재시도_없이_재던진다(self, card: AgentCard) -> None:
+        transport = _FlakyTransport(fail_times=99, exc=_FakeStatusError(400), chunks=[])
+        sleeper = _RecordingSleeper()
+        runtime = ClaudeApiRuntime(transport=transport, sleeper=sleeper)
+        with pytest.raises(_FakeStatusError):
+            runtime.answer("질문", card)
+        assert transport.calls == 1
+        assert sleeper.calls == []
+
+    def test_answer_stub_transport는_무회귀_재시도_경로_무영향(self, card: AgentCard) -> None:
+        transport = StubProviderTransport(chunks=["정상 답변"])
+        sleeper = _RecordingSleeper()
+        runtime = ClaudeApiRuntime(transport=transport, sleeper=sleeper)
+        answer = runtime.answer("질문", card)
+        assert answer.text == "정상 답변"
+        assert sleeper.calls == []  # 첫 시도 성공 — 재시도 없음
+
+    def test_answer_stream_시작_전_실패는_재시도한다(self, card: AgentCard) -> None:
+        transport = _FlakyTransport(
+            fail_times=1, exc=_FakeStatusError(429), chunks=["환", "불"]
+        )
+        sleeper = _RecordingSleeper()
+        runtime = ClaudeApiRuntime(
+            transport=transport,
+            retry_policy=RetryPolicy(max_attempts=3, backoff_base_s=0.5),
+            sleeper=sleeper,
+        )
+        chunks = list(runtime.answer_stream("질문", card))
+        assert chunks == [AnswerChunk(text_delta="환"), AnswerChunk(text_delta="불")]
+        assert transport.calls == 2  # 1회 실패 + 1회 성공
+        assert sleeper.calls == [0.5]
+
+    def test_answer_stream_중간_실패는_재시도하지_않고_전파한다(self, card: AgentCard) -> None:
+        # 첫 델타가 이미 흘렀으므로 중간 실패는 재시도 금지 — 소비 중 예외로 전파.
+        transport = _MidStreamFailTransport(first="부분", exc=_FakeStatusError(503))
+        sleeper = _RecordingSleeper()
+        runtime = ClaudeApiRuntime(
+            transport=transport,
+            retry_policy=RetryPolicy(max_attempts=3, backoff_base_s=0.5),
+            sleeper=sleeper,
+        )
+        stream = runtime.answer_stream("질문", card)
+        collected: list[AnswerChunk] = []
+        with pytest.raises(_FakeStatusError):
+            for chunk in stream:
+                collected.append(chunk)
+        assert collected == [AnswerChunk(text_delta="부분")]  # 첫 델타는 흘렀다
+        assert transport.calls == 1  # 재시도 없음(중간 실패)
+        assert sleeper.calls == []
+
+    def test_answer_stream_401은_ProviderAuthError로_승격한다(self, card: AgentCard) -> None:
+        transport = _FlakyTransport(fail_times=5, exc=_FakeStatusError(403), chunks=["never"])
+        runtime = ClaudeApiRuntime(transport=transport, sleeper=_RecordingSleeper())
+        with pytest.raises(ProviderAuthError):
+            list(runtime.answer_stream("질문", card))
+        assert transport.calls == 1  # 재시도 없음

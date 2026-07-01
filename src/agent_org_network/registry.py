@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,9 +14,19 @@ class RegistryError(Exception):
 
 
 class Registry:
+    """카드·유저 레지스트리.
+
+    동시성: web.py 엔드포인트가 def(비 async)라 스레드풀에서 병렬 실행된다.
+    register/register_user의 중복 체크(if in dict)와 쓰기 사이를 `_lock`(RLock)
+    으로 직렬화한다 — 동시 등록 시 같은 agent_id/user id가 이중 등록되지 않게
+    한다("유효하지 않은 카드는 등록되지 않는다" 불변식의 동시성 보장, 공개
+    시그니처·반환값·예외는 불변).
+    """
+
     def __init__(self) -> None:
         self._cards: dict[str, AgentCard] = {}
         self._users: dict[str, User] = {}
+        self._lock = threading.RLock()
 
     def user_ids(self) -> frozenset[str]:
         """등록된 User id 집합(읽기 전용)."""
@@ -30,14 +41,16 @@ class Registry:
         return self._users[user_id]
 
     def register(self, card: AgentCard) -> None:
-        if card.agent_id in self._cards:
-            raise RegistryError(f"중복 agent_id: {card.agent_id}")
-        self._cards[card.agent_id] = card
+        with self._lock:
+            if card.agent_id in self._cards:
+                raise RegistryError(f"중복 agent_id: {card.agent_id}")
+            self._cards[card.agent_id] = card
 
     def register_user(self, user: User) -> None:
-        if user.id in self._users:
-            raise RegistryError(f"중복 user id: {user.id}")
-        self._users[user.id] = user
+        with self._lock:
+            if user.id in self._users:
+                raise RegistryError(f"중복 user id: {user.id}")
+            self._users[user.id] = user
 
     def get(self, agent_id: str) -> AgentCard:
         return self._cards[agent_id]

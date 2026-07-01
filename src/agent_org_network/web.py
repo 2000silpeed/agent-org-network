@@ -42,7 +42,7 @@ from agent_org_network.ask_org import (
     project_pending,
     serialize_sse_event,
 )
-from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog
+from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog, action_record
 
 if TYPE_CHECKING:
     from agent_org_network.agent_card import AgentCard
@@ -776,34 +776,19 @@ class AuthorPublishRequest(BaseModel):
     concepts: list[AuthorConceptDisposition]
 
 
-# OKF 저작 추출 모델 — owner측 staged 추출(split/derive/link)에 쓰는 공급자 모델 ID.
-# `provider_transport_anthropic.py:_DEFAULT_MODEL`(답변=opus)·`classifier.py:CLASSIFIER_MODEL`
-# (분류=haiku)과 같은 *모듈 상수* 패턴 — 저작은 균형 모델(Sonnet)을 명시한다. 모델 교체는
-# 이 한 줄만 바꾼다(env 토글 없음 — 프로덕션 기본은 항상 실 추출).
-_AUTHOR_MODEL = "claude-sonnet-5"
-
-
 def _make_default_author() -> OkfAuthor:
-    """프로덕션 기본 OKF 저작자 — owner OAuth 인프로세스 anthropic SDK 실 추출(중앙 토큰 0).
+    """프로덕션 기본 OKF 저작자 — owner OAuth 실 추출(중앙 토큰 0·실사용 가짜 0).
 
-    `runtime_select._make_claude_api_runtime`과 *대칭* — anthropic SDK는 선택 extra라
-    (`pip install agent-org-network[claude-api]`) **지연 import**한다(코어 의존 0 — 미설치
-    owner는 author 기본 생성도 무접촉). 미설치면 `select_runtime`식 명확한 SystemExit 안내.
-
-    같은 `AnthropicSdkTransport`를 `/ask` 답변 경로(`ClaudeApiRuntime`)와 공유한다 — 인자
-    없는 `anthropic.Anthropic()`가 owner `ANTHROPIC_API_KEY`/`ant` OAuth 프로필을 자동 해석
-    (중앙 키 주입 0). `LlmAuthor`가 staged 파이프라인(split/derive/link)을 실 LLM으로 돌린다.
+    `author_select.select_author`(env `AON_AUTHOR` 시임·`runtime_select` 대칭)에 위임한다 —
+    미설정 기본은 `LlmAuthor(AnthropicSdkTransport())`(인프로세스 anthropic SDK·지연 import·
+    미설치면 명확한 SystemExit), `claude-code`면 `claude -p` 구독 위임. **어느 분기도 데모
+    더블이 아니다** — env 토글은 *실* transport 사이만 고른다. 모델은 `AON_AUTHOR_MODEL`
+    또는 `author_select.DEFAULT_AUTHOR_MODEL`. 결정론 테스트는 `create_app(author=FakeAuthor)`
+    주입으로 이 경로 자체를 안 탄다.
     """
-    try:
-        from agent_org_network.okf_authoring import LlmAuthor
-        from agent_org_network.provider_transport_anthropic import AnthropicSdkTransport
-    except ImportError as exc:  # anthropic SDK extra 미설치
-        raise SystemExit(
-            "OKF 저작(/author/run)이 실 추출을 쓰는데 anthropic SDK가 없습니다 — "
-            "공급자 extra를 설치하세요: pip install 'agent-org-network[claude-api]'  "
-            "(uv: uv sync --extra claude-api)"
-        ) from exc
-    return LlmAuthor(AnthropicSdkTransport(), model=_AUTHOR_MODEL)
+    from agent_org_network.author_select import select_author
+
+    return select_author()
 
 
 class AuthorConceptEditRequest(BaseModel):
@@ -1409,6 +1394,20 @@ def create_app(
             if "검토자" in msg and "다름" in msg:
                 raise HTTPException(status_code=403, detail=msg) from exc
             raise HTTPException(status_code=400, detail=msg) from exc
+        # 전이 ≠ 기록 — 전이(review_store)는 위 service가 했고, 검토 *행위*의 절차 기록은
+        # 호출자(여기)가 audit에 남긴다(ADR 0012 결정 7). 실패(4xx) 경로는 행위 미발생이라
+        # 기록하지 않는다 — service 성공 뒤에만 append(append-only·기존 인덱스 불변).
+        if bundle.audit is not None:
+            from datetime import UTC, datetime
+
+            bundle.audit.record_action(
+                action_record(
+                    timestamp=datetime.now(UTC),
+                    action=f"backup_review.{req.type}",
+                    subject_id=item_id,
+                    by=by_owner,
+                )
+            )
         return serialize_review_item(reviewed)
 
     @app.post("/reeval/{item_id}/review")
@@ -1440,6 +1439,19 @@ def create_app(
             if "1인칭 위반" in msg:
                 raise HTTPException(status_code=403, detail=msg) from exc
             raise HTTPException(status_code=400, detail=msg) from exc
+        # 전이 ≠ 기록 — 재평가 처분 *행위*의 절차 기록(둘째 탭 review_backup과 동형).
+        # 실패(4xx)는 행위 미발생이라 기록 없음 — service 성공 뒤에만 append.
+        if bundle.audit is not None:
+            from datetime import UTC, datetime
+
+            bundle.audit.record_action(
+                action_record(
+                    timestamp=datetime.now(UTC),
+                    action=f"reeval.{req.kind}",
+                    subject_id=item_id,
+                    by=by_owner,
+                )
+            )
         return serialize_reeval_item(reviewed, bundle.registry, bundle.audit_reader)
 
     @app.get("/monitor")

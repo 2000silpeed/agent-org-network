@@ -16,14 +16,22 @@ A(ii) OKF 접지: read_okf_bundle(순수 헬퍼, stdlib·pathlib만, SDK 0) +
 분류기·배치 경로의 claude -p는 잔존 (ADR 0027 결정 3 — 대화 경로만 교체)
 """
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
 
 from agent_org_network.agent_card import AgentCard
+from agent_org_network.provider_retry import (
+    DEFAULT_RETRY_POLICY,
+    RetryPolicy,
+    Sleeper,
+    run_with_retry,
+)
 from agent_org_network.runtime import Answer, AnswerChunk
+
+_T = TypeVar("_T")
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +219,13 @@ class ProviderApiRuntime:
 
     okf_root 주입 시 A(ii) OKF 접지 활성: 각 answer() 호출마다 자기 번들을 로컬 파일 I/O로
     읽어 system 프롬프트에 접지 — ClaudeCodeRuntime cwd 접지와 대칭(중앙 토큰 0·격리 보존).
+
+    일시 장애 재시도(provider_retry): transport 호출을 `run_with_retry`로 감싼다 — 429/5xx/
+    네트워크 일시 실패는 지수 백오프로 재시도하고, 401/403은 `ProviderAuthError`로 승격,
+    재시도 소진/비일시 실패는 원 예외를 그대로 재던져 기존 escalation·폴백 경로를 보존한다.
+    `retry_policy`/`sleeper`는 주입 seam — 테스트는 fake sleeper로 실 sleep 0·결정론. 기본값은
+    프로덕션 정책(`DEFAULT_RETRY_POLICY`)·실 `time.sleep`. StubProviderTransport는 예외를 던지지
+    않으므로 재시도 경로가 무영향(무회귀 — 첫 시도에서 성공).
     """
 
     def __init__(
@@ -219,16 +234,37 @@ class ProviderApiRuntime:
         *,
         model: str,
         okf_root: str | Path | None = None,
+        retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+        sleeper: Sleeper | None = None,
     ) -> None:
         self._transport = transport
         self._model = model
         self._okf_root = okf_root
+        self._retry_policy = retry_policy
+        self._sleeper = sleeper
+
+    def _with_retry(self, fn: "Callable[[], _T]") -> "_T":
+        """transport 호출을 재시도 정책으로 감싼다(sleeper 주입 seam·값/부작용 분리).
+
+        sleeper 미주입(None)이면 `run_with_retry` 기본(실 `time.sleep`). 주입 시 그 fake로
+        실 sleep 0·백오프 순서 결정론 단언. 401/403은 ProviderAuthError 승격, 소진/비일시는 재던짐.
+        """
+        if self._sleeper is None:
+            return run_with_retry(fn, policy=self._retry_policy)
+        return run_with_retry(fn, policy=self._retry_policy, sleeper=self._sleeper)
 
     def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
         okf = read_okf_bundle(self._okf_root, card.agent_id)
         request = build_provider_request(question, card, context=context, model=self._model, okf=okf)
-        chunks = self._transport(request)
-        text = assemble_stream(chunks)
+
+        # transport 호출 + 스트림 소진을 한 시도 단위로 재시도한다 — assemble_stream이 청크를
+        # 모두 끌어당기므로(제너레이터 transport의 실 실패는 소진 시점에 난다) 호출+소진을 함께
+        # 감싸야 429/5xx/네트워크 실패를 잡는다. 블로킹 answer는 부분 출력 개념이 없어 전체 재시도 안전.
+        def _call() -> str:
+            chunks = self._transport(request)
+            return assemble_stream(chunks)
+
+        text = self._with_retry(_call)
         return map_response_to_answer(text, card)
 
     def answer_stream(
@@ -241,10 +277,29 @@ class ProviderApiRuntime:
         `ProviderApiRuntime`(따라서 `ClaudeApiRuntime`·`CodexApiRuntime`)이 `StreamingRuntime`을
         만족 → `dispatch_stream`이 실 SDK 토큰 델타를 점진 전달한다(블로킹 1델타 폴백 탈출).
         빈 청크("")는 스킵한다(assemble_stream 정신·빈 TokenEvent 방지). 코어 `answer` 무변경.
+
+        일시 장애 재시도(스트림 시작 전만): transport 호출 + *첫 청크 도달까지*만 재시도한다.
+        첫 델타가 이미 흐른 뒤의 중간 실패는 **재시도하지 않는다** — 부분 출력이 소비자에게 이미
+        나갔으므로 재시도하면 델타가 중복/뒤엉킨다. 중간 실패는 기존 ErrorEvent 경로(상위
+        dispatch_stream이 소비 중 예외로 처리)를 그대로 탄다. 시작 전 실패(429/5xx/네트워크)만
+        `run_with_retry`로 잡아 지수 백오프 재시도하고, 401/403은 `ProviderAuthError`로 승격한다.
         """
         okf = read_okf_bundle(self._okf_root, card.agent_id)
         request = build_provider_request(question, card, context=context, model=self._model, okf=okf)
-        for chunk in self._transport(request):
+
+        # 스트림 시작 = transport 호출 + 첫 청크 pull. 이 지점까지의 실패만 재시도한다(부분 출력
+        # 전이라 안전). 재시도로 얻은 iterator와 이미 pull한 첫 청크를 함께 돌려받아, 이후 델타는
+        # 재시도 없이 그대로 흘린다(중간 실패는 소비자에게 전파 — ErrorEvent 경로 보존).
+        def _start() -> tuple[Iterator[str], str | None]:
+            it = iter(self._transport(request))
+            first = next(it, None)  # StopIteration(빈 스트림)은 재시도 대상 아님 → None.
+            return it, first
+
+        it, first = self._with_retry(_start)
+        if first is not None and first:
+            yield AnswerChunk(text_delta=first)
+        # 첫 청크 이후 델타 — 재시도 없이 그대로 흘린다(중간 실패는 그대로 전파).
+        for chunk in it:
             if chunk:
                 yield AnswerChunk(text_delta=chunk)
 
@@ -270,8 +325,16 @@ class ClaudeApiRuntime(ProviderApiRuntime):
         transport: ProviderTransport,
         *,
         okf_root: str | Path | None = None,
+        retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+        sleeper: Sleeper | None = None,
     ) -> None:
-        super().__init__(transport, model=self._DEFAULT_CLAUDE_MODEL, okf_root=okf_root)
+        super().__init__(
+            transport,
+            model=self._DEFAULT_CLAUDE_MODEL,
+            okf_root=okf_root,
+            retry_policy=retry_policy,
+            sleeper=sleeper,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -296,8 +359,16 @@ class CodexApiRuntime(ProviderApiRuntime):
         transport: ProviderTransport,
         *,
         okf_root: str | Path | None = None,
+        retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+        sleeper: Sleeper | None = None,
     ) -> None:
-        super().__init__(transport, model=self._DEFAULT_CODEX_MODEL, okf_root=okf_root)
+        super().__init__(
+            transport,
+            model=self._DEFAULT_CODEX_MODEL,
+            okf_root=okf_root,
+            retry_policy=retry_policy,
+            sleeper=sleeper,
+        )
 
 
 class GeminiApiRuntime:

@@ -450,3 +450,68 @@ def test_POST_backup_reviews_미존재_item_404() -> None:
 
     r = _post(client, "/backup-reviews/nonexistent", {"type": "approve", "by_owner": "alice"})
     assert r.status == 404
+
+# ── web: 처분 *행위*의 audit 기록(전이 ≠ 기록 — 기록 주체는 호출자[web 라우트]) ──
+
+
+def _make_review_app_with_audit() -> tuple[TestClient, InMemoryBackupReviewStore, InMemoryAuditLog]:
+    """audit_log 주입판 `_make_review_app` — 라우트가 남긴 행위 기록을 직접 검사한다."""
+    from agent_org_network.web import create_app
+
+    review_store = InMemoryBackupReviewStore()
+    review_svc = BackupReviewService(review_store)
+    audit = InMemoryAuditLog()
+
+    app = create_app(
+        runtime=StubRuntime(),
+        review_store=review_store,
+        review_service=review_svc,
+        audit_log=audit,
+    )
+    client = TestClient(app, raise_server_exceptions=True)
+    return client, review_store, audit
+
+
+def _action_records(audit: InMemoryAuditLog) -> list[dict[str, Any]]:
+    return [r for r in audit.records() if r.get("action") is not None]
+
+
+def test_POST_backup_reviews_성공시_행위가_audit에_남는다() -> None:
+    """검토 처분 성공 → 호출자(라우트)가 행위 레코드 1건을 audit에 append한다.
+
+    전이(review_store.history)와 별개의 절차 기록 — "이 답이 왜 이렇게 처분됐나"를
+    audit trail 하나로 추적 가능해진다(ADR 0012 결정 7·전이 ≠ 기록).
+    """
+    client, review_store, audit = _make_review_app_with_audit()
+    review_store.add(_make_item())
+
+    r = _post(client, "/backup-reviews/item-001", {"type": "approve", "by_owner": "alice"})
+    assert r.status == 200
+
+    actions = _action_records(audit)
+    assert len(actions) == 1
+    act = actions[0]["action"]
+    assert act["kind"] == "backup_review.approve"
+    assert act["subject_id"] == "item-001"
+    assert act["by"] == "alice"
+
+
+def test_POST_backup_reviews_실패시_행위_기록_없다() -> None:
+    """4xx(스코프 위반·미존재)는 행위 미발생 — audit에 아무것도 남지 않는다."""
+    client, review_store, audit = _make_review_app_with_audit()
+    review_store.add(_make_item())
+
+    assert _post(client, "/backup-reviews/item-001", {"type": "approve", "by_owner": "bob"}).status == 403
+    assert _post(client, "/backup-reviews/nonexistent", {"type": "approve", "by_owner": "alice"}).status == 404
+    assert _action_records(audit) == []
+
+
+def test_행위_기록이_monitor_파생과_무회귀() -> None:
+    """행위 레코드가 섞여도 `/monitor`(summarize·dedupe 파생)가 안전히 통과한다."""
+    client, review_store, audit = _make_review_app_with_audit()
+    review_store.add(_make_item())
+    _post(client, "/backup-reviews/item-001", {"type": "dismiss", "by_owner": "alice"})
+    assert len(_action_records(audit)) == 1
+
+    r = _get(client, "/monitor")
+    assert r.status == 200  # 파생 소비자가 새 레코드 종류에 안전(예외 0)

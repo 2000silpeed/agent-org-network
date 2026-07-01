@@ -1,6 +1,6 @@
 # Agent Org Network — PRD v0
 
-작성일: 2026-06-20 · rev5(owner = 관리 주체·거버넌스, 중앙이 owner 지식으로 실행 — ADR 0017) · 근거: [initial-planning.md](initial-planning.md), [CONTEXT.md](../CONTEXT.md), ADR 0001/0002/0004/0005/0006/0007/0009/0010/0011/0012/0013/0014/0015/0016/0017
+작성일: 2026-06-20 · rev6(2026-07-02 — 근거 ADR 최신화: 대화 답변 = owner OAuth 인프로세스[0027], OKF 자동 저작·크로스머신[0029·0030], 멱등 publish·의미 dedup[0032]) · 근거: [initial-planning.md](initial-planning.md), [CONTEXT.md](../CONTEXT.md), ADR 0001~0032([docs/adr/](adr/) — 핵심 전환점: 0017 중앙 실행 → 0027 owner측 실행 부활)
 
 ## 1. 문제
 

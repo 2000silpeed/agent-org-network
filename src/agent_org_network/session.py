@@ -15,6 +15,7 @@ N번째 인스턴스 — 새 메커니즘 0.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
@@ -73,6 +74,11 @@ class InMemorySessionStore:
 
     BackupReviewStore·ConflictCaseStore와 같은 포트+InMemory 구조.
     active 세션만 _active에 보관; 종료된 세션은 _ended에 옮긴다.
+
+    동시성: web.py 엔드포인트가 def(비 async)라 스레드풀에서 병렬 실행된다.
+    _active/_active_by_user/_ended 공유 dict 접근은 전부 `_lock`(RLock)으로
+    직렬화한다 — open_or_get의 idle 체크→_auto_end→새 세션 생성, append_turn의
+    get→update 사이 TOCTOU 경합을 막는다(공개 시그니처·반환값·예외는 불변).
     """
 
     # 유휴 자동종료 임계(ADR 0024 결정 B 확정값 30분). 슬라이딩 만료 로직은 T9.1(c)에서
@@ -84,28 +90,30 @@ class InMemorySessionStore:
         self._active: dict[str, Session] = {}
         self._active_by_user: dict[str, str] = {}
         self._ended: dict[str, Session] = {}
+        self._lock = threading.RLock()
 
     def open_or_get(self, user_id: str) -> Session:
-        session_id = self._active_by_user.get(user_id)
-        if session_id and session_id in self._active:
-            existing = self._active[session_id]
-            if self._is_idle_expired(existing):
-                self._auto_end(existing)
-            else:
-                return existing
+        with self._lock:
+            session_id = self._active_by_user.get(user_id)
+            if session_id and session_id in self._active:
+                existing = self._active[session_id]
+                if self._is_idle_expired(existing):
+                    self._auto_end(existing)
+                else:
+                    return existing
 
-        now = self._clock()
-        new_session = Session(
-            session_id=_new_session_id(),
-            user_id=user_id,
-            status="active",
-            transcript=(),
-            started_at=now,
-            last_active_at=now,
-        )
-        self._active[new_session.session_id] = new_session
-        self._active_by_user[user_id] = new_session.session_id
-        return new_session
+            now = self._clock()
+            new_session = Session(
+                session_id=_new_session_id(),
+                user_id=user_id,
+                status="active",
+                transcript=(),
+                started_at=now,
+                last_active_at=now,
+            )
+            self._active[new_session.session_id] = new_session
+            self._active_by_user[user_id] = new_session.session_id
+            return new_session
 
     def _auto_end(self, session: Session) -> None:
         ended = replace(session, status="ended", transcript=())
@@ -114,29 +122,32 @@ class InMemorySessionStore:
         self._ended[session.session_id] = ended
 
     def get(self, session_id: str) -> Session | None:
-        return self._active.get(session_id) or self._ended.get(session_id)
+        with self._lock:
+            return self._active.get(session_id) or self._ended.get(session_id)
 
     def append_turn(self, session_id: str, turn: SessionTurn) -> Session:
-        existing = self._active.get(session_id)
-        if existing is None:
-            raise ValueError(f"활성 세션 없음: {session_id!r}")
-        updated = replace(
-            existing,
-            transcript=existing.transcript + (turn,),
-            last_active_at=self._clock(),
-        )
-        self._active[session_id] = updated
-        return updated
+        with self._lock:
+            existing = self._active.get(session_id)
+            if existing is None:
+                raise ValueError(f"활성 세션 없음: {session_id!r}")
+            updated = replace(
+                existing,
+                transcript=existing.transcript + (turn,),
+                last_active_at=self._clock(),
+            )
+            self._active[session_id] = updated
+            return updated
 
     def end(self, session_id: str) -> Session | None:
-        existing = self._active.get(session_id)
-        if existing is None:
-            return None
-        ended = replace(existing, status="ended", transcript=())
-        del self._active[session_id]
-        self._active_by_user.pop(existing.user_id, None)
-        self._ended[session_id] = ended
-        return ended
+        with self._lock:
+            existing = self._active.get(session_id)
+            if existing is None:
+                return None
+            ended = replace(existing, status="ended", transcript=())
+            del self._active[session_id]
+            self._active_by_user.pop(existing.user_id, None)
+            self._ended[session_id] = ended
+            return ended
 
     def _is_idle_expired(self, session: Session) -> bool:
         now = self._clock()
@@ -144,10 +155,11 @@ class InMemorySessionStore:
         return elapsed >= self.IDLE_TIMEOUT_SECONDS
 
     def active_for_user(self, user_id: str) -> Session | None:
-        session_id = self._active_by_user.get(user_id)
-        if session_id is None:
-            return None
-        return self._active.get(session_id)
+        with self._lock:
+            session_id = self._active_by_user.get(user_id)
+            if session_id is None:
+                return None
+            return self._active.get(session_id)
 
 
 IDLE_TIMEOUT_SECONDS = InMemorySessionStore.IDLE_TIMEOUT_SECONDS

@@ -55,6 +55,9 @@ packages = ["src/agent_org_network"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "scale: 게이트 밖 실 스케일 데이터(registry/scale·okf_scale) 러너 — 미준비 시 skip",
+]
 
 [tool.ruff]
 line-length = 100

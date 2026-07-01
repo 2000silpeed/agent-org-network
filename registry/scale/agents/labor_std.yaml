@@ -1,0 +1,13 @@
+agent_id: labor_std
+owner: u_labor
+team: 노무
+summary: 근로시간, 연차휴가, 휴게시간, 근로계약 관련 문의를 안내합니다.
+domains:
+  - 근로시간
+  - 연차휴가
+  - 휴게시간
+  - 근로계약
+last_reviewed_at: "2026-07-01"
+knowledge_sources:
+  - 법령/근로기준법
+  - 법령/최저임금법

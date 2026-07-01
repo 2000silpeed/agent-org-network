@@ -1,0 +1,15 @@
+agent_id: wage_ops
+owner: u_wage
+team: 임금
+summary: 임금, 퇴직금, 임금체불, 최저임금 관련 문의를 안내합니다. 세무신고는 담당하지 않습니다.
+domains:
+  - 임금
+  - 퇴직금
+  - 임금체불
+  - 최저임금
+cannot_answer:
+  - 세무신고
+last_reviewed_at: "2026-07-01"
+knowledge_sources:
+  - 법령/근로기준법
+  - 법령/근로자퇴직급여보장법

@@ -1,0 +1,12 @@
+agent_id: consumer_protect
+owner: u_consumer
+team: 소비자보호
+summary: 청약철회, 환불, 피해구제, 표시광고 관련 문의를 안내합니다.
+domains:
+  - 청약철회
+  - 환불
+  - 피해구제
+  - 표시광고
+last_reviewed_at: "2026-07-01"
+knowledge_sources:
+  - 법령/전자상거래등에서의소비자보호에관한법률

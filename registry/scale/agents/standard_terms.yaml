@@ -1,0 +1,12 @@
+agent_id: standard_terms
+owner: u_terms
+team: 약관심사
+summary: 표준약관, 불공정조항, 약관해석, 계약조항 관련 문의를 안내합니다.
+domains:
+  - 표준약관
+  - 불공정조항
+  - 약관해석
+  - 계약조항
+last_reviewed_at: "2026-07-01"
+knowledge_sources:
+  - 법령/약관의규제에관한법률

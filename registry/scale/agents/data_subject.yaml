@@ -1,0 +1,12 @@
+agent_id: data_subject
+owner: u_subject
+team: 정보주체권리
+summary: 열람권, 삭제권, 정정권, 처리정지권 관련 문의를 안내합니다.
+domains:
+  - 열람권
+  - 삭제권
+  - 정정권
+  - 처리정지권
+last_reviewed_at: "2026-07-01"
+knowledge_sources:
+  - 법령/개인정보보호법

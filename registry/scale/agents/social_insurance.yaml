@@ -1,0 +1,13 @@
+agent_id: social_insurance
+owner: u_insurance
+team: 사회보험
+summary: 국민연금, 건강보험, 고용보험, 보험료부과 관련 문의를 안내합니다.
+domains:
+  - 국민연금
+  - 건강보험
+  - 고용보험
+  - 보험료부과
+last_reviewed_at: "2026-07-01"
+knowledge_sources:
+  - 법령/국민건강보험법
+  - 법령/고용보험법

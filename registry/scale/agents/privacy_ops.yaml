@@ -1,0 +1,14 @@
+agent_id: privacy_ops
+owner: u_privacy
+team: 개인정보보호
+summary: 개인정보수집, 이용동의, 보관파기, 안전조치 관련 문의를 안내합니다.
+domains:
+  - 개인정보수집
+  - 이용동의
+  - 보관파기
+  - 안전조치
+approval_when:
+  - 안전조치
+last_reviewed_at: "2026-07-01"
+knowledge_sources:
+  - 법령/개인정보보호법

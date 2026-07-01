@@ -1,0 +1,14 @@
+agent_id: oss_license
+owner: u_license
+team: 오픈소스거버넌스
+summary: 오픈소스라이선스, GPL, 라이선스양립성, 저작권고지 관련 문의를 안내합니다.
+domains:
+  - 오픈소스라이선스
+  - GPL
+  - 라이선스양립성
+  - 저작권고지
+last_reviewed_at: "2026-07-01"
+knowledge_sources:
+  - SPDX/MIT
+  - SPDX/Apache-2.0
+  - SPDX/GPL-3.0

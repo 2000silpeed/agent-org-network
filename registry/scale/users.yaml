@@ -1,0 +1,22 @@
+users:
+  - id: desk_root
+  - id: u_labor
+    manager: desk_root
+  - id: u_wage
+    manager: desk_root
+  - id: u_consumer
+    manager: desk_root
+  - id: u_terms
+    manager: desk_root
+  - id: u_privacy
+    manager: desk_root
+  - id: u_subject
+    manager: desk_root
+  - id: u_tax
+    manager: desk_root
+  - id: u_insurance
+    manager: desk_root
+  - id: u_bizreg
+    manager: desk_root
+  - id: u_license
+    manager: desk_root

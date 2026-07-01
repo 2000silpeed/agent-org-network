@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -21,6 +21,7 @@ class SampleQuestion(BaseModel, frozen=True):
     expected_approval: bool = False
     expected_collaborators: list[str] | None = None
     note: str = ""
+    tier: Literal["easy", "hard", "ambiguous"] = "easy"
 
 
 def load_golden(path: Path) -> list[SampleQuestion]:

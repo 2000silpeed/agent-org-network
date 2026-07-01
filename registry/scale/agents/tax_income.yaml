@@ -1,0 +1,12 @@
+agent_id: tax_income
+owner: u_tax
+team: 소득세
+summary: 원천징수, 연말정산, 소득공제, 종합소득세 관련 문의를 안내합니다.
+domains:
+  - 원천징수
+  - 연말정산
+  - 소득공제
+  - 종합소득세
+last_reviewed_at: "2026-07-01"
+knowledge_sources:
+  - 법령/소득세법

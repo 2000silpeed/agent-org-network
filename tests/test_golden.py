@@ -11,6 +11,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from agent_org_network.classifier import FakeClassifier
 from agent_org_network.decision import Contested, Routed, Unowned
@@ -80,6 +81,30 @@ def test_registry_신규_카드_it_ops_approval_when():
 
 def test_골든셋_30개_로드(golden: list[SampleQuestion]):
     assert len(golden) == 30
+
+
+def test_골든셋_tier_없는_기존_항목_기본값_easy(golden: list[SampleQuestion]):
+    """기존 samples/questions.jsonl(30줄·tier 없음)은 SampleQuestion.tier 기본값 "easy"로 통과한다(무회귀)."""
+    for entry in golden:
+        assert entry.tier == "easy", f"tier 기본값 불일치: {entry}"
+
+
+def test_SampleQuestion_tier_유효값_hard_ambiguous_허용():
+    for tier in ("easy", "hard", "ambiguous"):
+        q = SampleQuestion(
+            question="q", expected_intent="i", expected_disposition="unowned", tier=tier
+        )
+        assert q.tier == tier
+
+
+def test_SampleQuestion_tier_잘못된_값_검증_실패():
+    with pytest.raises(ValidationError):
+        SampleQuestion(
+            question="q",
+            expected_intent="i",
+            expected_disposition="unowned",
+            tier="bogus",  # pyright: ignore[reportArgumentType]  # 검증 실패를 확인하는 의도적 잘못된 값
+        )
 
 
 def test_골든셋_모든_항목_필수_필드_존재(golden: list[SampleQuestion]):

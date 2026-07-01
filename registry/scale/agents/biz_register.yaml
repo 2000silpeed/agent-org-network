@@ -1,0 +1,12 @@
+agent_id: biz_register
+owner: u_bizreg
+team: 사업자등록
+summary: 사업자등록, 휴폐업신고, 업종코드, 등록정정 관련 문의를 안내합니다.
+domains:
+  - 사업자등록
+  - 휴폐업신고
+  - 업종코드
+  - 등록정정
+last_reviewed_at: "2026-07-01"
+knowledge_sources:
+  - 법령/부가가치세법

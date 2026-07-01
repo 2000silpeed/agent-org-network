@@ -26,12 +26,21 @@ ADR 0021:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+import json
+import time
+import urllib.request
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from agent_org_network.registry import Registry
+
+# JWKS TTL 캐시 기본 수명(초). 실 IdP가 Cache-Control로 더 짧게 권할 수 있으나 과설계 없이
+# 고정 기본 + kid-미스 재fetch(키 롤테이션 대응) 두 규칙만 둔다(ADR 0021 결정 1 정신).
+_DEFAULT_JWKS_TTL_SECONDS = 3600.0
 
 
 class OidcVerificationError(Exception):
@@ -104,24 +113,233 @@ class FakeOidcProvider:
         return self._tokens[id_token]
 
 
+def _urllib_jwks_fetcher(jwks_uri: str) -> dict[str, Any]:
+    """기본 JWKS fetcher — stdlib urllib로 JWKS JSON을 GET한다(새 네트워크 의존성 0).
+
+    실 네트워크·비결정(게이트 밖). 테스트는 fixture fetcher를 주입해 이 함수를 우회한다
+    (`jwks_fetcher` seam — `SubprocessGitGateway`가 subprocess를 주입 seam으로 격리한 정신).
+    fetch·파싱 실패는 `OidcVerificationError`로 감싸 web 401 매핑을 보존한다.
+    """
+    try:
+        with urllib.request.urlopen(jwks_uri) as resp:  # noqa: S310 — jwks_uri는 신뢰 구성값
+            raw = resp.read()
+        parsed: Any = json.loads(raw)
+    except Exception as exc:  # 네트워크·타임아웃·JSON 파싱 실패 등
+        raise OidcVerificationError(f"JWKS fetch 실패({jwks_uri!r}): {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise OidcVerificationError(f"JWKS 응답이 JSON 객체가 아님: {jwks_uri!r}")
+    return _as_str_dict(cast("dict[object, object]", parsed))
+
+
 class HttpOidcProvider:
-    """실 JWKS·RS256 검증 `OidcProvider` — **게이트 밖 수동 시연**(ADR 0021 결정 1).
+    """실 JWKS·RS256 검증 `OidcProvider` — 표준 OIDC 제네릭(특정 IdP 가정 없음·ADR 0021 결정 1).
 
-    IdP의 JWKS endpoint에서 공개키를 fetch해 id_token의 RS256 서명을 검증하고, iss/aud/exp를
+    IdP의 JWKS endpoint에서 공개키를 fetch해 id_token의 RS256 서명을 검증하고 iss/aud/exp/nbf를
     검증한다(실 네트워크·서명·비결정 — `SubprocessGitGateway`의 git subprocess와 같은 결).
-    새 무거운 의존성(서명 검증 라이브러리)을 더할지는 **tdd-engineer/후속이 판단**한다 — 이
-    shape는 자리만(NotImplementedError). 실 검증이라 단위 게이트에서 돌리지 않는다(수동 시연).
+    `jwks_url`·`issuer`·`audience`는 사내 IdP 미정이라 **생성자 주입**(특정 공급자 가정 0).
 
-    **현재는 shape stub(미구현)** — 실 본문은 후속(mcp-runtime-engineer/수동·게이트 밖).
+    JWT 검증 = **PyJWT + cryptography**(선택 extra `oidc`로 격리 — anthropic `claude-api`·
+    fastembed `dedup` extra와 같은 패턴). 지연 import라 extra 미설치 코어는 안 깨지고, 미설치
+    환경에서 이 provider를 *생성*하면 명확한 `SystemExit`으로 안내한다(`FastEmbedEmbedder` 정신).
+
+    주입 seam(결정론 경계):
+      - `jwks_fetcher(url) -> dict` — 실 기본은 `_urllib_jwks_fetcher`(stdlib·네트워크). 테스트는
+        fixture fetcher를 주입해 네트워크 0으로 JWKS dict를 공급한다.
+      - `clock() -> float` — epoch 초. exp/iat/nbf 검증을 결정론으로 만든다(기본 `time.time`).
+
+    JWKS 캐싱(과설계 금지 — 이 두 규칙만):
+      1. TTL 캐시 — `clock` 기준 `jwks_ttl_seconds` 동안 fetch 결과를 재사용.
+      2. kid 미스 시 1회 재fetch — 키 롤테이션 대응. 재fetch 후에도 없으면 검증 실패.
+
+    **실 IdP 연동(redirect/PKCE code flow·refresh)은 이번 슬라이스 범위 밖** — id_token *검증*까지가
+    이번 슬라이스다(웹 로그인 flow 자체는 기존 `/login/sso`가 id_token을 받는 구조 그대로).
+    code flow·redirect는 사내 IdP 결정 후 후속이다.
     """
 
-    def __init__(self, issuer: str, audience: str, jwks_uri: str) -> None:
+    def __init__(
+        self,
+        issuer: str,
+        audience: str,
+        jwks_url: str,
+        *,
+        jwks_fetcher: Callable[[str], dict[str, Any]] | None = None,
+        clock: Callable[[], float] = time.time,
+        jwks_ttl_seconds: float = _DEFAULT_JWKS_TTL_SECONDS,
+    ) -> None:
+        # PyJWT+cryptography 지연 import(oidc extra) — 미설치면 명확한 SystemExit 안내.
+        # 모듈 상단 import가 아니라 생성 시점 import라 extra 미설치 코어/게이트는 안 깨진다.
+        try:
+            import jwt
+
+            _ = jwt.__version__  # 설치·로드 확인(실사용 API는 verify에서 지연 import)
+        except ImportError as exc:
+            raise SystemExit(
+                "HttpOidcProvider엔 PyJWT+cryptography가 필요합니다 — oidc extra를 설치하세요: "
+                "pip install 'agent-org-network[oidc]'  (uv: uv sync --extra oidc)"
+            ) from exc
+
         self.issuer = issuer
         self.audience = audience
-        self.jwks_uri = jwks_uri
+        self.jwks_url = jwks_url
+        self._jwks_fetcher = jwks_fetcher or _urllib_jwks_fetcher
+        self._clock = clock
+        self._jwks_ttl = jwks_ttl_seconds
+        # TTL 캐시 상태 — (fetched_at, JWKS dict). None이면 미fetch.
+        self._cache: tuple[float, dict[str, Any]] | None = None
+
+    # ── JWKS 캐시 ────────────────────────────────────────────────────────────
+
+    def _fetch_and_cache(self) -> dict[str, Any]:
+        jwks = self._jwks_fetcher(self.jwks_url)
+        self._cache = (self._clock(), jwks)
+        return jwks
+
+    def _get_jwks(self, *, force_refresh: bool = False) -> dict[str, Any]:
+        """캐시된 JWKS를 돌려주되, 만료·강제 시 재fetch한다(규칙 1: TTL)."""
+        if force_refresh or self._cache is None:
+            return self._fetch_and_cache()
+        fetched_at, jwks = self._cache
+        if self._clock() - fetched_at >= self._jwks_ttl:
+            return self._fetch_and_cache()
+        return jwks
+
+    def _find_signing_key(self, id_token: str) -> Any:
+        """id_token의 kid에 맞는 서명 공개키를 찾는다(규칙 2: kid 미스 시 1회 재fetch).
+
+        캐시된 JWKS에서 kid를 찾고, 없으면 키 롤테이션으로 보고 1회 재fetch 후 재시도한다.
+        재fetch 후에도 없으면 `OidcVerificationError`.
+        """
+        import jwt
+
+        try:
+            header = jwt.get_unverified_header(id_token)
+        except jwt.PyJWTError as exc:
+            raise OidcVerificationError(f"id_token 헤더 파싱 실패: {exc}") from exc
+        kid_raw = header.get("kid")
+        kid = kid_raw if isinstance(kid_raw, str) else None
+
+        # 1차: 캐시(또는 최초 fetch)에서 kid 조회.
+        jwks = self._get_jwks()
+        key = self._select_key(jwks, kid)
+        if key is not None:
+            return key
+
+        # kid 미스 → 키 롤테이션 대응 1회 재fetch.
+        jwks = self._get_jwks(force_refresh=True)
+        key = self._select_key(jwks, kid)
+        if key is not None:
+            return key
+
+        raise OidcVerificationError(
+            f"JWKS에서 kid {kid!r}에 맞는 서명 키를 찾지 못함(재fetch 후에도 미존재)"
+        )
+
+    @staticmethod
+    def _select_key(jwks: dict[str, Any], kid: str | None) -> Any:
+        """JWKS dict에서 kid에 맞는 JWK를 PyJWT 공개키 객체로 변환한다(없으면 None).
+
+        kid가 없으면(단일 키 IdP) 첫 키를 쓴다 — 다중 키에서 kid 없으면 매칭 불가로 본다.
+        반환은 PyJWT RSA 공개키(`decode`의 key 인자로 그대로 전달) — 포트 밖 내부 타입이라 Any.
+        """
+        from jwt.algorithms import RSAAlgorithm
+
+        raw_keys: object = jwks.get("keys")
+        if not isinstance(raw_keys, list):
+            return None
+        keys = cast("list[object]", raw_keys)
+        chosen: dict[str, Any] | None = None
+        for item in keys:
+            if not isinstance(item, dict):
+                continue
+            jwk = _as_str_dict(cast("dict[object, object]", item))
+            if kid is not None:
+                if jwk.get("kid") == kid:
+                    chosen = jwk
+                    break
+            elif len(keys) == 1:
+                chosen = jwk
+                break
+        if chosen is None:
+            return None
+        return RSAAlgorithm.from_jwk(json.dumps(chosen))
+
+    # ── verify ───────────────────────────────────────────────────────────────
 
     def verify(self, id_token: str) -> OidcClaims:
-        raise NotImplementedError("실 OIDC 검증 — 게이트 밖 수동 시연(T7.1 후속)")
+        """id_token의 RS256 서명·iss/aud/exp/nbf를 검증하고 `OidcClaims`로 매핑한다.
+
+        절차: kid로 JWKS 서명 키 선택(캐시·롤테이션 재fetch) → PyJWT `decode`로 서명·iss·aud·
+        exp·nbf 검증(`clock`으로 결정론) → 표준 claim을 `OidcClaims`로 투영. 실패(서명 위조·
+        만료·iss/aud 불일치·형식 오류·키 미스)는 전부 `OidcVerificationError`(web 401 매핑 보존).
+        """
+        import jwt
+
+        signing_key = self._find_signing_key(id_token)
+        try:
+            payload: dict[str, Any] = jwt.decode(
+                id_token,
+                signing_key,
+                algorithms=["RS256"],
+                audience=self.audience,
+                issuer=self.issuer,
+                options={
+                    "require": ["exp", "iss", "aud"],
+                    "verify_signature": True,
+                    "verify_iss": True,
+                    "verify_aud": True,
+                    # exp/nbf/iat 시간 검증은 PyJWT(내부적으로 time.time 사용)에 맡기지 않고
+                    # 주입 clock으로 직접 한다(_verify_time_claims) — 결정론 보장(clock seam).
+                    "verify_exp": False,
+                    "verify_nbf": False,
+                    "verify_iat": False,
+                },
+            )
+        except jwt.PyJWTError as exc:
+            raise OidcVerificationError(f"id_token 검증 실패: {exc}") from exc
+
+        self._verify_time_claims(payload)
+        return _claims_from_payload(payload)
+
+    def _verify_time_claims(self, payload: dict[str, Any]) -> None:
+        """exp/nbf를 주입 clock 기준으로 검증한다(결정론 — PyJWT의 time.time 우회).
+
+        `require`가 exp 존재를 이미 강제하므로 exp는 있다고 본다. nbf는 옵셔널(있으면 검증).
+        leeway 0 — 슬라이스 단순화(clock seam으로 테스트가 시각을 정확히 통제).
+        """
+        now = self._clock()
+        exp = payload.get("exp")
+        if isinstance(exp, (int, float)) and now >= exp:
+            raise OidcVerificationError("id_token 검증 실패: 토큰 만료(exp)")
+        nbf = payload.get("nbf")
+        if isinstance(nbf, (int, float)) and now < nbf:
+            raise OidcVerificationError("id_token 검증 실패: 아직 유효하지 않음(nbf)")
+
+
+def _as_str_dict(item: dict[object, object]) -> dict[str, Any]:
+    """JWK dict의 키를 str로 좁힌다(JSON 파싱 결과라 키는 사실상 str)."""
+    return {str(k): v for k, v in item.items()}
+
+
+def _claims_from_payload(payload: dict[str, Any]) -> OidcClaims:
+    """검증 통과한 JWT payload를 `OidcClaims`로 매핑한다(표준 claim만·공급자 중립).
+
+    `aud`는 표준상 str 또는 list일 수 있으나(PyJWT가 audience 일치를 이미 검증) 값 객체엔
+    구성된 단일 audience 문자열이 들어가도록 정규화한다. `email`·`email_verified`는 IdP가
+    안 보낼 수 있어 안전 기본값(빈 문자열·False)으로 떨어뜨린다 — resolve_identity가 거른다.
+    """
+    aud_raw: object = payload.get("aud", "")
+    if isinstance(aud_raw, list):
+        aud_list = cast("list[object]", aud_raw)
+        aud = str(aud_list[0]) if aud_list else ""
+    else:
+        aud = str(aud_raw)
+    return OidcClaims(
+        sub=str(payload.get("sub", "")),
+        email=str(payload.get("email", "")),
+        email_verified=bool(payload.get("email_verified", False)),
+        iss=str(payload.get("iss", "")),
+        aud=aud,
+    )
 
 
 def resolve_identity(claims: OidcClaims, registry: Registry) -> str:

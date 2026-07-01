@@ -23,6 +23,10 @@ codex = ["openai>=2.0.0"]
 # tokenizers·numpy를 transitive로·torch 없음). 미설치 owner는 dedup이 무력(빈 후보)일 뿐
 # 코어·다른 extra·기본 CI는 무영향(공급자 SDK extra 격리 패턴).
 dedup = ["fastembed>=0.4.0"]
+# 실 OIDC 검증(HttpOidcProvider·T8.3·ADR 0021). JWKS fetch·RS256 서명 검증·iss/aud/exp 체크를
+# PyJWT+cryptography로 한다. 코어는 SSO를 FakeOidcProvider(결정론·게이트 내)로만 돌리므로 이
+# extra 미설치여도 코어·게이트 무영향(지연 import·미설치 시 명확한 SystemExit 안내).
+oidc = ["pyjwt[crypto]>=2.10.0"]
 
 [dependency-groups]
 dev = [
@@ -37,6 +41,9 @@ dev = [
     # 둔다(런타임 코어 의존 아님·실 사용은 dedup extra). 미설치 시 pyright가 fastembed 타입을
     # unknown으로 떨어뜨리지 않게 게이트 환경엔 항상 둔다.
     "fastembed>=0.4.0",
+    # HttpOidcProvider(oidc extra) 타입검사·결정론 테스트용 — pyright가 jwt 타입을 보고
+    # 결정론 테스트가 fixture fetcher로 실 서명을 검증하게 dev에 둔다(런타임 코어 의존 아님).
+    "pyjwt[crypto]>=2.10.0",
 ]
 
 [build-system]

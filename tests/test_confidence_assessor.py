@@ -901,12 +901,15 @@ class TestSelectAssessor:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("AON_ASSESSOR", raising=False)
+        from agent_org_network.confidence_assessor import AssessorChain
         from agent_org_network.index_matcher import EmbeddingAnnMatcher
 
         # EmbeddingAnnMatcher 인스턴스 필요(isinstance) — 실 임베더 없이 더블 embedder 주입.
         matcher = EmbeddingAnnMatcher(_CountingEmbedder({}))  # type: ignore[arg-type]
-        assessor = select_assessor(matcher, tmp_path)
-        assert isinstance(assessor, EmbeddingConfidenceAssessor)
+        chain = select_assessor(matcher, tmp_path)
+        assert isinstance(chain, AssessorChain)
+        assert isinstance(chain.primary, EmbeddingConfidenceAssessor)
+        assert chain.secondary is None
 
     def test_auto_overlap_매처면_None(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -914,7 +917,9 @@ class TestSelectAssessor:
         monkeypatch.delenv("AON_ASSESSOR", raising=False)
         from agent_org_network.index_matcher import ConceptOverlapMatcher
 
-        assert select_assessor(ConceptOverlapMatcher(), tmp_path) is None
+        chain = select_assessor(ConceptOverlapMatcher(), tmp_path)
+        assert chain.primary is None
+        assert chain.secondary is None
 
     def test_embedding_명시_임베더_공유(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -923,8 +928,9 @@ class TestSelectAssessor:
         from agent_org_network.index_matcher import EmbeddingAnnMatcher
 
         matcher = EmbeddingAnnMatcher(_CountingEmbedder({}))  # type: ignore[arg-type]
-        assessor = select_assessor(matcher, tmp_path)
-        assert isinstance(assessor, EmbeddingConfidenceAssessor)
+        chain = select_assessor(matcher, tmp_path)
+        assert isinstance(chain.primary, EmbeddingConfidenceAssessor)
+        assert chain.secondary is None
 
     def test_embedding_명시_overlap_매처면_SystemExit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -943,8 +949,9 @@ class TestSelectAssessor:
         monkeypatch.setenv("AON_ASSESSOR_PROVIDER", "claude-code")
         from agent_org_network.index_matcher import ConceptOverlapMatcher
 
-        assessor = select_assessor(ConceptOverlapMatcher(), tmp_path)
-        assert isinstance(assessor, LlmConfidenceAssessor)
+        chain = select_assessor(ConceptOverlapMatcher(), tmp_path)
+        assert isinstance(chain.primary, LlmConfidenceAssessor)
+        assert chain.secondary is None
 
     def test_off_명시_None(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -953,7 +960,32 @@ class TestSelectAssessor:
         from agent_org_network.index_matcher import EmbeddingAnnMatcher
 
         matcher = EmbeddingAnnMatcher(_CountingEmbedder({}))  # type: ignore[arg-type]
-        assert select_assessor(matcher, tmp_path) is None
+        chain = select_assessor(matcher, tmp_path)
+        assert chain.primary is None
+        assert chain.secondary is None
+
+    def test_hybrid_embedding_1차_LLM_2차(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """hybrid → primary=embedding(임베더 공유)·secondary=LLM(§17-c 결정 S)."""
+        monkeypatch.setenv("AON_ASSESSOR", "hybrid")
+        monkeypatch.setenv("AON_ASSESSOR_PROVIDER", "claude-code")
+        from agent_org_network.index_matcher import EmbeddingAnnMatcher
+
+        matcher = EmbeddingAnnMatcher(_CountingEmbedder({}))  # type: ignore[arg-type]
+        chain = select_assessor(matcher, tmp_path)
+        assert isinstance(chain.primary, EmbeddingConfidenceAssessor)
+        assert isinstance(chain.secondary, LlmConfidenceAssessor)
+
+    def test_hybrid_embedder_없는_매처면_SystemExit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """hybrid는 embedding 1차가 전제 — overlap 매처면 명시 오설정 SystemExit."""
+        monkeypatch.setenv("AON_ASSESSOR", "hybrid")
+        from agent_org_network.index_matcher import ConceptOverlapMatcher
+
+        with pytest.raises(SystemExit):
+            select_assessor(ConceptOverlapMatcher(), tmp_path)
 
     def test_미지값_SystemExit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

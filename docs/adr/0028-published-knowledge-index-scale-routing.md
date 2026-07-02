@@ -747,7 +747,7 @@ class EmbeddingConfidenceAssessor:                 # ConfidenceAssessor Protocol
 
 ## 17-b. stage-2 `LlmConfidenceAssessor` — LLM 자기평가 실 어댑터 2호 (domain-architect 확정 2026-07-02 — 결정 G~M)
 
-> **실측 판정(2026-07-02) — 기본 미채택**: 가드(오라우팅 2.4%) 안에서 기준선 미달(top-1 48.6% < 50.0%·margin 0.6 필요→결정력 상쇄), 가드 해제 시 top-1 62.5%·contested 15.3%로 압도하나 오라우팅 5.6%(사람-합의 라벨을 확신 라우팅). 지연 후보당 ~17s. `AON_ASSESSOR` auto 기본=임베딩 배선 보존·llm은 opt-in 존치. 다음 = 결정 M (c) 하이브리드 리랭크. 상세: docs/scale-eval-2026-07-02.md S12.
+> **실측 판정(2026-07-02) — 기본 미채택**: 가드(오라우팅 2.4%) 안에서 기준선 미달(top-1 48.6% < 50.0%·margin 0.6 필요→결정력 상쇄), 가드 해제 시 top-1 62.5%·contested 15.3%로 압도하나 오라우팅 5.6%(사람-합의 라벨을 확신 라우팅). 지연 후보당 ~17s. `AON_ASSESSOR` auto 기본=임베딩 배선 보존·llm은 opt-in 존치. 다음 = (c) 하이브리드 리랭크 → **§17-c(결정 N~T)에서 shape 확정**(embedding 사슬이 푼 50.0% 보존·잔여 Contested에만 LLM 2차·`AON_ASSESSOR=hybrid`·`AssessorChain` 반환형·잔여 집합 기준 오라우팅 가드 2.4% 재eval). 상세: docs/scale-eval-2026-07-02.md S12.
 
 > §17이 결정 A에서 (a) body 임베딩 접지를 v1으로 착지시키고 (b) LLM 자기평가를 "품질 상한↑·비결정·비쌈·게이트 밖·후속"으로 갈랐다. 이 절이 그 (b)를 확정한다. **구현 아님** — mcp-runtime-engineer(어댑터 조립·transport 배선·okf_root 접지·실 eval)·tdd-engineer(프롬프트 빌드·응답 파싱 순수함수·stub transport 주입 어댑터 동작·라우터 통합 결정론) 넘김용 *모양*. `confidence_assessor.py`(EmbeddingConfidenceAssessor 선례)·`okf_authoring.py`(`LlmAuthor`·`build_*_request`/`parse_*_response`·`_strip_code_fence`)·`provider_runtime.py`(`ProviderTransport`·`ProviderRequest`·`assemble_stream`)·`provider_transport_claude_code.py`(`ClaudeCodeTransport` — 이 머신 Claude 구독 자격)·`okf_index.py`(`parse_okf_document` body 추출)·`author_select.py`(select 시임 선례)·`two_stage_router.py`(`ConfidenceAssessor` Protocol·자동해소 규칙)를 읽고 확정.
 >
@@ -845,7 +845,7 @@ def select_assessor(matcher, okf_root) -> ConfidenceAssessor | None:   # index_m
 - 실 transport eval — 이 머신은 Claude 구독 자격이 있으므로 **`ClaudeCodeTransport`**(`claude -p` 위임·author_select 실증 선례)로 실측. 모델은 저작 파이프라인과 같은 기본(`_resolve_model`)류.
 - **eval 규모·시간**: contested ~25문항(S10 잔존 34.7% × 72 ≈ 25) × 후보 2 ≈ **~50호출**. `claude -p` 호출당 수 초라 순차면 수 분 소요(순차 v1 기준·병렬이면 단축).
 - **A/B**: `EmbeddingConfidenceAssessor`(§17 (a)·top-1 50.0%·contested 34.7%·오라우팅 1.4%) vs `LlmConfidenceAssessor`(b)를 **동일 골든셋 72문항·동일 stage-1(embedding τ=0.85)+stage-1.5(δ=0.03)** 위에서 대조. 지표: overall/hard/ambiguous top-1·contested↓·**오라우팅 상한 가드 2.4%**(§17 결정 F·기준선 1.4%+1%p — (b)가 contested를 더 줄여도 오라우팅 2.4% 넘기면 기각). 실 정책값(`clear_winner_margin`·`min_confidence`·`max_body_chars`)은 이 eval로 스윕 확정(§17 결정 F·§16 δ 스윕 정신).
-- (c) 하이브리드(a body cosine 먼저 → 잔여만 b LLM 리랭크)는 (b) 단독 A/B 이후 상향 경로(§17 결정 E·§7 top-K 리랭크 정신).
+- (c) 하이브리드(a body cosine 먼저 → 잔여만 b LLM 리랭크)는 (b) 단독 A/B 이후 상향 경로(§17 결정 E·§7 top-K 리랭크 정신) → **§17-c(결정 N~T)에서 확정**.
 
 ### 불변식 보존 자체점검 (결정 G~M)
 
@@ -860,6 +860,113 @@ def select_assessor(matcher, okf_root) -> ConfidenceAssessor | None:   # index_m
 - **노출 불변식**: `confidence`·`grounding`·body·cosine은 조직 내부값 — 사용자向 `OrgReply`/`Answered` 미노출(§13 결정 D 자체점검 그대로).
 - **전이 ≠ 기록**: 어댑터는 `GroundedConfidence`(전이 입력) 생성만·기록은 audit. 캐시는 최신 벡터 보관이지 로그 아님.
 - **기존 `TwoStageRouter` 무회귀**: 어댑터는 `assessor` 옵셔널 주입 자리에 들어가는 *새 어댑터*일 뿐 — 라우터 코드 무수정(assessor=None이면 §13 T10.3a 동작·FakeAssessor면 게이트 내). `Router`(레거시)·stage-1.5(§16)와 직교.
+
+---
+
+## 17-c. stage-2 하이브리드 리랭크 — embedding 자동해소 + 잔여 contested만 LLM 2차 (domain-architect 확정 2026-07-02 — 결정 N~T)
+
+> **실측 확정·채택(2026-07-02)**: 2차 margin=0.6·min_confidence=0.3 — top-1 50.0→54.2%·오라우팅 1.4% 무악화(잔여 집합 오염 0·미보장이 이 config에선 통과)·contested 30.6%·회수 3문항 전정답. 전원 저신뢰에도 2차 발동 결정이 실측 정당화(minc' 0.5는 전 조합 가드 위반). 지연 잔여 문항당 ~38s → opt-in(`AON_ASSESSOR=hybrid`) 유지·2차 비동기화 후속. 상세: docs/scale-eval-2026-07-02.md S13.
+
+> §17-b 결정 M의 (c)를 확정한다. **구현 아님** — tdd-engineer(라우터 사슬 분기·`AssessorChain` 값객체·순수 배선·stub 어댑터 결정론)·mcp-runtime-engineer(`select_assessor` 반환형 진화·hybrid 배선·실 eval·2차 정책값 재스윕) 넘김용 *모양*. `two_stage_router.py`(`ConfidenceAssessor` Protocol·stage-2 자동해소 규칙·stage-1.5 옵셔널 δ 주입 선례)·`confidence_assessor.py`(`EmbeddingConfidenceAssessor`·`LlmConfidenceAssessor`·`select_assessor`·`select_assess_transport`·LLM 정책 상수)·`index_matcher.py`(`_EMBED_POLICY_BY_MODEL`·`recommended_stage2_margin`)·`demo.py`(index 모드 조립·`select_assessor` 소비)·`ask_org.py`(`handle`·`route` 동기 호출·Contested→Pending 투영)를 읽고 확정.
+
+> **동기(하이브리드 가설)**: S12(§17-b) 실측이 (b) LLM 단독 대체를 기각했다 — 오라우팅 가드(2.4%) 안에서 margin 0.6이 필요한데 그러면 결정력이 상쇄돼 기준선 미달(top-1 48.6% < 50.0%). 그러나 그 실패의 원인은 LLM이 embedding이 *이미 값싸게 푼* 50.0%까지 **같이 재판정**하며 사람-합의(Contested) 라벨을 확신 라우팅해 오라우팅을 만들었기 때문이다. 하이브리드는 **embedding 사슬(stage-1.5 δ=0.03 + embedding stage-2 margin 0.02)이 풀어낸 50.0%를 그대로 두고**, *그래도 Contested로 남는 잔여(34.7%)에만* LLM을 2차로 얹는다 — LLM 결정력을 잔여 그레이 쌍에 한정 적용해 합집합 이득을 노린다(§7 "LLM은 top-K에만"·§17 결정 E "a 먼저 → 잔여만 b 리랭크"의 실체화). **정직한 미보장**: S12의 "margin 0.6 오라우팅 1.4%"는 *전체 72문항 분모* 기준이다. 하이브리드에서 LLM이 보는 것은 embedding이 못 푼 *잔여 집합*이라 그 부분집합에서의 오라우팅 오염도는 사전 보장이 아니다 — 채택은 결정 T의 실 eval에서 잔여 집합 기준 오라우팅 가드(2.4%) 통과가 조건이다.
+
+### 결정 N — 사슬 shape: **라우터에 2차 assessor·2차 정책값 옵셔널 주입**(합성 어댑터 기각·경계 근거)
+
+§13이 stage-2를 단일 `assessor` + `clear_winner_margin`으로 닫았다. 하이브리드는 "1차(embedding) 미해소 → 2차(LLM·자체 margin·자체 min_confidence)" *사슬*이 필요하다. `TwoStageRouter.__init__`에 옵셔널 주입을 더한다(§16 stage-1.5 옵셔널 δ 선례 N+1번째):
+
+```
+secondary_assessor: ConfidenceAssessor | None = None       # 2차(LLM) — None이면 하이브리드 off(1차 단독·기존 동작)
+secondary_clear_winner_margin: float | None = None         # 2차 자체 margin(None→0.0 흡수, clear_winner_margin과 대칭)
+```
+
+2차의 `min_confidence`는 어댑터(`LlmConfidenceAssessor.min_confidence`)가 이미 자기 안에서 저신뢰를 0.0으로 흡수하므로(§17-b 결정 H) 라우터에 별 필드로 다시 두지 않는다 — 라우터는 `secondary_assessor`가 돌려준 `GroundedConfidence`를 그대로 `secondary_clear_winner_margin`과 비교만 한다(1차와 대칭·라우터는 min_confidence를 모름).
+
+**대안 판정(§16 결정 C "margin 판정은 라우터 정책"을 근거로 (i) 채택):**
+- **(i) 라우터 옵셔널 파라미터 — 채택.** margin 비교·저신뢰 폴백·Contested 종착은 §13 결정 D·§16 결정 C가 이미 "라우터 정책"으로 못박은 라우터 소관이다. 미주입이면 100%·명시적·기존 옵셔널 주입 패턴과 대칭.
+- **(ii) assessor 합성 객체(라우터 무변경) — 기각.** 합성 어댑터가 두 assessor를 안에서 부르려면 *두 결과의 margin 비교·전원 저신뢰 폴백·1차↔2차 우선순위*를 어댑터가 흉내내야 하는데, 그건 정확히 라우터의 stage-2 처분 로직 복제다 = **경계 침식**(어댑터가 라우팅 정책을 쥠). `ConfidenceAssessor.assess`는 후보 1건의 confidence를 내는 계약이지 "후보 집합을 처분"하는 계약이 아니다 — 합성은 이 계약을 깬다.
+- **(iii) 제3안(2차 전용 별 포트) — 기각.** 2차도 `ConfidenceAssessor`(같은 `assess(question, card)→GroundedConfidence`)를 그대로 만족한다 — 형제 어댑터(`LlmConfidenceAssessor`)라 새 포트 불요. 새 포트는 헥사고날 표면만 늘린다.
+
+### 결정 O — 2차 발동 조건: 1차가 **Contested를 낼 직전**(격차 부족·동점·전원 저신뢰)에만, 저신뢰도 태운다
+
+현 `route`의 stage-2는 세 갈래로 Contested에 도달한다: ① 동점(`top.confidence == second.confidence`)·② 격차 부족(`top − second < clear_winner_margin`)·③ 전원 저신뢰(min_confidence 미달로 모두 0.0 → ①/②로 귀결). **이 세 Contested-직전 지점 전부에서 2차를 발동한다** — 즉 "1차 embedding이 Routed로 접었으면 2차 스킵, Contested로 접으려 하면 2차 시도".
+
+- **전원 저신뢰(③)도 2차를 태운다(핵심 판정).** 비용↑ vs 회수↑의 교환에서 회수를 택한다 — 근거: S11/S12 실물에서 LLM이 실제로 가른 그레이 쌍(최저임금 wage_ops vs labor_std)이 바로 **body cosine이 0.0043 격차로 압축돼 1차가 전원 저신뢰로 떨군** 케이스다. 저신뢰를 2차 제외하면 하이브리드 가설의 회수분을 통째로 버린다. 비용은 결정 R(잔여 contested만·후보당 1호출)으로 봉인한다.
+- **precedent 단축·stage-1.5·1차 Routed는 2차 앞에서 종착**(계단식·중복 0) — 앞 단계가 처분한 것은 2차가 안 본다. 발동 집합은 정확히 "1차 stage-2가 Contested로 낙하시킬 뻔한 후보 집합".
+- **2차 발동 조건이 "1차가 Contested 직전"이라는 정의는 오라우팅 안전의 근거이기도 하다** — embedding이 명백히 가른(Routed) 것은 LLM이 뒤집지 못한다(2차가 그 경로에 없음). LLM 결정력이 embedding의 오라우팅 방어를 *위에서 덧칠*하지 않고 *아래 잔여만* 채운다.
+
+### 결정 P — 폴백 사슬(순서 고정): precedent → stage-1.5 → 1차 stage-2 → **2차 stage-2** → Contested
+
+`≥2` 후보 분기의 계단(§16 결정 D 사슬에 한 칸 추가):
+
+1. **precedent 단축**(있으면 종착)
+2. **stage-1.5 margin ≥ δ → Routed**(신설분·§16)
+3. **1차 stage-2(embedding assessor)**: 격차 ≥ `clear_winner_margin` → Routed / 아니면 ↓
+4. **2차 stage-2(LLM assessor·신설)**: `secondary_assessor` 주입 시 잔여 후보에 `assess` → 격차 ≥ `secondary_clear_winner_margin` → Routed / 아니면 ↓
+5. **Contested**(2차 미주입·2차도 못 가름·전원 저신뢰 → ConflictCase → 1인칭 합의)
+
+- **각 단계는 앞이 처분 못 한 것만 받는다.** 2차 후보 집합 = 1차 stage-2가 Routed로 못 접은 후보(=현 코드에서 Contested로 낙하하던 그 후보들). 후보 순서는 authorized(매처 계약 score 내림차순) 보존.
+- **1차↔2차 confidence는 *섞지 않는다*.** 2차는 자체 `assess`를 잔여 후보에 다시 부르고 자체 격차만 본다 — embedding cosine과 LLM confidence는 다른 축이라 산술 결합·가중 평균 금지(스케일 비교 불가·§16 결정 B "다른 축은 하나의 임계로 못 덮는다" 정신). 계단식 대체(1차 실패분을 2차가 독립 재판정)이지 앙상블 가중이 아니다.
+- **2차도 tie-break일 뿐 권한 생성 아님**(§6 불변식): 2차 후보 집합은 이미 §13 admission 재검증(`domain_authorized`)을 통과한 authorized의 부분집합이다 — LLM confidence가 권한 밖 후보를 끌어올리는 경로 없음.
+
+### 결정 Q — 2차 정책값: LLM이라 `_EMBED_POLICY_BY_MODEL`과 **별개**·LLM 상수 곁에 둠
+
+2차 margin·min_confidence는 1차(embedding)와 별도다. 초기값은 S12 근거 `secondary_clear_winner_margin=0.6`·`min_confidence=0.3`(가드 준수값) — **최종은 결정 T 실 eval에서 *잔여 집합 기준* 재스윕**.
+
+- **`_EMBED_POLICY_BY_MODEL`(index_matcher)에 넣지 않는다.** 그 맵은 `(tau, stage1_margin, stage2_margin)`으로 *임베딩 모델 cosine 분포*에 묶인 값이다(모델 바뀌면 셋이 같이 감·짝 불일치 방지). 2차는 LLM이라 임베딩 모델과 무관 — 그 맵에 끼면 "e5-small↔e5-large 전환 시 LLM margin이 따라 바뀐다"는 잘못된 결합이 생긴다.
+- **위치: `confidence_assessor.py`의 LLM 정책 상수 곁**(`DEFAULT_LLM_ASSESS_MODEL`·`DEFAULT_LLM_ASSESS_MAX_BODY_CHARS` 옆) — `DEFAULT_HYBRID_SECONDARY_MARGIN`·`DEFAULT_HYBRID_SECONDARY_MIN_CONFIDENCE` 모듈 상수. 근거 주석에 이 절·S12를 가리킨다(`DEFAULT_STAGE2_CLEAR_WINNER_MARGIN`이 S10을 주석에 단 정신). 1차 embedding stage-2 정책값(`recommended_stage2_margin` — 모델 맵)은 무변경.
+
+### 결정 R — 비용·지연 계약: route는 **동기**·2차는 잔여 contested에만·후보당 ~17s가 라우팅 단계에 얹힘
+
+**실코드 확인(load-bearing)**: `AskOrg.handle`(ask_org.py:580~)은 `decision = self._router.route(question)`를 **동기 호출**하고, 그 뒤 `match decision`에서 **Routed일 때만** `dispatch→poll`로 (dispatched=비동기) Pending을 낸다. 즉 `/ask`의 비동기 회수(Pending dispatched)는 *라우팅이 Routed로 끝난 뒤 답 생성 단계*에 있다 — **라우팅(assessor 호출 포함)은 그 앞의 동기 구간**이다. 따라서 2차 LLM assess(후보당 ~17s·haiku)는 `route` 안에서 동기로 돌고 **그 지연은 대화 경로 라우팅 단계에 그대로 얹힌다**(dispatched Pending으로 흡수되지 않는다 — Contested/2차는 dispatch 앞).
+
+- **비용 봉인 = 잔여 contested만·순차 기본**(§17-b 결정 L 동일 규약): 2차는 1차가 Contested로 접으려던 후보(잔여 34.7% × 후보 2 ≈ 문항당 2호출)에만·`≥2` 분기에서만·1차 Routed·stage-1.5 Routed·precedent 종착은 2차 미접촉. transport에 **timeout**을 두고 초과·실패·파싱 실패는 confidence 0.0(저신뢰) → 격차 부족 → Contested 폴백(어댑터가 라우터로 예외 안 던짐·§17-b 결정 H·L).
+- **지연 UX 명계약(정직)**: 잔여 contested 질문에서 사용자는 라우팅 단계에서 수십 초(후보 2 × ~17s ≈ 30s+) 대기한다. 이는 동기 경로라 UX상 무겁다 — **v1은 opt-in**(`AON_ASSESSOR=hybrid`)으로만 켜고, 기본(auto)은 embedding 단독이라 이 지연이 없다. **비동기화(2차를 dispatched Pending처럼 백그라운드로 돌리고 회수)는 후속 상향 경로로 명시 연기** — 현 `route` 동기 계약을 이 ADR에서 바꾸지 않는다(라우팅↔dispatch 경계 변경은 별 결정). Contested 자체가 이미 Pending(kind="contested")·ConflictCase→1인칭 합의라, 2차 미채택/저신뢰는 그 기존 비동기 종착으로 정직하게 떨어진다.
+- **캐시**: `LlmConfidenceAssessor` 캐시(§17-b 결정 J·(question, agent_id, mtime))가 재질의 시 호출을 절감(하이브리드 특화 캐시 불요·어댑터 로컬).
+
+### 결정 S — 시임·배선: `AON_ASSESSOR=hybrid`·`select_assessor` 반환형을 `AssessorChain`으로 진화
+
+`select_assessor`가 지금 `ConfidenceAssessor | None` 단건을 돌린다 — 하이브리드는 (1차, 2차) 쌍이 필요하다. **반환형을 `AssessorChain` 값객체로 진화**(별 함수 신설 아님·단일 seam 유지):
+
+```
+@dataclass(frozen=True)
+class AssessorChain:
+    primary: ConfidenceAssessor | None       # 1차(embedding·auto/embedding) or None(off)
+    secondary: ConfidenceAssessor | None = None   # 2차(LLM·hybrid에서만) — 그 외 None
+```
+
+- **`AON_ASSESSOR` 분기(기존 의미 무변경 + hybrid 추가)**:
+  - `auto`(**기본**) → `AssessorChain(primary=embedding|None, secondary=None)` — 현 배선 100% 보존(매처가 embedding이면 임베더 공유 1차·아니면 None).
+  - `embedding` → `AssessorChain(primary=embedding, secondary=None)`.
+  - `llm` → `AssessorChain(primary=LLM, secondary=None)` — (b) 단독 대체(기존 opt-in·이득 없음 명기·§17-b). **1차 자리에 LLM**이지 2차 아님(기존 의미 보존).
+  - `off` → `AssessorChain(primary=None, secondary=None)`.
+  - `hybrid`(**신설**) → `AssessorChain(primary=embedding, secondary=LLM)` — 1차는 auto와 같은 임베더 공유 embedding assessor, 2차는 `select_assess_transport()` LLM assessor. **1차 embedding이 성립 안 하면(매처에 embedder 없음) SystemExit**(하이브리드는 embedding 1차가 전제·명시 오설정).
+  - 알 수 없는 값 → SystemExit(조용한 폴백 없음·기존).
+- **demo 배선 경계**: demo.py index 모드가 `chain = select_assessor(matcher, DEMO_OKF_ROOT)`를 받아 `TwoStageRouter(assessor=chain.primary, clear_winner_margin=recommended_stage2_margin() if chain.primary else None, secondary_assessor=chain.secondary, secondary_clear_winner_margin=DEFAULT_HYBRID_SECONDARY_MARGIN if chain.secondary else None, ...)`로 조립한다. 조립부(매처 종류·assessor 쌍을 아는 곳)가 정책값을 짝짓는다(§16 결정 C "조립부가 매처↔δ를 짝" 정신). `build_scale_router`도 같은 seam(2차 주입은 조립 시점 선택).
+- **하위호환**: `AssessorChain` 반환은 호출부(demo·scale_eval) 소량 변경을 부른다 — `select_assessor`의 소비처는 조립부뿐이라 국소적. 기존 `.primary`만 쓰면 단건 반환과 동형(secondary 기본 None).
+
+### 결정 T — 게이트 경계 · 실 eval 방법
+
+**게이트 내(결정론·`.venv` pytest):**
+- `TwoStageRouter` 하이브리드 분기 결정론(`FakeAssessor` 1차·2차 주입): ① 1차 Routed → 2차 미호출(spy 호출 0)·② 1차 Contested 직전 + 2차 격차 ≥ 2차 margin → Routed·③ 2차도 격차 부족/전원 저신뢰(0.0) → Contested 폴백(미아 없음)·④ `secondary_assessor=None`이면 기존 1차 단독 동작 100% 보존(무회귀).
+- 2차 발동 집합 단언: precedent 단축·stage-1.5 Routed·1차 Routed 케이스에서 2차 spy 미호출(계단식·중복 0 검증).
+- `select_assessor` 시임: `auto`/`embedding`/`off`/`hybrid`(embedder 있는 매처)·미지값(SystemExit)·hybrid+embedder 없는 매처(SystemExit) 분기. `AssessorChain` 필드 단언(hybrid만 secondary 채움). `llm`·2차 실 transport는 지연 import라 게이트 미접촉(author_select 게이트 정신).
+- 미아 없음 회귀: 1차·2차 stub 모두 저신뢰/깨진 응답 → confidence 0.0 → Contested 폴백(§13 규칙 재확인·§17-b 게이트 대칭).
+
+**게이트 밖(실 LLM·비결정·수동·오프라인 스윕):**
+- **raw confidence 재사용 우선**: S12(§17-b)가 이미 `LlmConfidenceAssessor` raw confidence를 잔여 문항에서 1회 수집했다(67콜). **가능하면 그 S12 raw 표를 재사용**해 2차 margin/min_confidence를 표 위에서 오프라인 재스윕한다(비결정 응답 재수집 회피·스윕 공정성·§17-b S12 방법 그대로). raw 표가 없거나 잔여 집합 정의가 달라졌으면 재수집(~잔여 contested 문항 × 후보 2 — S10 잔여 34.7%×72 기준 ~50콜·이 머신 `ClaudeCodeTransport` 실증 선례).
+- **A/B**: embedding 단독(§17 (a)·top-1 50.0%·contested 34.7%·오라우팅 1.4%) vs **하이브리드**(embedding 1차 + LLM 2차)를 동일 골든셋 72문항·동일 stage-1(embedding τ=0.85)+stage-1.5(δ=0.03)+1차 stage-2(margin 0.02) 위에서 대조. 지표: overall/hard/ambiguous top-1·contested↓·**오라우팅 상한 가드 2.4%가 채택 기준**(§17 결정 F·기준선 1.4%+1%p). 하이브리드가 embedding 50.0%를 보존하며 잔여 34.7%를 얼마나 회수하는지(합집합 이득)와 그 회수가 오라우팅 2.4%를 넘기는지가 판정 축.
+- **정직한 미보장 재확인**(결정 N): S12의 margin 0.6 "오라우팅 1.4%"는 전체 분모 기준이라 하이브리드 잔여 집합에서의 오염도는 이 eval로 처음 측정된다 — 잔여 집합 기준 오라우팅이 가드를 넘으면 2차 margin을 올려 상쇄하고, 상쇄가 회수분을 다 먹으면(§17-b (b) 단독과 같은 함정) 하이브리드도 미채택으로 정직하게 기록한다.
+- **지연 실측**: 잔여 contested 문항 라우팅 지연(후보 × ~17s)을 계측해 결정 R의 UX 계약을 수치로 확정.
+
+### 불변식 보존 자체점검 (결정 N~T)
+
+- **미아 없음**: 2차 assess 실패·timeout·파싱 실패·전원 저신뢰 → confidence 0.0 → 격차 부족 → Contested(→ConflictCase→1인칭 합의·기존 비동기 종착). 1차 Routed는 2차 앞에서 종착·stage-1 0 후보는 이 게이트들 앞이라 무영향. 모든 경로가 Routed·Contested·Unowned 종착(§13/§17/§17-b 규칙 무변경·확인만).
+- **Authority 중앙**: 2차 후보 집합은 이미 §13 admission 재검증(`domain_authorized`·card.domains)을 통과한 authorized의 부분집합이다 — LLM confidence는 권한 안 tie-break일 뿐 권한 생성 아님. LLM이 "이 카드가 답할 수 있다"고 높은 confidence를 줘도 권한 밖 카드는 애초에 2차 대상이 아니다(카드 자기보고가 권한 못 넓힘·ADR 0004). 1차↔2차 산술 결합 금지(결정 P)라 2차가 1차 권한 판정을 흔드는 경로도 없다.
+- **중앙 토큰 0·비소유**: 2차 transport는 owner측(구독/API 키·owner 워커)·중앙 키 0(§17-b (b)와 동일 규약·ADR 0010/0027). body·프롬프트·LLM 응답은 어댑터 로컬(인프로세스 okf_root·크로스머신 owner 워커)에만·중앙엔 `GroundedConfidence.confidence` 수치만. 1차 embedding도 owner측 로컬 ONNX(§17 (a)).
+- **노출 불변식**: 1차·2차 `confidence`·`grounding`·프롬프트·body·cosine은 조직 내부값 — 사용자向 `OrgReply`/`Answered` 미노출. `AssessorChain`은 조립부 내부 객체라 RoutingDecision에 안 실린다(§13/§17/§17-b 자체점검 그대로).
+- **전이 ≠ 기록**: 두 어댑터 모두 `GroundedConfidence`(전이 입력) 생성만·기록은 audit. 캐시는 호출 절감이지 로그 아님.
+- **기존 `TwoStageRouter`·(a)/(b) 어댑터 무회귀**: 하이브리드는 `secondary_assessor` 옵셔널 주입 자리의 *추가 사슬 칸*일 뿐 — 라우터 1차 로직·`EmbeddingConfidenceAssessor`·`LlmConfidenceAssessor` 어댑터 무수정. `secondary_assessor=None`·`select_assessor` 미설정=`auto`(secondary None)가 현 배선 100% 보존(결정 S). `Router`(레거시)·stage-1.5(§16)·(a)(§17)·(b) 단독(§17-b)과 직교.
 
 ---
 

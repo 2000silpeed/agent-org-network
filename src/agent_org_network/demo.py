@@ -264,21 +264,31 @@ def select_router(
         # None). embedding/llm/off 명시 선택 가능. okf_root는 답변 런타임과 같은
         # DEMO_OKF_ROOT(인프로세스 디제너레이트 — ADR 0030 §3·ClaudeCodeRuntime cwd 접지
         # 선례). 정책값은 실측 확정(§17·scale-eval S10).
-        from agent_org_network.confidence_assessor import select_assessor
+        from agent_org_network.confidence_assessor import (
+            DEFAULT_HYBRID_SECONDARY_MARGIN,
+            select_assessor,
+        )
 
-        assessor = select_assessor(matcher, DEMO_OKF_ROOT)
-        stage2_margin = recommended_stage2_margin() if assessor is not None else None
+        chain = select_assessor(matcher, DEMO_OKF_ROOT)
+        stage2_margin = recommended_stage2_margin() if chain.primary is not None else None
+        # 하이브리드 2차(§17-c): secondary가 있을 때만 2차 margin을 짝짓는다(조립부가
+        # 정책값을 짝 — 결정 S). secondary=None이면 1차 단독(기존 동작 100% 보존).
+        secondary_margin = (
+            DEFAULT_HYBRID_SECONDARY_MARGIN if chain.secondary is not None else None
+        )
         return TwoStageRouter(
             registry,
             matcher,
             store,
             root_user=ROOT_USER,
             precedents=precedents,
-            assessor=assessor,
+            assessor=chain.primary,
             clear_winner_margin=stage2_margin,
             # 매처와 같은 env에서 도출한 stage-1.5 권장 δ(ADR 0028 §16) — overlap이면
             # None(off·기존 동작), embedding이면 0.03(오라우팅 무악화 실측 확정값).
             stage1_clear_winner_margin=recommended_stage1_margin(),
+            secondary_assessor=chain.secondary,
+            secondary_clear_winner_margin=secondary_margin,
         )
     return Router(registry, classifier, root_user=ROOT_USER, precedents=precedents)
 

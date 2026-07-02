@@ -77,6 +77,8 @@ def build_scale_router(
     stage1_clear_winner_margin: float | None = None,
     assessor: ConfidenceAssessor | None = None,
     clear_winner_margin: float | None = None,
+    secondary_assessor: ConfidenceAssessor | None = None,
+    secondary_clear_winner_margin: float | None = None,
 ) -> TwoStageRouter:
     """매처(기본 ConceptOverlapMatcher) + assessor(기본 None)인 TwoStageRouter를 조립한다.
 
@@ -93,6 +95,10 @@ def build_scale_router(
 
     clear_winner_margin: stage-2 confidence 격차 임계(ADR 0028 §17 결정 D). assessor
     미주입이면 무의미(TwoStageRouter가 assessor=None 분기로 무시).
+
+    secondary_assessor·secondary_clear_winner_margin: 하이브리드 2차 LLM(ADR 0028
+    §17-c). 미주입이면 1차 단독(기존 A/B 조립 무회귀). 하이브리드 실 eval이 주입해
+    잔여 Contested에만 2차를 태운다.
     """
     return TwoStageRouter(
         registry,
@@ -103,6 +109,8 @@ def build_scale_router(
         assessor=assessor,
         clear_winner_margin=clear_winner_margin,
         stage1_clear_winner_margin=stage1_clear_winner_margin,
+        secondary_assessor=secondary_assessor,
+        secondary_clear_winner_margin=secondary_clear_winner_margin,
     )
 
 

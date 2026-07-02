@@ -1398,3 +1398,243 @@ class TestStage1ClearWinnerMargin:
         results = [router.route("환불 질문") for _ in range(5)]
         assert all(isinstance(r, Routed) for r in results)
         assert all(r.primary.agent_id == "cs_ops" for r in results)  # type: ignore[union-attr]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 14. stage-2 하이브리드 리랭크 (ADR 0028 §17-c 결정 N~T)
+#     1차(embedding)→잔여 Contested만 2차(LLM). FakeAssessor 2개·spy 호출 횟수.
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class SpyAssessor:
+    """호출 횟수를 세는 FakeAssessor — 2차 발동/미발동 spy 단언용(결정 T)."""
+
+    def __init__(self, confidences: dict[str, float]) -> None:
+        self._confidences = confidences
+        self.calls: list[str] = []
+
+    def assess(self, question: str, card: AgentCard) -> GroundedConfidence:
+        self.calls.append(card.agent_id)
+        return GroundedConfidence(
+            agent_id=card.agent_id,
+            confidence=self._confidences.get(card.agent_id, 0.0),
+        )
+
+
+def _hybrid_router(
+    registry: Registry,
+    matcher: FakeMatcher,
+    store: PublishedIndexStore,
+    *,
+    primary: ConfidenceAssessor | None,
+    clear_winner_margin: float | None,
+    secondary: ConfidenceAssessor | None = None,
+    secondary_clear_winner_margin: float | None = None,
+    stage1_clear_winner_margin: float | None = None,
+    precedents: InMemoryPrecedentStore | None = None,
+    root_user: str = "root",
+) -> TwoStageRouter:
+    return TwoStageRouter(
+        registry=registry,
+        matcher=matcher,
+        store=store,
+        root_user=root_user,
+        precedents=precedents,
+        assessor=primary,
+        clear_winner_margin=clear_winner_margin,
+        stage1_clear_winner_margin=stage1_clear_winner_margin,
+        secondary_assessor=secondary,
+        secondary_clear_winner_margin=secondary_clear_winner_margin,
+    )
+
+
+class TestHybridRerank:
+    """stage-2 하이브리드 사슬 분기 — 결정론(FakeAssessor 1차·2차·spy)."""
+
+    def _setup_two_candidates(
+        self,
+    ) -> tuple[Registry, FakeMatcher, InMemoryPublishedIndexStore]:
+        card_a = _card("cs_ops", domains=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        store = InMemoryPublishedIndexStore([_index("cs_ops", c_a), _index("finance_ops", c_b)])
+        reg = _registry(card_a, card_b)
+        matcher = FakeMatcher((
+            _match("cs_ops", 1.0, "c_a"),
+            _match("finance_ops", 0.8, "c_b"),
+        ))
+        return reg, matcher, store
+
+    def test_1차_Routed_해소시_2차_미호출(self) -> None:
+        """1차 embedding이 clear winner로 Routed → 2차 spy 호출 0(계단식·중복 0)."""
+        reg, matcher, store = self._setup_two_candidates()
+        primary = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.3})
+        spy2 = SpyAssessor({"cs_ops": 0.5, "finance_ops": 0.5})
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=primary, clear_winner_margin=0.5,
+            secondary=spy2, secondary_clear_winner_margin=0.1,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+        assert spy2.calls == []  # 2차 미호출
+
+    def test_1차_미해소_2차_발동_해소_Routed(self) -> None:
+        """1차 격차 부족(Contested 직전) → 2차 발동, 2차 격차 충분 → Routed."""
+        reg, matcher, store = self._setup_two_candidates()
+        # 1차: 격차 0.1 < margin 0.5 → 미해소
+        primary = FakeAssessor({"cs_ops": 0.8, "finance_ops": 0.7})
+        # 2차: 격차 0.6 >= margin 0.5 → finance_ops 승
+        spy2 = SpyAssessor({"cs_ops": 0.2, "finance_ops": 0.8})
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=primary, clear_winner_margin=0.5,
+            secondary=spy2, secondary_clear_winner_margin=0.5,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "finance_ops"
+        assert sorted(spy2.calls) == ["cs_ops", "finance_ops"]  # 잔여 집합 전원 발동
+
+    def test_2차도_미해소_Contested_폴백(self) -> None:
+        """1차 미해소 → 2차 발동 but 2차도 격차 부족 → Contested(미아 없음)."""
+        reg, matcher, store = self._setup_two_candidates()
+        primary = FakeAssessor({"cs_ops": 0.8, "finance_ops": 0.7})
+        spy2 = SpyAssessor({"cs_ops": 0.55, "finance_ops": 0.5})  # 격차 0.05 < 0.5
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=primary, clear_winner_margin=0.5,
+            secondary=spy2, secondary_clear_winner_margin=0.5,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+        assert sorted(spy2.calls) == ["cs_ops", "finance_ops"]  # 2차 발동됨
+
+    def test_전원_저신뢰_2차_발동(self) -> None:
+        """1차 전원 저신뢰(0.0·동점) → 2차 발동(회수 우선·결정 O 핵심 판정)."""
+        reg, matcher, store = self._setup_two_candidates()
+        # 1차 전원 0.0(min_confidence 미달 흡수 상황 모사) → 동점 → 미해소
+        primary = FakeAssessor({"cs_ops": 0.0, "finance_ops": 0.0})
+        spy2 = SpyAssessor({"cs_ops": 0.9, "finance_ops": 0.1})  # 2차가 가름
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=primary, clear_winner_margin=0.02,
+            secondary=spy2, secondary_clear_winner_margin=0.5,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+        assert sorted(spy2.calls) == ["cs_ops", "finance_ops"]
+
+    def test_전원_저신뢰_2차도_저신뢰_Contested(self) -> None:
+        """1차·2차 모두 전원 저신뢰(0.0) → Contested(미아 없음 회귀)."""
+        reg, matcher, store = self._setup_two_candidates()
+        primary = FakeAssessor({"cs_ops": 0.0, "finance_ops": 0.0})
+        spy2 = SpyAssessor({"cs_ops": 0.0, "finance_ops": 0.0})
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=primary, clear_winner_margin=0.02,
+            secondary=spy2, secondary_clear_winner_margin=0.5,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+        assert sorted(spy2.calls) == ["cs_ops", "finance_ops"]
+
+    def test_secondary_미주입_1차_단독_무회귀(self) -> None:
+        """secondary_assessor=None → 1차 단독 동작 100% 보존(무회귀)."""
+        reg, matcher, store = self._setup_two_candidates()
+        # 1차 격차 부족 → Contested(2차 없음)
+        primary = FakeAssessor({"cs_ops": 0.8, "finance_ops": 0.7})
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=primary, clear_winner_margin=0.5,
+            secondary=None,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+
+    def test_secondary_미주입_1차_해소_Routed_무회귀(self) -> None:
+        """secondary=None·1차 clear winner → Routed(기존 동작)."""
+        reg, matcher, store = self._setup_two_candidates()
+        primary = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.3})
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=primary, clear_winner_margin=0.5, secondary=None,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+
+    def test_stage1_5_발동시_2차_미호출(self) -> None:
+        """stage-1.5 margin 자동해소 → 1차·2차 assessor 둘 다 미호출(계단식 앞 종착)."""
+        reg, matcher, store = self._setup_two_candidates()
+        spy1 = SpyAssessor({"cs_ops": 0.5, "finance_ops": 0.5})
+        spy2 = SpyAssessor({"cs_ops": 0.9, "finance_ops": 0.1})
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=spy1, clear_winner_margin=0.5,
+            secondary=spy2, secondary_clear_winner_margin=0.5,
+            # stage-1 score 격차 0.2 >= δ 0.1 → stage-1.5 자동해소
+            stage1_clear_winner_margin=0.1,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+        assert spy1.calls == []
+        assert spy2.calls == []
+
+    def test_precedent_단축시_2차_미호출(self) -> None:
+        """precedent 단축 종착 → 1차·2차 assessor 미호출(계단식 맨 앞)."""
+        reg, matcher, store = self._setup_two_candidates()
+        precedents = InMemoryPrecedentStore()
+        precedents.record(Resolution(intent="환불", primary="cs_ops", rationale="판례"))
+        spy1 = SpyAssessor({"cs_ops": 0.5, "finance_ops": 0.5})
+        spy2 = SpyAssessor({"cs_ops": 0.9, "finance_ops": 0.1})
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=spy1, clear_winner_margin=0.5,
+            secondary=spy2, secondary_clear_winner_margin=0.5,
+            precedents=precedents,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+        assert spy1.calls == []
+        assert spy2.calls == []
+
+    def test_stage1_5_미발동_1차_미해소_2차_3단_공존(self) -> None:
+        """stage-1.5(δ)·1차·2차가 한 라우터에 공존 — δ 미달→1차 미해소→2차 해소."""
+        reg, matcher, store = self._setup_two_candidates()
+        # stage-1 score 격차 0.2 < δ 1.0 → stage-1.5 미발동
+        primary = FakeAssessor({"cs_ops": 0.8, "finance_ops": 0.75})  # 격차 0.05 < 0.5
+        spy2 = SpyAssessor({"cs_ops": 0.9, "finance_ops": 0.1})  # 격차 0.8 >= 0.5
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=primary, clear_winner_margin=0.5,
+            secondary=spy2, secondary_clear_winner_margin=0.5,
+            stage1_clear_winner_margin=1.0,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+        assert sorted(spy2.calls) == ["cs_ops", "finance_ops"]
+
+    def test_노출_불변식_2차_grounding_미노출(self) -> None:
+        """2차 GroundedConfidence.grounding은 RoutingDecision에 안 실린다(노출 불변식).
+
+        Routed.confidence는 라우팅 단계 기존 필드(GroundedConfidence와 별개)라 여기서
+        검증 대상이 아니다 — 어댑터 내부값(grounding)이 새지 않는지만 본다.
+        """
+        reg, matcher, store = self._setup_two_candidates()
+        primary = FakeAssessor({"cs_ops": 0.8, "finance_ops": 0.7})
+        spy2 = SpyAssessor({"cs_ops": 0.9, "finance_ops": 0.1})
+        router = _hybrid_router(
+            reg, matcher, store,
+            primary=primary, clear_winner_margin=0.5,
+            secondary=spy2, secondary_clear_winner_margin=0.5,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert not hasattr(result, "grounding")

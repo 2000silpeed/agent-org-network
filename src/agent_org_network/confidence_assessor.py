@@ -77,6 +77,14 @@ def _cosine(u: tuple[float, ...], v: tuple[float, ...]) -> float:
 DEFAULT_STAGE2_CLEAR_WINNER_MARGIN = 0.02
 DEFAULT_STAGE2_MIN_CONFIDENCE = 0.75
 
+# 하이브리드 2차(LLM) 정책값(ADR 0028 §17-c 결정 Q·S12 근거) — 1차(embedding)와 *별개*.
+# LLM confidence는 임베딩 모델 cosine 분포와 무관하므로 `_EMBED_POLICY_BY_MODEL`
+# (index_matcher·모델별 tau/margin 맵)에 넣지 않고 여기 LLM 상수 곁에 둔다(모델 전환 시
+# LLM margin이 따라 바뀌는 잘못된 결합 방지). 초기값은 S12 raw 표에서 오라우팅 가드
+# (2.4%)를 준수하던 조합 — 최종은 실 eval에서 *잔여 집합 기준* 재스윕(결정 T).
+DEFAULT_HYBRID_SECONDARY_MARGIN = 0.6
+DEFAULT_HYBRID_SECONDARY_MIN_CONFIDENCE = 0.3
+
 
 class EmbeddingConfidenceAssessor:
     """ConfidenceAssessor Protocol 구현 — 카드 개념 body 전문 cosine 접지(ADR 0028 §17)."""
@@ -155,11 +163,33 @@ class EmbeddingConfidenceAssessor:
             return GroundedConfidence(agent_id=card.agent_id, confidence=0.0)
 
 
+# ── AssessorChain 값객체 (ADR 0028 §17-c 결정 S) ────────────────────────────────
+#
+# `select_assessor`가 단건 `ConfidenceAssessor|None` 대신 (1차, 2차) 쌍을 돌린다 —
+# 하이브리드는 embedding 1차 + LLM 2차가 필요하다(단일 seam 진화·별 함수 아님).
+# `hybrid`만 secondary를 채우고 그 외는 secondary=None(기존 반환과 동형·.primary만
+# 쓰면 하위호환).
+
+
+@dataclass(frozen=True)
+class AssessorChain:
+    """stage-2 assessor 사슬 — (1차, 2차) 값객체(ADR 0028 §17-c 결정 S).
+
+    primary: 1차(embedding·auto/embedding) or LLM(llm 단독) or None(off).
+    secondary: 2차(LLM·hybrid에서만) — 그 외 None. 라우터에 옵셔널 주입되어
+      1차가 Contested를 낼 직전에만 발동한다(계단식·산술 결합 아님).
+    """
+
+    primary: ConfidenceAssessor | None
+    secondary: ConfidenceAssessor | None = None
+
+
 # ── select_assessor env 시임 (AON_ASSESSOR·author_select·select_matcher 대칭) ─────
 #
 # 현 demo 조립(demo.py `isinstance(matcher, EmbeddingAnnMatcher)`)은 매처 종류로
 # assessor를 암묵 선택한다. (b) LlmConfidenceAssessor 추가로 이 암묵 결합을 명시
 # 시임으로 승격한다(ADR 0028 §17-b 결정 K). 미설정=auto가 현 배선 100% 보존.
+# (c) 하이브리드(§17-c 결정 S)로 반환형을 AssessorChain으로 진화 — hybrid만 secondary.
 
 _ASSESS_TRANSPORT_CLAUDE_CODE_ALIASES = frozenset({"claude-code", "llm"})
 _ASSESS_TRANSPORT_CLAUDE_API_ALIASES = frozenset({"claude-api", "anthropic"})
@@ -205,20 +235,60 @@ def select_assess_transport() -> ProviderTransport:
     )
 
 
-def select_assessor(
+def _build_embedding_assessor(
     matcher: "KnowledgeIndexMatcher", okf_root: Path
-) -> ConfidenceAssessor | None:
-    """`AON_ASSESSOR` env로 stage-2 assessor를 고른다(§17-b 결정 K·author_select 대칭).
+) -> "EmbeddingConfidenceAssessor":
+    """매처 임베더를 공유하는 EmbeddingConfidenceAssessor를 만든다(embedder 없으면 SystemExit).
+
+    embedding/hybrid 분기가 공유 — 매처에 embedder가 없으면(overlap 등) 명시 오설정으로
+    SystemExit(조용한 폴백 없음).
+    """
+    embedder = getattr(matcher, "embedder", None)
+    if embedder is None:
+        raise SystemExit(
+            "AON_ASSESSOR=embedding/hybrid인데 매처에 embedder가 없습니다 — "
+            "AON_MATCHER=embedding과 짝지으세요(overlap 매처는 임베더 없음)."
+        )
+    return EmbeddingConfidenceAssessor(
+        embedder, okf_root, min_confidence=DEFAULT_STAGE2_MIN_CONFIDENCE
+    )
+
+
+def _build_llm_assessor(okf_root: Path) -> "LlmConfidenceAssessor":
+    """LlmConfidenceAssessor를 env(transport·max_body·min_conf)로 조립한다(llm/hybrid 2차 공유).
+
+    실 transport는 select_assess_transport()가 분기에서만 지연 import(게이트 미접촉).
+    """
+    max_body = int(
+        os.environ.get("AON_ASSESSOR_MAX_BODY") or DEFAULT_LLM_ASSESS_MAX_BODY_CHARS
+    )
+    min_conf = float(
+        os.environ.get("AON_ASSESSOR_MIN_CONFIDENCE")
+        or DEFAULT_HYBRID_SECONDARY_MIN_CONFIDENCE
+    )
+    return LlmConfidenceAssessor(
+        select_assess_transport(),
+        okf_root,
+        model=_resolve_assess_model(),
+        max_body_chars=max_body,
+        min_confidence=min_conf,
+    )
+
+
+def select_assessor(matcher: "KnowledgeIndexMatcher", okf_root: Path) -> AssessorChain:
+    """`AON_ASSESSOR` env로 stage-2 assessor 사슬을 고른다(§17-b 결정 K·§17-c 결정 S).
+
+    반환형은 `AssessorChain`(1차·2차 쌍) — hybrid만 secondary를 채우고 그 외는 None
+    (기존 단건 반환과 동형·`.primary`만 쓰면 하위호환).
 
     `AON_ASSESSOR`(소문자 trim):
       - 미설정/`auto`(**기본**) → 현 배선 보존(하위호환): matcher가 EmbeddingAnnMatcher면
-        같은 임베더 공유 EmbeddingConfidenceAssessor(모델 1회 로드)·아니면 None.
-      - `embedding` → EmbeddingConfidenceAssessor(matcher.embedder 공유). matcher에 embedder가
-        없으면(overlap 등) SystemExit(명시 오설정 — 조용한 폴백 없음).
-      - `llm` → LlmConfidenceAssessor(select_assess_transport(), okf_root). matcher와 무관
-        (transport 사용·임베더 공유 끊김) — assessor만 교체되는 경계가 명확해진다. 실 LLM은
-        transport 지연 import라 게이트에서 미접촉.
-      - `off` → None(assessor 미장착·≥2는 stage-1.5/Contested만).
+        같은 임베더 공유 embedding 1차·아니면 None. secondary=None.
+      - `embedding` → embedding 1차(matcher.embedder 공유). embedder 없으면 SystemExit.
+      - `llm` → LLM 1차 단독 대체(기존 opt-in·§17-b). 1차 자리에 LLM이지 2차 아님.
+      - `off` → primary=None·secondary=None(assessor 미장착).
+      - `hybrid`(**신설·§17-c**) → embedding 1차 + LLM 2차. 1차 embedding이 성립 안 하면
+        (매처에 embedder 없음) SystemExit(하이브리드는 embedding 1차가 전제).
       - 알 수 없는 값 → SystemExit(조용한 폴백 없음).
     """
     from agent_org_network.index_matcher import EmbeddingAnnMatcher
@@ -227,39 +297,28 @@ def select_assessor(
 
     if flag in ("", "auto"):
         if isinstance(matcher, EmbeddingAnnMatcher):
-            return EmbeddingConfidenceAssessor(
-                matcher.embedder,
-                okf_root,
-                min_confidence=DEFAULT_STAGE2_MIN_CONFIDENCE,
+            return AssessorChain(
+                primary=EmbeddingConfidenceAssessor(
+                    matcher.embedder,
+                    okf_root,
+                    min_confidence=DEFAULT_STAGE2_MIN_CONFIDENCE,
+                )
             )
-        return None
+        return AssessorChain(primary=None)
     if flag == "embedding":
-        embedder = getattr(matcher, "embedder", None)
-        if embedder is None:
-            raise SystemExit(
-                "AON_ASSESSOR=embedding인데 매처에 embedder가 없습니다 — "
-                "AON_MATCHER=embedding과 짝지으세요(overlap 매처는 임베더 없음)."
-            )
-        return EmbeddingConfidenceAssessor(
-            embedder, okf_root, min_confidence=DEFAULT_STAGE2_MIN_CONFIDENCE
-        )
+        return AssessorChain(primary=_build_embedding_assessor(matcher, okf_root))
     if flag == "llm":
-        max_body = int(
-            os.environ.get("AON_ASSESSOR_MAX_BODY") or DEFAULT_LLM_ASSESS_MAX_BODY_CHARS
-        )
-        min_conf = float(os.environ.get("AON_ASSESSOR_MIN_CONFIDENCE") or 0.0)
-        return LlmConfidenceAssessor(
-            select_assess_transport(),
-            okf_root,
-            model=_resolve_assess_model(),
-            max_body_chars=max_body,
-            min_confidence=min_conf,
-        )
+        return AssessorChain(primary=_build_llm_assessor(okf_root))
     if flag == "off":
-        return None
+        return AssessorChain(primary=None)
+    if flag == "hybrid":
+        return AssessorChain(
+            primary=_build_embedding_assessor(matcher, okf_root),
+            secondary=_build_llm_assessor(okf_root),
+        )
     raise SystemExit(
         f"알 수 없는 AON_ASSESSOR={flag!r} — 지원: auto(기본·현 배선 보존), "
-        "embedding, llm, off."
+        "embedding, llm, off, hybrid."
     )
 
 

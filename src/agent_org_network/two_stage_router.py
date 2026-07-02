@@ -265,6 +265,17 @@ class TwoStageRouter:
                    assessor 호출 없이 단독 top-1 Routed 자동해소. **None이면 게이트를
                    완전히 건너뛴다**(기존 사슬 100% 보존) — `clear_winner_margin`처럼
                    0.0으로 흡수하지 않는다(혼동 주의: 이름·자리·의미론이 다른 별개 필드).
+      secondary_assessor: 2차(LLM) ConfidenceAssessor(옵셔널 — 하이브리드 리랭크
+                   ADR 0028 §17-c 결정 N~T). None이면 하이브리드 off(1차 단독·기존
+                   동작 100% 보존). 주입 시 1차 stage-2가 Contested를 낼 직전(동점·격차
+                   부족·전원 저신뢰)에만 잔여 후보 집합에 2차 assess를 돌려 자체 margin으로
+                   재판정한다. 1차가 Routed로 해소하면 2차 미호출(계단식·중복 0). 2차도
+                   미해소면 Contested(미아 없음 보존). 1차↔2차 confidence 산술 결합 금지
+                   — 계단식 대체(다른 축)이지 앙상블 가중이 아니다.
+      secondary_clear_winner_margin: 2차 clear winner 판정 임계(옵셔널 — None이면
+                   기본 0.0·`clear_winner_margin`과 대칭). 2차 min_confidence는 어댑터
+                   (`LlmConfidenceAssessor.min_confidence`)가 자기 안에서 저신뢰를 0.0으로
+                   흡수하므로 라우터에 별 필드로 두지 않는다(§17-c 결정 N).
     """
 
     def __init__(
@@ -277,6 +288,8 @@ class TwoStageRouter:
         assessor: ConfidenceAssessor | None = None,
         clear_winner_margin: float | None = None,
         stage1_clear_winner_margin: float | None = None,
+        secondary_assessor: ConfidenceAssessor | None = None,
+        secondary_clear_winner_margin: float | None = None,
     ) -> None:
         self._registry = registry
         self._matcher = matcher
@@ -288,6 +301,14 @@ class TwoStageRouter:
         self._clear_winner_margin: float = clear_winner_margin if clear_winner_margin is not None else 0.0
         # None이면 게이트 완전 스킵(0.0 흡수 아님 — ADR 0028 §16 결정 A)
         self._stage1_clear_winner_margin = stage1_clear_winner_margin
+        # 하이브리드 2차(LLM) — None이면 off(1차 단독·기존 동작). ADR 0028 §17-c.
+        self._secondary_assessor = secondary_assessor
+        # 2차 margin — None이면 기본 0.0(1차 clear_winner_margin과 대칭)
+        self._secondary_clear_winner_margin: float = (
+            secondary_clear_winner_margin
+            if secondary_clear_winner_margin is not None
+            else 0.0
+        )
 
     def route(self, question: str) -> RoutingDecision:
         """2단 라우팅 — stage-1 인덱스 매칭 + 권한 재검증 + RoutingDecision 투영.
@@ -429,57 +450,94 @@ class TwoStageRouter:
                 intent=representative_intent,
             )
 
-        # stage-2: 권한통과 후보에게만 assess 호출(권한 밖은 이미 제외)
-        confidences: list[GroundedConfidence] = [
-            self._assessor.assess(question, card) for card in candidate_cards
-        ]
+        # ── 1차 stage-2(embedding assessor): clear winner면 Routed 종착 ───────────
+        primary_resolved = self._assess_stage2(
+            question,
+            candidate_cards,
+            authorized,
+            representative_intent,
+            self._assessor,
+            self._clear_winner_margin,
+            stage="stage-2",
+        )
+        if primary_resolved is not None:
+            return primary_resolved
 
-        # confidence 내림차순 정렬 — 동점 tie-break: agent_id 오름차순(결정론)
-        sorted_confs = sorted(
-            confidences, key=lambda gc: (-gc.confidence, gc.agent_id)
+        # ── 2차 stage-2(LLM assessor·신설·ADR 0028 §17-c): 1차가 Contested를 낼
+        # 직전일 때만 잔여 후보 집합에 재판정. 2차 미주입이면 아래 Contested로 종착
+        # (기존 1차 단독 동작 100% 보존). 2차도 미해소면 Contested(미아 없음 보존).
+        if self._secondary_assessor is not None:
+            secondary_resolved = self._assess_stage2(
+                question,
+                candidate_cards,
+                authorized,
+                representative_intent,
+                self._secondary_assessor,
+                self._secondary_clear_winner_margin,
+                stage="stage-2 하이브리드 2차",
+            )
+            if secondary_resolved is not None:
+                return secondary_resolved
+
+        # 1차(+2차) 미해소 → Contested 폴백(전원 저신뢰·동점·격차 부족)
+        return Contested(
+            candidates=tuple(candidate_cards),
+            reason=f"후보 {len(candidate_cards)}건, stage-2 자동해소 실패(격차 부족·동점·전원 저신뢰)",
+            intent=representative_intent,
         )
 
+    def _assess_stage2(
+        self,
+        question: str,
+        candidate_cards: Sequence[AgentCard],
+        authorized: Sequence[tuple[IndexMatch, str]],
+        representative_intent: str,
+        assessor: ConfidenceAssessor,
+        clear_winner_margin: float,
+        *,
+        stage: str,
+    ) -> RoutingDecision | None:
+        """assessor 한 개를 후보 집합에 돌려 clear winner면 Routed·아니면 None을 낸다.
+
+        None 반환 = "이 assessor로 미해소(동점·격차 부족·전원 저신뢰)" — 호출부가
+        2차 사슬로 넘기거나 Contested로 종착한다(계단식 대체·ADR 0028 §17-c 결정 P).
+        1차↔2차는 각자 자체 confidence를 다시 계산해 자체 margin만 본다(산술 결합 금지).
+        """
+        confidences: list[GroundedConfidence] = [
+            assessor.assess(question, card) for card in candidate_cards
+        ]
+        # confidence 내림차순 정렬 — 동점 tie-break: agent_id 오름차순(결정론)
+        sorted_confs = sorted(confidences, key=lambda gc: (-gc.confidence, gc.agent_id))
         top = sorted_confs[0]
         second = sorted_confs[1]
 
-        # 동점(top.confidence == second.confidence) → Contested
+        # 동점 → 미해소(None). 전원 저신뢰(0.0)도 동점으로 여기 귀결.
         if top.confidence == second.confidence:
-            return Contested(
-                candidates=tuple(candidate_cards),
-                reason=f"후보 {len(candidate_cards)}건, stage-2 동점(confidence={top.confidence:.3f})",
-                intent=representative_intent,
-            )
+            return None
+        # 격차 < margin → 미해소(None)
+        if top.confidence - second.confidence < clear_winner_margin:
+            return None
 
         # clear winner: top - second >= margin → Routed 자동해소
-        if top.confidence - second.confidence >= self._clear_winner_margin:
-            try:
-                winner_card = self._registry.get(top.agent_id)
-            except KeyError:
-                # 카드 조회 실패 → Contested 폴백(미아 없음 보존)
-                return Contested(
-                    candidates=tuple(candidate_cards),
-                    reason=f"stage-2 winner 카드 조회 실패: {top.agent_id}",
-                    intent=representative_intent,
-                )
-            # winner의 domain: authorized에서 agent_id로 domain 찾기
-            winner_domain = representative_intent
-            for match, domain in authorized:
-                if match.agent_id == top.agent_id:
-                    winner_domain = domain
-                    break
-            return attach_gates(
-                Routed(
-                    primary=winner_card,
-                    reason=f"stage-2 자동해소: intent '{winner_domain}' → {top.agent_id} (confidence={top.confidence:.3f})",
-                    intent=winner_domain,
+        try:
+            winner_card = self._registry.get(top.agent_id)
+        except KeyError:
+            # 카드 조회 실패 → 미해소(None·미아 없음 보존)
+            return None
+        winner_domain = representative_intent
+        for match, domain in authorized:
+            if match.agent_id == top.agent_id:
+                winner_domain = domain
+                break
+        return attach_gates(
+            Routed(
+                primary=winner_card,
+                reason=(
+                    f"{stage} 자동해소: intent '{winner_domain}' → {top.agent_id} "
+                    f"(confidence={top.confidence:.3f})"
                 ),
-                winner_domain,
-                self._registry,
-            )
-
-        # 격차 < margin → Contested 폴백
-        return Contested(
-            candidates=tuple(candidate_cards),
-            reason=f"후보 {len(candidate_cards)}건, stage-2 격차 부족(top={top.confidence:.3f}, second={second.confidence:.3f})",
-            intent=representative_intent,
+                intent=winner_domain,
+            ),
+            winner_domain,
+            self._registry,
         )

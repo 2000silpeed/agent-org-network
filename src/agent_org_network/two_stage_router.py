@@ -259,6 +259,12 @@ class TwoStageRouter:
       clear_winner_margin: stage-2 clear winner 판정 임계(옵셔널 — None이면 기본 0.0).
                    assessor 주입 시 top.confidence - second.confidence >= margin이면
                    단독 최고 후보로 Routed 자동해소. None이면 0.0 적용.
+      stage1_clear_winner_margin: stage-1.5 margin clear-winner 룰 임계(옵셔널 —
+                   assessor 전 값싼 중앙 결정론 선행 게이트, ADR 0028 §16). ≥2 후보
+                   분기에서 authorized[0].score - authorized[1].score(절대차) >= δ면
+                   assessor 호출 없이 단독 top-1 Routed 자동해소. **None이면 게이트를
+                   완전히 건너뛴다**(기존 사슬 100% 보존) — `clear_winner_margin`처럼
+                   0.0으로 흡수하지 않는다(혼동 주의: 이름·자리·의미론이 다른 별개 필드).
     """
 
     def __init__(
@@ -270,6 +276,7 @@ class TwoStageRouter:
         precedents: PrecedentStore | None = None,
         assessor: ConfidenceAssessor | None = None,
         clear_winner_margin: float | None = None,
+        stage1_clear_winner_margin: float | None = None,
     ) -> None:
         self._registry = registry
         self._matcher = matcher
@@ -279,6 +286,8 @@ class TwoStageRouter:
         self._assessor = assessor
         # None이면 기본 0.0 — 단독 최고면 clear, 동점이면 Contested
         self._clear_winner_margin: float = clear_winner_margin if clear_winner_margin is not None else 0.0
+        # None이면 게이트 완전 스킵(0.0 흡수 아님 — ADR 0028 §16 결정 A)
+        self._stage1_clear_winner_margin = stage1_clear_winner_margin
 
     def route(self, question: str) -> RoutingDecision:
         """2단 라우팅 — stage-1 인덱스 매칭 + 권한 재검증 + RoutingDecision 투영.
@@ -384,6 +393,33 @@ class TwoStageRouter:
                 candidate_cards.append(card)
             except KeyError:
                 continue
+
+        # ── stage-1.5: margin clear-winner 선행 게이트(ADR 0028 §16 결정 A~F) ───
+        # assessor 호출 *전* 값싼 중앙 결정론 게이트 — δ 미주입이면 완전 스킵(기존
+        # 사슬 100% 보존). authorized는 score 내림차순(매처 계약)이라 [0]/[1]이 top1/top2.
+        if self._stage1_clear_winner_margin is not None:
+            top_match, top_domain = authorized[0]
+            second_match, _second_domain = authorized[1]
+            margin = top_match.score - second_match.score
+            if margin >= self._stage1_clear_winner_margin:
+                try:
+                    winner_card = self._registry.get(top_match.agent_id)
+                except KeyError:
+                    pass  # 카드 조회 실패 → 기존 사슬로 낙하(미아 없음 보존)
+                else:
+                    return attach_gates(
+                        Routed(
+                            primary=winner_card,
+                            reason=(
+                                f"stage-1.5 margin 자동해소: intent '{top_domain}' → "
+                                f"{top_match.agent_id} (margin={margin:.3f})"
+                            ),
+                            intent=top_domain,
+                        ),
+                        top_domain,
+                        self._registry,
+                    )
+            # margin < δ → 기존 사슬로 낙하(assessor 있으면 stage-2·없으면 Contested)
 
         # assessor 미주입 → T10.3a 동작(≥2→Contested) 무회귀
         if self._assessor is None:

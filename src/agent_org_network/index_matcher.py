@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from collections.abc import Sequence
 from datetime import datetime
@@ -357,6 +358,26 @@ def _cosine(u: tuple[float, ...], v: tuple[float, ...]) -> float:
 
 _OVERLAP_ALIASES = frozenset({"", "overlap"})
 _EMBEDDING_ALIASES = frozenset({"embedding", "fastembed"})
+
+
+# stage-1.5 clear-winner margin의 매처별 권장 δ(ADR 0028 §16·docs/scale-eval-2026-07-02.md S9).
+# 실측 근거: embedding은 δ=0.03이 오라우팅 무악화(1.4% 유지)로 contested 45.8%→41.7%·
+# easy top-1 62.1%→72.4%. overlap은 정수 이산 score라 가드(오라우팅 +1%p 이내) 통과 δ가
+# 없어 비채택(None=off). 정책값은 router 주입이 권위 — 이 함수는 조립부가 소비하는 단일 원천.
+DEFAULT_STAGE1_MARGIN_EMBEDDING = 0.03
+
+
+def recommended_stage1_margin() -> float | None:
+    """현 `AON_MATCHER` 선택에 대응하는 stage-1.5 권장 δ를 돌려준다(조립부 소비).
+
+    미설정/`overlap` → None(off — 실측상 유효 δ 없음·ADR 0028 §16),
+    `embedding`/`fastembed` → DEFAULT_STAGE1_MARGIN_EMBEDDING.
+    `select_matcher`와 같은 env를 읽어 매처↔δ 짝이 어긋나지 않게 한다.
+    """
+    flag = (os.environ.get("AON_MATCHER") or "").strip().lower()
+    if flag in ("embedding", "fastembed"):
+        return DEFAULT_STAGE1_MARGIN_EMBEDDING
+    return None
 
 
 def select_matcher() -> KnowledgeIndexMatcher:

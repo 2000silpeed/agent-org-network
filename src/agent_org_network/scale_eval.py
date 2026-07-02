@@ -70,6 +70,7 @@ def build_scale_router(
     root_user: str = "desk_root",
     precedents: PrecedentStore | None = None,
     matcher: KnowledgeIndexMatcher | None = None,
+    stage1_clear_winner_margin: float | None = None,
 ) -> TwoStageRouter:
     """매처(기본 ConceptOverlapMatcher) + assessor=None인 TwoStageRouter를 조립한다.
 
@@ -77,6 +78,10 @@ def build_scale_router(
     EmbeddingAnnMatcher를 주입해 같은 조립·같은 골든셋에 대조한다.
 
     assessor=None 고정 — stage-2 자동해소 없음(현 한계 실측 목적, 모듈 docstring 참조).
+
+    stage1_clear_winner_margin: stage-1.5 margin clear-winner 룰 δ(ADR 0028 §16).
+    None(기본)이면 게이트 스킵 — 기존 A/B 조립·리포트 무회귀. δ 스윕 실측(§16 결정 E)이
+    주입해 매처별 contested↓/오라우팅↑ 트레이드오프를 캘리브레이션한다.
     """
     return TwoStageRouter(
         registry,
@@ -85,6 +90,7 @@ def build_scale_router(
         root_user,
         precedents=precedents,
         assessor=None,
+        stage1_clear_winner_margin=stage1_clear_winner_margin,
     )
 
 

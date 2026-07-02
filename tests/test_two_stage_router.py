@@ -1134,3 +1134,267 @@ class TestStage2Determinism:
         result = router.route("환불 질문")
         assert isinstance(result, Routed)
         assert not hasattr(result, "grounding")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 12. stage-1.5 margin clear-winner 룰 (ADR 0028 §16 결정 A~F)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _router_with_stage1_margin(
+    registry: Registry,
+    matcher: FakeMatcher,
+    store: PublishedIndexStore,
+    stage1_clear_winner_margin: float | None = None,
+    assessor: ConfidenceAssessor | None = None,
+    clear_winner_margin: float | None = None,
+    root_user: str = "root",
+) -> TwoStageRouter:
+    return TwoStageRouter(
+        registry=registry,
+        matcher=matcher,
+        store=store,
+        root_user=root_user,
+        assessor=assessor,
+        clear_winner_margin=clear_winner_margin,
+        stage1_clear_winner_margin=stage1_clear_winner_margin,
+    )
+
+
+class TestStage1ClearWinnerMargin:
+    """stage-1.5 margin clear-winner 게이트 — assessor 호출 *전* 값싼 중앙 결정론 선행 게이트."""
+
+    def _setup_two_candidates(
+        self, score_a: float, score_b: float
+    ) -> tuple[Registry, FakeMatcher, InMemoryPublishedIndexStore]:
+        card_a = _card("cs_ops", domains=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        idx_a = _index("cs_ops", c_a)
+        idx_b = _index("finance_ops", c_b)
+        store = InMemoryPublishedIndexStore([idx_a, idx_b])
+        reg = _registry(card_a, card_b)
+        matcher = FakeMatcher((
+            _match("cs_ops", score_a, "c_a"),
+            _match("finance_ops", score_b, "c_b"),
+        ))
+        return reg, matcher, store
+
+    def test_delta_None이면_게이트_스킵_assessor_없으면_Contested(self) -> None:
+        """δ=None(미주입) → 게이트 완전 스킵 → 기존 사슬(assessor 없음 → Contested) 무회귀."""
+        reg, matcher, store = self._setup_two_candidates(5.0, 1.0)  # 격차 4.0(크지만 δ=None)
+        router = _router_with_stage1_margin(
+            reg, matcher, store, stage1_clear_winner_margin=None
+        )
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+
+    def test_delta_None이면_게이트_스킵_assessor_있으면_stage2(self) -> None:
+        """δ=None + assessor 주입 → 게이트 스킵 → stage-2 사슬 그대로(무회귀)."""
+        reg, matcher, store = self._setup_two_candidates(5.0, 1.0)  # margin 4.0
+        assessor = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.3})
+        router = _router_with_stage1_margin(
+            reg,
+            matcher,
+            store,
+            stage1_clear_winner_margin=None,
+            assessor=assessor,
+            clear_winner_margin=0.5,
+        )
+
+        result = router.route("환불 질문")
+        # stage-1.5 스킵 → stage-2 confidence 격차(0.6) >= 0.5 → Routed(stage-2 경로로)
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+        assert "stage-2" in result.reason or "자동해소" in result.reason
+
+    def test_margin_ge_delta_단독_top1_Routed(self) -> None:
+        """margin(top1-top2) >= δ → 단독 top-1 Routed(assessor 호출 없이)."""
+        reg, matcher, store = self._setup_two_candidates(5.0, 1.0)  # margin=4.0
+        router = _router_with_stage1_margin(
+            reg, matcher, store, stage1_clear_winner_margin=2.0
+        )
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+        assert result.intent == "환불"
+
+    def test_margin_ge_delta_attach_gates_적용(self) -> None:
+        """stage-1.5 자동해소 Routed에도 attach_gates(approval_when) 적용."""
+        card_a = _card("cs_ops", domains=["환불"], approval_when=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        idx_a = _index("cs_ops", c_a)
+        idx_b = _index("finance_ops", c_b)
+        store = InMemoryPublishedIndexStore([idx_a, idx_b])
+        reg = _registry(card_a, card_b)
+        matcher = FakeMatcher((
+            _match("cs_ops", 5.0, "c_a"),
+            _match("finance_ops", 1.0, "c_b"),
+        ))
+        router = _router_with_stage1_margin(
+            reg, matcher, store, stage1_clear_winner_margin=2.0
+        )
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.requires_approval is True
+
+    def test_margin_ge_delta_assessor_호출_안함(self) -> None:
+        """margin >= δ면 stage-1.5에서 종착 — assessor.assess는 호출되지 않는다."""
+        reg, matcher, store = self._setup_two_candidates(5.0, 1.0)  # margin=4.0
+
+        assessed_ids: list[str] = []
+
+        class TrackingAssessor:
+            def assess(self, question: str, card: AgentCard) -> GroundedConfidence:
+                assessed_ids.append(card.agent_id)
+                return GroundedConfidence(agent_id=card.agent_id, confidence=0.9)
+
+        router = _router_with_stage1_margin(
+            reg,
+            matcher,
+            store,
+            stage1_clear_winner_margin=2.0,
+            assessor=TrackingAssessor(),
+            clear_winner_margin=0.1,
+        )
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+        assert assessed_ids == []  # stage-1.5가 종착 — assessor 호출 0
+
+    def test_margin_lt_delta_assessor_없으면_Contested(self) -> None:
+        """margin < δ → 기존 사슬 낙하(assessor 없음 → Contested)."""
+        reg, matcher, store = self._setup_two_candidates(2.0, 1.5)  # margin=0.5
+        router = _router_with_stage1_margin(
+            reg, matcher, store, stage1_clear_winner_margin=2.0
+        )
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+
+    def test_margin_lt_delta_assessor_있으면_stage2로_낙하(self) -> None:
+        """margin < δ → 기존 사슬 낙하(assessor 주입 시 stage-2 시도)."""
+        reg, matcher, store = self._setup_two_candidates(2.0, 1.5)  # margin=0.5 < δ=2.0
+        assessor = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.3})
+        router = _router_with_stage1_margin(
+            reg,
+            matcher,
+            store,
+            stage1_clear_winner_margin=2.0,
+            assessor=assessor,
+            clear_winner_margin=0.5,
+        )
+
+        result = router.route("환불 질문")
+        # stage-1.5 미발동 → stage-2 낙하 → confidence 격차 0.6 >= 0.5 → Routed(stage-2)
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+
+    def test_동점_margin_0_delta_양수_미발동_낙하(self) -> None:
+        """동점(margin=0) + δ>0 → stage-1.5 미발동 → 기존 사슬 낙하(assessor 없음 → Contested)."""
+        reg, matcher, store = self._setup_two_candidates(3.0, 3.0)  # 동점
+        router = _router_with_stage1_margin(
+            reg, matcher, store, stage1_clear_winner_margin=1.0
+        )
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+
+    def test_경계값_margin_정확히_delta_Routed(self) -> None:
+        """margin == δ(경계값 포함) → 발동 → Routed."""
+        reg, matcher, store = self._setup_two_candidates(3.0, 1.0)  # margin=2.0
+        router = _router_with_stage1_margin(
+            reg, matcher, store, stage1_clear_winner_margin=2.0
+        )
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+
+    def test_경계값_margin_delta_미만_epsilon_Contested(self) -> None:
+        """margin = δ - ε(경계 바로 아래) → 미발동 → 기존 사슬(Contested)."""
+        reg, matcher, store = self._setup_two_candidates(2.999, 1.0)  # margin=1.999 < δ=2.0
+        router = _router_with_stage1_margin(
+            reg, matcher, store, stage1_clear_winner_margin=2.0
+        )
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+
+    def test_precedent_단축_stage1_5보다_우선(self) -> None:
+        """precedent 단축경로가 stage-1.5 margin 게이트보다 먼저 발동(순서 고정)."""
+        card_a = _card("cs_ops", domains=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        c_a = _concept("c_a", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        c_b = _concept("c_b", "환불", "환불 처리는 어떻게 하나?", domain="환불")
+        idx_a = _index("cs_ops", c_a)
+        idx_b = _index("finance_ops", c_b)
+        store = InMemoryPublishedIndexStore([idx_a, idx_b])
+        reg = _registry(card_a, card_b)
+        # margin 게이트라면 finance_ops(top1, score=5.0)가 이겨야 하지만
+        # 판례는 cs_ops를 지목 — 판례가 우선해야 함.
+        matcher = FakeMatcher((
+            _match("finance_ops", 5.0, "c_b"),
+            _match("cs_ops", 1.0, "c_a"),
+        ))
+        precedent_store = InMemoryPrecedentStore()
+        precedent_store.record(Resolution(intent="환불", primary="cs_ops"))
+
+        router = TwoStageRouter(
+            registry=reg,
+            matcher=matcher,
+            store=store,
+            root_user="root",
+            precedents=precedent_store,
+            stage1_clear_winner_margin=2.0,
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+        assert "판례" in result.reason
+
+    def test_1후보_분기_무영향(self) -> None:
+        """1 후보는 stage-1.5 게이트 이전에 이미 Routed 직행 — margin 무관."""
+        card = _card("cs_ops", domains=["환불"])
+        c = _concept("c_r", "환불", "환불 정책이 어떻게 되나?", domain="환불")
+        idx = _index("cs_ops", c)
+        store = InMemoryPublishedIndexStore([idx])
+        reg = _registry(card)
+        matcher = FakeMatcher((_match("cs_ops", 1.0, "c_r"),))
+        router = _router_with_stage1_margin(
+            reg, matcher, store, stage1_clear_winner_margin=100.0
+        )
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+
+    def test_노출_불변식_margin_score_delta_미노출(self) -> None:
+        """margin·score·δ는 RoutingDecision에 안 실린다(노출 불변식)."""
+        reg, matcher, store = self._setup_two_candidates(5.0, 1.0)
+        router = _router_with_stage1_margin(
+            reg, matcher, store, stage1_clear_winner_margin=2.0
+        )
+
+        result = router.route("환불 질문")
+        assert isinstance(result, Routed)
+        assert not hasattr(result, "score")
+        assert not hasattr(result, "margin")
+
+    def test_결정론_같은_입력_반복_같은_결과(self) -> None:
+        """같은 입력 반복 → 같은 stage-1.5 자동해소 결과(결정론)."""
+        reg, matcher, store = self._setup_two_candidates(5.0, 1.0)
+        router = _router_with_stage1_margin(
+            reg, matcher, store, stage1_clear_winner_margin=2.0
+        )
+
+        results = [router.route("환불 질문") for _ in range(5)]
+        assert all(isinstance(r, Routed) for r in results)
+        assert all(r.primary.agent_id == "cs_ops" for r in results)  # type: ignore[union-attr]

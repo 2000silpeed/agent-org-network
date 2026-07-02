@@ -31,7 +31,7 @@ from agent_org_network.dispatch import (
     LocalStreamingDispatcher,
     RuntimeDispatcher,
 )
-from agent_org_network.index_matcher import select_matcher
+from agent_org_network.index_matcher import recommended_stage1_margin, select_matcher
 from agent_org_network.okf_index import build_knowledge_index_from_okf
 from agent_org_network.reeval import (
     Clock,
@@ -262,6 +262,9 @@ def select_router(
             root_user=ROOT_USER,
             precedents=precedents,
             assessor=None,
+            # 매처와 같은 env에서 도출한 stage-1.5 권장 δ(ADR 0028 §16) — overlap이면
+            # None(off·기존 동작), embedding이면 0.03(오라우팅 무악화 실측 확정값).
+            stage1_clear_winner_margin=recommended_stage1_margin(),
         )
     return Router(registry, classifier, root_user=ROOT_USER, precedents=precedents)
 

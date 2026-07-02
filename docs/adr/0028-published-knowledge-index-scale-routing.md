@@ -1,6 +1,6 @@
 # 스케일 라우팅 — published 지식 인덱스 + 2단 라우팅(중앙=목차·owner=내용)
 
-상태: accepted (2026-06-27) · **§13 T10.3 통합 shape 확정(2026-06-27 — 결정 A~E)** · **§14 T10.4 publish 경로 shape 확정(2026-06-28 — 결정 A~F·`PublishIndex` 프레임·워커-소유자 스코핑·`generated_at` staleness·와이어 포맷 변경=되돌리기 어려움)** · **§15 on-demand 문서 fetch shape 확정(2026-06-28 — 결정 A~F·`FetchDocument`/`DocumentContent` 프레임 2개·동기 대기 correlation·요청 owner 자기 케이스 스코핑·워커 자기 카드만 읽기·중앙 중계만 저장 0·ADR 0017 결정 4 옵션 B-1 실체·양 union 동시 진화=되돌리기 어려움)** · **ADR 0029(OKF 자동 저작)가 앞단으로 추가됨(2026-06-29 — 이 ADR이 *소비*하는 OKF/`KnowledgeIndex`를 *생성*하는 저작 파이프라인·`build_knowledge_index_from_okf`[T10.1]·okf_index·`ConceptEdge`·`PublishIndex`[§14]를 재사용·이 ADR 결정 전부 무변경)** · **ADR 0030(owner측 저작 토폴로지·크로스머신 fan-out)이 §14 `accept_published_index`에 reeval 트리거 훅 추가(2026-06-30 — supersede 아님·확장)**: 더 새 `generated_at` 수용 시 `StalenessPropagator`(ADR 0019) 옵셔널 발화 → 그 agent_id 과거 판례 reeval. §14 결정 C(staleness·더 새 것만·동률/역행 거부) 무변경·*수용 성공*에 훅만 건다. §14 결정 E "OKF 변경 재배포 트리거(`OkfChangeEvent` 연동·후속)"를 크로스머신 전파 사슬(owner commit→reindex→publish→accept→reeval·OKF git owner-로컬·중앙 목차만)로 닫음. · 사용자 grill 합의 7개 결정 명문화 · **현 라우팅(Classifier→intent 1라벨→`card.domains` 정확매칭→Routed/Contested/Unowned)을 *refine***(대체 아님 — `RoutingDecision` sealed sum·Authority 중앙·Precedent·Contested 폴백은 그대로, 후보 *제안* 메커니즘만 인덱스 기반으로 정밀화) · **ADR 0017 결정 3②("실시간 충돌 자동해소")의 실체** · **PRD §5 "LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위"를 현금화** · ADR 0006(중앙 MCP)·0010/0027(owner측 실행·중앙 토큰 0)·0013(OKF)·0011/0012(WS 전송)·0019(staleness 패턴)·0004(Authority 중앙)·0015(intent 단일 출처)와 정합 · CONTEXT(신규 KnowledgeIndex·Concept·KnowledgeIndexMatcher·published index·stage-1/stage-2 용어)·TRD §2·§4·PRD §5 갱신 대상
+상태: accepted (2026-06-27) · **§16 stage-1.5 margin clear-winner 룰 확정(2026-07-02 — 결정 A~F·`EmbeddingAnnMatcher` 실측 후 잔존 contested 45.8% 대응·stage-1 score 절대차 margin·assessor 호출 전 값싼 중앙 결정론 선행 게이트·δ 옵셔널 주입·δ=None이면 기존 동작 100% 보존·매처별 δ 분리·오라우팅 상한 가드[기준선 1.4%])** · **§13 T10.3 통합 shape 확정(2026-06-27 — 결정 A~E)** · **§14 T10.4 publish 경로 shape 확정(2026-06-28 — 결정 A~F·`PublishIndex` 프레임·워커-소유자 스코핑·`generated_at` staleness·와이어 포맷 변경=되돌리기 어려움)** · **§15 on-demand 문서 fetch shape 확정(2026-06-28 — 결정 A~F·`FetchDocument`/`DocumentContent` 프레임 2개·동기 대기 correlation·요청 owner 자기 케이스 스코핑·워커 자기 카드만 읽기·중앙 중계만 저장 0·ADR 0017 결정 4 옵션 B-1 실체·양 union 동시 진화=되돌리기 어려움)** · **ADR 0029(OKF 자동 저작)가 앞단으로 추가됨(2026-06-29 — 이 ADR이 *소비*하는 OKF/`KnowledgeIndex`를 *생성*하는 저작 파이프라인·`build_knowledge_index_from_okf`[T10.1]·okf_index·`ConceptEdge`·`PublishIndex`[§14]를 재사용·이 ADR 결정 전부 무변경)** · **ADR 0030(owner측 저작 토폴로지·크로스머신 fan-out)이 §14 `accept_published_index`에 reeval 트리거 훅 추가(2026-06-30 — supersede 아님·확장)**: 더 새 `generated_at` 수용 시 `StalenessPropagator`(ADR 0019) 옵셔널 발화 → 그 agent_id 과거 판례 reeval. §14 결정 C(staleness·더 새 것만·동률/역행 거부) 무변경·*수용 성공*에 훅만 건다. §14 결정 E "OKF 변경 재배포 트리거(`OkfChangeEvent` 연동·후속)"를 크로스머신 전파 사슬(owner commit→reindex→publish→accept→reeval·OKF git owner-로컬·중앙 목차만)로 닫음. · 사용자 grill 합의 7개 결정 명문화 · **현 라우팅(Classifier→intent 1라벨→`card.domains` 정확매칭→Routed/Contested/Unowned)을 *refine***(대체 아님 — `RoutingDecision` sealed sum·Authority 중앙·Precedent·Contested 폴백은 그대로, 후보 *제안* 메커니즘만 인덱스 기반으로 정밀화) · **ADR 0017 결정 3②("실시간 충돌 자동해소")의 실체** · **PRD §5 "LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위"를 현금화** · ADR 0006(중앙 MCP)·0010/0027(owner측 실행·중앙 토큰 0)·0013(OKF)·0011/0012(WS 전송)·0019(staleness 패턴)·0004(Authority 중앙)·0015(intent 단일 출처)와 정합 · CONTEXT(신규 KnowledgeIndex·Concept·KnowledgeIndexMatcher·published index·stage-1/stage-2 용어)·TRD §2·§4·PRD §5 갱신 대상
 
 ## 맥락 — 현 라우팅의 스케일 결함
 
@@ -572,11 +572,99 @@ WorkerFrame  = RegisterWorker | SubmitAnswer | PublishIndex | Heartbeat | Ack | 
 
 ---
 
+## 16. stage-1.5 margin clear-winner 룰 (domain-architect 확정 2026-07-02 — 결정 A~F)
+
+> **실측 확정·구현 완료(2026-07-02)**: embedding δ=0.03 채택(contested 45.8→41.7%·easy top-1 62.1→72.4%·overall 38.9→43.1%·오라우팅 1.4% 무악화·가드 통과), overlap은 가드 통과 δ 없어 비채택(None=off — δ=1 오라우팅 악화·δ≥2 정수 이산 score라 발동 0). `recommended_stage1_margin()`(`AON_MATCHER` 연동 단일 원천·`DEFAULT_STAGE1_MARGIN_EMBEDDING=0.03`)을 demo index 모드 조립이 소비. 상세: docs/scale-eval-2026-07-02.md S9.
+
+> §6·§13이 "≥2 후보 → stage-2 자동해소(assessor) or Contested"로 닫은 자리에, assessor 호출 *전*에 값싼 **중앙 결정론 선행 게이트**를 하나 더 끼운다. 동기는 실측(docs/scale-eval-2026-07-02.md §S8): `EmbeddingAnnMatcher` 채택 후에도 파이프라인 **contested 45.8%**인데, 원인은 매처 결함이 아니라 **e5-small cosine 분포가 [0.814, 0.918]로 압축**돼 절대-τ(0.85)가 다후보를 걸러도 *단일 승자를 못 고르는 구조*다. 매처 순수 top-1은 67.7%로 좋다 — top-1은 대개 정답인데 라우터가 ≥2 후보를 무조건 Contested로 접는다. stage-1이 이미 매긴 **score 격차(margin)**가 충분히 크면 그것만으로 단일 Routed로 자동해소해, 값비싼 owner측 assessor·사람 합의로 넘어가기 전에 명백한 승자를 값싸게 건진다. **구현 아님** — tdd-engineer 넘김용 *모양*. `two_stage_router.py`·`index_matcher.py`·`scale_eval.py`를 읽고 확정.
+
+**assessor의 `clear_winner_margin`과 이름·자리가 다르다(혼동 주의)**: 현 코드 `two_stage_router.py`의 `clear_winner_margin`은 **stage-2 assessor confidence 격차**(`top.confidence - second.confidence`)를 가른다. 이 절이 신설하는 것은 **stage-1 score margin**(매처가 이미 매긴 `IndexMatch.score` 격차)을 assessor *호출 전*에 가르는 *별개* 게이트다. 필드명을 겹치지 않게 `stage1_clear_winner_margin`으로 둔다(아래 결정 A).
+
+### 결정 A — 삽입 지점·시그니처: `≥2` 분기에서 assessor 호출 *전*, 옵셔널 δ 주입(δ=None이면 기존 동작 100% 보존)
+
+`TwoStageRouter.route`의 `≥2 후보` 분기(현 `two_stage_router.py:379~` — `candidate_cards` 구성 직후, `assessor is None` 검사 *직전*)에 stage-1.5 게이트를 끼운다. 순서:
+
+```
+# stage-1 권한통과 authorized (score 내림차순 유지) → ≥2
+if len(authorized) >= 2 and self._stage1_clear_winner_margin is not None:
+    top_match, top_domain = authorized[0]
+    second_match, _ = authorized[1]
+    if margin(top_match.score, second_match.score) >= self._stage1_clear_winner_margin:
+        return attach_gates(Routed(primary=<top_match 카드>, intent=top_domain, ...), ...)
+    # margin 미달 → 아래 기존 사슬로 낙하(assessor 있으면 stage-2·없으면 Contested)
+# ... 기존 코드: assessor is None → Contested · else stage-2 ...
+```
+
+- **생성자 시그니처**: `TwoStageRouter.__init__`에 `stage1_clear_winner_margin: float | None = None`을 **옵셔널 주입**으로 추가한다(기존 `assessor`·`precedents`·`clear_winner_margin` 옵셔널 주입 정신 N번째). **미주입/`None`이면 게이트를 *건너뛴다*** — `route`가 기존 사슬(assessor 있으면 stage-2·없으면 ≥2→Contested)을 그대로 탄다. 이 하위호환 규율이 결정적이다: 기존 테스트·기존 조립(`build_scale_router`의 assessor=None·현 데모)은 δ 미주입이라 **동작 100% 보존**(1297+ green 무회귀). `clear_winner_margin`이 `None→0.0` 기본으로 흡수되는 것과 *다르게*, stage-1.5는 `None`을 "게이트 off"의 의미로 보존한다(0.0을 기본으로 두면 "동점 아니면 무조건 top-1 Routed"가 되어 오라우팅 폭증 — 명시 δ 주입 없이 켜지면 안 됨).
+- **precedent 단축과의 순서**: precedent 단축경로(`route` 중반·stage-1 직후)가 *먼저*다 — 판례가 있으면 그걸로 종착하고, 없을 때만 이 stage-1.5 게이트로 내려온다(현 코드 순서 보존, 게이트를 판례 뒤에 끼움).
+- **1 후보 분기 무영향**: `len(authorized) == 1`은 이미 Routed 직행이라 이 게이트는 `≥2`에서만 발동(단일 후보에 margin 정의 불가).
+
+### 결정 B — margin 정의: **절대차(top1 − top2)**, 매처별 δ 기본값 분리
+
+margin = `top1.score − top2.score`(**절대차**). 상대차(`(top1−top2)/top1`)·비율은 채택하지 않는다.
+
+- **두 매처 모두에 의미 있어야 한다(핵심 제약)**: stage-1 score의 필드가 매처마다 다르다 — `ConceptOverlapMatcher`는 **공유 토큰 수**(0, 1, 2, … 이산·비상한)·`EmbeddingAnnMatcher`는 **cosine**(0.81~0.92 압축 연속). **절대차가 둘 다에서 자연 단위**다: overlap은 "top1이 top2보다 토큰 N개 더 겹친다"(정수 격차·`≥1`이면 이미 유의미)·embedding은 "cosine이 δ만큼 더 가깝다". 반면 **상대차는 embedding에서 붕괴**한다 — cosine이 [0.81, 0.92]로 압축돼 `(0.90−0.88)/0.90 ≈ 0.022`처럼 분모가 커 상대차가 눌린다(절대 0.02 격차가 상대 2%로 보여 δ 튜닝이 비직관·불안정). overlap에서도 상대차는 top1 score 크기에 흔들려(토큰 1개 vs 5개 매칭에서 같은 절대 격차가 다른 상대값) 결정론 δ가 어렵다. → **절대차 채택**.
+- **매처별 δ 기본값을 분리한다(같은 δ를 공유하지 않는다)**: overlap의 절대차(정수·1,2,3…)와 embedding의 절대차(0.0x~0.1x 실수)는 *스케일이 다른 축*이라 하나의 δ로 못 덮는다. 예: overlap에서 δ=1.0(토큰 1개 격차)이 유의미하지만 embedding에서 δ=1.0은 절대 도달 불가(cosine 격차가 0.1 남짓). **δ는 매처와 짝지어 결정**하고, 실 스윕(결정 E)으로 각각 캘리브레이션한다. 게이트 내 결정론 단언은 `FakeMatcher`가 내는 고정 score로 δ 경계를 직접 검증(매처 무관).
+- **동점(margin == 0) 처리**: `top1.score == top2.score`면 margin=0 < δ(δ>0 가정)라 게이트 미발동 → 기존 사슬로 낙하. 실측 실패 모드 ②(overlap "8시간 근로" labor_std 1.0 = social_insurance 1.0 동점)가 바로 이 경우 — margin 룰이 동점을 *억지로* 깨지 않고 stage-2/Contested로 정직하게 넘긴다(오라우팅 안전).
+- **tie-break 결정론**: authorized[0]/[1]은 이미 매처 계약(`score 내림차순, 동점 agent_id 오름차순`)으로 정렬돼 있어(index_matcher.py) top1/top2 선정이 결정론이다 — 별도 정렬 불요.
+
+### 결정 C — δ는 matcher가 아니라 **router 정책값**이다(주입 위치 근거)
+
+δ는 `KnowledgeIndexMatcher`(매처)가 아니라 `TwoStageRouter`(라우터) 생성자에 주입한다. 근거:
+
+- **margin을 *어떻게 처분하냐*는 라우팅 정책이지 매칭이 아니다**: 매처의 책임은 "질문↔인덱스 후보 랭킹"(score 산출)까지다 — "격차가 δ 이상이면 단독 Routed로 접는다"는 *처분 결정*이라 라우터 층이다. 매처는 후보를 *제안*만 하고(§5 불변식 — "인덱스 매칭은 후보를 *제안*만"), 처분(Routed/Contested)은 라우터가 정한다. δ를 매처에 두면 이 경계가 흐려진다.
+- **`clear_winner_margin`(stage-2)과 같은 층에 둬 일관**: 기존 stage-2 격차 임계도 라우터 생성자 주입(§13 결정 D)이다. 두 margin 임계가 같은 층에 나란히 있어야 "라우터가 두 게이트의 정책을 소유"가 명확하다.
+- **매처별 δ 분리(결정 B)와 양립**: δ가 매처별로 다르더라도 *주입은 라우터에서* 한다 — 조립부(`build_scale_router`·데모·워커)가 "이 매처를 쓰니 이 δ를 준다"를 *조립 시점*에 짝짓는다(매처 종류를 아는 곳이 조립부이지 라우터 내부가 아니다·`select_matcher`가 조립부 seam인 정신). 라우터는 δ 값 하나를 받아 절대차와 비교만 한다(매처 종류를 모름 — 공급자 중립 정신).
+- **Authority 무관**: δ는 *권한 선언이 아니라* 이미 admission 재검증을 통과한 후보들 *사이의 순위 처분 정책*이다(카드·인덱스 자기보고 아님·중앙 라우터 정책값·`DelegationSnapshot` staleness 임계 주입 정신). 후보는 이미 `authorized`(card.domains 게이트 통과)라 margin은 *권한 안에서의 순위 결정*일 뿐이다.
+
+### 결정 D — assessor와의 관계: stage-1.5는 값싼 중앙 결정론 *선행* 게이트, assessor는 잔여 모호의 owner측 *후행*
+
+두 메커니즘은 *별개이고 순차*다 — 경쟁이 아니라 계단이다:
+
+- **stage-1.5(margin)** = **중앙·결정론·값쌈·선행**. 이미 계산된 stage-1 score만 본다(추가 호출 0·토큰 0·owner 왕복 0). 명백한 승자(δ 이상 격차)를 여기서 즉시 건진다.
+- **stage-2(assessor)** = **owner측·RAG 접지·값비쌈·후행**. margin이 δ 미만인 *잔여 모호*에만 `ConfidenceAssessor.assess`(owner RAG·게이트 밖·비쌈)를 부른다 — margin 게이트가 이미 명백한 것을 걸러줬으므로 assessor 부하가 준다.
+- **폴백 사슬(순서 고정)**: `≥2` → ① precedent 단축(있으면 종착) → ② **stage-1.5 margin ≥ δ면 Routed**(신설) → ③ margin < δ이고 assessor 주입됐으면 stage-2 → ④ assessor 미주입이거나 stage-2도 못 가르면 Contested. 각 단계는 앞 단계가 처분 못 한 것만 받는다(계단식·중복 0).
+- **둘 다 tie-break일 뿐 권한 생성 아님**(§6 불변식 보존): stage-1.5도 stage-2도 *이미 권한 통과한 후보들 사이*의 순위 결정이다 — 권한 밖 후보를 끌어올리지 않는다.
+
+### 결정 E — margin δ 스윕 방법·오라우팅 상한 가드(구현 지시에 박음)
+
+**contested→routed 전환은 오라우팅 위험과 교환**이다 — margin이 애매한데 δ가 낮으면 top-1이 오답인 케이스도 Routed로 접혀 오라우팅이 는다. δ를 데이터로 캘리브레이션하되 **오라우팅 상한 가드를 스윕 판정에 박는다**:
+
+- **스윕 방법**: `scale_eval.py` 골든셋 **72문항**(easy 29·hard 25·ambiguous 18·0매칭 2)에 대해, δ를 각 매처의 자연 범위에서 스윕한다 — overlap은 `δ ∈ {1, 2, 3}`(정수 토큰 격차)·embedding은 `δ ∈ {0.005, 0.01, 0.02, 0.03, 0.05}`(cosine 격차). 각 δ에서 `run_scale_eval`을 돌려 **contested률↓ vs 오라우팅률↑ 트레이드오프 곡선**을 뽑는다(두 매처 각각·`stage1_top_margin` 헬퍼[scale_eval.py:245]가 이미 top1−top2 절대차를 노출하므로 재사용).
+- **오라우팅 상한 가드(하드 제약)**: **기준선 오라우팅 1.4%(Embedding τ=0.85·§S8)에서 유의미 악화 금지.** δ 스윕에서 오라우팅률이 기준선 대비 유의미하게(예: 절대 +1%p 초과, 골든셋 72문항 규모라 실측 판단) 오르는 δ는 *채택하지 않는다* — contested를 아무리 줄여도 오라우팅 상한을 깨면 기각. **정답 방향은 "contested↓ + 오라우팅 상한 유지"의 파레토 프런트**에서 δ를 고른다(contested만 최소화하는 δ는 함정).
+- **매처별 δ 확정은 게이트 밖**(실 임베딩·실 스윕·골든셋 eval·ADR 0003 정신) — 게이트 내는 `FakeMatcher` 고정 score로 "δ 이상이면 Routed·미만이면 낙하"의 *분기 로직*만 결정론 단언(δ 값 자체가 아니라 게이트 동작). 확정 δ 기본값은 매처 조립부(overlap용·embedding용 각각)에 상수로 두고 근거 주석에 이 스윕 리포트를 가리킨다(`DEFAULT_EMBED_TAU`가 τ 스윕 근거를 주석에 단 정신).
+
+### 결정 F — 게이트 경계
+
+**게이트 내(결정론·`.venv` pytest로 잠금):**
+- δ 미주입(`None`) → 게이트 스킵·기존 동작 100% 보존(assessor=None ≥2→Contested·assessor 주입 시 stage-2 — 무회귀).
+- δ 주입 + margin(top1−top2) ≥ δ → 단독 top-1 Routed(대표 intent=top1 domain·attach_gates 부착).
+- δ 주입 + margin < δ → 기존 사슬 낙하(assessor 있으면 stage-2·없으면 Contested).
+- 동점(margin=0) + δ>0 → 게이트 미발동·낙하.
+- precedent 단축이 stage-1.5보다 먼저(순서 고정)·1 후보 분기 무영향.
+- `FakeMatcher` 고정 score로 δ 경계값(정확히 δ·δ−ε·δ+ε) 분기 결정론.
+
+**게이트 밖(수동·실 스윕·비결정):**
+- 실 δ 스윕(`scale_eval` 72문항·두 매처·contested↓/오라우팅↑ 곡선·오라우팅 상한 가드 판정).
+- 매처별 δ 기본값 확정(overlap·embedding 각각·리포트 근거).
+
+### 불변식 보존 자체점검 (결정 A~F)
+
+- **미아 없음**: `≥2 → Routed`로 바뀌어도 종착은 여전히 3분류(Routed·Contested·Unowned) 안이다 — margin 게이트는 `≥2` 후보를 *Routed로 접거나*(δ 이상) *기존 사슬로 낙하*(δ 미만 → stage-2/Contested)만 하고, 어느 쪽도 질문을 떨구지 않는다. stage-1 0 후보 → Unowned(root)는 이 게이트 *앞*이라 무영향.
+- **Authority 중앙**: 후보는 이미 §13 admission 재검증(`domain_authorized`·card.domains)을 통과했다 — margin은 그 *권한 안에서의 순위 결정*일 뿐 권한 선언이 아니다(카드·인덱스 자기보고가 δ를 못 넓힘·중앙 라우터 정책값). δ가 권한 밖 후보를 끌어올리는 경로는 구조상 없다(margin은 authorized 리스트 안에서만 비교).
+- **노출 불변식**: margin·score·δ는 `RoutingDecision`에 *안 실린다* — `IndexMatch.score`가 이미 조직 내부값(사용자向 미노출·index_matcher.py 명시)이고, margin은 그 score 간 연산이라 사용자向 `OrgReply`/`Answered`에 도달하지 않는다(Routed는 primary·intent만 실음).
+- **오라우팅 위험 트레이드오프(명시)**: contested→routed 전환은 오라우팅 위험과 *교환*이다 — δ 스윕에서 오라우팅률 상한 가드(기준선 1.4%에서 유의미 악화 금지·결정 E)로 그 위험을 봉인한다. δ를 낮춰 contested를 더 줄여도 오라우팅 상한을 깨면 기각.
+- **전이 ≠ 기록**: stage-1.5는 `RoutingDecision`(전이) 생성 분기이지 기록이 아니다(기록은 audit·ask_org). δ는 정책값이지 로그가 아니다.
+- **기존 `TwoStageRouter` 무회귀**: δ=None이 기존 동작 100% 보존(결정 A) — δ 주입 조립만 새 동작. `Router`(레거시)·stage-2 `clear_winner_margin`은 이 신설과 직교(무접촉).
+
+---
+
 ## Open Questions / 게이트 밖
 
 - **`core_question` distill의 품질** — semantic-os 개념 노드 → `core_question` 도출이 라우팅 정밀도를 좌우한다. 골든셋 eval(ADR 0003)로 검증·게이트 밖(실 LLM/실 온톨로지).
 - **`intent` 단일 출처와 다개념 매칭의 정합(ADR 0015)** — ~~대표 키 선정 규칙~~ **결정 13 §E에서 `concept.domain`으로 확정**. 다후보 Contested 시 대표 domain 선정(최고 점수 후보)의 정밀화만 후속.
 - **stage-2 "clear winner" 임계** — 자동해소 vs Contested 폴백을 가르는 신뢰도 격차 임계(`DelegationSnapshot` staleness 임계 주입 정신 — 정책값 주입). 게이트 내 결정론 단언은 임계를 주입해 검증(결정 13 §D — `clear_winner_margin` 주입 확정·실 정책값은 결정 대기).
+- **stage-1.5 margin δ 매처별 기본값** — assessor *전* 값싼 선행 게이트의 stage-1 score 절대차 임계(§16 결정 A~F 확정). ~~정의·주입 위치~~ **§16에서 절대차(top1−top2)·router 정책값·δ=None이면 게이트 off로 확정**. 매처별 δ 기본값(overlap용 정수·embedding용 cosine 격차)의 실 확정은 게이트 밖(§16 결정 E — `scale_eval` 72문항 δ 스윕·contested↓/오라우팅↑ 곡선·오라우팅 상한 가드[기준선 1.4%]·두 매처 각각).
 - **인덱스 staleness 전파** — OKF 변경 시 인덱스 재배포와 *그 인덱스에 기댄 과거 판례* staleness(ADR 0019)의 짝. ~~`put` staleness 키~~ **§14 결정 C에서 `generated_at`(datetime·더 새 것만 수용·동률/역행 거부)으로 확정**. OKF 변경 시 재배포 트리거(`OkfChangeEvent` 연동)·그에 기댄 과거 판례 재검토 정밀화는 후속(게이트 밖).
 - **이름 충돌**(CONTEXT 명문화) — semantic-os의 "card/node"는 우리 "Agent Card"(권한·라우팅 메타)와 *다르다*. "OKF"=지식 내용, "KnowledgeIndex"=OKF/온톨로지에서 도출한 *목차*.
 - **fan-out과의 관계** — stage-2의 ≥2 후보 평가는 *tie-break*(담당 1명)이지 fan-out(여러 담당 동시 답)이 아니다. fan-out은 Phase 9에서 명시 연기됨(`Routed.collaborators` 씨앗) — 이 ADR도 메시지당 담당 1명을 유지한다.

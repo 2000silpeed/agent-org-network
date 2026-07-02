@@ -31,7 +31,11 @@ from agent_org_network.dispatch import (
     LocalStreamingDispatcher,
     RuntimeDispatcher,
 )
-from agent_org_network.index_matcher import recommended_stage1_margin, select_matcher
+from agent_org_network.index_matcher import (
+    EmbeddingAnnMatcher,
+    recommended_stage1_margin,
+    select_matcher,
+)
 from agent_org_network.okf_index import build_knowledge_index_from_okf
 from agent_org_network.reeval import (
     Clock,
@@ -255,13 +259,33 @@ def select_router(
         # AON_MATCHER 시임 — 미설정/overlap이면 ConceptOverlapMatcher(기본·무변경),
         # embedding/fastembed면 EmbeddingAnnMatcher(실 ONNX·게이트 밖). 기본 경로 100% 무변경.
         matcher = select_matcher()
+        # stage-2 assessor(ADR 0028 §17) — embedding 매처일 때만 같은 임베더를 *공유*해
+        # body 접지 자기평가를 장착(모델 1회 로드). overlap 기본 경로는 assessor=None 무변경.
+        # okf_root는 답변 런타임과 같은 DEMO_OKF_ROOT(인프로세스 디제너레이트 — ADR 0030 §3·
+        # ClaudeCodeRuntime cwd 접지 선례). 정책값은 실측 확정(§17·scale-eval S10).
+        assessor = None
+        stage2_margin: float | None = None
+        if isinstance(matcher, EmbeddingAnnMatcher):
+            from agent_org_network.confidence_assessor import (
+                DEFAULT_STAGE2_CLEAR_WINNER_MARGIN,
+                DEFAULT_STAGE2_MIN_CONFIDENCE,
+                EmbeddingConfidenceAssessor,
+            )
+
+            assessor = EmbeddingConfidenceAssessor(
+                matcher.embedder,
+                DEMO_OKF_ROOT,
+                min_confidence=DEFAULT_STAGE2_MIN_CONFIDENCE,
+            )
+            stage2_margin = DEFAULT_STAGE2_CLEAR_WINNER_MARGIN
         return TwoStageRouter(
             registry,
             matcher,
             store,
             root_user=ROOT_USER,
             precedents=precedents,
-            assessor=None,
+            assessor=assessor,
+            clear_winner_margin=stage2_margin,
             # 매처와 같은 env에서 도출한 stage-1.5 권장 δ(ADR 0028 §16) — overlap이면
             # None(off·기존 동작), embedding이면 0.03(오라우팅 무악화 실측 확정값).
             stage1_clear_winner_margin=recommended_stage1_margin(),

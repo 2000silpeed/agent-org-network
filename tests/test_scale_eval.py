@@ -193,6 +193,32 @@ def test_build_scale_router_assessor_미주입_2단계_자동해소_없음(scale
     assert isinstance(decision, Contested)
 
 
+def test_build_scale_router_assessor_주입_stage2_자동해소(scale_dir: Path, okf_root: Path):
+    """assessor 주입 시 build_scale_router가 TwoStageRouter에 그대로 스레딩한다(ADR 0028 §17).
+
+    A/B용 파라미터 스레딩만 검증 — FakeAssessor(결정론 고정 신뢰도)로 자동해소를 확인한다.
+    """
+    from agent_org_network.two_stage_router import FakeAssessor
+
+    _write_okf_doc(
+        okf_root, "finance_ops", "refund-fee.md", "환불 수수료", "환불 시 수수료 정책 안내", ["가격"]
+    )
+    registry = build_scale_registry(scale_dir)
+    store = build_scale_index_store(registry, okf_root, generated_at=GENERATED_AT)
+    assessor = FakeAssessor({"cs_ops": 0.9, "finance_ops": 0.2})
+    router = build_scale_router(
+        registry,
+        store,
+        root_user=ROOT_USER,
+        assessor=assessor,
+        clear_winner_margin=0.3,
+    )
+
+    decision = router.route("환불 수수료가 어떻게 되나요?")
+    assert isinstance(decision, Routed)
+    assert decision.primary.agent_id == "cs_ops"
+
+
 # ── 4. run_scale_eval — tier 집계 ────────────────────────────────────────────
 
 

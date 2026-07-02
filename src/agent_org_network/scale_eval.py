@@ -25,7 +25,11 @@ from agent_org_network.golden import SampleQuestion
 from agent_org_network.index_matcher import ConceptOverlapMatcher, KnowledgeIndexMatcher
 from agent_org_network.okf_index import build_knowledge_index_from_okf
 from agent_org_network.registry import Registry
-from agent_org_network.two_stage_router import InMemoryPublishedIndexStore, TwoStageRouter
+from agent_org_network.two_stage_router import (
+    ConfidenceAssessor,
+    InMemoryPublishedIndexStore,
+    TwoStageRouter,
+)
 
 Tier = Literal["easy", "hard", "ambiguous"]
 Disposition = Literal["routed", "contested", "unowned"]
@@ -71,17 +75,24 @@ def build_scale_router(
     precedents: PrecedentStore | None = None,
     matcher: KnowledgeIndexMatcher | None = None,
     stage1_clear_winner_margin: float | None = None,
+    assessor: ConfidenceAssessor | None = None,
+    clear_winner_margin: float | None = None,
 ) -> TwoStageRouter:
-    """매처(기본 ConceptOverlapMatcher) + assessor=None인 TwoStageRouter를 조립한다.
+    """매처(기본 ConceptOverlapMatcher) + assessor(기본 None)인 TwoStageRouter를 조립한다.
 
     matcher 미주입이면 ConceptOverlapMatcher(v1 결정론·기존 테스트 무변경). S8 A/B는
     EmbeddingAnnMatcher를 주입해 같은 조립·같은 골든셋에 대조한다.
 
-    assessor=None 고정 — stage-2 자동해소 없음(현 한계 실측 목적, 모듈 docstring 참조).
+    assessor=None(기본) — stage-2 자동해소 없음(현 한계 실측 목적, 모듈 docstring 참조).
+    A/B용으로 `EmbeddingConfidenceAssessor`(ADR 0028 §17) 주입 가능 — 프로덕션 데모
+    배선은 이 함수 몫이 아니다(eval 결과 보고 후속).
 
     stage1_clear_winner_margin: stage-1.5 margin clear-winner 룰 δ(ADR 0028 §16).
     None(기본)이면 게이트 스킵 — 기존 A/B 조립·리포트 무회귀. δ 스윕 실측(§16 결정 E)이
     주입해 매처별 contested↓/오라우팅↑ 트레이드오프를 캘리브레이션한다.
+
+    clear_winner_margin: stage-2 confidence 격차 임계(ADR 0028 §17 결정 D). assessor
+    미주입이면 무의미(TwoStageRouter가 assessor=None 분기로 무시).
     """
     return TwoStageRouter(
         registry,
@@ -89,7 +100,8 @@ def build_scale_router(
         index_store,
         root_user,
         precedents=precedents,
-        assessor=None,
+        assessor=assessor,
+        clear_winner_margin=clear_winner_margin,
         stage1_clear_winner_margin=stage1_clear_winner_margin,
     )
 

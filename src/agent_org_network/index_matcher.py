@@ -278,6 +278,15 @@ class EmbeddingAnnMatcher:
             tuple[str, datetime], tuple[tuple[str, tuple[float, ...]], ...]
         ] = {}
 
+    @property
+    def embedder(self) -> Embedder:
+        """조립부가 stage-2 assessor와 임베더 인스턴스를 *공유*하기 위한 읽기 접근자.
+
+        `EmbeddingConfidenceAssessor`(ADR 0028 §17)가 같은 실 임베더(모델 1회 로드)를
+        재사용하게 한다 — 두 번째 모델 인스턴스 방지(demo 조립·§16/§17 배선).
+        """
+        return self._embedder
+
     def _index_vectors(
         self, index: KnowledgeIndex
     ) -> tuple[tuple[str, tuple[float, ...]], ...]:

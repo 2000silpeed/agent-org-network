@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>운영자 콘솔 — 관전 피드</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --ink: #1f2933;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --me: #2563eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+        "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+    }
+    .console {
+      width: 100%;
+      max-width: 760px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header .title { font-weight: 700; font-size: 16px; }
+    header small { display: block; font-weight: 400; color: var(--muted); margin-top: 2px; }
+    .status {
+      margin-left: auto;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 999px;
+    }
+    .status.live { background: #d1fae5; color: #065f46; }
+    .status.down { background: #fee2e2; color: #b91c1c; }
+    .status.wait { background: #fef3c7; color: #92400e; }
+    .feed {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+    }
+    .empty {
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+      padding: 40px 16px;
+    }
+    .row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .badge {
+      flex-shrink: 0;
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .badge.question_received { background: #dbeafe; color: #1e40af; }
+    .badge.routing_decision_recorded { background: #ede9fe; color: #5b21b6; }
+    .badge.answer_sent { background: #d1fae5; color: #065f46; }
+    .badge.worker_connected { background: #ccfbf1; color: #115e59; }
+    .badge.worker_disconnected { background: #fee2e2; color: #b91c1c; }
+    .body { flex: 1; min-width: 0; }
+    .body .line { font-size: 13px; line-height: 1.5; word-break: break-word; }
+    .body .meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .ts { flex-shrink: 0; font-size: 11px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="console">
+    <header>
+      <div>
+        <div class="title">운영자 콘솔 — 관전 피드</div>
+        <small>질문 인입 · 라우팅 결정 · 답 확정 · 워커 연결을 실시간으로 관전합니다</small>
+      </div>
+      <span id="status" class="status wait">연결 중…</span>
+    </header>
+    <div id="feed" class="feed">
+      <div class="empty">아직 들어온 사건이 없어요. 채팅에서 질문이 오면 여기 흐릅니다.</div>
+    </div>
+  </div>
+
+  <script>
+    const feedEl = document.getElementById("feed");
+    const statusEl = document.getElementById("status");
+    let empty = true;
+
+    const LABELS = {
+      question_received: "질문 인입",
+      routing_decision_recorded: "라우팅 결정",
+      answer_sent: "답 확정",
+      worker_connected: "워커 연결",
+      worker_disconnected: "워커 종료",
+    };
+
+    function setStatus(kind, text) {
+      statusEl.className = "status " + kind;
+      statusEl.textContent = text;
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toLocaleTimeString("ko-KR", { hour12: false });
+    }
+
+    function describe(d) {
+      switch (d.event_type) {
+        case "question_received":
+          return { line: d.question || "(빈 질문)", meta: "세션 " + (d.session_id || "?") };
+        case "routing_decision_recorded": {
+          if (d.decision_kind === "routed")
+            return { line: "담당 → " + d.primary_agent_id, meta: "intent " + (d.intent || "?") + " · 신뢰 " + d.confidence };
+          if (d.decision_kind === "contested")
+            return { line: "다툼 후보 → " + (d.candidate_agent_ids || []).join(", "), meta: "intent " + (d.intent || "?") };
+          return { line: "미담당 → " + (d.escalated_to || "매니저"), meta: "intent " + (d.intent || "?") };
+        }
+        case "answer_sent":
+          return { line: "답변 담당 → " + (d.answered_by || "?"), meta: "mode " + (d.mode || "?") };
+        case "worker_connected":
+          return { line: "워커 연결 → " + d.owner_id, meta: "등급 " + (d.role || "?") };
+        case "worker_disconnected":
+          return { line: "워커 종료 → " + d.owner_id, meta: "등급 " + (d.role || "?") };
+        default:
+          return { line: JSON.stringify(d), meta: "" };
+      }
+    }
+
+    function append(d) {
+      if (empty) {
+        feedEl.innerHTML = "";
+        empty = false;
+      }
+      const kind = d.event_type || "unknown";
+      const { line, meta } = describe(d);
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML =
+        '<span class="badge ' + kind + '">' + (LABELS[kind] || kind) + "</span>" +
+        '<div class="body"><div class="line"></div><div class="meta"></div></div>' +
+        '<span class="ts">' + fmtTime(d.at) + "</span>";
+      row.querySelector(".line").textContent = line;
+      row.querySelector(".meta").textContent = meta;
+      feedEl.appendChild(row);
+      // 자동 스크롤(최신이 아래).
+      feedEl.scrollTop = feedEl.scrollHeight;
+    }
+
+    function connect() {
+      const es = new EventSource("/console/feed");
+      es.onopen = () => setStatus("live", "실시간 연결됨");
+      const handler = (e) => {
+        try {
+          append(JSON.parse(e.data));
+        } catch (_) { /* 파싱 실패 프레임 무시 */ }
+      };
+      // 이벤트 종류별 리스너(SSE event: 이름 = event_type).
+      Object.keys(LABELS).forEach((t) => es.addEventListener(t, handler));
+      // 이름 없는 기본 메시지도 흡수(방어).
+      es.onmessage = handler;
+      es.onerror = () => {
+        setStatus("down", "연결 끊김 — 재연결 중…");
+        // EventSource가 자동 재연결한다(브라우저 기본). 상태만 갱신.
+      };
+    }
+
+    connect();
+  </script>
+</body>
+</html>

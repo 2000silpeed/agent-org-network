@@ -5,6 +5,11 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from agent_org_network.audit import AuditEntry, AuditLog, Clock, default_clock
 from agent_org_network.conflict import Candidate, ConflictCase, ConflictCaseStore
+from agent_org_network.console import (
+    AnswerSent as _AnswerSent,
+    QuestionReceived as _QuestionReceived,
+    RoutingDecisionRecorded as _RoutingDecisionRecorded,
+)
 from agent_org_network.decision import Contested, Routed, Unowned
 from agent_org_network.dispatch import (
     AwaitingWorker,
@@ -21,6 +26,7 @@ from agent_org_network.user import User
 
 if TYPE_CHECKING:
     from datetime import datetime
+    from agent_org_network.console import ConsoleEvent, ConsoleFeed
     from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.notify import Notifier
@@ -241,6 +247,7 @@ class AskOrg:
         manager_root: str = "root",
         notifier: "Notifier | None" = None,
         hitl_toggles: "HitlToggleMap | None" = None,
+        console_feed: "ConsoleFeed | None" = None,
     ) -> None:
         # [Minor 2] manager_root 기본값 "root" 주의: 데모의 실제 root는 "root_manager".
         # manager_queue_store 를 주입할 때 manager_root 도 함께 주입하지 않으면
@@ -269,6 +276,10 @@ class AskOrg:
         # HITL 런타임 토글(T9.3(b)·ADR 0025) — 콘솔이 set, `_apply_approval_gate`가 read.
         # 미주입이면 기존 동작(카드 approval_when만 봄) 100% 보존(하위호환).
         self._hitl_toggles = hitl_toggles
+        # 운영자 콘솔 관전 피드(T9.2(c)·ADR 0024) — handle이 질문 인입·라우팅 결정·답 확정
+        # 시점에 ConsoleEvent를 emit한다(관전 미러). 미주입이면 발화 0(하위호환 — 기존 동작
+        # 100% 무변경). emit 실패는 흡수한다(관전이 본 흐름을 못 깨는 계약 — 전이≠기록 정신).
+        self._console_feed = console_feed
         # 답 회수용 불투명 추적 토큰 → WorkTicket 매핑(ADR 0011 결정 6-5). 서버가
         # ticket을 보관하고 사용자엔 *불투명 토큰만* 준다 — 사용자向 응답에 ticket_id·
         # owner 등 내부 구조가 새지 않게 한다(노출 불변식). 토큰은 uuid4 hex(미인코딩).
@@ -411,6 +422,18 @@ class AskOrg:
                     decision=decision,
                     dispatch_outcome=outcome,
                     tracking=tracking,
+                )
+            )
+            # 관전 피드(T9.2(c)): 분산 회신 경로의 답 확정 emit — 이 Delivered 첫 관측
+            # 멱등 지점(answered 기록과 같은 자리)에서 정확히 1회. answered_by는 ticket의
+            # agent_id(회신 담당). mode는 큐 종착 Delivered.answer.mode(게이트 미적용 원형 —
+            # retrieve는 Approval 게이트를 아직 안 거는 자리라 큐 mode를 그대로 관전에 실음).
+            self._emit_console(
+                _AnswerSent(
+                    ticket_id=ticket.ticket_id,
+                    answered_by=ticket.agent_id,
+                    mode=outcome.answer.mode,
+                    at=self._clock(),
                 )
             )
             self._answered_recorded.add(tracking)
@@ -577,8 +600,32 @@ class AskOrg:
         self._manager_queue_store.enqueue(item)
         self._push_manager_notification(mid, item.item_id, item.created_at)
 
+    def _emit_console(self, event: "ConsoleEvent") -> None:
+        """관전 피드에 사건을 1건 emit한다 — 실패는 흡수(관전이 본 흐름을 못 깬다).
+
+        `console_feed` 미주입이면 no-op(하위호환·발화 0). 주입 시 emit하되 어떤 예외도
+        삼킨다(try/except) — 관전 미러는 유실 허용이고, emit 실패가 질문 처리(본 흐름)를
+        깨서는 안 된다(전이≠기록 정신·notifier push 흡수와 동형).
+        """
+        if self._console_feed is None:
+            return
+        try:
+            self._console_feed.emit(event)
+        except Exception:
+            pass
+
     def handle(self, question: str, user: User, *, context: str | None = None) -> OrgReply:
+        # 관전 피드(T9.2(c)): 질문 인입을 즉시 emit한다(라우팅 전 — "들어온" 사건).
+        self._emit_console(
+            _QuestionReceived(
+                question=question,
+                session_id=user.id,
+                at=self._clock(),
+            )
+        )
         decision = self._router.route(question)
+        # 관전 피드: 라우팅 결정을 emit한다(Routed/Contested/Unowned 원형 재사용).
+        self._emit_console(_RoutingDecisionRecorded(decision=decision, at=self._clock()))
 
         # 디스패치 절차의 결말 — Routed일 때만 채워지고(dispatch→poll), Contested/
         # Unowned는 디스패치를 안 하므로 None. audit이 이 원형에서 answer를 파생하고
@@ -645,6 +692,20 @@ class AskOrg:
                     message="아직 담당이 없어 매니저에게 전달했어요. 답변되면 알림드릴게요.",
                 )
                 self._enqueue_unowned(decision, question)
+
+        # 관전 피드(T9.2(c)): 답 확정 시점 emit. 동기 즉답(Delivered) 경로는 여기서 답이
+        # 확정되므로 AnswerSent를 emit한다(reply가 Answered = Delivered 투영·게이트 반영 후
+        # 최종 mode). 분산 회신(Pending dispatched)은 아직 답이 없어 여기선 emit 안 하고,
+        # retrieve의 Delivered 첫 관측(멱등 지점)에서 emit한다.
+        if isinstance(reply, Answered):
+            self._emit_console(
+                _AnswerSent(
+                    ticket_id=tracking_token or "",
+                    answered_by=reply.answered_by[1],
+                    mode=reply.mode,
+                    at=self._clock(),
+                )
+            )
 
         self._audit.record(
             AuditEntry(

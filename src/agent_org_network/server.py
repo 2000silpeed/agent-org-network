@@ -42,6 +42,7 @@ from agent_org_network.transport import (
 )
 
 if TYPE_CHECKING:
+    from agent_org_network.console import ConsoleFeed
     from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.token import TokenStore
 
@@ -207,6 +208,7 @@ def create_central_app(
     oidc_provider: OidcProvider | None = None,
     token_store: "TokenStore | None" = None,
     hitl_toggles: "HitlToggleMap | None" = None,
+    console_feed: "ConsoleFeed | None" = None,
 ) -> FastAPI:
     """end-to-end 한 프로세스 중앙 앱 — 사용자 web 라우트 + owner 워커 WS를 *한 dispatcher*로.
 
@@ -341,11 +343,19 @@ def create_central_app(
     # dispatch 힌트에 반영된다(e2e, ADR 0025 결정 5). token_store와 동일 패턴 — 이 함수가
     # 받은 그대로(또는 새로 만든 기본값)를 dispatcher·create_app 양쪽에 물린다.
     _resolved_hitl_toggles = hitl_toggles if hitl_toggles is not None else HitlToggleMap()
+    # 콘솔 관전 피드(T9.2(c)·ADR 0024): 콘솔 SSE 라우트가 구독하는 그 피드에 워커 연결/종료
+    # (dispatcher)와 질문 처리 사건(AskOrg via create_app)이 *한 인스턴스*로 모여야 관전
+    # 스트림에 전 사건이 흐른다. 이 함수가 한 인스턴스를 만들어(또는 받은 것을) dispatcher·
+    # create_app 양쪽에 물린다(token_store·hitl_toggles와 동일 단일 원천 패턴).
+    from agent_org_network.console import ConsoleFeed
+
+    _resolved_console_feed = console_feed if console_feed is not None else ConsoleFeed()
     dispatcher = WebSocketDispatcher(
         staleness_threshold=staleness_threshold,
         review_store=review_store,
         token_store=_resolved_token_store,
         hitl_toggles=_resolved_hitl_toggles,
+        console_feed=_resolved_console_feed,
     )
     # 데모 owner들의 위임 스냅샷을 주입(opt-in 위임 — owner가 자기 영역을 백업에 위임).
     # 없으면 staleness_threshold가 설정된 상태에서 backup push가 거부된다(결정 9).
@@ -363,6 +373,7 @@ def create_central_app(
         oidc_provider=oidc_provider,
         token_store=_resolved_token_store,
         hitl_toggles=_resolved_hitl_toggles,
+        console_feed=_resolved_console_feed,
     )
     _mount_worker_endpoint(app, dispatcher)
     return app

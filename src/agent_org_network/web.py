@@ -43,6 +43,7 @@ from agent_org_network.ask_org import (
     serialize_sse_event,
 )
 from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog, action_record
+from agent_org_network.console import ConsoleFeed, stream_console_frames
 
 if TYPE_CHECKING:
     from datetime import datetime as _DateTime
@@ -135,6 +136,7 @@ _WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
 _INDEX_HTML = _WEB_DIR / "index.html"
 _INBOX_HTML = _WEB_DIR / "inbox.html"
 _MONITOR_HTML = _WEB_DIR / "monitor.html"
+_CONSOLE_FEED_HTML = _WEB_DIR / "console-feed.html"
 _ORG_HTML = _WEB_DIR / "org.html"
 _BUILDER_HTML = _WEB_DIR / "builder.html"
 
@@ -974,6 +976,7 @@ def create_app(
     author: OkfAuthor | None = None,
     token_store: TokenStore | None = None,
     hitl_toggles: HitlToggleMap | None = None,
+    console_feed: "ConsoleFeed | None" = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -1031,6 +1034,11 @@ def create_app(
     _hitl_toggles: HitlToggleMap = (
         hitl_toggles if hitl_toggles is not None else HitlToggleMap()
     )
+    # 콘솔 관전 피드(T9.2(c)·ADR 0024): 미주입이면 이 앱이 한 인스턴스를 만들어 AskOrg
+    # (build_demo 경유)·SSE 라우트(GET /console/feed)에 *같이* 물린다(단일 원천 — 질문
+    # 처리가 emit하는 그 피드를 관전 스트림이 구독). `create_central_app`은 dispatcher에도
+    # 같은 인스턴스를 물려 워커 연결/종료 사건까지 한 피드로 모은다(아래 배선).
+    _console_feed: ConsoleFeed = console_feed if console_feed is not None else ConsoleFeed()
     # GET /console/hitl/{agent_id}가 "명시 set된 적 있는가"를 구분해 카드 시드 해석값을
     # 낼 수 있게 하는 보조 집합(HitlToggleMap.is_on 자체는 미설정을 False로 다뤄 카드
     # approval_when이 있는 카드도 시드 전엔 off로 보이는 걸 막는다).
@@ -1043,6 +1051,7 @@ def create_app(
         manager_queue_store=manager_queue_store,
         audit_log=audit_log,
         hitl_toggles=_hitl_toggles,
+        console_feed=_console_feed,
     )
     # 라이브 publish 배선(T10.4 Blocker B1·ADR 0028 §14 결정 F): index 모드면 라우터가
     # 보는 *바로 그* published 인덱스 스토어를 디스패처에 같이 꽂는다 — 그래야 워커
@@ -1664,6 +1673,45 @@ def create_app(
         if revoked is None:
             raise HTTPException(status_code=404, detail=f"미존재 token_id: {token_id!r}")
         return {"token_id": revoked.token_id, "revoked": revoked.revoked}
+
+    # ── 운영자 콘솔 관전 SSE 피드 (T9.2(c)·ADR 0024) ────────────────────────
+    #
+    # `/ask/stream`(사용자 답 SSE)과 같은 패턴이되 *운영 면 관전*이다 — 질문 인입·라우팅
+    # 결정·답 확정·워커 연결/종료 사건을 실시간으로 흘린다. 인증은 /monitor와 같은 결
+    # (인증 활성 시 로그인 401). 연결 종료 시 finally로 반드시 unsubscribe(누수 방지).
+
+    @app.get("/console/feed")
+    def console_feed_stream(request: Request) -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+        """관전 피드 SSE 스트림 — 구독→큐 pop→SSE 프레임 yield, 종료 시 unsubscribe.
+
+        `/ask/stream` 패턴(StreamingResponse·text/event-stream). `_console_feed`에 subscribe해
+        큐에서 이벤트를 꺼내 `serialize_console_sse`로 프레임을 흘린다. 이벤트가 없으면
+        주기적으로 keep-alive 코멘트 프레임(`: keep-alive`)을 흘려 프록시 idle 타임아웃을
+        막는다(15s류). 클라이언트가 끊기면 generator가 GeneratorExit로 종료되고 finally가
+        반드시 unsubscribe한다(느린/떠난 구독자 큐 누수 방지). 운영 면 인증은 /monitor 결.
+        """
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+
+        # 프로덕션은 무한 스트림(`stop`은 항상 False) — 연결이 끊기면 StreamingResponse가
+        # 제너레이터를 GeneratorExit로 닫고, `stream_console_frames`의 finally가 unsubscribe
+        # 한다. 프레임 로직(구독→pop→프레임·프라이밍·keep-alive)은 console 모듈이 소유해
+        # 결정론 단위 테스트가 유한 `stop`으로 검증한다(TestClient 무한 스트림 우회).
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+        return StreamingResponse(
+            stream_console_frames(_console_feed, stop=lambda: False),
+            media_type="text/event-stream",
+            headers=headers,
+        )
+
+    @app.get("/console/view")
+    def console_feed_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
+        """관전 화면 서빙 — EventSource로 /console/feed를 구독하는 정적 HTML."""
+        return FileResponse(_CONSOLE_FEED_HTML)
 
     # ── T5.3: Agent 빌더(Owner 면 — 카드 구성·검증·YAML 미리보기) ────────────────
 

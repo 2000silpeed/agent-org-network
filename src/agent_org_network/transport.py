@@ -44,6 +44,7 @@ from agent_org_network.knowledge_index import KnowledgeIndex
 if TYPE_CHECKING:
     # 어댑터 시그니처 예고용 — 런타임 import 순환을 피해 타입 체크 시에만 끌어온다.
     from agent_org_network.agent_card import AgentCard
+    from agent_org_network.console import ConsoleEvent, ConsoleFeed
     from agent_org_network.git_gateway import ChangeEventListener
     from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.notify import Notifier
@@ -397,11 +398,14 @@ class WebSocketDispatcher:
         propagator: "ChangeEventListener | None" = None,
         token_store: "TokenStore | None" = None,
         hitl_toggles: "HitlToggleMap | None" = None,
+        console_feed: "ConsoleFeed | None" = None,
     ) -> None:
         # 작업 큐 도메인은 합성으로 재사용 — 큐 상태기계·단조 종착·timeout escalation은
         # 이 객체가 소유한다(WS는 그 위 전송층). 주입 가능하게 둬 결정론 테스트가 고정
         # clock·timeout·manager_of를 박은 큐를 넣을 수 있게 한다(2b-i).
         self._queue = queue if queue is not None else InMemoryWorkQueueDispatcher(clock=clock)
+        # 관전 피드 사건의 타임스탬프용 시계(주입 clock 보관 — 결정론 테스트가 고정 clock).
+        self._clock = clock
         # owner_id → {등급(role) → send 콜백}(등급별 연결 레지스트리, ADR 0012 결정 2).
         # RegisterWorker 시 그 role로 등록, 끊김/AuthError 시 그 role만 제거. push 대상은
         # 우선순위(primary 우선, 없으면 backup). 둘 다 없으면 작업은 큐에 대기.
@@ -460,6 +464,19 @@ class WebSocketDispatcher:
         # 싣는다. 미주입이면 `is_on`이 항상 False인 것과 동형(힌트 항상 False = 기존 즉시
         # 전송 동작, 하위호환). 워커는 이 힌트를 *지시받아* 따를 뿐 토글을 소유하지 않는다.
         self._hitl_toggles = hitl_toggles
+        # 운영자 콘솔 관전 피드(T9.2(c)·ADR 0024) — 워커 register 성공(WorkerConnected)·
+        # 연결 종료(WorkerDisconnected) 시 ConsoleEvent를 emit한다(관전 미러). 미주입이면
+        # 발화 0(하위호환·기존 WS 테스트 무회귀). emit 실패는 흡수(관전이 전송을 못 깬다).
+        self._console_feed = console_feed
+
+    def _emit_console(self, event: "ConsoleEvent") -> None:
+        """관전 피드에 사건을 1건 emit한다 — 실패는 흡수(관전이 전송을 못 깬다·T9.2(c))."""
+        if self._console_feed is None:
+            return
+        try:
+            self._console_feed.emit(event)
+        except Exception:
+            pass
 
     # ── 중앙측(질문 측): 내부 큐에 위임 ──────────────────────────────────────
 
@@ -774,6 +791,13 @@ class WebSocketDispatcher:
             # 인증 거부 — 레지스트리에 올리지 않으므로 이후 작업이 push되지 않는다(6-5).
             return AuthError(reason="미인증 워커 — owner 신원 검증 실패")
         self._connections.setdefault(frame.owner_id, {})[frame.role] = send
+        # 관전 피드(T9.2(c)): 인증 통과·등록 성공 시에만 WorkerConnected emit(AuthError는
+        # 위에서 이미 return되어 이 지점에 안 옴 — 관전엔 실제 연결 성립만 실린다).
+        from agent_org_network.console import WorkerConnected
+
+        self._emit_console(
+            WorkerConnected(owner_id=frame.owner_id, role=frame.role, at=self._clock())
+        )
         # 재연결 재동기: 등록 직후 그 owner의 대기 작업(미연결 동안 쌓인 것·끊김으로
         # re-queue된 것)을 우선순위 연결로 push한다.
         self._push_pending(frame.owner_id)
@@ -798,6 +822,13 @@ class WebSocketDispatcher:
             conns.pop(role, None)
             if not conns:
                 self._connections.pop(owner_id, None)
+        # 관전 피드(T9.2(c)): 연결 종료 emit(끊김 정리 시점). re-queue·재push와 독립 —
+        # 관전엔 "그 등급 연결이 끊겼다"는 사건만 실린다.
+        from agent_org_network.console import WorkerDisconnected
+
+        self._emit_console(
+            WorkerDisconnected(owner_id=owner_id, role=role, at=self._clock())
+        )
         if role == "primary":
             # primary 끊김 = t1 회수가 가리키던 "이 느린 primary"가 사라짐. "1회 한정 제외"
             # 표식은 *그 특정 primary*로 안 보낸다는 뜻이라 여기서 만료시킨다(결정 8-2 primary

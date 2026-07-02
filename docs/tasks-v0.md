@@ -247,7 +247,8 @@
   - **외부 결정·결정 대기**: 사용자(채팅) 신원 = **✅ 익명 세션 쿠키 확정(2026-06-27)** — `Session.user_id` 출처는 익명 쿠키(브라우저당 1·SSO 연계는 후속, ADR 0024 결정 A) · 유휴 타임아웃 기본값 = **✅ 30분 확정**(마지막 활동 후 슬라이딩·설정값, ADR 0024 결정 B).
   - **넘김**: ADR-A·세션 shape → **domain-architect**. (a)~(e) 결정론 구현 → **tdd-engineer**. 영속(SQLite)은 T9.8.
 
-- [~] **T9.2** 운영자 콘솔 — SSE 피드 + POST 명령 (ADR-A·ADR-C 연계) — *(a)(b)(d) ✅ 게이트 내 완료(2026-07-02) / (c) 실 SSE 브라우저 푸시·콘솔 화면 게이트 밖 잔여*
+- [x] **T9.2** 운영자 콘솔 — SSE 피드 + POST 명령 (ADR-A·ADR-C 연계) — *완료(2026-07-02)*
+  - **(c) ✅ 실 SSE 관전 피드·콘솔 화면(2026-07-02)**: `ConsoleFeed` 허브(console.py — 구독자별 스레드 안전 큐·drop-oldest 백프레셔[관전 유실 허용·발행자 무블록 계약]·RLock)·발행 훅 옵셔널 주입(`AskOrg(console_feed=)` — 질문 인입/라우팅 결정/답 확정[즉답+retrieve Delivered 첫 관측 멱등 지점]·emit 예외 흡수[관전이 본 흐름을 못 깬다], `WebSocketDispatcher(console_feed=)` — register 성공/연결 종료)·`GET /console/feed`(SSE·`/monitor` 결 인증·keep-alive)·`GET /console/view`(`web/console-feed.html` — EventSource·종류별 배지·자동 스크롤). `create_central_app`이 한 인스턴스를 AskOrg·디스패처·라우트에 공유. 게이트 테스트 26(허브/훅/배선 — TestClient가 무한 스트림에서 블록되는 하네스 한계는 순수 제너레이터 `stream_console_frames`[유한 stop seam] 분리로 우회·문서화). **실 시연**: 실 uvicorn + curl SSE 구독 중 `/ask` 질문 → `question_received`→`routing_decision_recorded` 실시간 수신·keep-alive 확인(2026-07-02).
   - **배경·근거**: 운영자가 질문 인입·라우팅 결정·답 전송·워커 연결/해제를 *실시간*으로 보고(SSE 피드), 세션 종료·HITL 토글·토큰 발급·워커 승인/취소를 *명령*(POST)한다. 별도 앱(채팅·owner UI와 다른 면). ADR 0022가 Open Question으로 남긴 "운영 면 브라우저 실시간 push(SSE/WS)"를 이 콘솔이 닫는다(통지 도메인과 별 축 — 콘솔은 운영자 관전·통지는 처리함 적재 알림).
   - **슬라이스 분해**:
     - **(a) ✅ SSE 이벤트 직렬화 순수 함수 [게이트 내·결정론]** — 도메인 사건(질문 인입·`RoutingDecision`·답 전송·워커 연결/해제)을 SSE 이벤트 페이로드로 투영하는 순수 함수(`serialize_reply` 정신). 검증: 각 사건→이벤트 직렬화·노출 불변식(콘솔은 운영 면이라 내부값 OK이되 *사용자向 비밀은 렌더 규율* — `render_mcp_notification` 정신). **불변식**: 노출 불변식(운영 면 내부값 노출 OK·사용자 채팅과 다른 면). **구현 완료(2026-06-27)** — `console.py`·`tests/test_console_sse.py` 33개 테스트.

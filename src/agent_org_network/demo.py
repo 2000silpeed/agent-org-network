@@ -55,6 +55,7 @@ from agent_org_network.two_stage_router import (
 from agent_org_network.user import User
 
 if TYPE_CHECKING:
+    from agent_org_network.console import ConsoleFeed
     from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.review import BackupReviewStore
@@ -301,6 +302,7 @@ def build_demo(
     audit_log: "JsonlAuditLog | InMemoryAuditLog | None" = None,
     classifier: Classifier | None = None,
     hitl_toggles: "HitlToggleMap | None" = None,
+    console_feed: "ConsoleFeed | None" = None,
 ) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
@@ -398,6 +400,7 @@ def build_demo(
         manager_of=_manager_of,
         manager_root=ROOT_USER,
         hitl_toggles=hitl_toggles,
+        console_feed=console_feed,
     )
     consensus = ConsensusService(case_store=case_store, precedents=precedents)
     # 재평가(세 번째 탭) store/service — review_store(둘째 탭)와 동형으로 항상 구성해

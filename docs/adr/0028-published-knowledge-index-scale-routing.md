@@ -1,6 +1,6 @@
 # 스케일 라우팅 — published 지식 인덱스 + 2단 라우팅(중앙=목차·owner=내용)
 
-상태: accepted (2026-06-27) · **§17 stage-2 `ConfidenceAssessor` 실 어댑터 shape 확정(2026-07-02 — 결정 A~F·`EmbeddingConfidenceAssessor`·body 임베딩 접지[목차 아닌 개념 body 전문 cosine·okf_scale 그레이 쌍 4쌍 실물 검증: 목차 어휘 미분리·body 어휘 분리]·기존 `Embedder` 포트 재사용·새 의존성 0·인프로세스 okf_root 디스크 직접 읽기[ClaudeCodeRuntime cwd 선례]·크로스머신 §15 FetchDocument 확장 후속·LLM 자기평가[b]·하이브리드[c] 후속·미아 없음 폴백은 §13 규칙 재확인)** · **§16 stage-1.5 margin clear-winner 룰 확정(2026-07-02 — 결정 A~F·`EmbeddingAnnMatcher` 실측 후 잔존 contested 45.8% 대응·stage-1 score 절대차 margin·assessor 호출 전 값싼 중앙 결정론 선행 게이트·δ 옵셔널 주입·δ=None이면 기존 동작 100% 보존·매처별 δ 분리·오라우팅 상한 가드[기준선 1.4%])** · **§13 T10.3 통합 shape 확정(2026-06-27 — 결정 A~E)** · **§14 T10.4 publish 경로 shape 확정(2026-06-28 — 결정 A~F·`PublishIndex` 프레임·워커-소유자 스코핑·`generated_at` staleness·와이어 포맷 변경=되돌리기 어려움)** · **§15 on-demand 문서 fetch shape 확정(2026-06-28 — 결정 A~F·`FetchDocument`/`DocumentContent` 프레임 2개·동기 대기 correlation·요청 owner 자기 케이스 스코핑·워커 자기 카드만 읽기·중앙 중계만 저장 0·ADR 0017 결정 4 옵션 B-1 실체·양 union 동시 진화=되돌리기 어려움)** · **ADR 0029(OKF 자동 저작)가 앞단으로 추가됨(2026-06-29 — 이 ADR이 *소비*하는 OKF/`KnowledgeIndex`를 *생성*하는 저작 파이프라인·`build_knowledge_index_from_okf`[T10.1]·okf_index·`ConceptEdge`·`PublishIndex`[§14]를 재사용·이 ADR 결정 전부 무변경)** · **ADR 0030(owner측 저작 토폴로지·크로스머신 fan-out)이 §14 `accept_published_index`에 reeval 트리거 훅 추가(2026-06-30 — supersede 아님·확장)**: 더 새 `generated_at` 수용 시 `StalenessPropagator`(ADR 0019) 옵셔널 발화 → 그 agent_id 과거 판례 reeval. §14 결정 C(staleness·더 새 것만·동률/역행 거부) 무변경·*수용 성공*에 훅만 건다. §14 결정 E "OKF 변경 재배포 트리거(`OkfChangeEvent` 연동·후속)"를 크로스머신 전파 사슬(owner commit→reindex→publish→accept→reeval·OKF git owner-로컬·중앙 목차만)로 닫음. · 사용자 grill 합의 7개 결정 명문화 · **현 라우팅(Classifier→intent 1라벨→`card.domains` 정확매칭→Routed/Contested/Unowned)을 *refine***(대체 아님 — `RoutingDecision` sealed sum·Authority 중앙·Precedent·Contested 폴백은 그대로, 후보 *제안* 메커니즘만 인덱스 기반으로 정밀화) · **ADR 0017 결정 3②("실시간 충돌 자동해소")의 실체** · **PRD §5 "LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위"를 현금화** · ADR 0006(중앙 MCP)·0010/0027(owner측 실행·중앙 토큰 0)·0013(OKF)·0011/0012(WS 전송)·0019(staleness 패턴)·0004(Authority 중앙)·0015(intent 단일 출처)와 정합 · CONTEXT(신규 KnowledgeIndex·Concept·KnowledgeIndexMatcher·published index·stage-1/stage-2 용어)·TRD §2·§4·PRD §5 갱신 대상
+상태: accepted (2026-06-27) · **§17-b stage-2 `LlmConfidenceAssessor` LLM 자기평가 실 어댑터 2호 shape 확정(2026-07-02 — 결정 G~M·§17 결정 A가 후속으로 갈랐던 (b) 확정·"이 지식으로 이 질문에 답할 수 있는가"를 LLM에 물어 confidence+근거·프롬프트 빌드/파싱 순수함수 분리[LlmAuthor 패턴·JSON 강제·`_strip_code_fence` 방어·파싱 실패=0.0 폴백]·core_question 전부+body 발췌[토큰 비용]·`AON_ASSESSOR` 시임[미설정=auto 현 배선 보존·embedding·llm·off]·후보당 1호출×잔여 contested만·순차 기본[병렬 후속]·timeout·실패=Contested·이 머신 `ClaudeCodeTransport` 실 eval[~50호출]·A/B 오라우팅 가드 2.4%·하이브리드[c] 후속·중앙 토큰 0·미아 없음·노출 불변식 §17 (a)와 동일)** · **§17 stage-2 `ConfidenceAssessor` 실 어댑터 shape 확정(2026-07-02 — 결정 A~F·`EmbeddingConfidenceAssessor`·body 임베딩 접지[목차 아닌 개념 body 전문 cosine·okf_scale 그레이 쌍 4쌍 실물 검증: 목차 어휘 미분리·body 어휘 분리]·기존 `Embedder` 포트 재사용·새 의존성 0·인프로세스 okf_root 디스크 직접 읽기[ClaudeCodeRuntime cwd 선례]·크로스머신 §15 FetchDocument 확장 후속·LLM 자기평가[b]·하이브리드[c] 후속·미아 없음 폴백은 §13 규칙 재확인)** · **§16 stage-1.5 margin clear-winner 룰 확정(2026-07-02 — 결정 A~F·`EmbeddingAnnMatcher` 실측 후 잔존 contested 45.8% 대응·stage-1 score 절대차 margin·assessor 호출 전 값싼 중앙 결정론 선행 게이트·δ 옵셔널 주입·δ=None이면 기존 동작 100% 보존·매처별 δ 분리·오라우팅 상한 가드[기준선 1.4%])** · **§13 T10.3 통합 shape 확정(2026-06-27 — 결정 A~E)** · **§14 T10.4 publish 경로 shape 확정(2026-06-28 — 결정 A~F·`PublishIndex` 프레임·워커-소유자 스코핑·`generated_at` staleness·와이어 포맷 변경=되돌리기 어려움)** · **§15 on-demand 문서 fetch shape 확정(2026-06-28 — 결정 A~F·`FetchDocument`/`DocumentContent` 프레임 2개·동기 대기 correlation·요청 owner 자기 케이스 스코핑·워커 자기 카드만 읽기·중앙 중계만 저장 0·ADR 0017 결정 4 옵션 B-1 실체·양 union 동시 진화=되돌리기 어려움)** · **ADR 0029(OKF 자동 저작)가 앞단으로 추가됨(2026-06-29 — 이 ADR이 *소비*하는 OKF/`KnowledgeIndex`를 *생성*하는 저작 파이프라인·`build_knowledge_index_from_okf`[T10.1]·okf_index·`ConceptEdge`·`PublishIndex`[§14]를 재사용·이 ADR 결정 전부 무변경)** · **ADR 0030(owner측 저작 토폴로지·크로스머신 fan-out)이 §14 `accept_published_index`에 reeval 트리거 훅 추가(2026-06-30 — supersede 아님·확장)**: 더 새 `generated_at` 수용 시 `StalenessPropagator`(ADR 0019) 옵셔널 발화 → 그 agent_id 과거 판례 reeval. §14 결정 C(staleness·더 새 것만·동률/역행 거부) 무변경·*수용 성공*에 훅만 건다. §14 결정 E "OKF 변경 재배포 트리거(`OkfChangeEvent` 연동·후속)"를 크로스머신 전파 사슬(owner commit→reindex→publish→accept→reeval·OKF git owner-로컬·중앙 목차만)로 닫음. · 사용자 grill 합의 7개 결정 명문화 · **현 라우팅(Classifier→intent 1라벨→`card.domains` 정확매칭→Routed/Contested/Unowned)을 *refine***(대체 아님 — `RoutingDecision` sealed sum·Authority 중앙·Precedent·Contested 폴백은 그대로, 후보 *제안* 메커니즘만 인덱스 기반으로 정밀화) · **ADR 0017 결정 3②("실시간 충돌 자동해소")의 실체** · **PRD §5 "LLM 분류기·임베딩 유사도 정교화 — 포트만 두고 후순위"를 현금화** · ADR 0006(중앙 MCP)·0010/0027(owner측 실행·중앙 토큰 0)·0013(OKF)·0011/0012(WS 전송)·0019(staleness 패턴)·0004(Authority 중앙)·0015(intent 단일 출처)와 정합 · CONTEXT(신규 KnowledgeIndex·Concept·KnowledgeIndexMatcher·published index·stage-1/stage-2 용어)·TRD §2·§4·PRD §5 갱신 대상
 
 ## 맥락 — 현 라우팅의 스케일 결함
 
@@ -725,7 +725,7 @@ class EmbeddingConfidenceAssessor:                 # ConfidenceAssessor Protocol
 ### 결정 E — 후속 상향 경로 (명시)
 
 - **크로스머신 WS 확장**(결정 B): §15 `FetchDocument`/`DocumentContent` 확장으로 owner 워커가 자기 body를 임베딩·confidence만 회신(중앙 디스크 접근 0). 물리 2대 실측은 게이트 밖.
-- **LLM 자기평가 상향**(결정 A·(c) 하이브리드): (a) body cosine이 못 푸는 잔여(hard 구어·다단계 추론)에 한해 owner OAuth LLM(`ClaudeApiRuntime` 인프라·ADR 0027) top-K 리랭크. `LlmConfidenceAssessor` 어댑터·골든셋 eval(ADR 0003)·게이트 밖.
+- **LLM 자기평가 상향**(결정 A·(b)): `LlmConfidenceAssessor` 어댑터 — **§17-b(결정 G~M)에서 shape 확정**(질문+개념을 LLM에 실어 "답가능성"을 confidence+근거로·프롬프트 빌드/파싱 순수함수·`AON_ASSESSOR` 시임·후보당 1호출·이 머신 `ClaudeCodeTransport` 실 eval). (c) 하이브리드(a body cosine 먼저 → 잔여만 b LLM top-K 리랭크·§7 정신)는 (b) 단독 A/B 이후 상향(§17-b 결정 M).
 - **상위 임베딩 모델**(S9 지적): e5-small보다 큰 모델로 cosine 분해능 상향(margin 압축 완화)도 병렬 지렛대 — 어댑터 교체(Embedder 주입)로 흡수·게이트 밖.
 
 ### 결정 F — 게이트 경계
@@ -742,6 +742,119 @@ class EmbeddingConfidenceAssessor:                 # ConfidenceAssessor Protocol
 ### 불변식 보존 자체점검 (결정 A~F)
 
 - **미아 없음**: stage-2 자동해소 실패(동점·격차 부족·전부 저신뢰·어댑터 실패) → Contested(→ConflictCase→1인칭 합의). stage-1 0 후보는 이 게이트 앞이라 무영향. 모든 경로가 Routed·Contested·Unowned 종착(§13 규칙 무변경·확인만).
+
+---
+
+## 17-b. stage-2 `LlmConfidenceAssessor` — LLM 자기평가 실 어댑터 2호 (domain-architect 확정 2026-07-02 — 결정 G~M)
+
+> **실측 판정(2026-07-02) — 기본 미채택**: 가드(오라우팅 2.4%) 안에서 기준선 미달(top-1 48.6% < 50.0%·margin 0.6 필요→결정력 상쇄), 가드 해제 시 top-1 62.5%·contested 15.3%로 압도하나 오라우팅 5.6%(사람-합의 라벨을 확신 라우팅). 지연 후보당 ~17s. `AON_ASSESSOR` auto 기본=임베딩 배선 보존·llm은 opt-in 존치. 다음 = 결정 M (c) 하이브리드 리랭크. 상세: docs/scale-eval-2026-07-02.md S12.
+
+> §17이 결정 A에서 (a) body 임베딩 접지를 v1으로 착지시키고 (b) LLM 자기평가를 "품질 상한↑·비결정·비쌈·게이트 밖·후속"으로 갈랐다. 이 절이 그 (b)를 확정한다. **구현 아님** — mcp-runtime-engineer(어댑터 조립·transport 배선·okf_root 접지·실 eval)·tdd-engineer(프롬프트 빌드·응답 파싱 순수함수·stub transport 주입 어댑터 동작·라우터 통합 결정론) 넘김용 *모양*. `confidence_assessor.py`(EmbeddingConfidenceAssessor 선례)·`okf_authoring.py`(`LlmAuthor`·`build_*_request`/`parse_*_response`·`_strip_code_fence`)·`provider_runtime.py`(`ProviderTransport`·`ProviderRequest`·`assemble_stream`)·`provider_transport_claude_code.py`(`ClaudeCodeTransport` — 이 머신 Claude 구독 자격)·`okf_index.py`(`parse_okf_document` body 추출)·`author_select.py`(select 시임 선례)·`two_stage_router.py`(`ConfidenceAssessor` Protocol·자동해소 규칙)를 읽고 확정.
+>
+> **동기(잔존 압박)**: S10 후 잔존 contested 34.7%·hard top-1 24.0%. 잔존 실패의 본질은 (a)조차 못 푸는 **같은 법 계열 조문끼리 body 어휘도 의미 공간이 붙어 임베딩으로 분리 불가**한 케이스다(S11 실물: 최저임금 질문에서 wage_ops 0.862 vs labor_std 0.866 — body cosine 격차 0.0043·δ 미달·스윕 무효). 임베딩은 표면·의미 근접도지 *"이 지식으로 이 질문에 답할 수 있는가"의 추론*이 아니다. LLM은 이 판단을 의미 이해로 가른다는 게 (b)의 가설(§17 결정 A "품질 상한은 (b)가 높다 — 구어·다단계 추론").
+
+### 결정 G — 평가 기반: LLM에게 "이 지식으로 이 질문에 답할 수 있는가"를 confidence + 근거로 물음
+
+(a)가 *질문↔body cosine*(표면 근접)이었다면, (b)는 **후보 카드의 OKF 개념을 컨텍스트로 실어 LLM에게 답가능성을 판정**시킨다. `assess(question, card)`가:
+
+1. 카드의 OKF 개념(core_question 목록 + body 발췌)과 질문을 프롬프트에 싣고,
+2. "이 지식만으로 이 질문에 답할 수 있는가"를 `{confidence: 0~1, grounding: str}` JSON으로 받는다.
+
+(a)와 같은 `GroundedConfidence` 값객체·같은 `ConfidenceAssessor` Protocol을 만족한다 — 라우터·자동해소 규칙 무변경(어댑터만 교체). (a)/(b)는 **접지 방식만 다른 형제 어댑터**다(cosine vs LLM 추론). `EmbeddingConfidenceAssessor`/`EmbeddingAnnMatcher`가 `LlmAuthor`와 같은 "포트 + 어댑터 계층"인 정신 N번째.
+
+### 결정 H — 어댑터 shape: `LlmConfidenceAssessor` (프롬프트 빌드·파싱은 순수함수 분리 — LlmAuthor 패턴)
+
+```
+def build_assess_request(                          # 순수·IO 0 (LlmAuthor build_*_request 정신)
+    question: str,
+    concepts: Sequence[AssessConcept],             # (core_question, body 발췌) — okf_root에서 추출
+    *,
+    model: str,
+) -> ProviderRequest: ...                           # system=답가능성 판정 지시·JSON 강제·코드펜스 금지
+
+def parse_assess_response(text: str) -> tuple[float, str]:   # 순수·IO 0
+    # _strip_code_fence(okf_authoring 재사용) → json.loads → (confidence, grounding)
+    # 파싱 실패(JSONDecodeError·필드 부재·범위 밖 confidence) → (0.0, "") 폴백(미아 없음 — 라우터로 예외 안 던짐)
+    ...
+
+class LlmConfidenceAssessor:                        # ConfidenceAssessor Protocol 구현 [게이트 밖]
+    def __init__(
+        self,
+        transport: ProviderTransport,              # StubProviderTransport(게이트)·ClaudeCodeTransport/AnthropicSdkTransport(실)
+        okf_root: Path,                            # 후보 카드 개념 추출(EmbeddingConfidenceAssessor와 같은 접지 경계)
+        *,
+        model: str,                                # LlmAuthor 정신 — 필수 키워드(공급자별 기본은 조립부)
+        max_body_chars: int = ...,                 # body 발췌 상한(토큰 비용 — 결정 I)
+        min_confidence: float = 0.0,               # 저신뢰 폴백 임계(EmbeddingConfidenceAssessor 대칭)
+    ) -> None: ...
+
+    def assess(self, question: str, card: AgentCard) -> GroundedConfidence:
+        # okf_root/{card.agent_id}/*.md → parse_okf_document(front, body) → AssessConcept(core_question, body[:max])
+        # build_assess_request → transport → assemble_stream → parse_assess_response
+        # 예외/타임아웃/파싱 실패 → confidence=0.0 흡수(어댑터 계약·EmbeddingConfidenceAssessor와 동일)
+        ...
+```
+
+- **순수함수 분리(핵심)**: 프롬프트 빌드(`build_assess_request`)·응답 파싱(`parse_assess_response`)은 transport·IO 없는 순수함수다(LlmAuthor의 `build_split_request`/`parse_split_response` 정신). 게이트 내에서 프롬프트 shape·파싱·폴백을 transport 없이 결정론 단언한다.
+- **JSON 강제·코드펜스 방어**: system 프롬프트가 "JSON만·코드펜스·산문 금지"(okf_authoring split/derive 프롬프트 정신)·`_strip_code_fence`(okf_authoring 재사용·중복 금지) → `json.loads`. 파싱 실패는 fail-loud가 아니라 **저신뢰 흡수**(0.0) — authoring은 실패를 던지지만(파이프라인 중단 허용) assessor는 못 던진다(미아 없음 — 라우팅 경로는 항상 종착해야 함).
+- **접지 경계 재사용**: okf_root 개념 추출은 `EmbeddingConfidenceAssessor._body_vectors`와 *같은 경로·같은 파서*(`okf_root/{agent_id}/*.md`·`parse_okf_document`)를 쓴다 — body 추출 IO 로직 중복 금지(공용 헬퍼로 추출하거나 동형 복제, red→green에서 더 작은 쪽). `registry` 주입 불요(assess가 card를 받음·§17 결정 C 동일).
+
+### 결정 I — body 전문 vs 발췌: **발췌(상한)** 기본 · core_question 목록은 전부 실음
+
+- **core_question은 전부, body는 발췌**: 개념 core_question 목록(한 줄들)은 토큰이 싸고 답가능성 신호가 강하므로 전부 싣는다. body는 개념당 `max_body_chars`(기본값 자리·실 스윕 몫)로 발췌한다 — LLM 컨텍스트·비용이 body 전문 × 개념 수로 폭발하기 때문(§7 "전 개념 LLM 먹이기 기각" 정신의 개념 내 판). stage-2는 이미 ≥2 contested 후보로 좁혀졌고 후보당 1호출이라, 개념 다수 × body 전문은 불필요한 토큰이다.
+- **`read_okf_bundle`의 100_000자 상한 선례**(provider_runtime): 답변 경로도 OKF 접지에 방어적 총량 상한을 둔다 — 같은 정신의 발췌. 발췌 vs 전문의 품질 차는 실 eval(결정 M)로 측정하되, v1 기본은 발췌(비용 하한)로 착지한다.
+
+### 결정 J — 캐시: (question × card) 결과 캐시 (어댑터 로컬·옵셔널)
+
+- **같은 (question, agent_id, generated_at/mtime) 재호출 방지**: 같은 세션·같은 질문이 같은 후보에 재평가되는 경우(재시도·병렬 경합) LLM 재호출은 순수 낭비다. 캐시 키 = `(question, card.agent_id, 파일 mtime 튜플)` — `EmbeddingConfidenceAssessor._cache`의 (agent_id, mtimes) 무효화 규약에 question 축을 더한 것. OKF 변경(mtime) 시 자연 무효화.
+- **단, 결정론 아님 주의**: LLM 응답은 비결정이라 캐시는 *같은 응답 재현*이 아니라 *호출 절감*이 목적이다(첫 응답을 고정). 캐시는 어댑터 인스턴스 로컬(중앙 store 미탑재·§17 결정 B 비소유). **v1은 캐시 옵셔널**(mcp-runtime-engineer 판단 — 데모는 세션당 질문 1회라 캐시 이득 작음·크로스머신 확장 시 우선순위↑). 게이트 내 단언은 stub transport 호출 횟수로 캐시 적중 검증.
+
+### 결정 K — 선택 시임: `AON_ASSESSOR` env (`select_assessor()` — author_select·select_matcher 정신)
+
+현 demo 조립(`demo.py:269` `isinstance(matcher, EmbeddingAnnMatcher)`)은 **매처 종류로 assessor를 암묵 선택**한다 — embedding 매처면 EmbeddingConfidenceAssessor, 아니면 None. (b) 추가로 이 암묵 결합을 **명시 시임으로 승격**한다:
+
+```
+def select_assessor(matcher, okf_root) -> ConfidenceAssessor | None:   # index_matcher.select_matcher·author_select 대칭
+    flag = (os.environ.get("AON_ASSESSOR") or "").strip().lower()
+    # 미설정/"auto" → 현 배선 보존(embedding 매처면 EmbeddingConfidenceAssessor·아니면 None) — 하위호환
+    # "embedding"       → EmbeddingConfidenceAssessor(matcher.embedder 공유·모델 1회 로드)
+    # "llm"             → LlmConfidenceAssessor(select_assess_transport(), okf_root, model=...)  [게이트 밖]
+    # "off"             → None (assessor 미장착·≥2는 stage-1.5/Contested만)
+    # 알 수 없는 값      → SystemExit (조용한 폴백 없음·author_select 정신)
+```
+
+- **미설정=`auto`가 현 동작 100% 보존(하위호환 규율)**: 기존 데모·기존 테스트·overlap 경로는 `AON_ASSESSOR` 미설정이라 현 `isinstance` 배선을 그대로 탄다(EmbeddingConfidenceAssessor 자동 장착·overlap이면 None). §16 δ=None 하위호환 규율과 같은 정신 — 명시 opt-in 없이 (b)가 켜지지 않는다.
+- **임베더 공유 경계와의 정합(핵심)**: `embedding` assessor는 **매처와 임베더를 공유**한다(`matcher.embedder` 접근자·모델 1회 로드·현 배선·S10). `llm` assessor는 임베더가 아니라 **transport**를 쓰므로 그 공유가 끊기고 *별개 배선*이 된다 — assessor만 교체되는 경계가 명확해진다(매처는 여전히 embedding으로 stage-1 랭킹·assessor만 LLM). `off`는 매처와 무관하게 assessor를 뗀다. 이 명시 시임이 "매처와 임베더 공유하던 기존 배선에서 assessor만 교체"를 깨끗이 표현한다.
+- **transport 선택은 `author_select` 재사용/대칭**: `llm` 분기의 transport는 `AON_ASSESSOR_PROVIDER`(또는 `author_select`의 `AON_AUTHOR`류)로 `ClaudeCodeTransport`(구독·이 머신 실증 선례)/`AnthropicSdkTransport`(API 키)를 고른다 — 새 transport 팩토리 만들지 말고 author_select의 선택 규약을 재사용하거나 얇게 대칭 복제(mcp-runtime-engineer 판단·중앙 토큰 0 규약은 owner측 transport라 §17 (a)와 동일).
+
+### 결정 L — 비용·지연 계약: 후보당 1호출 × 잔여 contested만 · 순차 기본 · timeout·실패=Contested
+
+- **호출 상한(구조적)**: stage-1.5(margin) 선행 게이트가 명백한 승자를 값싸게 걷어낸 *뒤*의 잔여 ≥2 contested 후보에만 assess가 돈다(§16 결정 D 계단·라우터 기존 사슬 무변경). LLM 호출 = *잔여 contested 후보 수*(2~3)로 묶인다 — 전 후보·전 질문 아님. §6/§7 "fan-out은 ≥2 모호 후보에게만·전 owner 아님"·"LLM은 top-K에만" 정신 그대로.
+- **지연 직결·timeout 명계약**: assess는 대화 경로(질문→응답) 지연에 직결된다(임베딩 ms 단위와 달리 LLM은 초 단위). transport에 **timeout**을 두고, 초과·실패·파싱 실패는 그 후보 confidence=0.0(저신뢰)로 흡수 → 전부 저신뢰면 격차 부족 → **Contested 폴백**(→ConflictCase→1인칭 합의·기존 종착·미아 없음). 어댑터가 라우터로 예외를 안 던진다(§17 결정 D·EmbeddingConfidenceAssessor 계약 동일).
+- **순차 기본·병렬은 후속**: 후보 2~3개를 **순차** assess가 v1(라우터 기존 루프 `[assessor.assess(...) for card in candidates]` 무변경). 후보 3개 × 초 단위면 지연이 곱해지나, v1은 단순·결정론 경계 유지를 우선한다. **병렬 호출(asyncio.gather류)은 후속** — 지연 곱 완화가 필요할 때 어댑터/라우터 루프를 병렬화(게이트 밖·mcp-runtime 판단). 순차→병렬은 어댑터 계약(assess 독립·부작용 0) 안에서 흡수 가능(라우터 루프만 교체).
+
+### 결정 M — 게이트 경계 · 실 eval 방법
+
+**게이트 내(결정론·`.venv` pytest):**
+- `build_assess_request`(프롬프트 shape·core_question 전부·body 발췌 상한)·`parse_assess_response`(정상 JSON·코드펜스 감싼 JSON·파싱 실패 0.0·범위 밖 confidence 클램프/0.0) — 순수함수·transport 0.
+- `LlmConfidenceAssessor.assess` with **StubProviderTransport**(고정 JSON 청크) → 자동해소·저신뢰 폴백·캐시 적중(stub 호출 횟수) 결정론 단언. body 추출 파서(okf_index 재사용) 단위 테스트.
+- 미아 없음 회귀: stub이 저신뢰/깨진 JSON 방출 → confidence 0.0 → Contested 폴백(§13 규칙 재확인·EmbeddingConfidenceAssessor 게이트 대칭).
+- `select_assessor` 시임: `auto`(현 배선 보존)·`embedding`·`off`·미지값(SystemExit) 분기(`llm`은 지연 import라 게이트에서 미접촉·author_select 게이트 정신).
+
+**게이트 밖(실 LLM·비결정·수동):**
+- 실 transport eval — 이 머신은 Claude 구독 자격이 있으므로 **`ClaudeCodeTransport`**(`claude -p` 위임·author_select 실증 선례)로 실측. 모델은 저작 파이프라인과 같은 기본(`_resolve_model`)류.
+- **eval 규모·시간**: contested ~25문항(S10 잔존 34.7% × 72 ≈ 25) × 후보 2 ≈ **~50호출**. `claude -p` 호출당 수 초라 순차면 수 분 소요(순차 v1 기준·병렬이면 단축).
+- **A/B**: `EmbeddingConfidenceAssessor`(§17 (a)·top-1 50.0%·contested 34.7%·오라우팅 1.4%) vs `LlmConfidenceAssessor`(b)를 **동일 골든셋 72문항·동일 stage-1(embedding τ=0.85)+stage-1.5(δ=0.03)** 위에서 대조. 지표: overall/hard/ambiguous top-1·contested↓·**오라우팅 상한 가드 2.4%**(§17 결정 F·기준선 1.4%+1%p — (b)가 contested를 더 줄여도 오라우팅 2.4% 넘기면 기각). 실 정책값(`clear_winner_margin`·`min_confidence`·`max_body_chars`)은 이 eval로 스윕 확정(§17 결정 F·§16 δ 스윕 정신).
+- (c) 하이브리드(a body cosine 먼저 → 잔여만 b LLM 리랭크)는 (b) 단독 A/B 이후 상향 경로(§17 결정 E·§7 top-K 리랭크 정신).
+
+### 불변식 보존 자체점검 (결정 G~M)
+
+- **미아 없음**: assess 실패·timeout·파싱 실패·전부 저신뢰 → confidence 0.0 → 격차 부족 → Contested(→ConflictCase→1인칭 합의). stage-1 0 후보는 이 게이트 앞이라 무영향. 모든 경로가 Routed·Contested·Unowned 종착(§13/§17 규칙 무변경·확인만).
+- **Authority 중앙**: 어댑터는 assess *호출 전* 이미 §13 권한 재검증(`domain_authorized`·card.domains) 통과 후보만 받는다 — LLM confidence는 권한 안 tie-break일 뿐 권한 생성 아님. LLM이 "이 카드가 답할 수 있다"고 높은 confidence를 줘도 권한 밖 카드는 애초에 assess 대상이 아니다(카드 자기보고가 권한을 못 넓힘·ADR 0004).
+- **중앙 토큰 0·비소유**: transport는 owner측(구독/API 키·owner 워커)·중앙 키 0(§17 (a)와 동일 규약·ADR 0010/0027). body·프롬프트·LLM 응답은 어댑터 로컬(인프로세스 okf_root·크로스머신 owner 워커)에만·중앙엔 `GroundedConfidence.confidence` 수치만.
+- **노출 불변식**: `confidence`·`grounding`(LLM 근거)·프롬프트·body는 조직 내부값 — 사용자向 `OrgReply`/`Answered` 미노출(§13/§17 자체점검 그대로).
+- **전이 ≠ 기록**: 어댑터는 `GroundedConfidence`(전이 입력) 생성만·기록은 audit. 캐시는 호출 절감이지 로그 아님.
+- **기존 `TwoStageRouter`·(a) 어댑터 무회귀**: (b)는 `assessor` 옵셔널 주입 자리의 *형제 어댑터*일 뿐 — 라우터·(a) `EmbeddingConfidenceAssessor` 무수정. `select_assessor` 미설정=`auto`가 현 배선 100% 보존(결정 K). `Router`(레거시)·stage-1.5(§16)·(a)(§17)와 직교.
 - **Authority 중앙**: 어댑터는 assess *호출 전* 이미 §13 권한 재검증(`domain_authorized`)을 통과한 후보만 받는다 — stage-2는 권한 안 tie-break일 뿐 권한 생성 아님. body 접지가 권한 밖 후보를 끌어올리는 경로 없음(assess 대상이 권한통과 후보로 이미 좁혀짐).
 - **중앙 토큰 0·비소유**: body·임베딩 벡터는 okf_root 디스크(인프로세스) 또는 owner 워커(크로스머신)에만. 중앙엔 `GroundedConfidence.confidence` 수치만. Embedder는 owner측 로컬 ONNX(외부 API·키 0·`EmbeddingAnnMatcher` 정신). ADR 0010/0027 "중앙 키 0" 보존·강화.
 - **노출 불변식**: `confidence`·`grounding`·body·cosine은 조직 내부값 — 사용자向 `OrgReply`/`Answered` 미노출(§13 결정 D 자체점검 그대로).

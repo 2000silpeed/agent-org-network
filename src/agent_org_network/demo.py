@@ -32,7 +32,6 @@ from agent_org_network.dispatch import (
     RuntimeDispatcher,
 )
 from agent_org_network.index_matcher import (
-    EmbeddingAnnMatcher,
     recommended_stage1_margin,
     recommended_stage2_margin,
     select_matcher,
@@ -260,24 +259,15 @@ def select_router(
         # AON_MATCHER 시임 — 미설정/overlap이면 ConceptOverlapMatcher(기본·무변경),
         # embedding/fastembed면 EmbeddingAnnMatcher(실 ONNX·게이트 밖). 기본 경로 100% 무변경.
         matcher = select_matcher()
-        # stage-2 assessor(ADR 0028 §17) — embedding 매처일 때만 같은 임베더를 *공유*해
-        # body 접지 자기평가를 장착(모델 1회 로드). overlap 기본 경로는 assessor=None 무변경.
-        # okf_root는 답변 런타임과 같은 DEMO_OKF_ROOT(인프로세스 디제너레이트 — ADR 0030 §3·
-        # ClaudeCodeRuntime cwd 접지 선례). 정책값은 실측 확정(§17·scale-eval S10).
-        assessor = None
-        stage2_margin: float | None = None
-        if isinstance(matcher, EmbeddingAnnMatcher):
-            from agent_org_network.confidence_assessor import (
-                DEFAULT_STAGE2_MIN_CONFIDENCE,
-                EmbeddingConfidenceAssessor,
-            )
+        # stage-2 assessor(ADR 0028 §17·§17-b) — `AON_ASSESSOR` 시임으로 고른다(결정 K).
+        # 미설정/auto가 현 배선 100% 보존(embedding 매처면 같은 임베더 공유 assessor·아니면
+        # None). embedding/llm/off 명시 선택 가능. okf_root는 답변 런타임과 같은
+        # DEMO_OKF_ROOT(인프로세스 디제너레이트 — ADR 0030 §3·ClaudeCodeRuntime cwd 접지
+        # 선례). 정책값은 실측 확정(§17·scale-eval S10).
+        from agent_org_network.confidence_assessor import select_assessor
 
-            assessor = EmbeddingConfidenceAssessor(
-                matcher.embedder,
-                DEMO_OKF_ROOT,
-                min_confidence=DEFAULT_STAGE2_MIN_CONFIDENCE,
-            )
-            stage2_margin = recommended_stage2_margin()
+        assessor = select_assessor(matcher, DEMO_OKF_ROOT)
+        stage2_margin = recommended_stage2_margin() if assessor is not None else None
         return TwoStageRouter(
             registry,
             matcher,

@@ -601,3 +601,391 @@ class TestExceptionFallback:
         assessor = EmbeddingConfidenceAssessor(_RaisingEmbedder(), tmp_path)
         gc = assessor.assess("환불 질문", card)
         assert gc.confidence == 0.0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 7. LlmConfidenceAssessor — 프롬프트 빌드(순수)
+# ════════════════════════════════════════════════════════════════════════════
+
+from agent_org_network.confidence_assessor import (  # noqa: E402
+    AssessConcept,
+    LlmConfidenceAssessor,
+    build_assess_request,
+    parse_assess_response,
+    select_assessor,
+)
+
+
+class TestBuildAssessRequest:
+    def test_core_question_전부_실린다(self) -> None:
+        concepts = [
+            AssessConcept(core_question="Q1?", body="body1"),
+            AssessConcept(core_question="Q2?", body="body2"),
+            AssessConcept(core_question="Q3?", body="body3"),
+        ]
+        req = build_assess_request("질문입니다", concepts, model="m")
+        user = req.messages[0]["content"]
+        assert "Q1?" in user and "Q2?" in user and "Q3?" in user
+        assert "질문입니다" in user
+        assert req.model == "m"
+        # system이 JSON 강제·코드펜스 금지.
+        assert "JSON" in req.system
+        assert "코드펜스" in req.system
+
+    def test_body_발췌_상한_잘림(self) -> None:
+        long_body = "가" * 5000
+        concepts = [AssessConcept(core_question="Q?", body=long_body)]
+        req = build_assess_request("질문", concepts, model="m", max_body_chars=100)
+        user = req.messages[0]["content"]
+        # body는 100자로 잘려 실린다 — core_question은 전부.
+        assert user.count("가") == 100
+        assert "Q?" in user
+
+    def test_개념_0이면_안내_문구(self) -> None:
+        req = build_assess_request("질문", [], model="m")
+        assert "질문" in req.messages[0]["content"]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 8. parse_assess_response — 4케이스(정상·코드펜스·깨진 JSON·범위 밖)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestParseAssessResponse:
+    def test_정상_JSON(self) -> None:
+        conf, grounding = parse_assess_response(
+            '{"confidence": 0.87, "grounding": "제17조 일치"}'
+        )
+        assert conf == pytest.approx(0.87)
+        assert grounding == "제17조 일치"
+
+    def test_코드펜스_감싼_JSON(self) -> None:
+        conf, grounding = parse_assess_response(
+            '```json\n{"confidence": 0.5, "grounding": "메모"}\n```'
+        )
+        assert conf == pytest.approx(0.5)
+        assert grounding == "메모"
+
+    def test_깨진_JSON_0으로_흡수(self) -> None:
+        conf, grounding = parse_assess_response("이건 JSON이 아니라 산문입니다")
+        assert conf == 0.0
+        assert grounding == ""
+
+    def test_범위_밖_confidence_클램프(self) -> None:
+        assert parse_assess_response('{"confidence": 1.5}')[0] == 1.0
+        assert parse_assess_response('{"confidence": -0.3}')[0] == 0.0
+
+    def test_confidence_필드_부재_0(self) -> None:
+        assert parse_assess_response('{"grounding": "메모"}')[0] == 0.0
+
+    def test_confidence_숫자_아님_0(self) -> None:
+        assert parse_assess_response('{"confidence": "높음"}')[0] == 0.0
+
+    def test_객체_아닌_배열_0(self) -> None:
+        assert parse_assess_response("[1, 2, 3]") == (0.0, "")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 9. LlmConfidenceAssessor.assess — StubProviderTransport 주입
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _write_okf_with_core_question(
+    okf_root: Path, agent_id: str, filename: str, *, core_question: str, body: str
+) -> None:
+    agent_dir = okf_root / agent_id
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / filename).write_text(
+        f"""---
+type: concept
+title: {agent_id} 개념
+core_question: {core_question}
+---
+
+{body}
+""",
+        encoding="utf-8",
+    )
+
+
+class _CountingTransport:
+    """ProviderTransport 테스트 더블 — 고정 JSON 청크 반환 + 호출 계측."""
+
+    def __init__(self, chunks: tuple[str, ...]) -> None:
+        self._chunks = chunks
+        self.calls = 0
+
+    def __call__(self, request: object) -> tuple[str, ...]:
+        self.calls += 1
+        return self._chunks
+
+
+class TestLlmAssessWithStubTransport:
+    def test_stub_JSON_confidence_반환(self, tmp_path: Path) -> None:
+        card = _card("cs_ops", domains=["환불"])
+        _write_okf_with_core_question(
+            tmp_path, "cs_ops", "a.md", core_question="환불 되나요?", body="본문"
+        )
+        transport = _CountingTransport(('{"confidence": 0.9, "grounding": "일치"}',))
+        assessor = LlmConfidenceAssessor(transport, tmp_path)  # type: ignore[arg-type]
+        gc = assessor.assess("환불 문의", card)
+        assert isinstance(gc, GroundedConfidence)
+        assert gc.confidence == pytest.approx(0.9)
+        assert gc.grounding == "일치"
+        assert transport.calls == 1
+
+    def test_개념_0_transport_미호출_저신뢰(self, tmp_path: Path) -> None:
+        card = _card("cs_ops", domains=["환불"])
+        transport = _CountingTransport(('{"confidence": 0.9}',))
+        assessor = LlmConfidenceAssessor(transport, tmp_path)  # type: ignore[arg-type]
+        gc = assessor.assess("질문", card)
+        assert gc.confidence == 0.0
+        assert transport.calls == 0
+
+    def test_깨진_응답_저신뢰_흡수(self, tmp_path: Path) -> None:
+        card = _card("cs_ops", domains=["환불"])
+        _write_okf_with_core_question(
+            tmp_path, "cs_ops", "a.md", core_question="Q?", body="본문"
+        )
+        transport = _CountingTransport(("산문 응답",))
+        assessor = LlmConfidenceAssessor(transport, tmp_path)  # type: ignore[arg-type]
+        gc = assessor.assess("질문", card)
+        assert gc.confidence == 0.0
+
+    def test_min_confidence_미만_0으로_낙하(self, tmp_path: Path) -> None:
+        card = _card("cs_ops", domains=["환불"])
+        _write_okf_with_core_question(
+            tmp_path, "cs_ops", "a.md", core_question="Q?", body="본문"
+        )
+        transport = _CountingTransport(('{"confidence": 0.4}',))
+        assessor = LlmConfidenceAssessor(
+            transport,  # type: ignore[arg-type]
+            tmp_path,
+            min_confidence=0.5,
+        )
+        gc = assessor.assess("질문", card)
+        assert gc.confidence == 0.0
+
+    def test_transport_예외_저신뢰_흡수(self, tmp_path: Path) -> None:
+        card = _card("cs_ops", domains=["환불"])
+        _write_okf_with_core_question(
+            tmp_path, "cs_ops", "a.md", core_question="Q?", body="본문"
+        )
+
+        def _raising(request: object) -> tuple[str, ...]:
+            raise RuntimeError("transport 실패")
+
+        assessor = LlmConfidenceAssessor(_raising, tmp_path)  # type: ignore[arg-type]
+        gc = assessor.assess("질문", card)
+        assert gc.confidence == 0.0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 10. LlmConfidenceAssessor 캐시 — 같은 (question, card) 재호출 절감
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestLlmAssessCache:
+    def test_같은_질문_같은_카드_캐시_적중_호출_1회(self, tmp_path: Path) -> None:
+        card = _card("cs_ops", domains=["환불"])
+        _write_okf_with_core_question(
+            tmp_path, "cs_ops", "a.md", core_question="Q?", body="본문"
+        )
+        transport = _CountingTransport(('{"confidence": 0.8}',))
+        assessor = LlmConfidenceAssessor(transport, tmp_path)  # type: ignore[arg-type]
+        assessor.assess("같은 질문", card)
+        assessor.assess("같은 질문", card)
+        assert transport.calls == 1
+
+    def test_다른_질문_캐시_미스_재호출(self, tmp_path: Path) -> None:
+        card = _card("cs_ops", domains=["환불"])
+        _write_okf_with_core_question(
+            tmp_path, "cs_ops", "a.md", core_question="Q?", body="본문"
+        )
+        transport = _CountingTransport(('{"confidence": 0.8}',))
+        assessor = LlmConfidenceAssessor(transport, tmp_path)  # type: ignore[arg-type]
+        assessor.assess("질문 1", card)
+        assessor.assess("질문 2", card)
+        assert transport.calls == 2
+
+    def test_캐시_비활성화시_매번_호출(self, tmp_path: Path) -> None:
+        card = _card("cs_ops", domains=["환불"])
+        _write_okf_with_core_question(
+            tmp_path, "cs_ops", "a.md", core_question="Q?", body="본문"
+        )
+        transport = _CountingTransport(('{"confidence": 0.8}',))
+        assessor = LlmConfidenceAssessor(
+            transport,  # type: ignore[arg-type]
+            tmp_path,
+            cache=False,
+        )
+        assessor.assess("같은 질문", card)
+        assessor.assess("같은 질문", card)
+        assert transport.calls == 2
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 11. LlmConfidenceAssessor — TwoStageRouter 통합(자동해소/Contested)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestLlmRouterIntegration:
+    def _setup(
+        self, tmp_path: Path
+    ) -> tuple[Registry, InMemoryPublishedIndexStore, FakeMatcher]:
+        card_a = _card("cs_ops", domains=["환불"])
+        card_b = _card("finance_ops", domains=["환불"])
+        _write_okf_with_core_question(
+            tmp_path, "cs_ops", "a.md", core_question="환불?", body="전자상거래법"
+        )
+        _write_okf_with_core_question(
+            tmp_path, "finance_ops", "b.md", core_question="환불?", body="약관규제법"
+        )
+        reg = _registry(card_a, card_b)
+        from agent_org_network.knowledge_index import Concept, KnowledgeIndex
+
+        idx_a = KnowledgeIndex(
+            agent_id="cs_ops",
+            version="v1",
+            generated_at=_NOW,
+            concepts=(Concept(id="a", label="환불 A", core_question="환불?", domain="환불"),),
+        )
+        idx_b = KnowledgeIndex(
+            agent_id="finance_ops",
+            version="v1",
+            generated_at=_NOW,
+            concepts=(Concept(id="b", label="환불 B", core_question="환불?", domain="환불"),),
+        )
+        store = InMemoryPublishedIndexStore([idx_a, idx_b])
+        matcher = FakeMatcher(
+            (_match("cs_ops", 1.0, "a"), _match("finance_ops", 1.0, "b"))
+        )
+        return reg, store, matcher
+
+    def test_자동해소_격차_충분_Routed(self, tmp_path: Path) -> None:
+        reg, store, matcher = self._setup(tmp_path)
+
+        class _PerCardTransport:
+            def __call__(self, request: object) -> tuple[str, ...]:
+                content = request.messages[0]["content"]  # type: ignore[attr-defined]
+                if "전자상거래법" in content:
+                    return ('{"confidence": 0.95}',)
+                return ('{"confidence": 0.2}',)
+
+        assessor = LlmConfidenceAssessor(_PerCardTransport(), tmp_path)  # type: ignore[arg-type]
+        router = TwoStageRouter(
+            reg, matcher, store, "root", assessor=assessor, clear_winner_margin=0.5
+        )
+        result = router.route("청약철회")
+        assert isinstance(result, Routed)
+        assert result.primary.agent_id == "cs_ops"
+
+    def test_저신뢰_전부_깨진_JSON_Contested(self, tmp_path: Path) -> None:
+        reg, store, matcher = self._setup(tmp_path)
+        transport = _CountingTransport(("산문",))  # 둘 다 0.0
+        assessor = LlmConfidenceAssessor(transport, tmp_path)  # type: ignore[arg-type]
+        router = TwoStageRouter(
+            reg, matcher, store, "root", assessor=assessor, clear_winner_margin=0.1
+        )
+        result = router.route("환불 질문")
+        assert isinstance(result, Contested)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 12. select_assessor 시임 — 5분기(auto/embedding/llm/off/미지)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestSelectAssessor:
+    def test_auto_embedding_매처면_EmbeddingConfidenceAssessor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("AON_ASSESSOR", raising=False)
+        from agent_org_network.index_matcher import EmbeddingAnnMatcher
+
+        # EmbeddingAnnMatcher 인스턴스 필요(isinstance) — 실 임베더 없이 더블 embedder 주입.
+        matcher = EmbeddingAnnMatcher(_CountingEmbedder({}))  # type: ignore[arg-type]
+        assessor = select_assessor(matcher, tmp_path)
+        assert isinstance(assessor, EmbeddingConfidenceAssessor)
+
+    def test_auto_overlap_매처면_None(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("AON_ASSESSOR", raising=False)
+        from agent_org_network.index_matcher import ConceptOverlapMatcher
+
+        assert select_assessor(ConceptOverlapMatcher(), tmp_path) is None
+
+    def test_embedding_명시_임베더_공유(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AON_ASSESSOR", "embedding")
+        from agent_org_network.index_matcher import EmbeddingAnnMatcher
+
+        matcher = EmbeddingAnnMatcher(_CountingEmbedder({}))  # type: ignore[arg-type]
+        assessor = select_assessor(matcher, tmp_path)
+        assert isinstance(assessor, EmbeddingConfidenceAssessor)
+
+    def test_embedding_명시_overlap_매처면_SystemExit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AON_ASSESSOR", "embedding")
+        from agent_org_network.index_matcher import ConceptOverlapMatcher
+
+        with pytest.raises(SystemExit):
+            select_assessor(ConceptOverlapMatcher(), tmp_path)
+
+    def test_llm_명시_LlmConfidenceAssessor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AON_ASSESSOR", "llm")
+        # claude-code transport는 지연 import·runner 미호출(생성만) — subprocess 무접촉.
+        monkeypatch.setenv("AON_ASSESSOR_PROVIDER", "claude-code")
+        from agent_org_network.index_matcher import ConceptOverlapMatcher
+
+        assessor = select_assessor(ConceptOverlapMatcher(), tmp_path)
+        assert isinstance(assessor, LlmConfidenceAssessor)
+
+    def test_off_명시_None(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AON_ASSESSOR", "off")
+        from agent_org_network.index_matcher import EmbeddingAnnMatcher
+
+        matcher = EmbeddingAnnMatcher(_CountingEmbedder({}))  # type: ignore[arg-type]
+        assert select_assessor(matcher, tmp_path) is None
+
+    def test_미지값_SystemExit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AON_ASSESSOR", "bogus")
+        from agent_org_network.index_matcher import ConceptOverlapMatcher
+
+        with pytest.raises(SystemExit):
+            select_assessor(ConceptOverlapMatcher(), tmp_path)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 13. demo select_router 기본 경로 무회귀 — AON_ASSESSOR 미설정 시 현 배선 보존
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestDemoDefaultPathNoRegression:
+    def test_overlap_기본_assessor_None(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AON_MATCHER·AON_ASSESSOR 미설정 → index 라우터가 overlap 매처·assessor None."""
+        monkeypatch.delenv("AON_MATCHER", raising=False)
+        monkeypatch.delenv("AON_ASSESSOR", raising=False)
+        from agent_org_network.classifier import FakeClassifier
+        from agent_org_network.conflict import InMemoryPrecedentStore
+        from agent_org_network.demo import select_router
+        from agent_org_network.two_stage_router import TwoStageRouter
+
+        reg = _registry(_card("cs_ops", domains=["환불"]))
+        router = select_router(
+            "index", reg, FakeClassifier("환불"), InMemoryPrecedentStore()
+        )
+        assert isinstance(router, TwoStageRouter)
+        # 기본 overlap 경로는 assessor 미장착(현 배선 보존).
+        assert router._assessor is None  # type: ignore[attr-defined]

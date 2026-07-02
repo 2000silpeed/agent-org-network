@@ -38,6 +38,8 @@ def select_embedder() -> "Embedder | None":
       - 미설정/`demo`/`off` → `None`(**운영 기본 = 비활성**). 호출 측(dedup 라우트)이 `None`을
         보면 임베딩을 건너뛰고 빈 후보를 낸다(extra 미설치 owner 무영향·미아 없음 보존).
       - `fastembed` → `FastEmbedEmbedder()`(실 ONNX·게이트 밖·dedup extra 필요).
+        `AON_EMBED_MODEL`이 설정돼 있으면 그 모델명으로 `FastEmbedEmbedder(model_name=...)`,
+        미설정이면 기본 모델(`DEFAULT_EMBED_MODEL`) 100% 무변경.
       - 알 수 없는 값 → 명시 실패(SystemExit — 조용히 비활성으로 안 떨어진다).
 
     실 어댑터 import는 `fastembed` 분기에서만 — demo/비활성 기본 경로는 fastembed를 안 건드린다.
@@ -47,11 +49,22 @@ def select_embedder() -> "Embedder | None":
         return None
     if flag in _FASTEMBED_ALIASES:
         # 실 어댑터는 이 분기에서만 지연 import(demo/비활성 기본은 무접촉).
-        from agent_org_network.provider_embed_fastembed import FastEmbedEmbedder
+        from agent_org_network.provider_embed_fastembed import (
+            DEFAULT_EMBED_MODEL,
+            FastEmbedEmbedder,
+        )
 
+        # AON_EMBED_MODEL 미설정/빈값 → 기본 모델 무변경. 설정 시 그 모델명으로 파라미터화.
+        model_name = (os.environ.get("AON_EMBED_MODEL") or "").strip()
+        if model_name:
+            print(
+                f"[embedder_select] AON_EMBEDDER={flag} AON_EMBED_MODEL={model_name} → "
+                f"FastEmbedEmbedder({model_name}) — owner측 로컬 ONNX·중앙 토큰 0(게이트 밖)."
+            )
+            return FastEmbedEmbedder(model_name=model_name)
         print(
-            f"[embedder_select] AON_EMBEDDER={flag} → FastEmbedEmbedder(intfloat/"
-            "multilingual-e5-small) — owner측 로컬 ONNX 임베딩·중앙 토큰 0(게이트 밖)."
+            f"[embedder_select] AON_EMBEDDER={flag} → FastEmbedEmbedder({DEFAULT_EMBED_MODEL})"
+            " — owner측 로컬 ONNX 임베딩·중앙 토큰 0(게이트 밖)."
         )
         return FastEmbedEmbedder()
     raise SystemExit(

@@ -661,6 +661,9 @@ class TestSelectMatcher:
         import agent_org_network.provider_embed_fastembed as pef
 
         class _StubFastEmbed:
+            def __init__(self, model_name: str = "") -> None:  # select_matcher가 모델명 전달
+                self.model_name = model_name
+
             def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
                 return tuple((1.0, 0.0) for _ in texts)
 
@@ -673,6 +676,9 @@ class TestSelectMatcher:
         import agent_org_network.provider_embed_fastembed as pef
 
         class _StubFastEmbed:
+            def __init__(self, model_name: str = "") -> None:  # select_matcher가 모델명 전달
+                self.model_name = model_name
+
             def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
                 return tuple((1.0, 0.0) for _ in texts)
 

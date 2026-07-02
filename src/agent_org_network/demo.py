@@ -34,6 +34,7 @@ from agent_org_network.dispatch import (
 from agent_org_network.index_matcher import (
     EmbeddingAnnMatcher,
     recommended_stage1_margin,
+    recommended_stage2_margin,
     select_matcher,
 )
 from agent_org_network.okf_index import build_knowledge_index_from_okf
@@ -267,7 +268,6 @@ def select_router(
         stage2_margin: float | None = None
         if isinstance(matcher, EmbeddingAnnMatcher):
             from agent_org_network.confidence_assessor import (
-                DEFAULT_STAGE2_CLEAR_WINNER_MARGIN,
                 DEFAULT_STAGE2_MIN_CONFIDENCE,
                 EmbeddingConfidenceAssessor,
             )
@@ -277,7 +277,7 @@ def select_router(
                 DEMO_OKF_ROOT,
                 min_confidence=DEFAULT_STAGE2_MIN_CONFIDENCE,
             )
-            stage2_margin = DEFAULT_STAGE2_CLEAR_WINNER_MARGIN
+            stage2_margin = recommended_stage2_margin()
         return TwoStageRouter(
             registry,
             matcher,

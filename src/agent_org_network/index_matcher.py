@@ -369,23 +369,55 @@ _OVERLAP_ALIASES = frozenset({"", "overlap"})
 _EMBEDDING_ALIASES = frozenset({"embedding", "fastembed"})
 
 
-# stage-1.5 clear-winner margin의 매처별 권장 δ(ADR 0028 §16·docs/scale-eval-2026-07-02.md S9).
-# 실측 근거: embedding은 δ=0.03이 오라우팅 무악화(1.4% 유지)로 contested 45.8%→41.7%·
-# easy top-1 62.1%→72.4%. overlap은 정수 이산 score라 가드(오라우팅 +1%p 이내) 통과 δ가
-# 없어 비채택(None=off). 정책값은 router 주입이 권위 — 이 함수는 조립부가 소비하는 단일 원천.
-DEFAULT_STAGE1_MARGIN_EMBEDDING = 0.03
+# ── 임베딩 모델별 라우팅 정책값(단일 원천) ─────────────────────────────────────
+# 정책값(τ·stage-1.5 δ·stage-2 margin)은 임베딩 모델의 cosine 분포에 묶인다 — 모델을
+# 바꾸면 셋 다 다시 스윕해야 한다(docs/scale-eval-2026-07-02.md S9~S11 실측·ADR 0028 §16·§17).
+#   e5-small(기본): τ=0.85·δ=0.03·m2=0.02 — S8/S9/S10 확정(top-1 50.0%·오라우팅 1.4%).
+#   e5-large(opt-in): τ=0.83·δ=0.02·m2=0.03 — S11 확정(top-1 54.2%·미아 16.7%·오라우팅 1.4%
+#     — +4.2%p·모델 2.24GB/dim 1024 비용, 품질 우선 배포용 opt-in·기본 미변경).
+# 미지 모델(스윕 전): e5-small 값으로 폴백하되 스윕 전 수치라는 보장 없음(주석 계약).
+_EMBED_POLICY_BY_MODEL: dict[str, tuple[float, float, float]] = {
+    # model_name: (tau, stage1_margin, stage2_margin)
+    "intfloat/multilingual-e5-small": (0.85, 0.03, 0.02),
+    "intfloat/multilingual-e5-large": (0.83, 0.02, 0.03),
+}
+_DEFAULT_EMBED_MODEL_NAME = "intfloat/multilingual-e5-small"
+DEFAULT_STAGE1_MARGIN_EMBEDDING = 0.03  # e5-small 확정값(하위호환 상수 — 정책 맵이 권위)
+
+
+def _resolve_embed_model_name() -> str:
+    """`AON_EMBED_MODEL`(embedder_select와 같은 env)로 현 임베딩 모델명을 해석한다."""
+    return (os.environ.get("AON_EMBED_MODEL") or "").strip() or _DEFAULT_EMBED_MODEL_NAME
+
+
+def _embed_policy() -> tuple[float, float, float]:
+    """현 모델의 (tau, stage1_margin, stage2_margin) — 미지 모델은 e5-small 폴백."""
+    return _EMBED_POLICY_BY_MODEL.get(
+        _resolve_embed_model_name(),
+        _EMBED_POLICY_BY_MODEL[_DEFAULT_EMBED_MODEL_NAME],
+    )
 
 
 def recommended_stage1_margin() -> float | None:
-    """현 `AON_MATCHER` 선택에 대응하는 stage-1.5 권장 δ를 돌려준다(조립부 소비).
+    """현 `AON_MATCHER`(+`AON_EMBED_MODEL`)에 대응하는 stage-1.5 권장 δ(조립부 소비).
 
     미설정/`overlap` → None(off — 실측상 유효 δ 없음·ADR 0028 §16),
-    `embedding`/`fastembed` → DEFAULT_STAGE1_MARGIN_EMBEDDING.
-    `select_matcher`와 같은 env를 읽어 매처↔δ 짝이 어긋나지 않게 한다.
+    `embedding`/`fastembed` → 모델별 정책 맵의 δ(매처·모델과 같은 env를 읽어 짝 불일치 방지).
     """
     flag = (os.environ.get("AON_MATCHER") or "").strip().lower()
     if flag in ("embedding", "fastembed"):
-        return DEFAULT_STAGE1_MARGIN_EMBEDDING
+        return _embed_policy()[1]
+    return None
+
+
+def recommended_stage2_margin() -> float | None:
+    """현 매처 선택에 대응하는 stage-2 clear_winner_margin 권장값(조립부 소비).
+
+    overlap이면 None(assessor 자체가 미장착 — demo 조립 규약), embedding이면 모델별 정책 맵.
+    """
+    flag = (os.environ.get("AON_MATCHER") or "").strip().lower()
+    if flag in ("embedding", "fastembed"):
+        return _embed_policy()[2]
     return None
 
 
@@ -407,11 +439,13 @@ def select_matcher() -> KnowledgeIndexMatcher:
         # 실 어댑터는 이 분기에서만 지연 import(기본 overlap 경로는 fastembed 무접촉).
         from agent_org_network.provider_embed_fastembed import FastEmbedEmbedder
 
+        model_name = _resolve_embed_model_name()
+        tau, _, _ = _embed_policy()
         print(
-            f"[select_matcher] AON_MATCHER={flag} → EmbeddingAnnMatcher(FastEmbedEmbedder) "
-            "— owner측 로컬 ONNX 임베딩·중앙 토큰 0(게이트 밖)."
+            f"[select_matcher] AON_MATCHER={flag} → EmbeddingAnnMatcher(FastEmbedEmbedder"
+            f"[{model_name}], tau={tau}) — owner측 로컬 ONNX 임베딩·중앙 토큰 0(게이트 밖)."
         )
-        return EmbeddingAnnMatcher(FastEmbedEmbedder())
+        return EmbeddingAnnMatcher(FastEmbedEmbedder(model_name=model_name), tau=tau)
     raise SystemExit(
         f"알 수 없는 AON_MATCHER={flag!r} — 지원: overlap(기본), embedding/fastembed"
     )

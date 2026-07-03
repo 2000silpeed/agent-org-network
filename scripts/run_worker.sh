@@ -39,5 +39,12 @@ PORT="${3:-8000}"
 CENTRAL_HOST="${4:-127.0.0.1}"
 URL="ws://${CENTRAL_HOST}:${PORT}/worker"
 
+# admission 토큰(T9.5·ADR 0026): 중앙이 AON_DB로 실 토큰 검증을 켰다면 필수.
+#   TOKEN=<콘솔에서 발급받은 평문 토큰> scripts/run_worker.sh cs_lead primary 8000 <중앙IP>
+TOKEN_ARGS=()
+if [ -n "${TOKEN:-}" ]; then
+  TOKEN_ARGS=(--token "${TOKEN}")
+fi
+
 echo "[worker] owner=${OWNER} role=${ROLE}  ->  ${URL}"
-exec uv run python -m agent_org_network.worker --owner "${OWNER}" --role "${ROLE}" --url "${URL}"
+exec uv run python -u -m agent_org_network.worker --owner "${OWNER}" --role "${ROLE}" --url "${URL}" "${TOKEN_ARGS[@]}"

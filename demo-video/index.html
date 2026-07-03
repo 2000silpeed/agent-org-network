@@ -33,14 +33,31 @@
         height: 1080px;
         position: relative;
       }
+      /* 실화면은 프레임에 담아 위로 — 자막 존과 분리(화면 가림 0) */
       video,
       img.freeze {
         position: absolute;
-        inset: 0;
-        width: 1920px;
-        height: 1080px;
+        top: 64px;
+        left: 196px;
+        width: 1528px;
+        height: 860px;
         object-fit: cover;
         background: #0a0e16;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        box-shadow:
+          0 30px 90px rgba(0, 0, 0, 0.55),
+          0 0 0 1px rgba(77, 159, 255, 0.07);
+      }
+      /* 비디오 씬 캔버스 질감(카드 씬과 동일 결) */
+      #master-root::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image: linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+        background-size: 88px 88px;
+        pointer-events: none;
       }
       .card-scene {
         position: absolute;
@@ -174,15 +191,22 @@
       }
       .cap {
         position: absolute;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        padding: 70px 170px 30px;
-        font-size: 27px;
-        line-height: 1.5;
-        text-align: center;
-        color: #ffffff;
-        background: linear-gradient(rgba(10, 14, 22, 0), rgba(10, 14, 22, 0.62) 40%, rgba(10, 14, 22, 0.94));
+        left: 196px;
+        width: 1528px;
+        bottom: 34px;
+        box-sizing: border-box;
+        padding: 24px 34px;
+        font-size: 29px;
+        line-height: 1.55;
+        text-align: left;
+        color: #f2f6fa;
+        background: #11161f;
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--blue);
+        border-radius: 6px;
+        word-break: keep-all;
+        overflow-wrap: break-word;
+        text-wrap: balance;
         opacity: 0;
         z-index: 900;
         pointer-events: none;
@@ -193,16 +217,17 @@
       }
       .badge {
         position: absolute;
-        top: 34px;
-        left: 40px;
+        top: 16px;
+        left: 196px;
         z-index: 910;
         display: flex;
         align-items: center;
         gap: 12px;
-        background: rgba(10, 14, 22, 0.82);
+        background: #11161f;
         border: 1px solid var(--line);
-        padding: 12px 20px;
-        font-size: 21px;
+        border-radius: 6px;
+        padding: 8px 18px;
+        font-size: 20px;
         color: var(--text);
         opacity: 0;
       }

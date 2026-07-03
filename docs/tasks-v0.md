@@ -588,7 +588,7 @@ PRD §4 페르소나 면(Ask·Author·Inbox·Console)을 **별 프론트엔드 `
 - [x] **처분 행위 audit 기록(설계 헛점 3)**: "기록은 호출자 책임" 설계의 미구현 절반을 완결 — `audit.action_record`(순수)·`AuditLog.record_action`(두 구현체)·`DemoBundle.audit`(쓰기 손잡이) 신설, `POST /backup-reviews/{item_id}`·`POST /reeval/{item_id}/review`가 service 성공 후 행위 레코드(`backup_review.{type}`·`reeval.{kind}`·subject_id·by) append. 4xx는 기록 없음(행위 미발생). 기존 소비자(`summarize_audit_record`·`dedupe`·`audit_index` 안정성) 무회귀 단언·서비스 계층은 여전히 audit 무접촉(기존 계약 보존). 라우트 테스트 5 + 단위 7.
 - [x] **SSOT 정합**: PRD rev6·TRD rev7 — 머릿말 근거 ADR 목록 0001~0017 → **0001~0032** 최신화(본문은 이미 0027 재정의 서술·머릿말만 낡았던 것). TRD에 위 3건(Registry/Session 동시성·재시도 정책·행위 기록) 반영.
 - **게이트(직접 재확인)**: `uv run pytest` **1921 passed** · `uv run pyright`(인자 없이) **0 errors** · `uv run ruff check .` clean.
-- **잔여(이 라운드 범위 밖·기존 태스크로 추적)**: ~~T9.8 SQLite 영속화·T9.5 워커 토큰·T9.2 콘솔·T9.3 HITL~~ → **같은 날 후속 라운드로 게이트 내 완결(2026-07-02·아래 절)**. 남은 것: T8.3 OIDC(외부 결정 대기)·로그 로테이션 정책(운영 문서 후속).
+- **잔여(이 라운드 범위 밖·기존 태스크로 추적)**: ~~T9.8 SQLite 영속화·T9.5 워커 토큰·T9.2 콘솔·T9.3 HITL~~ → **같은 날 후속 라운드로 게이트 내 완결(2026-07-02·아래 절)**. 남은 것: T8.3 OIDC(외부 결정 대기)·로그 로테이션 정책(운영 문서 후속)·**외부 배포 네트워킹 = Tailscale 채택 후보(후순위·검토 완료 2026-07-04)** — 워커↔중앙 WS 채널을 tailnet으로: 중앙을 tailnet 인터페이스에만 바인드해 공인 IP/포트 개방 0(현 `run_central.sh` 0.0.0.0 신뢰-LAN 경고의 근본 해소)·기기별 고정 주소+MagicDNS(`central.<tailnet>.ts.net`)·WireGuard 암호화+tailnet ACL+기존 토큰 admission(T9.5) 3중 방어·Tailscale SSO가 회사 IdP 연동(T8.3 결정)과 동일 신원 체계. **주의**: 사용자 웹면(/ask)은 별개 판단 — 사내 전용이면 tailnet(MDM 배포)으로 충분, 외부 노출 필요 시 그 면만 리버스 프록시+TLS 또는 Funnel로 분리(2채널 구도)·좌표 서버 서드파티 의존(셀프호스트 대안 Headscale)·무료 3인/100기기. 착수 시점 = 실 사용자 수용/외부 배포 직전(T8.3과 같은 단계).
 
 ## Phase 9 잔여 게이트 내 완결 (2026-07-02·둘째 라운드)
 

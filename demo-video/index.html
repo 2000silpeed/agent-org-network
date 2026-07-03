@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Org Network — 실 화면 임원 시연</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      :root {
+        --bg: #0a0e16;
+        --surface: #141b26;
+        --line: #243044;
+        --text: #e6edf3;
+        --muted: #9aa7b8;
+        --blue: #4d9fff;
+        --green: #46d27a;
+        --amber: #ffb020;
+        --violet: #a98bff;
+      }
+      body,
+      html {
+        margin: 0;
+        padding: 0;
+        width: 1920px;
+        height: 1080px;
+        background-color: #0a0e16;
+        overflow: hidden;
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        color: var(--text);
+      }
+      #master-root {
+        width: 1920px;
+        height: 1080px;
+        position: relative;
+      }
+      video,
+      img.freeze {
+        position: absolute;
+        inset: 0;
+        width: 1920px;
+        height: 1080px;
+        object-fit: cover;
+        background: #0a0e16;
+      }
+      .card-scene {
+        position: absolute;
+        inset: 0;
+        background-color: var(--bg);
+        overflow: hidden;
+      }
+      .card-scene::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image: linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+        background-size: 88px 88px;
+      }
+      .inner {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        padding: 110px 160px 130px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 34px;
+      }
+      .eyebrow {
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: 0.34em;
+        color: var(--blue);
+        text-transform: uppercase;
+      }
+      #open-card h1 {
+        margin: 0;
+        font-size: 96px;
+        font-weight: 900;
+        line-height: 1.16;
+        letter-spacing: -0.015em;
+        max-width: 1500px;
+      }
+      #open-card .sub {
+        font-size: 38px;
+        color: var(--muted);
+        font-weight: 300;
+        line-height: 1.45;
+        max-width: 1350px;
+      }
+      #open-card .live {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 8px;
+        font-size: 23px;
+        color: var(--green);
+        border: 1px solid rgba(70, 210, 122, 0.5);
+        padding: 12px 20px;
+        width: fit-content;
+      }
+      #open-card .live .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--green);
+      }
+      #stat-card h1 {
+        margin: 0;
+        font-size: 56px;
+        font-weight: 900;
+      }
+      #stat-card .stats {
+        display: flex;
+        gap: 28px;
+      }
+      #stat-card .stat {
+        flex: 1;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        padding: 40px 44px;
+      }
+      #stat-card .big {
+        font-size: 122px;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+      }
+      #stat-card .big.b {
+        color: var(--blue);
+      }
+      #stat-card .big.g {
+        color: var(--green);
+      }
+      #stat-card .lab {
+        font-size: 27px;
+        margin-top: 10px;
+      }
+      #stat-card .det {
+        font-size: 21px;
+        color: var(--muted);
+        margin-top: 8px;
+        font-variant-numeric: tabular-nums;
+      }
+      #stat-card .note {
+        font-size: 24px;
+        color: var(--muted);
+      }
+      #stat-card .note b {
+        color: var(--violet);
+        font-weight: 700;
+      }
+      #close-card .inner {
+        align-items: center;
+        text-align: center;
+      }
+      #close-card .wordmark {
+        font-size: 104px;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+      }
+      #close-card .wordmark .dot {
+        color: var(--blue);
+      }
+      #close-card .tag {
+        font-size: 44px;
+        font-weight: 300;
+      }
+      #close-card .proof {
+        font-size: 23px;
+        color: var(--muted);
+        letter-spacing: 0.05em;
+      }
+      .cap {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 70px 170px 30px;
+        font-size: 27px;
+        line-height: 1.5;
+        text-align: center;
+        color: #ffffff;
+        background: linear-gradient(rgba(10, 14, 22, 0), rgba(10, 14, 22, 0.62) 40%, rgba(10, 14, 22, 0.94));
+        opacity: 0;
+        z-index: 900;
+        pointer-events: none;
+      }
+      .cap b {
+        color: #ffd77a;
+        font-weight: 700;
+      }
+      .badge {
+        position: absolute;
+        top: 34px;
+        left: 40px;
+        z-index: 910;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: rgba(10, 14, 22, 0.82);
+        border: 1px solid var(--line);
+        padding: 12px 20px;
+        font-size: 21px;
+        color: var(--text);
+        opacity: 0;
+      }
+      .badge .k {
+        color: var(--blue);
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        font-size: 17px;
+      }
+      #dip {
+        position: absolute;
+        inset: 0;
+        background: #0a0e16;
+        opacity: 0;
+        z-index: 950;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="master-root" data-composition-id="master" data-width="1920" data-height="1080" data-start="0" data-duration="117.5" data-track-index="0">
+      <!-- 내레이션(ElevenLabs — Jaeil 1.1x·질문 대사 Sian) -->
+      <audio id="a-m1" class="clip" data-start="0.5" data-duration="7.66" data-track-index="2" src="assets/tts/m1.mp3"></audio>
+      <audio id="a-nq" class="clip" data-start="10.4" data-duration="7.29" data-track-index="3" src="assets/tts/nq.mp3" data-volume="0.95"></audio>
+      <audio id="a-m2" class="clip" data-start="18.0" data-duration="13.98" data-track-index="2" src="assets/tts/m2.mp3"></audio>
+      <audio id="a-md1" class="clip" data-start="33.1" data-duration="6.73" data-track-index="2" src="assets/tts/md1.mp3"></audio>
+      <audio id="a-md2" class="clip" data-start="45.0" data-duration="9.29" data-track-index="2" src="assets/tts/md2.mp3"></audio>
+      <audio id="a-me" class="clip" data-start="63.4" data-duration="9.2" data-track-index="2" src="assets/tts/me.mp3"></audio>
+      <audio id="a-m3" class="clip" data-start="75.5" data-duration="5.71" data-track-index="2" src="assets/tts/m3.mp3"></audio>
+      <audio id="a-m4" class="clip" data-start="86.4" data-duration="8.68" data-track-index="2" src="assets/tts/m4.mp3"></audio>
+      <audio id="a-m5" class="clip" data-start="99.4" data-duration="10.54" data-track-index="2" src="assets/tts/m5.mp3"></audio>
+      <audio id="a-m6" class="clip" data-start="111.2" data-duration="5.06" data-track-index="2" src="assets/tts/m6.mp3"></audio>
+
+      <!-- S1 오프닝 카드: 0 ~ 12.4 -->
+      <div class="card-scene clip" id="open-card" data-start="0" data-duration="8.9" data-track-index="1">
+        <div class="inner">
+          <div class="eyebrow anim">실 화면 시연 · 라이브 녹화</div>
+          <h1 class="anim">“이건 누구한테 물어봐야 하지?”</h1>
+          <div class="sub anim">조직의 지식은 문서가 아니라 사람에게 있습니다. 담당자를 찾아 헤매는 시간을 없애는 것 — 이 시스템의 출발점입니다.</div>
+          <div class="live anim"><span class="dot"></span>이후 모든 화면은 실제 동작 중인 제품을 그대로 녹화한 것입니다</div>
+        </div>
+      </div>
+
+      <!-- S2 클립 A: 채팅 12.4 ~ 25.84 + 정지컷 연장 ~ 40.4 -->
+      <video class="clip" id="v-a" data-start="8.9" data-duration="13.44" data-track-index="1" src="recordings-exec/clip-a-ask.webm" muted playsinline></video>
+      <img class="clip freeze" id="f-a" data-start="22.34" data-duration="10.26" data-track-index="1" src="assets/freeze-a.png" />
+
+      <!-- 클립 D: 다툼→합의→판례→즉답 32.6 ~ 62.96 -->
+      <video class="clip" id="v-d" data-start="32.6" data-duration="30.36" data-track-index="1" src="recordings-exec/clip-d-precedent.webm" muted playsinline></video>
+
+      <!-- 클립 E: 안전 케이스(거절·이관) 62.96 ~ 75.0 -->
+      <video class="clip" id="v-e" data-start="62.96" data-duration="12.04" data-track-index="1" src="recordings-exec/clip-e-safety.webm" muted playsinline></video>
+
+      <!-- 클립 B: 콘솔 관전 40.4 ~ 51.32 -->
+      <video class="clip" id="v-b" data-start="75.0" data-duration="10.92" data-track-index="1" src="recordings-exec/clip-b-console.webm" muted playsinline></video>
+
+      <!-- S4 클립 C: HITL 검토 51.32 ~ 64.32 -->
+      <video class="clip" id="v-c" data-start="85.92" data-duration="13.0" data-track-index="1" src="recordings-exec/clip-c-hitl.webm" muted playsinline></video>
+
+      <!-- S5 수치 카드: 64.32 ~ 78.9 -->
+      <div class="card-scene clip" id="stat-card" data-start="98.92" data-duration="11.88" data-track-index="1">
+        <div class="inner">
+          <div class="eyebrow anim">실측으로 증명</div>
+          <h1 class="anim">실제 법령 데이터 72문항으로 측정했습니다</h1>
+          <div class="stats">
+            <div class="stat anim">
+              <div class="big b">2.6×</div>
+              <div class="lab">라우팅 정확도 개선</div>
+              <div class="det">20.8% → 54.2% · 동일 시험셋</div>
+            </div>
+            <div class="stat anim">
+              <div class="big g">1.4%</div>
+              <div class="lab">오답이 그대로 나가는 비율</div>
+              <div class="det">15.3%에서 1/11로 — 가장 해로운 실패를 우선 차단</div>
+            </div>
+          </div>
+          <div class="note anim"><b>학습 루프</b> — 모호한 질문은 사람의 합의로 넘기고, 합의는 판례로 쌓여 다음부터 자동 라우팅됩니다.</div>
+        </div>
+      </div>
+
+      <!-- S6 클로징: 78.9 ~ 87 -->
+      <div class="card-scene clip" id="close-card" data-start="110.8" data-duration="6.7" data-track-index="1">
+        <div class="inner">
+          <div class="eyebrow anim">AGENT ORG NETWORK</div>
+          <div class="wordmark anim">Agent Org Network<span class="dot">.</span></div>
+          <div class="tag anim">조직의 지식이, 조직의 답이 되도록.</div>
+          <div class="proof anim">자동 검증 2,210건 통과 · 실기기 2대 실네트워크 관통 · 실측 리포트 공개</div>
+        </div>
+      </div>
+
+      <!-- 오버레이(장면 배지·캡션·전환 딥) — master 타임라인 소유 -->
+      <div class="badge" id="bg-a" data-layout-allow-occlusion><span class="k">LIVE</span>사용자 채팅 — 질문이 담당을 찾아갑니다</div>
+      <div class="badge" id="bg-d" data-layout-allow-occlusion><span class="k">LIVE</span>다툼 → 합의 → 판례 학습</div>
+      <div class="badge" id="bg-e" data-layout-allow-occlusion><span class="k">LIVE</span>안전 장치 — 거절과 이관</div>
+      <div class="badge" id="bg-b" data-layout-allow-occlusion><span class="k">LIVE</span>운영자 콘솔 — 실시간 관전 피드</div>
+      <div class="badge" id="bg-c" data-layout-allow-occlusion><span class="k">LIVE</span>담당자 화면 — 초안 검토·수정·승인</div>
+
+      <div class="cap" id="cap-q" data-layout-allow-occlusion>“단순 변심인데 결제한 지 20일 됐어요. 10만 원 결제했는데 환불 얼마나 받을 수 있나요?”</div>
+      <div class="cap" id="cap-m2" data-layout-allow-occlusion>질문을 던지면 조직 그래프에서 담당을 찾아 연결하고, 담당 에이전트가 <b>실제 규정 문서</b>를 읽고 계산까지 마친 답을 내놓습니다. 근거 없는 답은 하지 않습니다.</div>
+      <div class="cap" id="cap-md1" data-layout-allow-occlusion>담당이 겹치는 질문은 함부로 답하지 않습니다. 시스템이 <b>다툼</b>으로 표시하고, 사람의 판단을 기다립니다.</div>
+      <div class="cap" id="cap-md2" data-layout-allow-occlusion>담당자가 처리함에서 담당을 지정하면 그 합의는 <b>판례</b>로 저장됩니다. 같은 질문이 다시 오면, 이제 사람 없이 즉시 연결됩니다.</div>
+      <div class="cap" id="cap-me" data-layout-allow-occlusion>권한 밖 요청은 정중히 거절하고, 담당이 없는 질문은 책임자에게 이관합니다. <b>모르면서 아는 척하지 않습니다.</b></div>
+      <div class="cap" id="cap-m3" data-layout-allow-occlusion>운영자는 질문 인입부터 담당 결정까지, 모든 흐름을 실시간으로 지켜봅니다.</div>
+      <div class="cap" id="cap-m4" data-layout-allow-occlusion>민감한 답은 사람이 마지막을 지킵니다. 담당자가 초안을 검토하고 <b>직접 고쳐</b> 승인해야 나갑니다 — 실제 담당자 PC 화면입니다.</div>
+
+      <div id="dip"></div>
+
+      <script>
+        window.__timelines = window.__timelines || {};
+        const tl = gsap.timeline({ paused: true });
+
+        // ── 카드 씬 엔트런스 ───────────────────────────────
+        tl.from("#open-card .anim", { y: 44, opacity: 0, duration: 0.55, stagger: 0.12, ease: "power3.out" }, 0.2);
+        tl.from("#stat-card .anim", { y: 40, opacity: 0, duration: 0.5, stagger: 0.12, ease: "power4.out" }, 99.3);
+        tl.from("#close-card .anim", { scale: 0.92, opacity: 0, duration: 0.55, stagger: 0.12, ease: "back.out(1.4)" }, 111.15);
+
+        // ── 씬 경계 딥(비디오 컷 완충) ─────────────────────
+        const cuts = [8.9, 32.6, 62.96, 75.0, 85.92, 98.92, 110.8];
+        for (const t of cuts) {
+          tl.fromTo("#dip", { opacity: 0 }, { opacity: 1, duration: 0.22, ease: "sine.in" }, t - 0.22);
+          tl.to("#dip", { opacity: 0, duration: 0.28, ease: "sine.out", overwrite: "auto" }, t + 0.02);
+        }
+
+        // ── 장면 배지 ──────────────────────────────────────
+        const badges = [
+          ["#bg-a", 9.5, 32.2],
+          ["#bg-d", 33.2, 62.5],
+          ["#bg-e", 63.5, 74.6],
+          ["#bg-b", 75.6, 85.5],
+          ["#bg-c", 86.5, 98.5],
+        ];
+        for (const [sel, tin, tout] of badges) {
+          tl.fromTo(sel, { opacity: 0, x: -24 }, { opacity: 1, x: 0, duration: 0.5, ease: "expo.out" }, tin);
+          tl.to(sel, { opacity: 0, duration: 0.3, ease: "sine.in" }, tout);
+          tl.set(sel, { opacity: 0 }, tout + 0.32);
+        }
+
+        // ── 내레이션 캡션(오디오 동기) ─────────────────────
+        const caps = [
+          ["#cap-q", 10.4, 17.5],
+          ["#cap-m2", 18.0, 32.1],
+          ["#cap-md1", 33.1, 40.3],
+          ["#cap-md2", 45.0, 54.8],
+          ["#cap-me", 63.4, 73.1],
+          ["#cap-m3", 75.5, 81.6],
+          ["#cap-m4", 86.4, 95.5],
+        ];
+        for (const [sel, tin, tout] of caps) {
+          tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "sine.out" }, tin);
+          tl.to(sel, { opacity: 0, duration: 0.3, ease: "sine.in" }, tout);
+          tl.set(sel, { opacity: 0 }, tout + 0.32);
+        }
+
+        // ── 클로징 페이드(마지막 씬만 허용) ────────────────
+        tl.to("#close-card .inner", { opacity: 0, duration: 1.0, ease: "sine.inOut" }, 116.2);
+
+        window.__timelines["master"] = tl;
+      </script>
+    </div>
+  </body>
+</html>

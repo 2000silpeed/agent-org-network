@@ -197,6 +197,7 @@
       wrap.appendChild(el("div", "answer-label", "워커가 만든 답 (고쳐서 보낼 수 있음)"));
       const textArea = el("textarea", "draft-text");
       textArea.value = d.draft_answer;
+      textArea.defaultValue = d.draft_answer; // 편집 중 판정 기준(value !== defaultValue)
       wrap.appendChild(textArea);
 
       if (d.sources && d.sources.length) {
@@ -250,7 +251,20 @@
       return wrap;
     }
 
+    function isEditing() {
+      // 폴링 리렌더가 입력 중인 수정을 날리지 않게 하는 가드(크로스머신 시연에서 실증된 결함).
+      // ① textarea에 포커스가 있거나 ② 아직 전송하지 않은 수정(value !== defaultValue)이
+      // 남아 있으면 이번 폴링 주기는 화면을 갈아엎지 않는다.
+      const a = document.activeElement;
+      if (a && a.tagName === "TEXTAREA" && draftsEl.contains(a)) return true;
+      for (const ta of draftsEl.querySelectorAll("textarea")) {
+        if (ta.value !== ta.defaultValue) return true;
+      }
+      return false;
+    }
+
     async function load() {
+      if (isEditing()) return;
       let drafts;
       try {
         drafts = await fetchDrafts();

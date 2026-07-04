@@ -12,17 +12,24 @@ A(ii) OKF 접지: read_okf_bundle(순수 헬퍼, stdlib·pathlib만, SDK 0) +
                 build_provider_request okf 키워드 + ProviderApiRuntime okf_root 주입.
                 ClaudeCodeRuntime의 cwd 접지와 대칭 — 인프로세스 공급자도 OKF 로컬 읽기.
 
+Phase 12 S2(ADR 0033 결정 1): 지식 접지 원천이 디스크(`read_okf_bundle`)→`KnowledgeStore`로
+이동한다. `resolve_knowledge_text`가 그 전환 지점(스토어 우선, 부재 시 디스크 폴백) —
+`ProviderApiRuntime`에 `knowledge_store` 선택 주입을 더했을 뿐 `AgentRuntime` 포트
+시그니처(`answer(question, card, context) -> Answer`)·`Answer` 계약은 무변경이다.
+
 게이트 밖: 실 OAuth·실 공급자 API·실 스트리밍·공급자 SDK (T9.6)
 분류기·배치 경로의 claude -p는 잔존 (ADR 0027 결정 3 — 대화 경로만 교체)
 """
 
 from collections.abc import Callable, Iterable, Iterator
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from pydantic import BaseModel
 
 from agent_org_network.agent_card import AgentCard
+from agent_org_network.knowledge_store import knowledge_stale_seconds
 from agent_org_network.provider_retry import (
     DEFAULT_RETRY_POLICY,
     RetryPolicy,
@@ -31,7 +38,16 @@ from agent_org_network.provider_retry import (
 )
 from agent_org_network.runtime import Answer, AnswerChunk
 
+if TYPE_CHECKING:
+    from agent_org_network.knowledge_store import KnowledgeStore
+
 _T = TypeVar("_T")
+
+Clock = Callable[[], datetime]
+
+
+def _default_clock() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +145,52 @@ def read_okf_bundle(okf_root: str | Path | None, agent_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Phase 12 S2 — resolve_knowledge_text (스토어 우선, 디스크 폴백 전환 지점)
+# ---------------------------------------------------------------------------
+
+
+def _bundle_text_from_documents(documents: "Iterable[object]") -> str:
+    """`KnowledgeBundleContent.documents`(KnowledgeDoc들)를 read_okf_bundle과 같은
+    꼴("### {path}\\n{body}"를 "\\n\\n" 연결)로 조립한다 — 접지 프롬프트 포맷 일관성."""
+    sections: list[str] = []
+    for doc in documents:
+        path = getattr(doc, "path", "")
+        body = getattr(doc, "body", "")
+        sections.append(f"### {path}\n{body}")
+    return "\n\n".join(sections)
+
+
+def resolve_knowledge_text(
+    knowledge_store: "KnowledgeStore | None",
+    okf_root: str | Path | None,
+    agent_id: str,
+    *,
+    now: datetime,
+    threshold_s: int,
+) -> tuple[str, bool]:
+    """지식 접지 텍스트를 조회하는 전환 지점(ADR 0033 결정 1) — 스토어 우선, 디스크 폴백.
+
+    `read_okf_bundle`(디스크)의 *입력 원천*을 `KnowledgeStore`로 옮기되, 매핑 함수·
+    포트는 무변경으로 두는 최소 수술. **폴백 정책(결정 — ADR/plan에 구체 지침 없어
+    tasks에 메모)**: 스토어가 주입됐고 그 agent_id 본문이 있으면 스토어를 쓴다.
+    스토어가 없거나(None) 그 agent_id 본문이 없으면 기존 디스크(`read_okf_bundle`)
+    경로로 폴백한다 — 회귀 0(스토어 미배선 기존 호출부는 100% 기존 동작).
+
+    반환값: `(접지 텍스트, is_stale)`. 스토어 히트일 때만 `is_stale`을
+    `store.is_stale(agent_id, now=now, threshold_s=threshold_s)`로 판정한다(디스크
+    폴백·완전 부재 시엔 신선도를 논할 스토어 본문 자체가 없으므로 `False` — 디스크
+    직독은 원래 신선도 개념이 없던 기존 동작 보존).
+    """
+    if knowledge_store is not None:
+        content = knowledge_store.get(agent_id)
+        if content is not None:
+            text = _bundle_text_from_documents(content.documents)
+            stale = knowledge_store.is_stale(agent_id, now=now, threshold_s=threshold_s)
+            return text, stale
+    return read_okf_bundle(okf_root, agent_id), False
+
+
+# ---------------------------------------------------------------------------
 # 슬라이스 (b) — 순수 함수 (SDK/IO 0)
 # ---------------------------------------------------------------------------
 
@@ -220,6 +282,13 @@ class ProviderApiRuntime:
     okf_root 주입 시 A(ii) OKF 접지 활성: 각 answer() 호출마다 자기 번들을 로컬 파일 I/O로
     읽어 system 프롬프트에 접지 — ClaudeCodeRuntime cwd 접지와 대칭(중앙 토큰 0·격리 보존).
 
+    Phase 12 S2(ADR 0033 결정 1): `knowledge_store` 주입 시 지식 접지 원천이 중앙
+    `KnowledgeStore`로 전환된다(`resolve_knowledge_text` — 스토어 우선, 그 agent_id
+    본문 부재 시 기존 디스크 `okf_root` 경로로 폴백). `knowledge_store` 미주입(기본
+    None)이면 기존 디스크 전용 동작 100% 보존(회귀 0). `last_knowledge_stale`은
+    직전 answer/answer_stream 호출의 stale 판정 결과를 담는 관측 seam이다 — stale이어도
+    답 자체는 차단하지 않는다(미아 없음 보존, 표식은 신뢰 하향 신호일 뿐).
+
     일시 장애 재시도(provider_retry): transport 호출을 `run_with_retry`로 감싼다 — 429/5xx/
     네트워크 일시 실패는 지수 백오프로 재시도하고, 401/403은 `ProviderAuthError`로 승격,
     재시도 소진/비일시 실패는 원 예외를 그대로 재던져 기존 escalation·폴백 경로를 보존한다.
@@ -234,14 +303,21 @@ class ProviderApiRuntime:
         *,
         model: str,
         okf_root: str | Path | None = None,
+        knowledge_store: "KnowledgeStore | None" = None,
         retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
         sleeper: Sleeper | None = None,
+        clock: Clock = _default_clock,
     ) -> None:
         self._transport = transport
         self._model = model
         self._okf_root = okf_root
+        self._knowledge_store = knowledge_store
         self._retry_policy = retry_policy
         self._sleeper = sleeper
+        self._clock = clock
+        # 관측 seam(ADR 0033 결정 3) — 직전 answer/answer_stream 호출의 stale 판정.
+        # Answer 계약(text·sources·mode·snapshot_sha)엔 안 싣는다(노출 불변식 보존).
+        self.last_knowledge_stale: bool = False
 
     def _with_retry(self, fn: "Callable[[], _T]") -> "_T":
         """transport 호출을 재시도 정책으로 감싼다(sleeper 주입 seam·값/부작용 분리).
@@ -253,8 +329,20 @@ class ProviderApiRuntime:
             return run_with_retry(fn, policy=self._retry_policy)
         return run_with_retry(fn, policy=self._retry_policy, sleeper=self._sleeper)
 
+    def _resolve_okf(self, agent_id: str) -> str:
+        """지식 접지 텍스트를 얻고 stale 관측 seam을 갱신한다(스토어 우선, 디스크 폴백)."""
+        okf, stale = resolve_knowledge_text(
+            self._knowledge_store,
+            self._okf_root,
+            agent_id,
+            now=self._clock(),
+            threshold_s=knowledge_stale_seconds(),
+        )
+        self.last_knowledge_stale = stale
+        return okf
+
     def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
-        okf = read_okf_bundle(self._okf_root, card.agent_id)
+        okf = self._resolve_okf(card.agent_id)
         request = build_provider_request(question, card, context=context, model=self._model, okf=okf)
 
         # transport 호출 + 스트림 소진을 한 시도 단위로 재시도한다 — assemble_stream이 청크를
@@ -284,7 +372,7 @@ class ProviderApiRuntime:
         dispatch_stream이 소비 중 예외로 처리)를 그대로 탄다. 시작 전 실패(429/5xx/네트워크)만
         `run_with_retry`로 잡아 지수 백오프 재시도하고, 401/403은 `ProviderAuthError`로 승격한다.
         """
-        okf = read_okf_bundle(self._okf_root, card.agent_id)
+        okf = self._resolve_okf(card.agent_id)
         request = build_provider_request(question, card, context=context, model=self._model, okf=okf)
 
         # 스트림 시작 = transport 호출 + 첫 청크 pull. 이 지점까지의 실패만 재시도한다(부분 출력
@@ -316,6 +404,7 @@ class ClaudeApiRuntime(ProviderApiRuntime):
     ProviderApiRuntime 베이스 상속 — model 기본값은 기존 placeholder(무회귀).
     실 OAuth·실 API 스트리밍은 게이트 밖 T9.6.
     okf_root 주입 시 A(ii) OKF 접지 활성(ClaudeCodeRuntime cwd 접지 대칭).
+    knowledge_store 주입 시 Phase 12 S2 전환 활성(ADR 0033 결정 1 — 스토어 우선·디스크 폴백).
     """
 
     _DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"  # adaptive thinking 지원(답변 실 LLM)·저작(LlmAuthor)과 통일
@@ -325,15 +414,19 @@ class ClaudeApiRuntime(ProviderApiRuntime):
         transport: ProviderTransport,
         *,
         okf_root: str | Path | None = None,
+        knowledge_store: "KnowledgeStore | None" = None,
         retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
         sleeper: Sleeper | None = None,
+        clock: Clock = _default_clock,
     ) -> None:
         super().__init__(
             transport,
             model=self._DEFAULT_CLAUDE_MODEL,
             okf_root=okf_root,
+            knowledge_store=knowledge_store,
             retry_policy=retry_policy,
             sleeper=sleeper,
+            clock=clock,
         )
 
 
@@ -350,6 +443,7 @@ class CodexApiRuntime(ProviderApiRuntime):
     ChatGPT 구독 codex 백엔드가 gpt-5.2-codex는 미지원, gpt-5.5·gpt-5.4 등 지원).
     실 OAuth·openai SDK·실 네트워크는 게이트 밖 슬라이스 2.
     okf_root 주입 시 A(ii) OKF 접지 활성(ClaudeApiRuntime 대칭).
+    knowledge_store 주입 시 Phase 12 S2 전환 활성(ClaudeApiRuntime 대칭).
     """
 
     _DEFAULT_CODEX_MODEL = "gpt-5.5"
@@ -359,15 +453,19 @@ class CodexApiRuntime(ProviderApiRuntime):
         transport: ProviderTransport,
         *,
         okf_root: str | Path | None = None,
+        knowledge_store: "KnowledgeStore | None" = None,
         retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
         sleeper: Sleeper | None = None,
+        clock: Clock = _default_clock,
     ) -> None:
         super().__init__(
             transport,
             model=self._DEFAULT_CODEX_MODEL,
             okf_root=okf_root,
+            knowledge_store=knowledge_store,
             retry_policy=retry_policy,
             sleeper=sleeper,
+            clock=clock,
         )
 
 

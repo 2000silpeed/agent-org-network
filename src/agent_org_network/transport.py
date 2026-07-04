@@ -40,6 +40,7 @@ from agent_org_network.dispatch import (
     default_clock,
 )
 from agent_org_network.knowledge_index import KnowledgeIndex
+from agent_org_network.knowledge_sync import SyncKnowledge
 
 if TYPE_CHECKING:
     # 어댑터 시그니처 예고용 — 런타임 import 순환을 피해 타입 체크 시에만 끌어온다.
@@ -47,10 +48,13 @@ if TYPE_CHECKING:
     from agent_org_network.console import ConsoleEvent, ConsoleFeed
     from agent_org_network.git_gateway import ChangeEventListener
     from agent_org_network.hitl import HitlToggleMap
+    from agent_org_network.knowledge_store import KnowledgeStore
+    from agent_org_network.knowledge_sync import KnowledgeSyncAck, KnowledgeSyncSpec
     from agent_org_network.notify import Notifier
+    from agent_org_network.presence import PresenceTracker
     from agent_org_network.registry import Registry
     from agent_org_network.review import BackupReviewStore
-    from agent_org_network.runtime import Answer
+    from agent_org_network.runtime import AgentRuntime, Answer
     from agent_org_network.token import TokenStore
     from agent_org_network.two_stage_router import PublishedIndexStore
 
@@ -200,11 +204,22 @@ class Ack(_Frame):
     ticket_id: str
 
 
-WorkerFrame = RegisterWorker | SubmitAnswer | PublishIndex | Heartbeat | Ack | DocumentContent
+WorkerFrame = (
+    RegisterWorker
+    | SubmitAnswer
+    | PublishIndex
+    | Heartbeat
+    | Ack
+    | DocumentContent
+    | SyncKnowledge
+)
 #   워커→중앙 업스트림 프레임의 sealed 판별 유니온(type 필드로 갈림).
 #   PublishIndex(§14)·DocumentContent(§15)는 추가 변이(새 type 키) — 기존 분기 무변경
 #   (ADR 0028 §14 결정 A·§15 결정 A). _Frame extra="forbid"라 *추가*는 안전·*제거/이름변경*만
 #   와이어 깨짐(되돌리기 어려움). §15는 양 union을 *동시에* 늘리는 첫 사례라 더 신중히 닫는다.
+#   SyncKnowledge(Phase 12 (B)·ADR 0033 결정 3)는 지식 동기화 업스트림 변이(새 type 키
+#   "sync_knowledge") — 같은 추가 규율(기존 분기 무회귀). 프레임 DTO 자체는 knowledge_sync.py가
+#   소유하고 여기선 union에만 끼운다(server._parse_worker_frame이 그 elif로 복원).
 
 
 # ── 중앙→워커(다운스트림) 프레임 ─────────────────────────────────────────────
@@ -399,6 +414,9 @@ class WebSocketDispatcher:
         token_store: "TokenStore | None" = None,
         hitl_toggles: "HitlToggleMap | None" = None,
         console_feed: "ConsoleFeed | None" = None,
+        presence_tracker: "PresenceTracker | None" = None,
+        knowledge_store: "KnowledgeStore | None" = None,
+        fallback_runtime: "AgentRuntime | None" = None,
     ) -> None:
         # 작업 큐 도메인은 합성으로 재사용 — 큐 상태기계·단조 종착·timeout escalation은
         # 이 객체가 소유한다(WS는 그 위 전송층). 주입 가능하게 둬 결정론 테스트가 고정
@@ -468,6 +486,28 @@ class WebSocketDispatcher:
         # 연결 종료(WorkerDisconnected) 시 ConsoleEvent를 emit한다(관전 미러). 미주입이면
         # 발화 0(하위호환·기존 WS 테스트 무회귀). emit 실패는 흡수(관전이 전송을 못 깬다).
         self._console_feed = console_feed
+        # 프레즌스 추적기(Phase 12 (A)·ADR 0033 결정 5) — 워커 WS 연결/해제를 담당자
+        # 온라인/오프라인 1급 상태로 도출한다. register 성공 시 observe_connect, disconnect
+        # 시 observe_disconnect. 미주입이면 프레즌스 미배선(하위호환 — 기존 WS 테스트/경로는
+        # 프레즌스 없이 그대로 동작하고 `_resolve_hitl_hint`도 프레즌스 결합 없이 기존
+        # 계산으로 폴백). WS 연결이 사실상 하트비트라(0011·0012 `_connections` 재사용) 프레즌스는
+        # 휘발이 정당하다 — 재시작하면 연결도 끊겨 있으므로 InMemory가 진실 원천으로 충분.
+        self._presence_tracker = presence_tracker
+        # 중앙 지식 저장소(Phase 12 (B)(C)·ADR 0033 결정 1·3) — 워커가 동기화한 본문을
+        # agent_id별 보관한다. SyncKnowledge 수신부(`accept_knowledge_sync_frame`)가
+        # `accept_and_store_knowledge_sync`(M3 계약 — store.put 직접 호출 금지·판정과 보관
+        # 분리) 경유로 이 스토어에 put한다. 미주입이면 지식 동기화 수용 안 함(no-op·하위호환).
+        self._knowledge_store = knowledge_store
+        # 오프라인 폴백 런타임(Phase 12 마지막 조합 지점·ADR 0033 결정 1·5) — 담당 워커가
+        # 미연결(또는 backup 거부로 보낼 곳 없음)이라 `dispatch`가 작업을 push하지 못했을 때,
+        # 중앙이 이 런타임으로 답을 대신 생성해 큐에 submit한다(→ 이어지는 poll이 Delivered).
+        # 그래야 "담당자 PC 꺼져도 답변"이 인프로세스 경로뿐 아니라 *분산 배선*에서도 성립한다.
+        # 이 런타임은 중앙 지식 저장소를 접지원으로 소비하는 실 공급자 어댑터(select_runtime)
+        # 또는 결정론 StubRuntime(테스트). AgentRuntime 포트·Answer 계약 무변경 — dispatch가
+        # 그 포트를 호출할 뿐이다. 미주입이면 폴백 없음(하위호환 — 미연결이면 기존대로 큐
+        # 대기→timeout escalation, 노출은 dispatched). 워커가 연결돼 있으면 push가 성공해
+        # 폴백이 발동하지 않는다(회귀 0 — 기존 워커 회신 경로 그대로).
+        self._fallback_runtime = fallback_runtime
 
     def _emit_console(self, event: "ConsoleEvent") -> None:
         """관전 피드에 사건을 1건 emit한다 — 실패는 흡수(관전이 전송을 못 깬다·T9.2(c))."""
@@ -487,10 +527,45 @@ class WebSocketDispatcher:
         PushWork를 send 콜백으로 내보낸다. 미연결이면 큐에 대기(기존 AwaitingWorker).
         context는 `_queue.dispatch(context=)`로 전파된다(ADR 0027 결정 13·T9.7 S1 — WS
         프레임 맥락 전파 실체화. 결정 8의 "인자 흡수(미전파)"를 이 슬라이스가 대체한다).
+
+        오프라인 폴백(Phase 12 마지막 조합 지점): `_push_pending` 뒤에도 이 ticket이 여전히
+        `queued`면 담당 워커가 미연결(또는 backup 거부로 보낼 곳 없음)이라 push되지 못한
+        것이다. `fallback_runtime`이 주입돼 있으면 중앙이 그 런타임으로 답을 대신 생성해 큐에
+        submit한다 — 이어지는 `poll`이 `Delivered`를 돌려주므로 상위(`AskOrg`)의 기존 Delivered
+        경로(Answered 투영·Approval 게이트·`_record_answer`의 presence 기반 needs_correction_review·
+        감사 로그)가 그대로 태워진다(2라운드 배선 합류). 워커가 연결돼 push에 성공했으면
+        status가 `claimed`라 폴백은 발동하지 않는다(회귀 0 — 기존 워커 회신 경로 그대로).
         """
         ticket = self._queue.dispatch(question, card, context=context)
         self._push_pending(card.owner)
+        self._maybe_answer_with_fallback(ticket, card, context)
         return ticket
+
+    def _maybe_answer_with_fallback(
+        self, ticket: WorkTicket, card: "AgentCard", context: str | None
+    ) -> None:
+        """담당 워커에 push 못 한 작업을 중앙 폴백 런타임으로 답한다(오프라인 폴백 합류점).
+
+        발동 조건(둘 다 참일 때만): ① `fallback_runtime` 주입됨, ② `_push_pending` 뒤에도
+        이 ticket이 여전히 `queued`(보낼 워커 없음·backup 거부). 워커가 연결돼 있으면
+        `claimed`라 조기 반환(회귀 0). 답을 만들면 `_queue.submit`으로 큐에 회신해 정상
+        answered 종착으로 흘려보낸다 — 별도 경로가 아니라 *같은 큐 도메인*에 합류하므로
+        멱등(첫 답 고정)·단조 종착·미아 없음이 그대로 보존된다.
+
+        폴백 답의 mode는 런타임이 낸 그대로(보통 full)다 — 노출·2라운드 판정은 상위
+        `AskOrg`가 진다(오프라인이면 `_record_answer`가 presence_of로 needs_correction_review=True를
+        찍는다). 여기선 "워커 미연결·폴백"이라는 내부 사실을 답에 심지 않는다(노출 불변식 —
+        폴백 답도 담당·승인·출처만 싣는 일반 Answer로 큐에 들어간다). 런타임 예외는 흡수하지
+        않는다 — 폴백이 실패하면 작업은 큐에 queued로 남아 기존 timeout escalation으로 종착한다
+        (미아 없음). submit 자체가 멱등이라 중복 호출도 첫 답을 안 덮는다.
+        """
+        if self._fallback_runtime is None:
+            return
+        if self._queue.status_of(ticket.ticket_id) != "queued":
+            # 워커로 push됨(claimed) — 기존 회신 경로가 답을 낸다(폴백 미발동).
+            return
+        answer = self._fallback_runtime.answer(ticket.question, card, context=context)
+        self._queue.submit(ticket.ticket_id, answer)
 
     def poll(self, ticket: WorkTicket) -> DispatchOutcome:
         """회신·대기·escalation 조회 — t1 경과 backup 전환을 트리거한 뒤 `_queue.poll`에 위임.
@@ -578,6 +653,72 @@ class WebSocketDispatcher:
             self._registry,
             self._published_index_store,
             propagator=self._propagator,
+        )
+
+    # ── 지식 동기화 수용 (Phase 12 (B)·ADR 0033 결정 3·M3 계약) ─────────────────
+
+    def accept_knowledge_sync_frame(
+        self, session_owner_id: str, frame: "SyncKnowledge"
+    ) -> "KnowledgeSyncAck | None":
+        """워커가 보낸 SyncKnowledge를 수용 처리한다 — 스코핑→admission→store put(M3 계약).
+
+        WS 핸들러가 *연결 세션의 인증 owner*(`RegisterWorker.owner_id`)와 함께 호출한다 —
+        owner는 프레임에 없다(소켓이 곧 그 owner·`PublishIndex.publishable` 정신 재사용).
+
+        ⚠️ **M3 계약(code-reviewer·2026-07-04)**: `store.put`을 직접 호출하지 않고 반드시
+        `accept_and_store_knowledge_sync`(knowledge_store.py) 경유한다 — admission 판정과
+        보관을 한 조합 함수로 접합해 admission을 우회할 수 없게 한다(전이≠기록·수용 관문 단일화).
+
+        **spec 전달 방식(mcp-runtime-engineer 결정·2026-07-04)**: `KnowledgeSyncSpec`(무엇을
+        올릴지의 경계)을 프레임에 실린 `content`의 문서 경로 집합에서 *도출*한다
+        (`_spec_from_content`). ADR/plan에 spec 전달의 구체 지침이 없어 가장 단순한 정합
+        해법을 택했다 — 워커가 자기 시작 설정(`AON_KNOWLEDGE_PATHS`)으로 명시 지정한 경계
+        안의 문서만 SyncKnowledge에 실으므로, 실린 content의 경로들이 곧 그 워커가 자기
+        제한한 경계다. **Authority 우회가 아닌 이유**: spec은 "무엇을 올릴지"의 *자기 제한*
+        이지 *권한 확장*이 아니다 — 실 권한 게이트는 `accept_knowledge_sync` 안의 워커-소유자
+        스코핑(`card.owner == session_owner_id`)이 진다. 자기 제한을 프레임에서 도출해도
+        권한을 넓힐 수 없다(스코핑이 owner 사칭을 이미 막고, 민감 필터가 본문을 검사한다).
+        경로 자기보고로 넓힐 수 있는 것은 "자기 경계" 뿐인데 그건 이미 owner 자기 것이다.
+
+        registry(card.owner 권위)·knowledge_store가 *둘 다* 주입돼야 수용한다. 하나라도
+        미주입이면 None(수용 안 함·no-op·하위호환 — 지식 동기화 모르는 디스패처는 기존 동작).
+        반환: 수용/거부를 담은 `KnowledgeSyncAck`(핸들러가 워커에 회신)·미배선이면 None.
+        """
+        if self._registry is None or self._knowledge_store is None:
+            return None
+        try:
+            card = self._registry.get(frame.content.agent_id)
+        except KeyError:
+            # 미등록 agent_id — admission이 card 없이 판정 불가. 거부 회신(등록 무결성).
+            from agent_org_network.knowledge_sync import KnowledgeSyncAck
+
+            return KnowledgeSyncAck(
+                agent_id=frame.content.agent_id,
+                accepted=False,
+                reason=f"미등록 agent_id: {frame.content.agent_id!r}",
+            )
+        from agent_org_network.knowledge_store import accept_and_store_knowledge_sync
+
+        spec = self._spec_from_content(frame)
+        return accept_and_store_knowledge_sync(
+            session_owner_id, frame, card, spec, self._knowledge_store
+        )
+
+    @staticmethod
+    def _spec_from_content(frame: "SyncKnowledge") -> "KnowledgeSyncSpec":
+        """프레임 content의 문서 경로들에서 `KnowledgeSyncSpec`을 도출한다(spec 자기 제한).
+
+        각 문서 경로를 그대로 spec.paths로 삼는다 — 워커가 지정 경계 안의 문서만 실었다는
+        전제(위 `accept_knowledge_sync_frame` docstring의 Authority 우회 반박 참조). 이러면
+        지정 밖 경로 검사(admit_knowledge의 `_path_in_spec`)는 실린 문서들에 대해선 항상
+        통과하지만, 민감 필터·워커-소유자 스코핑·agent_id 일치는 여전히 강제된다 — 즉
+        "무엇을 올릴지"는 워커 자기 제한이고 "올릴 수 있는지"는 중앙 스코핑·필터가 지킨다.
+        """
+        from agent_org_network.knowledge_sync import KnowledgeSyncSpec
+
+        return KnowledgeSyncSpec(
+            agent_id=frame.content.agent_id,
+            paths=tuple(doc.path for doc in frame.content.documents),
         )
 
     # ── on-demand 문서 fetch (ADR 0028 §15 결정 B·C·E) ───────────────────────
@@ -798,6 +939,12 @@ class WebSocketDispatcher:
         self._emit_console(
             WorkerConnected(owner_id=frame.owner_id, role=frame.role, at=self._clock())
         )
+        # 프레즌스 온라인 도출(Phase 12 (A)·ADR 0033 결정 5): 워커 WS 연결 성립 =
+        # 담당자 온라인. owner_id를 프레즌스 키로 쓴다 — 프레즌스는 owner(담당자) 단위이지
+        # 등급(primary/backup) 단위가 아니다(어느 워커든 그 owner가 붙어 있으면 온라인).
+        # 미주입이면 no-op(하위호환). 관측 실패가 전송을 못 깨게 관전 emit과 같은 위치.
+        if self._presence_tracker is not None:
+            self._presence_tracker.observe_connect(frame.owner_id, at=self._clock())
         # 재연결 재동기: 등록 직후 그 owner의 대기 작업(미연결 동안 쌓인 것·끊김으로
         # re-queue된 것)을 우선순위 연결로 push한다.
         self._push_pending(frame.owner_id)
@@ -822,6 +969,12 @@ class WebSocketDispatcher:
             conns.pop(role, None)
             if not conns:
                 self._connections.pop(owner_id, None)
+        # 프레즌스 오프라인 도출(Phase 12 (A)·ADR 0033 결정 5): 그 owner의 *모든* 등급
+        # 연결이 사라졌을 때만 오프라인으로 도출한다 — primary가 끊겨도 backup이 남아 있으면
+        # 그 담당자는 여전히 온라인(어느 워커든 붙어 있으면 온라인). grace period 없음(결정 6
+        # 기본 — 연결 끊김 즉시 오프라인). 미주입이면 no-op(하위호환).
+        if self._presence_tracker is not None and owner_id not in self._connections:
+            self._presence_tracker.observe_disconnect(owner_id, at=self._clock())
         # 관전 피드(T9.2(c)): 연결 종료 emit(끊김 정리 시점). re-queue·재push와 독립 —
         # 관전엔 "그 등급 연결이 끊겼다"는 사건만 실린다.
         from agent_org_network.console import WorkerDisconnected
@@ -938,8 +1091,15 @@ class WebSocketDispatcher:
         소유하지 않는다. `hitl.resolve_mode`(+`seed_from_card`) 재사용: 카드 `approval_when`
         시드(있으면 True) OR 콘솔 토글(`is_on`)로 최종 힌트를 낸다. `_hitl_toggles`나
         `_registry`가 미주입이면 그 항목은 False로 본다(하위호환 — 기존 즉시 전송 동작).
+
+        프레즌스 결합(Phase 12 (A)·ADR 0033 결정 5): `_presence_tracker`가 주입돼 있으면
+        담당자 온라인/오프라인을 힌트 입력에 *OR로 더한다*(`presence_to_hitl` — 온라인이면
+        사전 검토 상향). 워커가 온라인이라 이 push가 나가는 상황이므로 실제로는 온라인 분기가
+        지배적이다(온라인=사전 검토). 이 결합은 *조이는* 방향만 한다 — 카드 approval_when이
+        건 검토는 어떤 프레즌스에서도 안 풀린다(under-claim 단조성은 `resolve_mode`가 보존).
+        미주입이면 프레즌스 결합 없이 기존 계산 그대로(회귀 0).
         """
-        if self._hitl_toggles is None:
+        if self._hitl_toggles is None and self._presence_tracker is None:
             return False
         seeded = False
         if self._registry is not None:
@@ -951,7 +1111,14 @@ class WebSocketDispatcher:
                 from agent_org_network.hitl import seed_from_card
 
                 seeded = seed_from_card(card)
-        return seeded or self._hitl_toggles.is_on(ticket.agent_id)
+        toggle_on = self._hitl_toggles.is_on(ticket.agent_id) if self._hitl_toggles is not None else False
+        base_hint = seeded or toggle_on
+        if self._presence_tracker is None:
+            return base_hint
+        from agent_org_network.presence import presence_to_hitl
+
+        status = self._presence_tracker.status(ticket.owner_id)
+        return base_hint or presence_to_hitl(status)
 
     def _select_connection(
         self, owner_id: str, ticket: WorkTicket, exclude_primary: bool = False

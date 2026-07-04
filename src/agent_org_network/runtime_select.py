@@ -19,6 +19,7 @@ from agent_org_network.runtime import AgentRuntime, ClaudeCodeRuntime
 
 if TYPE_CHECKING:
     from agent_org_network.git_gateway import GitGateway
+    from agent_org_network.knowledge_store import KnowledgeStore
 
 # ── 공급자 레지스트리 (ADR 0027 결정 1·11 — 공급자 중립) ──────────────────────────
 # AON_PROVIDER 값(별칭) → 공급자 어댑터. 각 공급자는 *대칭*: 자기 SDK extra + 자기 OAuth 프로필
@@ -28,10 +29,15 @@ if TYPE_CHECKING:
 # 공급자 owner는 미설치 SDK를 안 건드림).
 
 
-def _make_claude_api_runtime(okf_root: str | Path | None) -> AgentRuntime:
-    """Claude 공급자 어댑터 — owner OAuth 인프로세스 anthropic SDK 스트리밍(중앙 토큰 0).
+def _make_claude_api_runtime(
+    okf_root: str | Path | None,
+    knowledge_store: "KnowledgeStore | None" = None,
+) -> AgentRuntime:
+    """Claude 공급자 어댑터 — 중앙 조직 API 키(ADR 0033 결정 2)·인프로세스 anthropic SDK 스트리밍.
 
     okf_root 주입으로 A(ii) OKF 접지 활성 — ClaudeCodeRuntime cwd 접지 대칭.
+    knowledge_store 주입 시 Phase 12 (C) 중앙 답변 활성 — 답 생성이 중앙 지식 저장소를
+    소비한다(ADR 0033 결정 1 — 스토어 우선·디스크 폴백). 미주입이면 기존 디스크 접지.
     """
     try:
         from agent_org_network.provider_runtime import ClaudeApiRuntime
@@ -41,15 +47,23 @@ def _make_claude_api_runtime(okf_root: str | Path | None) -> AgentRuntime:
             "AON_PROVIDER=claude-api 인데 anthropic SDK가 없습니다 — 자기 공급자 extra를 설치하세요: "
             "pip install 'agent-org-network[claude-api]'  (uv: uv sync --extra claude-api)"
         ) from exc
-    return ClaudeApiRuntime(transport=AnthropicSdkTransport(), okf_root=okf_root)
+    return ClaudeApiRuntime(
+        transport=AnthropicSdkTransport(),
+        okf_root=okf_root,
+        knowledge_store=knowledge_store,
+    )
 
 
-def _make_codex_runtime(okf_root: str | Path | None) -> AgentRuntime:
+def _make_codex_runtime(
+    okf_root: str | Path | None,
+    knowledge_store: "KnowledgeStore | None" = None,
+) -> AgentRuntime:
     """Codex(OpenAI) 공급자 어댑터 — owner ~/.codex/auth.json OAuth 인프로세스 openai SDK 스트리밍.
 
     claude 팩토리와 대칭: 자기 SDK extra(`[codex]` → openai)·자기 OAuth 자격(owner 기기
-    auth.json)을 *지연* import로 가둔다 — codex를 고를 때만 openai SDK를 건드린다(중앙 토큰 0).
+    auth.json)을 *지연* import로 가둔다 — codex를 고를 때만 openai SDK를 건드린다.
     okf_root 주입으로 A(ii) OKF 접지 활성 — ClaudeApiRuntime 대칭.
+    knowledge_store 주입 시 Phase 12 (C) 중앙 답변 활성 — ClaudeApiRuntime 대칭.
     """
     try:
         from agent_org_network.provider_runtime import CodexApiRuntime
@@ -59,7 +73,11 @@ def _make_codex_runtime(okf_root: str | Path | None) -> AgentRuntime:
             "AON_PROVIDER=codex 인데 openai SDK가 없습니다 — 자기 공급자 extra를 설치하세요: "
             "pip install 'agent-org-network[codex]'  (uv: uv sync --extra codex)"
         ) from exc
-    return CodexApiRuntime(transport=CodexOauthTransport(), okf_root=okf_root)
+    return CodexApiRuntime(
+        transport=CodexOauthTransport(),
+        okf_root=okf_root,
+        knowledge_store=knowledge_store,
+    )
 
 
 # 별칭 → 공급자 키 (후속: "gemini"/"google" → "gemini").
@@ -70,8 +88,10 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "codex": "codex",
     "openai": "codex",
 }
-# 공급자 키 → lazy 어댑터 팩토리 (okf_root: str | Path | None → AgentRuntime).
-_PROVIDER_FACTORIES: dict[str, Callable[[str | Path | None], AgentRuntime]] = {
+# 공급자 키 → lazy 어댑터 팩토리 (okf_root, knowledge_store → AgentRuntime).
+_PROVIDER_FACTORIES: dict[
+    str, Callable[[str | Path | None, "KnowledgeStore | None"], AgentRuntime]
+] = {
     "claude-api": _make_claude_api_runtime,
     "codex": _make_codex_runtime,
 }
@@ -80,6 +100,7 @@ _PROVIDER_FACTORIES: dict[str, Callable[[str | Path | None], AgentRuntime]] = {
 def select_runtime(
     okf_root: str | Path | None,
     git_gateway: "GitGateway | None" = None,
+    knowledge_store: "KnowledgeStore | None" = None,
 ) -> AgentRuntime:
     """env 플래그로 답 생성 런타임을 고른다 — 공급자 중립 레지스트리(ADR 0027 결정 1·11).
 
@@ -104,6 +125,10 @@ def select_runtime(
 
     flag = (os.environ.get("AON_PROVIDER") or os.environ.get("AON_RUNTIME") or "").strip().lower()
     if not flag or flag == "claude-code":
+        # 레거시 claude-code(claude -p) 경로는 knowledge_store 소비 배선이 없다 —
+        # ClaudeCodeRuntime은 cwd 스냅샷 접지 모델(ADR 0017 계보)이라 KnowledgeStore
+        # 소비형(ADR 0033 결정 1)이 아니다. 중앙 지식 저장소 소비는 인프로세스 공급자
+        # 어댑터(claude-api·codex) 경로에서 활성(그쪽이 resolve_knowledge_text를 탄다).
         return ClaudeCodeRuntime(okf_root=okf_root, git_gateway=git_gateway)
     provider = _PROVIDER_ALIASES.get(flag)
     factory = _PROVIDER_FACTORIES.get(provider) if provider is not None else None
@@ -111,7 +136,7 @@ def select_runtime(
         supported = ", ".join(sorted(_PROVIDER_ALIASES))
         raise SystemExit(f"알 수 없는 AON_PROVIDER={flag!r} — 지원: claude-code(기본), {supported}")
     print(
-        f"[runtime_select] AON_PROVIDER={flag} → owner OAuth 인프로세스 공급자 SDK 어댑터 사용"
-        "(owner 프로필 자동 해석·중앙 토큰 0·게이트 밖 T9.6)."
+        f"[runtime_select] AON_PROVIDER={flag} → 인프로세스 공급자 SDK 어댑터 사용"
+        "(ADR 0033 결정 2 중앙 조직 키·지식 저장소 소비·게이트 밖 T9.6)."
     )
-    return factory(okf_root)
+    return factory(okf_root, knowledge_store)

@@ -60,11 +60,17 @@ class ProviderRequest(BaseModel, frozen=True):
 
     Anthropic API는 system을 top-level 파라미터로 받는다 — messages가 아니라 별 필드.
     model + system(담당자 페르소나) + messages(대화 이력·질문) 3필드.
+
+    `agent_id`(Phase 12·ADR 0033 결정 2·옵셔널·비용 태깅): 중앙 조직 키 1개로 부를 때
+    담당자별 비용을 사후 집계할 수 있게 하는 *식별자 태그*(키를 담당자별로 쪼개지 않는다).
+    실 transport(`AnthropicSdkTransport`)가 SDK `metadata`로 실어 보낸다. None이면 태깅
+    없음(하위호환 — 기존 요청 형태 무회귀). 키가 아니라 *식별자*라 노출 불변식 무관.
     """
 
     model: str
     system: str = ""
     messages: list[dict[str, str]] = []
+    agent_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +247,7 @@ def build_provider_request(
         model=model,
         system="\n".join(system_parts),
         messages=messages,
+        agent_id=card.agent_id,  # 비용 태깅(ADR 0033 결정 2) — 식별자만, 키 아님.
     )
 
 

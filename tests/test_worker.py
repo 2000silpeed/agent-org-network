@@ -824,3 +824,102 @@ def test_T11_7e_예외_sink_반복_커밋도_계속_흡수된다(tmp_path: Path)
         assert result.agent_id == "cs_ops"
 
     assert failing_sink.call_count == 3
+
+
+# ── (Phase 12 (B)) knowledge_sync_frames: 지정 경계 파일 → SyncKnowledge ─────────
+
+
+def _worker_with_knowledge(
+    owner_id: str,
+    agent_id: str,
+    okf_root: Path,
+    knowledge_paths: dict[str, tuple[str, ...]],
+) -> WorkerLogic:
+    """지식 동기화 경계(knowledge_paths)를 물린 WorkerLogic — knowledge_sync_frames 검증용."""
+
+    class _NullRunner:
+        def __call__(self, prompt: str, **kw: object) -> str:
+            return "답"
+
+    card = AgentCard(
+        agent_id=agent_id,
+        owner=owner_id,
+        team="cs",
+        summary="환불 안내",
+        domains=["환불"],
+        last_reviewed_at=BASE_TS.date(),
+    )
+    return WorkerLogic(
+        owner_id=owner_id,
+        cards={agent_id: card},
+        runtime=ClaudeCodeRuntime(runner=_NullRunner()),
+        okf_root=okf_root,
+        knowledge_paths=knowledge_paths,
+    )
+
+
+def test_knowledge_sync_frames가_지정_디렉터리_파일을_읽어_본문을_싣는다(tmp_path: Path) -> None:
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불")
+    worker = _worker_with_knowledge("cs_lead", "cs_ops", tmp_path, {"cs_ops": ("cs_ops",)})
+    frames = worker.knowledge_sync_frames(synced_at=BASE_TS)
+    assert len(frames) == 1
+    content = frames[0].content
+    assert content.agent_id == "cs_ops"
+    assert content.documents[0].path == "cs_ops/refund.md"
+    assert "본문" in content.documents[0].body
+    assert content.synced_at == BASE_TS
+
+
+def test_지정_경계가_없는_카드는_동기화하지_않는다(tmp_path: Path) -> None:
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불")
+    # knowledge_paths 미지정 — 빈 프레임(하위호환·명시 지정만).
+    worker = _worker_with_knowledge("cs_lead", "cs_ops", tmp_path, {})
+    assert worker.knowledge_sync_frames(synced_at=BASE_TS) == []
+
+
+def test_okf_root_미주입이면_빈_프레임(tmp_path: Path) -> None:
+    class _NullRunner:
+        def __call__(self, prompt: str, **kw: object) -> str:
+            return "답"
+
+    card = AgentCard(
+        agent_id="cs_ops",
+        owner="cs_lead",
+        team="cs",
+        summary="환불 안내",
+        domains=["환불"],
+        last_reviewed_at=BASE_TS.date(),
+    )
+    worker = WorkerLogic(
+        owner_id="cs_lead",
+        cards={"cs_ops": card},
+        runtime=ClaudeCodeRuntime(runner=_NullRunner()),
+        knowledge_paths={"cs_ops": ("cs_ops",)},
+    )
+    assert worker.knowledge_sync_frames(synced_at=BASE_TS) == []
+
+
+def test_같은_본문이면_같은_version_다른_본문이면_다른_version(tmp_path: Path) -> None:
+    """version은 본문 해시라 무변경 재송신은 같은 version(중앙 put 멱등)·변경분은 다른 version."""
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불")
+    worker = _worker_with_knowledge("cs_lead", "cs_ops", tmp_path, {"cs_ops": ("cs_ops",)})
+    v1 = worker.knowledge_sync_frames(synced_at=BASE_TS)[0].content.version
+    v1_again = worker.knowledge_sync_frames(synced_at=BASE_TS)[0].content.version
+    assert v1 == v1_again  # 같은 본문 → 같은 version(멱등 재송신)
+    (tmp_path / "cs_ops" / "refund.md").write_text("변경된 본문", encoding="utf-8")
+    v2 = worker.knowledge_sync_frames(synced_at=BASE_TS)[0].content.version
+    assert v2 != v1  # 본문 변경 → 다른 version
+
+
+def test_okf_root_밖_경로는_traversal_차단(tmp_path: Path) -> None:
+    """지정 경로가 okf_root 밖을 가리키면(../) resolve 후 하위 확인으로 차단(그 문서 미포함)."""
+    _write_okf_file(tmp_path, "cs_ops", "refund.md", front="title: 환불")
+    # 부모 디렉터리에 비밀 파일 — traversal로 끌어오려는 시도.
+    (tmp_path.parent / "secret.md").write_text("비밀", encoding="utf-8")
+    worker = _worker_with_knowledge(
+        "cs_lead", "cs_ops", tmp_path, {"cs_ops": ("cs_ops", "../secret.md")}
+    )
+    frames = worker.knowledge_sync_frames(synced_at=BASE_TS)
+    # cs_ops 문서만 실리고 ../secret.md는 차단(okf_root 밖).
+    paths = [d.path for d in frames[0].content.documents]
+    assert paths == ["cs_ops/refund.md"]

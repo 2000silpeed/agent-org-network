@@ -52,8 +52,26 @@ class Registry:
                 raise RegistryError(f"중복 user id: {user.id}")
             self._users[user.id] = user
 
+    def replace_card(self, card: AgentCard) -> None:
+        """기존 agent_id의 카드 값을 교체한다(오너 변경 전이의 스위치·ADR 0034 결정 2).
+
+        `register`가 신규 agent_id만 받는(중복 거부) 것과 대칭 — 이건 *이미 있는*
+        agent_id의 frozen 값 교체다. owner가 A→B로 바뀐 새 카드 값으로 갈아끼운다
+        (agent_id 불변·frozen 값이라 mutation이 아니라 값 교체). 없는 agent_id면
+        RegistryError(전이 대상 부재). 참조 무결성(새 owner 실재)은 호출측
+        admission이 진다(우회 API 금지 — `register`와 같은 관문 재사용).
+        """
+        with self._lock:
+            if card.agent_id not in self._cards:
+                raise RegistryError(f"미존재 agent_id: {card.agent_id}")
+            self._cards[card.agent_id] = card
+
     def get(self, agent_id: str) -> AgentCard:
         return self._cards[agent_id]
+
+    def has_card(self, agent_id: str) -> bool:
+        with self._lock:
+            return agent_id in self._cards
 
     def all_cards(self) -> list[AgentCard]:
         return list(self._cards.values())

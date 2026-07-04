@@ -26,10 +26,12 @@ from agent_org_network.user import User
 
 if TYPE_CHECKING:
     from datetime import datetime
+    from agent_org_network.answer_record import AnswerRecordStore
     from agent_org_network.console import ConsoleEvent, ConsoleFeed
     from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.notify import Notifier
+    from agent_org_network.presence import PresenceStatus
     from agent_org_network.review import BackupReview, BackupReviewItem, BackupReviewStore
     from agent_org_network.runtime import Answer
 
@@ -40,6 +42,11 @@ class Answered:
     answered_by: tuple[str, str]
     mode: AnswerMode
     sources: tuple[str, ...] = field(default_factory=tuple)
+    # 답변 감사 단위(`AnswerRecord`) 식별자(Phase 12 (B)·ADR 0033 결정 4). 중앙 답변
+    # 발신 시 적재된 레코드를 질문자가 나중에 재조회(풀 방식 정정 배지)할 때 쓰는 *불투명
+    # 손잡이* 1개다 — `tracking`과 같은 결(내부 구조 미인코딩). 미배선(answer_record_store
+    # 미주입)이면 None(하위호환 — 기존 즉답 경로는 record_id 없이 그대로 동작).
+    record_id: str | None = None
 
 
 # Pending kind 세 갈래로 확장(T6.3 슬라이스2). `dispatched`가 분산 전송의 비동기
@@ -90,14 +97,22 @@ def project_answered_by(answered_by: tuple[str, str]) -> dict[str, str]:
 
 
 def project_answered(reply: "Answered") -> dict[str, "object"]:
-    """Answered를 사용자向 dict로 투영한다(담당·mode·출처만 — 내부값 0)."""
-    return {
+    """Answered를 사용자向 dict로 투영한다(담당·mode·출처만 — 내부값 0).
+
+    `record_id`(Phase 12 (B)·ADR 0033 결정 4)는 답변 감사 단위의 *불투명 손잡이* 1개로
+    질문자가 답변 페이지에서 정정 배지를 풀(pull)로 조회할 때만 쓴다(`tracking`과 같은
+    결 — 조직 내부 구조 미인코딩·불투명 ID라 leaky 아님). 미배선이면 None이라 실리지 않음.
+    """
+    body: dict[str, object] = {
         "type": "answered",
         "text": reply.text,
         "answered_by": project_answered_by(reply.answered_by),
         "mode": reply.mode,
         "sources": list(reply.sources),
     }
+    if reply.record_id is not None:
+        body["record_id"] = reply.record_id
+    return body
 
 
 def project_pending(reply: "Pending") -> dict[str, "object"]:
@@ -248,6 +263,8 @@ class AskOrg:
         notifier: "Notifier | None" = None,
         hitl_toggles: "HitlToggleMap | None" = None,
         console_feed: "ConsoleFeed | None" = None,
+        answer_record_store: "AnswerRecordStore | None" = None,
+        presence_of: "Callable[[str], PresenceStatus] | None" = None,
     ) -> None:
         # [Minor 2] manager_root 기본값 "root" 주의: 데모의 실제 root는 "root_manager".
         # manager_queue_store 를 주입할 때 manager_root 도 함께 주입하지 않으면
@@ -280,6 +297,14 @@ class AskOrg:
         # 시점에 ConsoleEvent를 emit한다(관전 미러). 미주입이면 발화 0(하위호환 — 기존 동작
         # 100% 무변경). emit 실패는 흡수한다(관전이 본 흐름을 못 깨는 계약 — 전이≠기록 정신).
         self._console_feed = console_feed
+        # 답변 감사 단위 적재(Phase 12 (B)·ADR 0033 결정 4) — 중앙이 낸 답이 확정될 때마다
+        # `AnswerRecord`를 append한다(담당자 모니터링·질문자 정정 배지의 데이터 원천). 미주입
+        # 이면 적재 안 함(하위호환 — 기존 경로는 record_id 없이 그대로). `presence_of`는 그
+        # 답의 담당 agent_id가 오프라인인지 조회하는 콜백(디스패처 프레즌스 추적기 위임) —
+        # 오프라인 자동발신(`full`)이면 `needs_correction_review=True`로 실어 담당자 검토 필터에
+        # 노출한다(`resolve_mode_with_presence(..., return_flag=True)` 정신을 적재 지점에서 재현).
+        self._answer_record_store = answer_record_store
+        self._presence_of = presence_of
         # 답 회수용 불투명 추적 토큰 → WorkTicket 매핑(ADR 0011 결정 6-5). 서버가
         # ticket을 보관하고 사용자엔 *불투명 토큰만* 준다 — 사용자向 응답에 ticket_id·
         # owner 등 내부 구조가 새지 않게 한다(노출 불변식). 토큰은 uuid4 hex(미인코딩).
@@ -290,6 +315,10 @@ class AskOrg:
         self._pending_audit: dict[str, tuple[str, str, "Routed"]] = {}
         # 이미 answered 엔트리를 기록한 tracking 집합 — 멱등 가드.
         self._answered_recorded: set[str] = set()
+        # tracking → 그 답에 적재된 record_id(Phase 12 (B)). 분산 회신(retrieve)은 여러 번
+        # poll될 수 있어, 첫 Delivered에 record_id를 이 맵에 고정하고 이후 재조회는 같은
+        # record_id를 답에 실어 준다(질문자가 새로고침해도 정정 배지 조회 손잡이가 안정).
+        self._answer_record_ids: dict[str, str] = {}
 
     def _project_outcome(
         self,
@@ -323,6 +352,50 @@ class AskOrg:
                 )
             case _ as never:
                 assert_never(never)
+
+    def _record_answer(
+        self, reply: OrgReply, question: str, session_id: str | None
+    ) -> OrgReply:
+        """확정된 `Answered`를 `AnswerRecord`로 적재하고 record_id를 그 답에 실어 돌려준다.
+
+        중앙 답변 발신 지점(전이 ≠ 기록의 "기록" 축·ADR 0033 결정 4): 이 함수가 답 확정
+        마다 정확히 append-only 레코드를 하나 남긴다 — 담당자 모니터링(`monitoring_for_owner`)
+        과 질문자 정정 배지(`view_answer_with_correction`)의 원천. `Answered`가 아니거나 store
+        미주입이면 그대로 통과(하위호환·발화 0).
+
+        `needs_correction_review`(오프라인 자동발신 사후교정 플래그): `presence_of`가 그 답의
+        담당 agent_id를 offline으로 보고하고 최종 mode가 `full`(자동 발신)이면 True — 담당자가
+        복귀 후 "검토 필요" 필터에서 본다. `resolve_mode_with_presence(..., return_flag=True)`가
+        S4에서 정한 판정을 *적재 시점*에 재현한다(온라인이거나 draft_only/backup이면 False).
+
+        record_id는 uuid4 hex(내부 구조 미인코딩·불투명 손잡이) — 질문자가 이 토큰으로 자기
+        답변 페이지에서 정정을 조회한다.
+        """
+        if self._answer_record_store is None or not isinstance(reply, Answered):
+            return reply
+        from agent_org_network.answer_record import AnswerRecord
+
+        owner, agent_id = reply.answered_by
+        needs_review = False
+        if self._presence_of is not None and reply.mode == "full":
+            needs_review = self._presence_of(agent_id) == "offline"
+        record_id = uuid.uuid4().hex
+        self._answer_record_store.add(
+            AnswerRecord(
+                record_id=record_id,
+                question=question,
+                answer_text=reply.text,
+                answered_by=owner,
+                agent_id=agent_id,
+                mode=reply.mode,
+                session_id=session_id,
+                answered_at=self._clock(),
+                needs_correction_review=needs_review,
+            )
+        )
+        import dataclasses
+
+        return dataclasses.replace(reply, record_id=record_id)
 
     def _apply_approval_gate(self, reply: OrgReply, decision: Routed) -> OrgReply:
         """Approval 게이트를 사용자向 답에 강제 반영한다(T2.5, ADR 0012 mode 강제 패턴).
@@ -438,11 +511,56 @@ class AskOrg:
             )
             self._answered_recorded.add(tracking)
         # 검토 store 덧씌움: Delivered backup 답에 검토 결과를 우선 투영(큐 무변경).
+        reply: OrgReply
         if isinstance(outcome, Delivered) and self._review_store is not None:
             reviewed = self._review_store.get_by_ticket(ticket.ticket_id)
             if reviewed is not None and reviewed.status == "reviewed":
-                return self._project_review_outcome(reviewed, ticket, tracking)
-        return self._project_outcome(outcome, ticket.owner_id, ticket.agent_id, tracking)
+                reply = self._project_review_outcome(reviewed, ticket, tracking)
+                return self._record_answer_for_tracking(reply, tracking)
+        reply = self._project_outcome(outcome, ticket.owner_id, ticket.agent_id, tracking)
+        return self._record_answer_for_tracking(reply, tracking)
+
+    def _record_answer_for_tracking(self, reply: OrgReply, tracking: str) -> OrgReply:
+        """분산 회신(retrieve)에서 확정된 Answered를 tracking별로 멱등 적재한다.
+
+        `handle`의 즉답 경로(`_record_answer`)와 달리 여기선 record_id를 tracking에 고정한다
+        — retrieve가 여러 번 호출돼도 첫 적재의 record_id를 재사용해(멱등) 질문자 정정 배지
+        조회 손잡이가 안정된다. `_pending_audit`가 그 답의 질문·질문자 세션을 보관한다.
+        """
+        if self._answer_record_store is None or not isinstance(reply, Answered):
+            return reply
+        existing = self._answer_record_ids.get(tracking)
+        if existing is not None:
+            import dataclasses
+
+            return dataclasses.replace(reply, record_id=existing)
+        from agent_org_network.answer_record import AnswerRecord
+
+        audit_ctx = self._pending_audit.get(tracking)
+        session_id = audit_ctx[0] if audit_ctx is not None else None
+        question = audit_ctx[1] if audit_ctx is not None else ""
+        owner, agent_id = reply.answered_by
+        needs_review = False
+        if self._presence_of is not None and reply.mode == "full":
+            needs_review = self._presence_of(agent_id) == "offline"
+        record_id = uuid.uuid4().hex
+        self._answer_record_store.add(
+            AnswerRecord(
+                record_id=record_id,
+                question=question,
+                answer_text=reply.text,
+                answered_by=owner,
+                agent_id=agent_id,
+                mode=reply.mode,
+                session_id=session_id,
+                answered_at=self._clock(),
+                needs_correction_review=needs_review,
+            )
+        )
+        self._answer_record_ids[tracking] = record_id
+        import dataclasses
+
+        return dataclasses.replace(reply, record_id=record_id)
 
     def _project_review_outcome(
         self, reviewed_item: "BackupReviewItem", ticket: WorkTicket, tracking: str
@@ -663,6 +781,11 @@ class AskOrg:
                 # draft_only로 *덮지 않는다* — backup 답은 owner 미검토라 승인 대기보다 약한
                 # 신뢰가 맞다. full→draft_only만 격상(게이트 표시), backup은 보존.
                 reply = self._apply_approval_gate(reply, decision)
+                # 답변 감사 단위 적재(Phase 12 (B)·ADR 0033 결정 4) — 즉답(Delivered) 경로에서
+                # Answered가 확정된 직후. 오프라인 자동발신이면 needs_correction_review=True.
+                # 분산 회신(Pending dispatched)은 아직 답이 없어 여기선 적재 안 하고 retrieve가
+                # Delivered 첫 관측 시 적재한다(retrieve 참조).
+                reply = self._record_answer(reply, question, user.id)
                 # EscalatedToManager면 Manager 큐에도 적재(T5.2 ADR 0014).
                 if isinstance(outcome, EscalatedToManager):
                     self._enqueue_dispatch(outcome)

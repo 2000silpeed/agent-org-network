@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -470,6 +471,89 @@ def test_여러_정정_중_최신_정정본이_배지에_반영된다():
 
     assert view is not None
     assert view.corrected_text == "2차 정정(최신)"
+
+
+# ── 정정 권한 판정 = 현재 카드 owner 기준 (ADR 0034 결정 3) ─────────────────
+
+
+def _service_with_owner_of(
+    owner_of: "Callable[[str], str | None]",
+) -> tuple[CorrectionService, InMemoryAnswerRecordStore, InMemoryReevalStore]:
+    answer_store = InMemoryAnswerRecordStore()
+    reeval_store = InMemoryReevalStore()
+    service = CorrectionService(
+        answer_store=answer_store,
+        correction_store=InMemoryCorrectionStore(),
+        reeval_store=reeval_store,
+        owner_of=owner_of,
+    )
+    return service, answer_store, reeval_store
+
+
+def test_현재_카드_owner가_정정할_수_있다():
+    """오너 변경 후 새 owner(현재 카드 owner)가 과거 답을 정정 가능(ADR 0034 결정 3)."""
+    # 과거 답변자는 alice지만 현재 카드 owner는 bob(오너 변경됨).
+    service, answer_store, _ = _service_with_owner_of(lambda agent_id: "bob")
+    answer_store.add(_record(answered_by="alice", agent_id="refund-bot"))
+
+    event = service.submit_correction(
+        record_id="rec-1",
+        by_owner="bob",  # 새 owner
+        corrected_text="새 owner 정정",
+        at=_T0,
+    )
+    assert event.by_owner == "bob"
+    # 과거 기록(answered_by)은 불변(전이 ≠ 기록).
+    stored = answer_store.get("rec-1")
+    assert stored is not None and stored.answered_by == "alice"
+
+
+def test_구_owner는_현재_카드_owner가_아니면_거부된다():
+    """오너 변경 후 구 owner(과거 답변자)는 더 이상 정정 불가(ADR 0034 결정 3)."""
+    service, answer_store, _ = _service_with_owner_of(lambda agent_id: "bob")
+    answer_store.add(_record(answered_by="alice", agent_id="refund-bot"))
+
+    with pytest.raises(ValueError):
+        service.submit_correction(
+            record_id="rec-1",
+            by_owner="alice",  # 구 owner — 이제 카드 owner 아님
+            corrected_text="구 owner 정정 시도",
+            at=_T0,
+        )
+
+
+def test_카드가_사라지면_정정_불가():
+    """owner_of가 None(카드 폐기)이면 판정 원천 부재 — 정정 불가(불변식 안전)."""
+    service, answer_store, _ = _service_with_owner_of(lambda agent_id: None)
+    answer_store.add(_record(answered_by="alice", agent_id="refund-bot"))
+
+    with pytest.raises(ValueError):
+        service.submit_correction(
+            record_id="rec-1",
+            by_owner="alice",
+            corrected_text="x",
+            at=_T0,
+        )
+
+
+def test_오너_변경_후_정정하면_reeval이_새_owner_처리함에_뜬다():
+    """code-reviewer m-3: reeval 귀속은 정정자(event.by_owner) 기준이어야 한다.
+
+    `record.answered_by`(구 owner)로 귀속하면 새 owner가 정정해도 reeval이 구 owner
+    처리함에 떠(ADR 0034 결정 3의 "정정 권한=현재 owner" 취지가 reeval에서 무력화).
+    """
+    service, answer_store, reeval_store = _service_with_owner_of(lambda agent_id: "bob")
+    answer_store.add(_record(answered_by="alice", agent_id="refund-bot"))
+
+    service.submit_correction(
+        record_id="rec-1",
+        by_owner="bob",  # 새 owner가 정정
+        corrected_text="새 owner 정정",
+        at=_T0,
+    )
+
+    assert len(reeval_store.pending_for_owner("bob")) == 1
+    assert reeval_store.pending_for_owner("alice") == []
 
 
 def test_존재하지_않는_레코드_조회는_None():

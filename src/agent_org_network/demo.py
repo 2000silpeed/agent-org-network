@@ -55,9 +55,13 @@ from agent_org_network.two_stage_router import (
 from agent_org_network.user import User
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from agent_org_network.answer_record import AnswerRecordStore
     from agent_org_network.console import ConsoleFeed
     from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.manager_queue import ManagerQueueStore
+    from agent_org_network.presence import PresenceStatus
     from agent_org_network.review import BackupReviewStore
 
 ROOT_USER = "root_manager"
@@ -204,6 +208,11 @@ class DemoBundle:
     published_index_store: InMemoryPublishedIndexStore | None = None
     reeval_store: ReevalStore | None = None
     reeval_service: ReevalService | None = None
+    # 답변 감사 단위 저장소(Phase 12 (B)·ADR 0033 결정 4) — `ask`가 답 확정 시 append하는
+    # *바로 그* `AnswerRecordStore`를 노출하는 손잡이. 담당자 모니터링 라우트·질문자 정정 배지
+    # 라우트(create_app)가 이 인스턴스를 꺼내 조회한다. 주입 시에만 채워지고 미주입이면 None
+    # (하위호환 — 적재/모니터링 없이 동작).
+    answer_record_store: "AnswerRecordStore | None" = None
 
 
 # 데모 인덱스 라우팅 시드의 고정 generated_at — OKF→인덱스 도출이 결정론이 되도록
@@ -303,6 +312,8 @@ def build_demo(
     classifier: Classifier | None = None,
     hitl_toggles: "HitlToggleMap | None" = None,
     console_feed: "ConsoleFeed | None" = None,
+    answer_record_store: "AnswerRecordStore | None" = None,
+    presence_of: "Callable[[str], PresenceStatus] | None" = None,
 ) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
@@ -313,8 +324,13 @@ def build_demo(
     cs_ops·finance_ops가 "보상" domain을 공유 → "보상" 질문은 Contested(다툼) 시연.
 
     `dispatcher`를 주입하면 그 디스패처를 쓴다(분산 회수 경로 테스트용 `WebSocketDispatcher`
-    등). 미주입이면 기본 `LocalRuntimeDispatcher`(동기 즉답 — 데모/in-process 기본).
-    주입 시 `runtime`은 무시된다(디스패처가 답 획득을 전담).
+    등). 미주입이면 기본 `LocalStreamingDispatcher`(동기 즉답 — 데모/in-process 기본).
+    주입 시 `runtime`은 이 `build_demo` 안에서는 소비되지 않는다(디스패처가 답 획득을 전담) —
+    단 `WebSocketDispatcher`의 **오프라인 폴백원**(`fallback_runtime`)으로는 여전히 실 소비된다.
+    담당 워커가 미연결이라 push 못 한 작업을 그 디스패처가 폴백 런타임으로 대신 답하고, 이 함수가
+    만드는 `AskOrg`의 기존 Delivered 경로(Answered 투영·`_record_answer`)가 그대로 태워진다
+    (`create_central_app`이 중앙 런타임을 `WebSocketDispatcher(fallback_runtime=)`로 꽂는다 —
+    "담당자 PC 꺼져도 답변"의 분산 배선 성립점).
 
     `precedents`·`case_store`를 하나씩 만들어 Router·AskOrg·ConsensusService에
     같은 인스턴스로 주입한다 — 처리함 합의(Agreed→Precedent 기록)가 곧바로
@@ -401,6 +417,8 @@ def build_demo(
         manager_root=ROOT_USER,
         hitl_toggles=hitl_toggles,
         console_feed=console_feed,
+        answer_record_store=answer_record_store,
+        presence_of=presence_of,
     )
     consensus = ConsensusService(case_store=case_store, precedents=precedents)
     # 재평가(세 번째 탭) store/service — review_store(둘째 탭)와 동형으로 항상 구성해
@@ -422,6 +440,7 @@ def build_demo(
         published_index_store=published_index_store,
         reeval_store=reeval_store,
         reeval_service=reeval_service,
+        answer_record_store=answer_record_store,
     )
 
 

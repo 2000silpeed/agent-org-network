@@ -306,6 +306,39 @@ class TestBuildProviderRequest:
         req = build_provider_request("질문", card, context="이전 맥락")
         assert isinstance(req, ProviderRequest)
 
+    def test_agent_id가_비용_태깅으로_실린다(self, card: AgentCard) -> None:
+        # Phase 12·ADR 0033 결정 2 — 중앙 조직 키 1개 하에서 담당자별 비용 태깅(식별자만).
+        req = build_provider_request("질문", card)
+        assert req.agent_id == "cs_ops"
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 (C)·ADR 0033 결정 2 — 중앙 조직 API 키 로딩(env만·로그 미노출)
+# ---------------------------------------------------------------------------
+
+
+class TestCentralOrgKeyLoading:
+    def test_AON_PROVIDER_KEY가_우선(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from agent_org_network.provider_transport_anthropic import load_central_org_key
+
+        monkeypatch.setenv("AON_PROVIDER_KEY", "sk-central-org")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-owner")
+        assert load_central_org_key() == "sk-central-org"
+
+    def test_ANTHROPIC_API_KEY로_폴백(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from agent_org_network.provider_transport_anthropic import load_central_org_key
+
+        monkeypatch.delenv("AON_PROVIDER_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-owner")
+        assert load_central_org_key() == "sk-owner"
+
+    def test_둘다_미설정이면_None(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from agent_org_network.provider_transport_anthropic import load_central_org_key
+
+        monkeypatch.delenv("AON_PROVIDER_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        assert load_central_org_key() is None
+
     def test_순수_함수_동일_입력_동일_출력(self, card: AgentCard) -> None:
         req1 = build_provider_request("질문", card)
         req2 = build_provider_request("질문", card)

@@ -25,7 +25,7 @@ OrgReply(Answered | Pending)를 JSON으로 직렬화해 돌려준다.
 
 import os
 import secrets
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never, cast
 
@@ -49,7 +49,14 @@ if TYPE_CHECKING:
     from datetime import datetime as _DateTime
 
     from agent_org_network.agent_card import AgentCard
+    from agent_org_network.answer_record import (
+        AnswerCorrectionView,
+        AnswerRecordStore,
+        CorrectionStore,
+        MonitoringItem,
+    )
     from agent_org_network.audit import AuditReader
+    from agent_org_network.presence import PresenceStatus
 from agent_org_network.conflict import (
     Agreed,
     ConcurOnPrimary,
@@ -136,9 +143,11 @@ _WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
 _INDEX_HTML = _WEB_DIR / "index.html"
 _INBOX_HTML = _WEB_DIR / "inbox.html"
 _MONITOR_HTML = _WEB_DIR / "monitor.html"
+_SUPERVISION_HTML = _WEB_DIR / "owner-monitor.html"
 _CONSOLE_FEED_HTML = _WEB_DIR / "console-feed.html"
 _ORG_HTML = _WEB_DIR / "org.html"
 _BUILDER_HTML = _WEB_DIR / "builder.html"
+_ADMIN_HTML = _WEB_DIR / "admin.html"
 
 # 웹챗에서 오는 익명 end-user. 채팅(`/ask`·`/`)은 운영 세션을 요구하지 않는다
 # (ADR 0009·0016 — 실 사용자 면은 운영 면과 다른 별개 공간, 익명 유지).
@@ -198,6 +207,62 @@ def _session_identity(request: Request) -> str:
 
 class AskRequest(BaseModel):
     question: str
+
+
+class CorrectionRequest(BaseModel):
+    """POST /supervision/answers/{record_id}/correct 요청 바디(Phase 12 (A)·ADR 0033 결정 4).
+
+    owner 로컬 감독 면(127.0.0.1 관례)의 정정 제출. `corrected_text`는 정정본, `rationale`은
+    정정 사유(선택). `corrected_text`/`rationale`은 owner 스코핑 위반은 서비스가
+    ValueError→403.
+
+    `by_owner`(정정 주체 신원, `concur`/`ConcurRequest`와 대칭 — code-reviewer M-1):
+    인증 활성(`_auth_enabled`) 시 **세션 신원을 강제**하고 이 필드는 무시한다(클라이언트
+    자기보고 신뢰 금지 — 세션 신원이 오너 변경 후에도 항상 *지금* 로그인한 사용자를
+    가리키므로, 구 owner UI 세션을 갖고 있어도 재로그인 없이는 남의 신원을 못 싣는다).
+    미인증 로컬 관례(세션 미들웨어 없음)에서만 이 필드를 읽는다(하위호환) — 도메인
+    `owner_of` 현재 owner 대조가 그 경우에도 최종 방어선.
+    """
+
+    by_owner: str = ""
+    corrected_text: str
+    rationale: str = ""
+
+
+class AdminCardRegisterRequest(BaseModel):
+    """POST /admin/cards 요청 바디 — 신규 Agent Card 라이브 등록(ADR 0034 결정 1).
+
+    `BuilderValidateRequest`와 같은 카드 필드를 받는다(폼→카드 후보 미러). 핸들러가
+    `CardCandidate`로 변환해 admission 관문(`admit_card`)에 그대로 태운다 — 우회 등록
+    API 없음(ADR 0023 계승). 통과 시 라이브 Registry에 즉시 반영 + 감사 로그 append.
+    권한류 필드(`can_answer` 등)는 카드 under-claim 자기보고일 뿐(ADR 0004) — Authority
+    SSOT는 여전히 중앙.
+    """
+
+    agent_id: str
+    owner: str
+    team: str
+    summary: str
+    domains: list[str]
+    last_reviewed_at: str
+    maintainer: str | None = None
+    can_answer: list[str] = []
+    cannot_answer: list[str] = []
+    approval_when: list[str] = []
+    collaborate_when: list[str] = []
+    knowledge_sources: list[str] = []
+    trust_labels: list[str] = []
+
+
+class AdminOwnerChangeRequest(BaseModel):
+    """POST /admin/cards/{agent_id}/owner 요청 바디 — 오너 변경 전이(ADR 0034 결정 2).
+
+    `new_owner`만 받는다 — 나머지 카드 값은 현재 라이브 카드에서 읽어 새 owner로 갈아끼운
+    카드 후보를 구성한다(frozen 값 교체·agent_id 불변). 재-admission(새 owner 실재·참조
+    무결성) 통과 시 스위치 + 구 owner 워커 토큰 revoke를 같은 임계 구역에서 실행한다.
+    """
+
+    new_owner: str
 
 
 class ConcurRequest(BaseModel):
@@ -265,6 +330,44 @@ def serialize_reply(reply: OrgReply) -> dict[str, Any]:
             return project_pending(reply)
         case _ as never:
             assert_never(never)
+
+
+def serialize_monitoring_item(item: "MonitoringItem") -> dict[str, Any]:
+    """담당자 모니터링 한 건을 화면向 dict로 변환한다(Phase 12 (A)·owner 로컬 감독 면).
+
+    owner 자기 에이전트 감독 면이라 질문·답 본문·발신 mode·검토 필요 표식·정정 이력을
+    그대로 노출한다(채팅 OrgReply 노출 불변식의 반대 — 여긴 담당자가 답을 감독하는 면).
+    """
+    return {
+        "record_id": item.record.record_id,
+        "question": item.record.question,
+        "answer_text": item.record.answer_text,
+        "agent_id": item.record.agent_id,
+        "answered_by": item.record.answered_by,
+        "mode": item.record.mode,
+        "answered_at": item.record.answered_at.isoformat(),
+        "needs_correction_review": item.needs_correction_review,
+        "corrections": [
+            {
+                "corrected_text": ev.corrected_text,
+                "by_owner": ev.by_owner,
+                "rationale": ev.rationale,
+                "corrected_at": ev.corrected_at.isoformat(),
+            }
+            for ev in item.corrections
+        ],
+    }
+
+
+def serialize_correction_view(view: "AnswerCorrectionView") -> dict[str, Any]:
+    """질문자向 정정 배지 투영을 dict로 변환한다(풀 방식·원문+정정본 보존)."""
+    return {
+        "record_id": view.record_id,
+        "original_text": view.original_text,
+        "has_correction": view.has_correction,
+        "corrected_text": view.corrected_text,
+        "corrected_at": view.corrected_at.isoformat() if view.corrected_at is not None else None,
+    }
 
 
 def serialize_case(
@@ -977,6 +1080,9 @@ def create_app(
     token_store: TokenStore | None = None,
     hitl_toggles: HitlToggleMap | None = None,
     console_feed: "ConsoleFeed | None" = None,
+    answer_record_store: "AnswerRecordStore | None" = None,
+    correction_store: "CorrectionStore | None" = None,
+    presence_of: "Callable[[str], PresenceStatus] | None" = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -1044,6 +1150,25 @@ def create_app(
     # approval_when이 있는 카드도 시드 전엔 off로 보이는 걸 막는다).
     _hitl_toggles_explicit: set[str] = set()
 
+    # 담당자 감독 배선(Phase 12 (A)(B)·ADR 0033 결정 4): 답변 감사 단위·정정 이벤트 저장소.
+    # 미주입이면 이 앱이 InMemory를 만들어 `build_demo`(→AskOrg 적재)·감독 라우트가 *같은
+    # 인스턴스*를 본다(단일 원천). `presence_of`는 답의 담당 프레즌스 조회 콜백(오프라인
+    # 자동발신 → 검토 필요 표식) — 미주입이면 항상 offline 미간주(needs_correction_review는
+    # 그 조건이 성립 못 해 False). `create_central_app`이 실 `_presence_tracker.status`를 물린다.
+    from agent_org_network.answer_record import (
+        InMemoryAnswerRecordStore as _InMemoryAnswerRecordStore,
+        InMemoryCorrectionStore as _InMemoryCorrectionStore,
+    )
+
+    _answer_record_store: AnswerRecordStore = (
+        answer_record_store
+        if answer_record_store is not None
+        else _InMemoryAnswerRecordStore()
+    )
+    _correction_store: CorrectionStore = (
+        correction_store if correction_store is not None else _InMemoryCorrectionStore()
+    )
+
     bundle = build_demo(
         runtime=runtime,
         dispatcher=dispatcher,
@@ -1052,6 +1177,8 @@ def create_app(
         audit_log=audit_log,
         hitl_toggles=_hitl_toggles,
         console_feed=_console_feed,
+        answer_record_store=_answer_record_store,
+        presence_of=presence_of,
     )
     # 라이브 publish 배선(T10.4 Blocker B1·ADR 0028 §14 결정 F): index 모드면 라우터가
     # 보는 *바로 그* published 인덱스 스토어를 디스패처에 같이 꽂는다 — 그래야 워커
@@ -1110,6 +1237,63 @@ def create_app(
     _reeval_store = reeval_store
     _reeval_service = reeval_service
     _manager_queue_store = manager_queue_store
+    # 정정 상태기계(Phase 12 (A)·ADR 0033 결정 4): `submit_correction`이 원 레코드 불변으로
+    # `CorrectionEvent`를 append하고 정정 지식을 재평가 큐에 얹는다. reeval 적재 대상은
+    # bundle이 항상 구성하는 reeval_store(주입 없으면 그것) — 정정→판례/지식 갱신 고리.
+    from agent_org_network.answer_record import CorrectionService as _CorrectionService
+
+    _correction_reeval_store = (
+        reeval_store if reeval_store is not None else bundle.reeval_store
+    )
+    # 정정 판정 교체(Phase 12 3라운드·ADR 0034 결정 3): `submit_correction`이 "현재 카드
+    # owner" 기준으로 정정 권한을 판정하도록 `owner_of`(레지스트리 조회)를 주입한다. 오너
+    # 변경 후 새 owner가 과거 답을 정정 가능·구 owner는 거부. 카드가 사라지면 None → 정정
+    # 불가(판정 원천 부재). 과거 `AnswerRecord.answered_by`는 불변(전이 ≠ 기록).
+    def _card_owner_of(agent_id: str) -> str | None:
+        try:
+            return bundle.registry.get(agent_id).owner
+        except KeyError:
+            return None
+
+    _correction_service = (
+        _CorrectionService(
+            _answer_record_store,
+            _correction_store,
+            _correction_reeval_store,
+            owner_of=_card_owner_of,
+        )
+        if _correction_reeval_store is not None
+        else None
+    )
+    # 관리 UI 서비스(Phase 12 3라운드·ADR 0034 결정 1·2): 라이브 카드 등록 + 오너 변경
+    # 전이. 같은 `bundle.registry`를 Router가 라이브로 읽으므로(라우터는 매 route마다
+    # `all_cards()` — 재색인 불요) 등록·전이가 다음 라우팅에 즉시 잡힌다. 감사는
+    # `bundle.audit`(등록·전이 이력의 append-only 진실 — YAML git 추적을 대신), 오너 변경
+    # 시 구 owner 토큰 revoke는 `_token_store`(콘솔 발급과 같은 인스턴스), 구 owner 워커 WS
+    # 세션 끊기는 `WebSocketDispatcher.disconnect`(등급별 — presence offline·in-flight
+    # re-queue). 디스패처가 WS가 아니면(로컬/데모) disconnect 미배선(no-op·하위호환).
+    from agent_org_network.admin_registry import AdminRegistryService as _AdminRegistryService
+
+    _admin_disconnect_owner: "Callable[[str], None] | None" = None
+    if isinstance(dispatcher, WebSocketDispatcher):
+        _ws_dispatcher = dispatcher
+
+        def _disconnect_owner_all_roles(owner_id: str) -> None:
+            # 구 owner 워커의 모든 등급(primary/backup) 연결을 끊는다 — 등록 레지스트리에서
+            # 제거(다음 push 차단)·presence offline 도출·in-flight claimed 작업 re-queue.
+            # 이미 열린 소켓 자체는 토큰 revoke 후 재인증 실패로 닫히지만, 여기서 명시적
+            # disconnect로 즉시 presence·큐 정리를 유발한다(ADR 0034 결정 2 부작용 축).
+            _ws_dispatcher.disconnect(owner_id, "primary")
+            _ws_dispatcher.disconnect(owner_id, "backup")
+
+        _admin_disconnect_owner = _disconnect_owner_all_roles
+
+    _admin_registry_service = _AdminRegistryService(
+        bundle.registry,
+        audit_sink=bundle.audit,
+        token_store=_token_store,
+        disconnect_owner=_admin_disconnect_owner,
+    )
     _git_gateway: GitGateway = git_gateway if git_gateway is not None else FakeGitGateway()
     # OKF 저작자(/author/run) — 주입(테스트=FakeAuthor)이면 그대로, 미주입(프로덕션)이면 실
     # `LlmAuthor`를 *지연* 생성한다. `runtime_select` 대칭: anthropic SDK는 선택 extra라 첫
@@ -1216,6 +1400,196 @@ def create_app(
         if reply is None:
             raise HTTPException(status_code=404, detail="알 수 없는 추적 토큰")
         return serialize_reply(reply)
+
+    # ── 담당자 감독(Supervised Answering) 면 — Phase 12 (A)·ADR 0033 결정 4 ────
+    #
+    # owner 로컬 감독 면(127.0.0.1 관례·owner_web 검토면과 대칭). 자기 에이전트의 Answer
+    # Record 목록·검토 필요 필터·정정 제출·프레즌스 배지. owner 스코핑은 agent_id(조회)와
+    # CorrectionService 1인칭 대조(정정)가 떠받친다. 질문자 정정 배지는 별 라우트(/answer/…).
+
+    from agent_org_network.answer_record import (
+        monitoring_for_owner as _monitoring_for_owner,
+        view_answer_with_correction as _view_answer_with_correction,
+    )
+
+    @app.get("/supervision")
+    def supervision_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
+        return FileResponse(_SUPERVISION_HTML)
+
+    @app.get("/supervision/answers")
+    def supervision_answers(  # pyright: ignore[reportUnusedFunction]
+        agent_id: str, needs_review: bool = False
+    ) -> list[dict[str, Any]]:
+        # 자기 에이전트의 답 목록(최신순)·정정 이력 투영. needs_review=true면 검토 필요만.
+        # owner 스코핑: agent_id로만 스코핑(담당자는 자기 에이전트 것만 — 도메인 코어 계약).
+        items = _monitoring_for_owner(
+            _answer_record_store, _correction_store, agent_id=agent_id
+        )
+        items = sorted(items, key=lambda it: it.record.answered_at, reverse=True)
+        if needs_review:
+            items = [it for it in items if it.needs_correction_review]
+        return [serialize_monitoring_item(it) for it in items]
+
+    @app.post("/supervision/answers/{record_id}/correct")
+    def supervision_correct(  # pyright: ignore[reportUnusedFunction]
+        record_id: str, req: CorrectionRequest, request: Request
+    ) -> dict[str, Any]:
+        # 정정 제출 — 미배선(reeval 부재)이면 503, 미존재 레코드면 404, 남의 에이전트
+        # 정정(1인칭 위반)이면 403. 원 레코드는 불변으로 CorrectionEvent만 append된다.
+        #
+        # by_owner 출처(`concur`와 대칭·code-reviewer M-1): 인증 활성 시 세션 신원을
+        # 강제(클라이언트 자기보고 무시) — 오너 변경 후 새 owner 세션이 정정할 수 있고
+        # 구 owner 세션은 여전히 자기 신원(구 owner)으로만 보내므로 도메인 판정에서
+        # 403이 난다. 미인증 로컬 관례에선 body의 by_owner를 읽되, 도메인 `owner_of`
+        # 현재 owner 대조가 최종 방어선(위조돼도 현재 owner가 아니면 거부).
+        if _correction_service is None:
+            raise HTTPException(status_code=503, detail="정정 서비스가 배선되지 않았습니다")
+        by_owner = _session_identity(request) if _auth_enabled else req.by_owner
+        try:
+            event = _correction_service.submit_correction(
+                record_id=record_id,
+                by_owner=by_owner,
+                corrected_text=req.corrected_text,
+                rationale=req.rationale,
+            )
+        except ValueError as exc:
+            # 미존재 레코드 vs 1인칭 위반을 메시지로 가른다(도메인이 두 경우 다 ValueError).
+            if "미존재" in str(exc):
+                raise HTTPException(status_code=404, detail=str(exc))
+            raise HTTPException(status_code=403, detail=str(exc))
+        return {"submitted": True, "event_id": event.event_id, "record_id": record_id}
+
+    @app.get("/supervision/presence/{agent_id}")
+    def supervision_presence(agent_id: str) -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
+        # 자기 워커 프레즌스 배지(온라인/오프라인). 미배선이면 offline 기본(안전측·미관측 정신).
+        status: "PresenceStatus" = presence_of(agent_id) if presence_of is not None else "offline"
+        return {"agent_id": agent_id, "status": status}
+
+    @app.get("/answer/{record_id}/correction")
+    def answer_correction(record_id: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        # 질문자 정정 배지(풀 방식·ADR 0033 결정 4) — 원문 + (있으면) 정정 배지·정정본.
+        # 노출 불변식: 정정 주체(by_owner)·사유 등 감독 내부값은 싣지 않는다(원문·정정본만).
+        view = _view_answer_with_correction(
+            _answer_record_store, _correction_store, record_id=record_id
+        )
+        if view is None:
+            raise HTTPException(status_code=404, detail="알 수 없는 답변 레코드")
+        return serialize_correction_view(view)
+
+    # ── 관리 UI 라우트 (Phase 12 3라운드·ADR 0034) ──────────────────────────
+    #
+    # 신규 카드 등록 + 오너 변경 전이. 운영자 면이라 세션 신원을 요구한다(인증 활성 시
+    # 미로그인 401·ADR 0034 결정 4). 역할(root/운영자) 구분은 아직 없다 — 실 SSO 활성 시
+    # `resolve_identity` 위에 운영자 role 클레임 검사를 얹는 게 강화 지점(ADR 0016/0021).
+    # 우회 등록 API 없음: 둘 다 `admit_card` 관문을 통과해야 라이브에 들어간다(ADR 0023).
+
+    from agent_org_network.admin_registry import (
+        AdmissionError as _AdmissionError,
+        CardCandidate as _CardCandidate,
+        DuplicateCardError as _DuplicateCardError,
+        UnknownCardError as _UnknownCardError,
+    )
+
+    @app.get("/admin")
+    def admin_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
+        return FileResponse(_ADMIN_HTML)
+
+    @app.get("/admin/cards")
+    def admin_list_cards(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+        """등록된 카드 목록(운영 면) — 오너 변경 폼의 대상 선택 원천.
+
+        운영 면이라 내부값(agent_id·owner·team·domains) 노출 OK(채팅 OrgReply 불변식의
+        반대·`serialize_org_graph` 결). 인증 활성 시 미로그인 401.
+        """
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+        return [
+            {
+                "agent_id": c.agent_id,
+                "owner": c.owner,
+                "team": c.team,
+                "domains": list(c.domains),
+            }
+            for c in sorted(bundle.registry.all_cards(), key=lambda c: c.agent_id)
+        ]
+
+    @app.post("/admin/cards")
+    def admin_register_card(  # pyright: ignore[reportUnusedFunction]
+        req: AdminCardRegisterRequest, request: Request
+    ) -> dict[str, Any]:
+        """신규 카드 라이브 등록 — admission 통과 즉시 반영(ADR 0034 결정 1).
+
+        무효 카드는 422(사유 목록)·중복 agent_id는 409·미로그인 401. 우회 없이
+        `admit_card` 관문을 통과해야 라이브에 들어간다("무효 카드 등록 금지" 불변식).
+        """
+        operator = _session_identity(request) if _auth_enabled else "operator"
+        candidate = _CardCandidate(
+            agent_id=req.agent_id,
+            owner=req.owner,
+            team=req.team,
+            summary=req.summary,
+            domains=list(req.domains),
+            last_reviewed_at=req.last_reviewed_at,
+            maintainer=req.maintainer,
+            can_answer=list(req.can_answer),
+            cannot_answer=list(req.cannot_answer),
+            approval_when=list(req.approval_when),
+            collaborate_when=list(req.collaborate_when),
+            knowledge_sources=list(req.knowledge_sources),
+            trust_labels=list(req.trust_labels),
+        )
+        try:
+            card = _admin_registry_service.register_card(candidate, by=operator)
+        except _AdmissionError as exc:
+            raise HTTPException(status_code=422, detail={"errors": exc.errors})
+        except _DuplicateCardError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"registered": True, "agent_id": card.agent_id, "owner": card.owner}
+
+    @app.post("/admin/cards/{agent_id}/owner")
+    def admin_change_owner(  # pyright: ignore[reportUnusedFunction]
+        agent_id: str, req: AdminOwnerChangeRequest, request: Request
+    ) -> dict[str, Any]:
+        """오너 변경 전이 — 재-admission + 스위치 + 구 owner 토큰 revoke(ADR 0034 결정 2).
+
+        현재 카드 값을 읽어 새 owner로 갈아끼운 후보를 구성하고(agent_id 불변·frozen 값
+        교체) 재-admission을 태운다. 무효 새 owner는 422·미존재 카드는 404·미로그인 401.
+        스위치와 revoke는 도메인 서비스가 같은 임계 구역에서 실행(owner 격리 보안 계약).
+        """
+        operator = _session_identity(request) if _auth_enabled else "operator"
+        try:
+            current = bundle.registry.get(agent_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"미존재 agent_id: {agent_id!r}")
+        candidate = _CardCandidate(
+            agent_id=current.agent_id,
+            owner=req.new_owner,
+            team=current.team,
+            summary=current.summary,
+            domains=list(current.domains),
+            last_reviewed_at=current.last_reviewed_at.isoformat(),
+            maintainer=current.maintainer,
+            can_answer=list(current.can_answer),
+            cannot_answer=list(current.cannot_answer),
+            approval_when=list(current.approval_when),
+            collaborate_when=list(current.collaborate_when),
+            knowledge_sources=list(current.knowledge_sources),
+            trust_labels=list(current.trust_labels),
+        )
+        try:
+            result = _admin_registry_service.transfer_ownership(candidate, by=operator)
+        except _AdmissionError as exc:
+            raise HTTPException(status_code=422, detail={"errors": exc.errors})
+        except _UnknownCardError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return {
+            "transferred": True,
+            "agent_id": result.agent_id,
+            "from_owner": result.from_owner,
+            "to_owner": result.to_owner,
+            "revoked_token_ids": result.revoked_token_ids,
+            "audit_index": result.audit_index,
+        }
 
     # ── 운영 면 인증 라우트 (T6.5 슬라이스 1) ───────────────────────────────
 

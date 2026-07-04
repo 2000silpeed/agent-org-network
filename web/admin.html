@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>관리 — 카드 등록·오너 변경(운영자)</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --me: #2563eb;
+      --ink: #1f2933;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+        "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+    }
+    .admin {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 16px 20px;
+      font-weight: 700;
+      font-size: 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    header small { display: block; font-weight: 400; color: var(--muted); margin-top: 2px; }
+    .login-banner {
+      padding: 14px 20px;
+      background: #fef3c7;
+      border-bottom: 1px solid #fcd34d;
+      font-size: 14px;
+      color: #92400e;
+    }
+    .login-form { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+    .login-form input {
+      padding: 6px 10px; border: 1px solid #fcd34d; border-radius: 6px;
+      font-size: 13px; flex: 1; max-width: 240px;
+    }
+    .login-form button {
+      padding: 6px 14px; background: #d97706; color: #fff; border: none;
+      border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .whoami {
+      display: flex; align-items: center; gap: 8px; padding: 10px 20px;
+      background: #eff6ff; border-bottom: 1px solid #bfdbfe; font-size: 13px; color: #1e40af;
+    }
+    .whoami strong { font-weight: 700; }
+    .logout-btn {
+      margin-left: auto; padding: 3px 10px; font-size: 12px; background: none;
+      border: 1px solid #93c5fd; border-radius: 999px; color: #1e40af; cursor: pointer;
+    }
+    .main { flex: 1; padding: 20px; }
+    .notice {
+      background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px;
+      padding: 12px 16px; font-size: 13px; color: #1e40af; margin-bottom: 18px;
+    }
+    .notice code {
+      font-family: ui-monospace, monospace; background: #dbeafe; padding: 1px 5px; border-radius: 3px;
+    }
+    .tabs { display: flex; gap: 4px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+    .tab {
+      padding: 9px 16px; font-size: 13px; font-weight: 600; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer;
+    }
+    .tab.active { color: var(--me); border-bottom-color: var(--me); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .form-card {
+      background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 20px;
+    }
+    .form-card h2 { margin: 0 0 18px; font-size: 15px; font-weight: 700; }
+    .field { margin-bottom: 14px; }
+    .field label {
+      display: block; font-size: 12px; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px;
+    }
+    .field label .req { color: #dc2626; margin-left: 2px; }
+    .field input, .field textarea, .field select {
+      width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+      font-size: 13px; font-family: inherit; color: var(--ink); background: #fff;
+    }
+    .field input:focus, .field textarea:focus, .field select:focus {
+      outline: none; border-color: var(--me);
+    }
+    .field .hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .field textarea { resize: vertical; min-height: 56px; }
+    .field-row { display: flex; gap: 12px; }
+    .field-row .field { flex: 1; }
+    .submit-btn {
+      width: 100%; padding: 10px; font-size: 14px; font-weight: 700; background: var(--me);
+      color: #fff; border: none; border-radius: 8px; cursor: pointer; margin-top: 6px;
+    }
+    .submit-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+    .result-area { margin-top: 20px; }
+    .result-ok {
+      background: #fff; border: 1px solid #bbf7d0; border-radius: 12px; padding: 20px;
+    }
+    .result-ok h3 { margin: 0 0 8px; font-size: 14px; font-weight: 700; color: #065f46; }
+    .result-ok .kv { font-size: 13px; color: var(--ink); margin: 3px 0; }
+    .result-ok .kv b { color: var(--muted); font-weight: 600; }
+    .result-error {
+      background: #fff; border: 1px solid #fca5a5; border-radius: 12px; padding: 20px;
+    }
+    .result-error h3 { margin: 0 0 10px; font-size: 14px; font-weight: 700; color: #991b1b; }
+    .error-list { list-style: none; padding: 0; margin: 0; }
+    .error-list li {
+      font-size: 13px; color: #b91c1c; padding: 4px 0; border-bottom: 1px dashed #fecaca;
+    }
+    .error-list li:last-child { border-bottom: none; }
+    .nav {
+      padding: 12px 16px; font-size: 13px; background: #fff; border-top: 1px solid var(--line);
+    }
+    .nav a { color: var(--me); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="admin">
+    <header>
+      관리 — 카드 등록·오너 변경
+      <small>운영자 면. 신규 Agent Card를 라이브 등록하거나 카드 owner를 변경합니다(즉시 반영).</small>
+    </header>
+
+    <div id="login-banner" class="login-banner" style="display:none;">
+      <strong>로그인이 필요합니다.</strong> 운영자 신원으로 로그인하세요.
+      <div class="login-form">
+        <input id="login-input" type="text" placeholder="user_id (예: root_manager)" />
+        <button id="login-btn">로그인</button>
+      </div>
+      <div id="login-error" style="margin-top:6px; font-size:12px; color:#b91c1c;"></div>
+    </div>
+
+    <div id="whoami-bar" class="whoami" style="display:none;">
+      로그인: <strong id="whoami-name">—</strong>
+      <span style="color:var(--muted); font-size:12px;">— 운영자 면(역할 구분은 실 SSO 단계 강화).</span>
+      <button class="logout-btn" id="logout-btn">로그아웃</button>
+    </div>
+
+    <div class="main">
+      <div class="tabs">
+        <button class="tab active" id="tab-register" data-panel="panel-register">신규 카드 등록</button>
+        <button class="tab" id="tab-owner" data-panel="panel-owner">오너 변경</button>
+      </div>
+
+      <!-- 신규 카드 등록 -->
+      <div class="panel active" id="panel-register">
+        <div class="notice">
+          입력한 카드는 <strong>admission 검증(형식·owner 실재)</strong>을 통과하면
+          <strong>라이브 Registry에 즉시 반영</strong>됩니다(우회 API 없음·감사 로그 기록).
+          라우팅에 바로 잡힙니다. YAML 파일은 초기 시드 역할만 합니다.
+        </div>
+        <div class="form-card">
+          <h2>신규 카드 등록</h2>
+          <div class="field-row">
+            <div class="field">
+              <label>agent_id <span class="req">*</span></label>
+              <input id="r-agent-id" type="text" placeholder="예: new_ops" />
+            </div>
+            <div class="field">
+              <label>owner <span class="req">*</span></label>
+              <input id="r-owner" type="text" placeholder="예: cs_lead" />
+              <div class="hint">Registry에 실재하는 User여야 합니다.</div>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>team <span class="req">*</span></label>
+              <input id="r-team" type="text" placeholder="예: cs" />
+            </div>
+            <div class="field">
+              <label>last_reviewed_at <span class="req">*</span></label>
+              <input id="r-date" type="date" />
+            </div>
+          </div>
+          <div class="field">
+            <label>summary <span class="req">*</span></label>
+            <textarea id="r-summary" rows="2" placeholder="담당 내용 한 줄 요약"></textarea>
+          </div>
+          <div class="field">
+            <label>domains <span class="req">*</span></label>
+            <input id="r-domains" type="text" placeholder="쉼표로 구분: 환불, 보상" />
+            <div class="hint">라우터가 이 도메인으로 질문을 라우팅합니다.</div>
+          </div>
+          <div class="field">
+            <label>maintainer <small style="font-weight:400;">(선택)</small></label>
+            <input id="r-maintainer" type="text" placeholder="예: root_manager" />
+          </div>
+          <div class="field">
+            <label>knowledge_sources <small style="font-weight:400;">(선택)</small></label>
+            <input id="r-ks" type="text" placeholder="쉼표로 구분" />
+          </div>
+          <button class="submit-btn" id="register-btn">등록</button>
+        </div>
+        <div class="result-area" id="register-result"></div>
+      </div>
+
+      <!-- 오너 변경 -->
+      <div class="panel" id="panel-owner">
+        <div class="notice">
+          카드 <strong>owner를 A→B로 변경</strong>합니다. <code>agent_id</code>는 불변이고,
+          재-admission(새 owner 실재) 통과 시 즉시 전환됩니다. 전환과 동시에
+          <strong>구 owner 워커 토큰이 revoke</strong>되고 구 워커 연결이 끊깁니다(owner 격리).
+        </div>
+        <div class="form-card">
+          <h2>오너 변경</h2>
+          <div class="field">
+            <label>대상 카드 (agent_id) <span class="req">*</span></label>
+            <select id="o-agent-id"></select>
+            <div class="hint" id="o-current-owner"></div>
+          </div>
+          <div class="field">
+            <label>새 owner <span class="req">*</span></label>
+            <input id="o-new-owner" type="text" placeholder="예: bob" />
+            <div class="hint">Registry에 실재하는 User여야 합니다.</div>
+          </div>
+          <button class="submit-btn" id="owner-btn">오너 변경</button>
+        </div>
+        <div class="result-area" id="owner-result"></div>
+      </div>
+    </div>
+
+    <div class="nav">
+      <a href="/">← 채팅으로</a> &nbsp;|&nbsp;
+      <a href="/org/view">Org 그래프</a> &nbsp;|&nbsp;
+      <a href="/builder">빌더</a>
+    </div>
+  </div>
+
+  <script>
+    let cards = [];
+
+    function splitCsv(val) {
+      return val.split(",").map(s => s.trim()).filter(Boolean);
+    }
+
+    function extractErrors(detail) {
+      if (detail && Array.isArray(detail.errors)) return detail.errors;
+      if (typeof detail === "string") return [detail];
+      return ["알 수 없는 오류"];
+    }
+
+    function renderOk(areaId, title, rows) {
+      const area = document.getElementById(areaId);
+      area.innerHTML = "";
+      const box = document.createElement("div");
+      box.className = "result-ok";
+      const h3 = document.createElement("h3");
+      h3.textContent = title;
+      box.appendChild(h3);
+      for (const [k, v] of rows) {
+        const div = document.createElement("div");
+        div.className = "kv";
+        // 방어심층화(code-reviewer m-4): innerHTML 조립 대신 key는 정적 <b> 요소로,
+        // value는 textContent로 분리 — v에 임의 문자열(예: 새 owner 입력값)이 섞여도
+        // HTML로 해석되지 않는다(owner-monitor.html의 el() 패턴).
+        const label = document.createElement("b");
+        label.textContent = k + ":";
+        div.appendChild(label);
+        div.appendChild(document.createTextNode(" " + v));
+        box.appendChild(div);
+      }
+      area.appendChild(box);
+    }
+
+    function renderError(areaId, errors) {
+      const area = document.getElementById(areaId);
+      area.innerHTML = "";
+      const box = document.createElement("div");
+      box.className = "result-error";
+      const h3 = document.createElement("h3");
+      h3.textContent = "실패";
+      box.appendChild(h3);
+      const ul = document.createElement("ul");
+      ul.className = "error-list";
+      for (const e of errors) {
+        const li = document.createElement("li");
+        li.textContent = e;
+        ul.appendChild(li);
+      }
+      box.appendChild(ul);
+      area.appendChild(box);
+    }
+
+    async function loadCards() {
+      try {
+        const res = await fetch("/admin/cards");
+        if (res.status === 401) {
+          document.getElementById("login-banner").style.display = "block";
+          return;
+        }
+        cards = await res.json();
+        const sel = document.getElementById("o-agent-id");
+        sel.innerHTML = "";
+        for (const c of cards) {
+          const opt = document.createElement("option");
+          opt.value = c.agent_id;
+          opt.textContent = c.agent_id + " (owner: " + c.owner + ")";
+          sel.appendChild(opt);
+        }
+        updateCurrentOwner();
+      } catch (_) { /* 무시 */ }
+    }
+
+    function updateCurrentOwner() {
+      const agentId = document.getElementById("o-agent-id").value;
+      const card = cards.find(c => c.agent_id === agentId);
+      document.getElementById("o-current-owner").textContent =
+        card ? ("현재 owner: " + card.owner) : "";
+    }
+
+    async function doRegister() {
+      const btn = document.getElementById("register-btn");
+      btn.disabled = true;
+      btn.textContent = "등록 중…";
+      const payload = {
+        agent_id: document.getElementById("r-agent-id").value.trim(),
+        owner: document.getElementById("r-owner").value.trim(),
+        team: document.getElementById("r-team").value.trim(),
+        summary: document.getElementById("r-summary").value.trim(),
+        domains: splitCsv(document.getElementById("r-domains").value),
+        last_reviewed_at: document.getElementById("r-date").value.trim(),
+        maintainer: document.getElementById("r-maintainer").value.trim() || null,
+        knowledge_sources: splitCsv(document.getElementById("r-ks").value),
+      };
+      try {
+        const res = await fetch("/admin/cards", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 200) {
+          renderOk("register-result", "등록 완료", [
+            ["agent_id", data.agent_id], ["owner", data.owner],
+          ]);
+          await loadCards();
+        } else if (res.status === 401) {
+          document.getElementById("login-banner").style.display = "block";
+          renderError("register-result", ["로그인이 필요합니다."]);
+        } else if (res.status === 409) {
+          renderError("register-result", ["이미 존재하는 agent_id입니다."]);
+        } else {
+          renderError("register-result", extractErrors(data.detail));
+        }
+      } catch (err) {
+        renderError("register-result", ["요청 실패: " + err.message]);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "등록";
+      }
+    }
+
+    async function doOwnerChange() {
+      const btn = document.getElementById("owner-btn");
+      const agentId = document.getElementById("o-agent-id").value;
+      const newOwner = document.getElementById("o-new-owner").value.trim();
+      if (!agentId) { renderError("owner-result", ["대상 카드를 선택하세요."]); return; }
+      if (!newOwner) { renderError("owner-result", ["새 owner를 입력하세요."]); return; }
+      btn.disabled = true;
+      btn.textContent = "변경 중…";
+      try {
+        const res = await fetch("/admin/cards/" + encodeURIComponent(agentId) + "/owner", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({new_owner: newOwner}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 200) {
+          renderOk("owner-result", "오너 변경 완료", [
+            ["agent_id", data.agent_id],
+            ["from → to", data.from_owner + " → " + data.to_owner],
+            ["revoke된 구 owner 토큰", (data.revoked_token_ids || []).length + "개"],
+            ["감사 인덱스", data.audit_index],
+          ]);
+          await loadCards();
+        } else if (res.status === 401) {
+          document.getElementById("login-banner").style.display = "block";
+          renderError("owner-result", ["로그인이 필요합니다."]);
+        } else if (res.status === 404) {
+          renderError("owner-result", ["미존재 카드: " + agentId]);
+        } else {
+          renderError("owner-result", extractErrors(data.detail));
+        }
+      } catch (err) {
+        renderError("owner-result", ["요청 실패: " + err.message]);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "오너 변경";
+      }
+    }
+
+    async function tryLogin() {
+      const userId = document.getElementById("login-input").value.trim();
+      if (!userId) return;
+      const errEl = document.getElementById("login-error");
+      errEl.textContent = "";
+      try {
+        const res = await fetch("/login", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({user_id: userId}),
+        });
+        if (res.status === 401) { errEl.textContent = "미존재 사용자입니다."; return; }
+        if (!res.ok) throw new Error("로그인 실패: " + res.status);
+        document.getElementById("login-banner").style.display = "none";
+        document.getElementById("whoami-bar").style.display = "flex";
+        document.getElementById("whoami-name").textContent = userId;
+        await loadCards();
+      } catch (err) {
+        errEl.textContent = String(err);
+      }
+    }
+
+    async function doLogout() {
+      await fetch("/logout", {method: "POST"});
+      document.getElementById("whoami-bar").style.display = "none";
+      document.getElementById("login-banner").style.display = "block";
+    }
+
+    function switchTab(panelId) {
+      for (const t of document.querySelectorAll(".tab")) {
+        t.classList.toggle("active", t.dataset.panel === panelId);
+      }
+      for (const p of document.querySelectorAll(".panel")) {
+        p.classList.toggle("active", p.id === panelId);
+      }
+    }
+
+    document.getElementById("register-btn").addEventListener("click", doRegister);
+    document.getElementById("owner-btn").addEventListener("click", doOwnerChange);
+    document.getElementById("o-agent-id").addEventListener("change", updateCurrentOwner);
+    document.getElementById("login-btn").addEventListener("click", tryLogin);
+    document.getElementById("login-input").addEventListener("keydown", e => {
+      if (e.key === "Enter") tryLogin();
+    });
+    document.getElementById("logout-btn").addEventListener("click", doLogout);
+    document.getElementById("tab-register").addEventListener("click", () => switchTab("panel-register"));
+    document.getElementById("tab-owner").addEventListener("click", () => switchTab("panel-owner"));
+
+    document.getElementById("r-date").value = new Date().toISOString().slice(0, 10);
+    loadCards();
+  </script>
+</body>
+</html>

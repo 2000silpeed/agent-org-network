@@ -13,8 +13,14 @@
     적재하고, 그 정정된 지식을 `ReevalStore`(reeval.py, ADR 0019 재사용)에
     `AnswerSubject` 재평가 항목으로 얹는다 — 정정→판례/지식 갱신 고리.
 
-owner 스코핑: 정정은 그 답을 낸 담당자(`AnswerRecord.answered_by`)만 할 수 있다
-(`BackupReviewService`·`ReevalService`의 1인칭 강제 정신).
+owner 스코핑(ADR 0034 결정 3 — 현재 카드 owner 기준): 정정은 그 답의 *현재 카드
+owner*만 할 수 있다. 판정 기준을 `by_owner == record.answered_by`(과거 답변자 동등)
+에서 **현재 그 카드의 owner인가**(`owner_of(record.agent_id) == by_owner`)로 옮긴다 —
+오너 변경(Ownership Transfer) 후 새 owner가 과거 답을 정정할 수 있고, 구 owner는
+거부된다. 과거 기록 필드(`record.answered_by`)는 절대 수정하지 않는다(전이 ≠ 기록 —
+누가 원래 답했나의 사실). `owner_of` 콜백(레지스트리 조회 주입)이 미주입이면 기존
+동등 대조로 폴백(하위호환). 카드가 Registry에서 사라진 경우(`owner_of`가 None)엔
+정정 불가(판정 원천 부재·불변식 안전).
 
 멱등: 같은 (record_id, by_owner, corrected_text) 재제출은 새 이벤트를 만들지
 않고 기존 이벤트를 그대로 반환한다(`CorrectionEvent.event_id` 결정론 도출).
@@ -172,9 +178,12 @@ class CorrectionService:
     (monitoring_for_owner) → 정정 제출(submit_correction) → CorrectionEvent
     적재 → ReevalItem 적재(AnswerSubject, ADR 0019 재사용).
 
-    owner 스코핑(1인칭 강제): `by_owner`가 `AnswerRecord.answered_by`와 달라야
-    하면 ValueError(`BackupReviewService`·`ReevalService`의 1인칭 강제 정신 —
-    담당자는 자기 에이전트 답만 정정 가능).
+    owner 스코핑(ADR 0034 결정 3 — 현재 카드 owner 기준): `by_owner`가 그 답의
+    *현재 카드 owner*(`owner_of(record.agent_id)`)와 달라야 하면 ValueError. 이는
+    "자기 에이전트 답만 정정" 불변식의 재해석이다 — 정정 권한이 *과거 답변자*가
+    아니라 *현재 카드 소유*를 따른다(오너 변경 후 새 owner가 과거 답을 정정 가능·
+    구 owner는 거부). `owner_of` 미주입이면 기존 `answered_by` 동등 대조로 폴백
+    (하위호환). 카드가 사라져 `owner_of`가 None을 돌리면 정정 불가(판정 원천 부재).
 
     멱등: 같은 (record_id, by_owner, corrected_text) 재제출은 새 이벤트를
     만들지 않고 기존 이벤트를 그대로 반환한다(reeval도 중복 적재 안 함).
@@ -186,11 +195,13 @@ class CorrectionService:
         correction_store: CorrectionStore,
         reeval_store: ReevalStore,
         clock: Clock = default_clock,
+        owner_of: Callable[[str], str | None] | None = None,
     ) -> None:
         self._answer_store = answer_store
         self._correction_store = correction_store
         self._reeval_store = reeval_store
         self._clock = clock
+        self._owner_of = owner_of
 
     def submit_correction(
         self,
@@ -204,7 +215,19 @@ class CorrectionService:
         record = self._answer_store.get(record_id)
         if record is None:
             raise ValueError(f"미존재 answer record: {record_id!r}")
-        if by_owner != record.answered_by:
+        if self._owner_of is not None:
+            current_owner = self._owner_of(record.agent_id)
+            if current_owner is None:
+                raise ValueError(
+                    f"미존재 카드({record.agent_id!r}) — 현재 owner를 확인할 수 없어 정정 불가"
+                )
+            if by_owner != current_owner:
+                raise ValueError(
+                    f"정정자({by_owner!r})가 현재 카드 owner({current_owner!r})와 다름 — "
+                    "현재 카드 owner만 정정할 수 있다"
+                )
+        elif by_owner != record.answered_by:
+            # 폴백(하위호환): owner_of 미주입이면 과거 답변자 동등 대조.
             raise ValueError(
                 f"정정자({by_owner!r})가 답변자({record.answered_by!r})와 다름 — "
                 "자기 에이전트 답만 정정할 수 있다"
@@ -236,9 +259,15 @@ class CorrectionService:
         레코드 식별자 문자열을 해시해 정수 슬롯으로 매핑한다 — 두 축(정정 vs
         audit stale 전파)이 같은 `ReevalStore`를 공유하되 서로 다른 트리거에서
         독립적으로 적재하므로 충돌 걱정 없이 `AnswerSubject`를 재사용한다.
+
+        귀속(owner_id)은 `event.by_owner`(실제 정정자)로 한다 — `record.answered_by`
+        (과거 답변자)로 하면 오너 변경 후 새 owner가 정정해도 reeval이 구 owner
+        처리함에 뜨는 결함(code-reviewer m-3). 정정 권한이 이미 "현재 카드 owner"로
+        옮겨졌으니(결정 3), 그 결과물(reeval)도 정정을 실제로 수행한 owner에게 가야
+        판례/지식 갱신 고리가 자기 처리함에서 닫힌다.
         """
         subject = AnswerSubject(audit_index=_record_id_to_slot(record.record_id))
-        pending = self._reeval_store.pending_for_owner(record.answered_by)
+        pending = self._reeval_store.pending_for_owner(event.by_owner)
         already_queued = any(
             isinstance(item.subject, AnswerSubject)
             and item.subject.audit_index == subject.audit_index
@@ -249,7 +278,7 @@ class CorrectionService:
         self._reeval_store.add(
             ReevalItem(
                 subject=subject,
-                owner_id=record.answered_by,
+                owner_id=event.by_owner,
                 agent_id=record.agent_id,
                 trigger_sha=event.event_id,
                 flagged_at=event.corrected_at,

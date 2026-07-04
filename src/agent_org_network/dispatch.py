@@ -401,6 +401,17 @@ class InMemoryWorkQueueDispatcher:
                 return ticket
         return None
 
+    def status_of(self, ticket_id: str) -> str:
+        """ticket_id의 현재 큐 상태를 조회한다(전이 없음 — 미등록이면 "queued" 기본).
+
+        오프라인 폴백 판정(Phase 12 조합 지점): `WebSocketDispatcher.dispatch`가
+        `_push_pending` 직후 이 ticket이 여전히 `queued`(=보낼 워커 없음·backup 거부로
+        push 안 됨)인지 본다. `queued`면 중앙 런타임 폴백을 태운다. 순수 조회라 단조성·
+        미아 없음 불변식과 무관(status 딕셔너리 그대로 반환). 미등록 ticket은 `poll`의
+        기본과 같은 "queued"를 준다(방어).
+        """
+        return self._status.get(ticket_id, "queued")
+
     def stale_claims(self, owner_id: str) -> list[WorkTicket]:
         """그 owner의 claimed 작업 중 *claim 후 t1 경과*한 것을 골라 `queued`로 회수한다.
 

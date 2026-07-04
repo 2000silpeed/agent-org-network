@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>답변 감독 — 담당자 모니터링(로컬)</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --me: #2563eb;
+      --org: #ffffff;
+      --ink: #1f2933;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+        "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+    }
+    .inbox {
+      width: 100%;
+      max-width: 680px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      background: var(--bg);
+    }
+    header {
+      padding: 16px 20px;
+      font-weight: 700;
+      font-size: 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    header small { display: block; font-weight: 400; color: var(--muted); margin-top: 2px; }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 20px;
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+    }
+    .controls label { font-size: 13px; color: var(--muted); }
+    .controls input[type="text"] {
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+    }
+    .controls input[type="text"]:focus { border-color: var(--me); }
+    .controls .filter { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+    .presence {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: #f3f4f6;
+      color: var(--muted);
+    }
+    .presence .dot { width: 8px; height: 8px; border-radius: 999px; background: #9ca3af; }
+    .presence.online { background: #dcfce7; color: #166534; }
+    .presence.online .dot { background: #16a34a; }
+    .presence.offline { background: #fee2e2; color: #b91c1c; }
+    .presence.offline .dot { background: #dc2626; }
+    #answers {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .empty { color: var(--muted); font-size: 14px; text-align: center; padding: 32px 16px; }
+    .case {
+      background: var(--org);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .case .meta { font-size: 12px; color: var(--muted); }
+    .badge {
+      display: inline-block;
+      align-self: flex-start;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .badge.review { background: #fef3c7; color: #92400e; }
+    .badge.corrected { background: #dbeafe; color: #1e40af; }
+    .label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .question, .answer {
+      font-size: 15px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .answer { background: #f9fafb; border-radius: 10px; padding: 10px 12px; }
+    .history { border-top: 1px dashed var(--line); padding-top: 8px; }
+    .history .item { font-size: 13px; color: var(--ink); margin-bottom: 6px; }
+    .history .item .when { color: var(--muted); font-size: 11px; }
+    textarea.correct-text {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.55;
+      font-family: inherit;
+      outline: none;
+      resize: vertical;
+      min-height: 72px;
+      background: #fff;
+    }
+    textarea.correct-text:focus { border-color: var(--me); }
+    input.rationale {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+    }
+    .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    button {
+      padding: 9px 18px;
+      border: none;
+      border-radius: 999px;
+      background: var(--me);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .result { font-size: 13px; font-weight: 600; }
+    .result.sent { color: #166534; }
+    .result.error { color: #b91c1c; }
+    .foot { padding: 12px 20px; font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="inbox">
+    <header>
+      답변 감독
+      <small>내 에이전트에 들어온 질문·나간 답을 열람하고, 잘못된 답을 정정한다(로컬).</small>
+    </header>
+    <div class="controls">
+      <label for="agent-id">에이전트</label>
+      <input type="text" id="agent-id" placeholder="예: contract_ops" />
+      <span class="presence" id="presence"><span class="dot"></span><span id="presence-text">—</span></span>
+      <span class="filter">
+        <input type="checkbox" id="needs-review" />
+        <label for="needs-review">검토 필요만</label>
+      </span>
+    </div>
+    <div id="answers"></div>
+    <div class="foot">
+      이 화면은 내 PC 로컬(127.0.0.1)에서만 열린다. 정정은 원 답을 지우지 않고 새 정정으로 쌓인다.
+      질문자는 자기 답변 페이지에서 정정 배지로 정정본을 본다(풀 방식).
+    </div>
+  </div>
+
+  <script>
+    const answersEl = document.getElementById("answers");
+    const agentInput = document.getElementById("agent-id");
+    const needsReviewEl = document.getElementById("needs-review");
+    const presenceEl = document.getElementById("presence");
+    const presenceTextEl = document.getElementById("presence-text");
+
+    function el(tag, cls, text) {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      return isNaN(d) ? iso : d.toLocaleString();
+    }
+
+    function currentAgent() {
+      return agentInput.value.trim();
+    }
+
+    async function fetchAnswers(agentId, needsReview) {
+      const q = new URLSearchParams({ agent_id: agentId });
+      if (needsReview) q.set("needs_review", "true");
+      const res = await fetch("/supervision/answers?" + q.toString());
+      if (!res.ok) throw new Error("요청 실패: " + res.status);
+      return res.json();
+    }
+
+    async function fetchPresence(agentId) {
+      const res = await fetch("/supervision/presence/" + encodeURIComponent(agentId));
+      if (!res.ok) throw new Error("요청 실패: " + res.status);
+      return res.json();
+    }
+
+    async function postCorrection(recordId, body) {
+      const res = await fetch(
+        "/supervision/answers/" + encodeURIComponent(recordId) + "/correct",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data && data.detail ? data.detail : "요청 실패: " + res.status;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    function renderPresence(status) {
+      presenceEl.className = "presence " + (status || "");
+      presenceTextEl.textContent =
+        status === "online" ? "워커 온라인" : status === "offline" ? "워커 오프라인" : "—";
+    }
+
+    function renderAnswer(a) {
+      const wrap = el("div", "case");
+      wrap.appendChild(el("div", "meta", a.agent_id + " · " + a.mode + " · " + fmtTime(a.answered_at)));
+      if (a.needs_correction_review) wrap.appendChild(el("span", "badge review", "검토 필요"));
+      if (a.corrections && a.corrections.length) {
+        wrap.appendChild(el("span", "badge corrected", "정정됨 " + a.corrections.length));
+      }
+
+      wrap.appendChild(el("div", "label", "질문"));
+      wrap.appendChild(el("div", "question", a.question));
+      wrap.appendChild(el("div", "label", "나간 답"));
+      wrap.appendChild(el("div", "answer", a.answer_text));
+
+      if (a.corrections && a.corrections.length) {
+        const hist = el("div", "history");
+        hist.appendChild(el("div", "label", "정정 이력"));
+        for (const c of a.corrections) {
+          const item = el("div", "item");
+          item.appendChild(el("span", null, c.corrected_text));
+          const meta = el("span", "when", "  — " + (c.by_owner || "") + " · " + fmtTime(c.corrected_at));
+          if (c.rationale) meta.textContent += " · " + c.rationale;
+          item.appendChild(meta);
+          hist.appendChild(item);
+        }
+        wrap.appendChild(hist);
+      }
+
+      wrap.appendChild(el("div", "label", "정정하기 (원 답은 지우지 않고 새 정정으로 쌓임)"));
+      const correctText = el("textarea", "correct-text");
+      correctText.defaultValue = ""; // 편집 중 판정 기준(value !== defaultValue)
+      correctText.placeholder = "정정본을 입력하세요";
+      wrap.appendChild(correctText);
+      const rationale = el("input", "rationale");
+      rationale.type = "text";
+      rationale.defaultValue = "";
+      rationale.placeholder = "정정 사유(선택)";
+      wrap.appendChild(rationale);
+
+      const result = el("div", "result");
+      const actions = el("div", "actions");
+      const submitBtn = el("button", null, "정정 전송");
+      actions.appendChild(submitBtn);
+      actions.appendChild(result);
+      wrap.appendChild(actions);
+
+      submitBtn.addEventListener("click", async () => {
+        const text = correctText.value.trim();
+        if (!text) {
+          result.className = "result error";
+          result.textContent = "정정본이 비어 있습니다.";
+          return;
+        }
+        submitBtn.disabled = true;
+        try {
+          // by_owner는 보내지 않는다 — 서버가 로그인 세션 신원으로 판정한다(현재 카드
+          // owner 대조, ADR 0034 결정 3). 과거 답변자(a.answered_by)를 하드코딩해 보내면
+          // 오너 변경 후 새 owner가 여기서 정정할 때 403이 나던 결함(code-reviewer M-1).
+          await postCorrection(a.record_id, {
+            corrected_text: text,
+            rationale: rationale.value.trim(),
+          });
+          result.className = "result sent";
+          result.textContent = "정정 전송 완료 — 재조회합니다.";
+          correctText.value = "";
+          rationale.value = "";
+          setTimeout(load, 800);
+        } catch (err) {
+          result.className = "result error";
+          result.textContent = err.message || "전송 실패";
+          submitBtn.disabled = false;
+        }
+      });
+
+      return wrap;
+    }
+
+    function isEditing() {
+      // 폴링 리렌더가 작성 중인 정정을 날리지 않게 하는 가드(크로스머신 시연에서 실증된 결함).
+      // ① 입력 요소에 포커스가 있거나 ② 아직 전송하지 않은 정정 내용(value !== defaultValue)이
+      // 남아 있으면 이번 폴링 주기는 화면을 갈아엎지 않는다.
+      const a = document.activeElement;
+      if (a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") && answersEl.contains(a)) {
+        return true;
+      }
+      for (const node of answersEl.querySelectorAll("textarea, input")) {
+        if (node.value !== node.defaultValue) return true;
+      }
+      return false;
+    }
+
+    async function load() {
+      const agentId = currentAgent();
+      if (!agentId) {
+        answersEl.innerHTML = "";
+        answersEl.appendChild(el("div", "empty", "위에서 감독할 에이전트 ID를 입력하세요."));
+        renderPresence(null);
+        return;
+      }
+      if (isEditing()) return;
+
+      try {
+        renderPresence((await fetchPresence(agentId)).status);
+      } catch (_) {
+        renderPresence(null);
+      }
+
+      let answers;
+      try {
+        answers = await fetchAnswers(agentId, needsReviewEl.checked);
+      } catch (err) {
+        answersEl.innerHTML = "";
+        answersEl.appendChild(el("div", "empty", "목록을 불러오지 못했습니다."));
+        return;
+      }
+      answersEl.innerHTML = "";
+      if (!answers.length) {
+        answersEl.appendChild(
+          el("div", "empty", needsReviewEl.checked ? "검토 필요한 답이 없습니다." : "답 이력이 없습니다.")
+        );
+        return;
+      }
+      for (const a of answers) answersEl.appendChild(renderAnswer(a));
+    }
+
+    agentInput.addEventListener("input", () => setTimeout(load, 200));
+    needsReviewEl.addEventListener("change", load);
+
+    // 간단 폴링 — 새 답/정정이 다음 주기에 반영된다(작성 중이면 isEditing 가드가 스킵).
+    load();
+    setInterval(load, 4000);
+  </script>
+</body>
+</html>

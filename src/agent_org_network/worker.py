@@ -35,6 +35,11 @@ from typing import Any, cast
 from pydantic import ValidationError
 
 from agent_org_network.agent_card import AgentCard, is_safe_path_component
+from agent_org_network.knowledge_sync import (
+    KnowledgeBundleContent,
+    KnowledgeDoc,
+    SyncKnowledge,
+)
 from agent_org_network.okf_index import build_knowledge_index_from_okf
 from agent_org_network.runtime import AgentRuntime, Answer
 from agent_org_network.runtime_select import select_runtime
@@ -184,9 +189,15 @@ class WorkerLogic:
         role: WorkerRole = "primary",
         okf_root: "Path | None" = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        knowledge_paths: "dict[str, tuple[str, ...]] | None" = None,
     ) -> None:
         self._owner_id = owner_id
         self._cards = cards
+        # 명시 지정 지식 동기화 경계(Phase 12 (B)·ADR 0033 결정 3·외부 결정 ①): agent_id →
+        # 지정 파일/디렉터리 경로들(okf_root 상대). 담당자가 *명시 지정한* 것만 동기화한다
+        # (owner 환경 전체를 올리지 않음). `main`이 env `AON_KNOWLEDGE_PATHS`를 파싱해 채운다
+        # (게이트 밖). 미주입이면 지식 동기화 안 함(빈 프레임 — 하위호환).
+        self._knowledge_paths: dict[str, tuple[str, ...]] = knowledge_paths or {}
         # owner의 로컬 OKF 번들 루트(`okf_root/{agent_id}/*.md`). publish_frames가 여기서
         # 인덱스를 도출한다(ADR 0028 §14 결정 E). None이면 publish_frames가 빈 리스트(OKF
         # 없는 워커는 배포 안 함·하위호환). *워커측* 호출 — 중앙은 OKF를 안 읽는다(비소유).
@@ -247,6 +258,95 @@ class WorkerLogic:
             )
             for card in self._cards.values()
         ]
+
+    def knowledge_sync_frames(self, synced_at: datetime) -> list[SyncKnowledge]:
+        """지정 경계(`self._knowledge_paths`)의 파일을 읽어 SyncKnowledge 프레임을 만든다.
+
+        Phase 12 (B)·ADR 0033 결정 3 — 워커가 "답변 실행자"에서 "지식 공급자"로 전환하는
+        핵심 발신. `publish_frames`(목차 도출)와 대칭이되 이건 *본문 동기화*다. 흐름:
+        자기 소유 카드(`self._cards`)마다 지정 경로(`self._knowledge_paths[agent_id]`)의
+        파일들을 `okf_root` 기준으로 읽어 `KnowledgeDoc`(path·body)를 만들고, 그 묶음을
+        `KnowledgeBundleContent`(agent_id·documents·version·synced_at)로 싸 `SyncKnowledge`로
+        만든다. 실 파일 읽기는 *워커 쪽*이다(중앙은 본문을 받기만 — 비소유 정신 유지).
+
+        결정론: 파일 내용 + 주입 `synced_at`으로 정해진다(`publish_frames`가 주입 clock으로
+        결정론인 정신). `version`은 본문 해시로 도출해 같은 본문이면 같은 version(중앙
+        `KnowledgeStore.put`이 같은 version을 멱등 무시 — 재송신 안전). okf_root 미주입이거나
+        지정 경로가 없는 카드는 프레임 생성 안 함(빈 지정 = 동기화 안 함·하위호환).
+
+        경계 안전: 지정 경로가 디렉터리면 그 아래 파일들을, 파일이면 그 파일을 읽는다.
+        okf_root 밖으로 새는 경로(traversal)는 resolve 후 하위 확인으로 차단(handle_fetch_document
+        정신). 읽기 실패(없음·권한)는 그 파일만 건너뛴다(부분 실패가 전체를 막지 않음).
+        """
+        if self._okf_root is None:
+            return []
+        frames: list[SyncKnowledge] = []
+        for agent_id in self._cards:
+            paths = self._knowledge_paths.get(agent_id)
+            if not paths:
+                continue
+            docs = self._read_knowledge_docs(agent_id, paths)
+            if not docs:
+                continue
+            version = self._content_version(docs)
+            frames.append(
+                SyncKnowledge(
+                    content=KnowledgeBundleContent(
+                        agent_id=agent_id,
+                        documents=tuple(docs),
+                        version=version,
+                        synced_at=synced_at,
+                    )
+                )
+            )
+        return frames
+
+    def _read_knowledge_docs(
+        self, agent_id: str, paths: tuple[str, ...]
+    ) -> list[KnowledgeDoc]:
+        """지정 경로(okf_root 상대)의 파일 본문을 읽어 `KnowledgeDoc` 리스트로 만든다(정렬 결정론).
+
+        각 지정 경로가 디렉터리면 그 아래 모든 파일을, 파일이면 그 파일 하나를 읽는다.
+        traversal 차단: resolve 후 okf_root 하위임을 확인한다(밖이면 건너뜀). doc.path는
+        okf_root 기준 상대 경로(POSIX)로 실어 중앙 admission이 spec 경계와 대조 가능하게 한다.
+        """
+        assert self._okf_root is not None
+        root = self._okf_root.resolve()
+        collected: dict[str, str] = {}
+        for rel in paths:
+            target = (root / rel).resolve()
+            if not target.is_relative_to(root):
+                continue  # okf_root 밖 — traversal 차단
+            if target.is_dir():
+                files = sorted(p for p in target.rglob("*") if p.is_file())
+            elif target.is_file():
+                files = [target]
+            else:
+                continue  # 없음 — 건너뜀
+            for f in files:
+                try:
+                    body = f.read_text(encoding="utf-8")
+                except OSError:
+                    continue  # 읽기 실패 — 그 파일만 건너뜀(부분 실패 흡수)
+                collected[f.relative_to(root).as_posix()] = body
+        return [KnowledgeDoc(path=p, body=collected[p]) for p in sorted(collected)]
+
+    @staticmethod
+    def _content_version(docs: list[KnowledgeDoc]) -> str:
+        """문서 묶음의 결정론 version(본문 해시) — 같은 본문이면 같은 version(멱등 재송신).
+
+        중앙 `KnowledgeStore.put`이 같은 version을 무시하므로(멱등), 파일이 안 바뀌면
+        주기 재송신이 스토어를 흔들지 않는다. sha256 12자로 충분(충돌 무시 가능·짧게).
+        """
+        import hashlib
+
+        h = hashlib.sha256()
+        for doc in docs:
+            h.update(doc.path.encode("utf-8"))
+            h.update(b"\0")
+            h.update(doc.body.encode("utf-8"))
+            h.update(b"\0")
+        return h.hexdigest()[:12]
 
     def handle_push_work(self, push: PushWork) -> SubmitAnswer | None:
         """`PushWork` 한 건을 처리한다 — HITL 힌트 off면 즉시 `SubmitAnswer`, on이면 보류.
@@ -509,7 +609,22 @@ def run_worker(
                         f"[worker:{logic.owner_id}|{logic.role}] 인덱스 배포 "
                         f"agent={pub.index.agent_id} concepts={len(pub.index.concepts)}"
                     )
-                _serve(ws, logic, outbound=outbound)
+                # 지식 동기화 시작 시 1회 발신(Phase 12 (B)·ADR 0033 결정 3) — 지정 경계
+                # 파일 본문을 SyncKnowledge로 중앙에 올린다. 커밋=이벤트 즉시 반영 정신이되
+                # (결정 3), 실 워커는 시작 시 1회 + 주기 재송신(`_serve`가 interval 만큼)으로
+                # 낡음을 회수한다. 중앙 store가 version 멱등으로 무변경 재송신을 흡수한다.
+                for sync in logic.knowledge_sync_frames(synced_at=datetime.now(tz=_tz.utc)):
+                    ws.send(sync.model_dump_json())
+                    print(
+                        f"[worker:{logic.owner_id}|{logic.role}] 지식 동기화 "
+                        f"agent={sync.content.agent_id} docs={len(sync.content.documents)}"
+                    )
+                _serve(
+                    ws,
+                    logic,
+                    outbound=outbound,
+                    knowledge_sync_interval=knowledge_sync_interval_seconds(),
+                )
         except _Reconnect:
             pass
         except (OSError, EOFError, WebSocketException) as exc:
@@ -551,10 +666,25 @@ def _drain_outbound(ws: Any, logic: WorkerLogic, outbound: "queue.Queue[SubmitAn
         )
 
 
+def knowledge_sync_interval_seconds() -> int:
+    """`AON_KNOWLEDGE_SYNC_INTERVAL_SECONDS` 설정값(기본 0 = 주기 재송신 없음·보수적).
+
+    ADR 0033 ⑤ 기본 관례(커밋=이벤트 즉시 반영·보수적 기본값). 실 커밋 훅 배선은 후속이라
+    MVP는 시작 시 1회 + 옵션 주기 재송신으로 낡음을 회수한다. 0이면 주기 재송신 없음(시작 시
+    1회만·가장 보수적). 양수면 그 초마다 지정 경계를 다시 읽어 재송신한다(version 멱등으로
+    무변경분은 중앙이 흡수). 30분(1800) 같은 보수적 값을 권장한다(stale 임계와 대칭).
+    """
+    import os
+
+    raw = (os.environ.get("AON_KNOWLEDGE_SYNC_INTERVAL_SECONDS") or "").strip()
+    return int(raw) if raw else 0
+
+
 def _serve(
     ws: Any,
     logic: WorkerLogic,
     outbound: "queue.Queue[SubmitAnswer] | None" = None,
+    knowledge_sync_interval: int = 0,
 ) -> None:
     """등록된 소켓에서 프레임을 받아 처리하는 수신 루프(수동 시연 영역).
 
@@ -565,20 +695,59 @@ def _serve(
     `outbound`(owner 검토 UI 겸직): 주입되면 recv를 짧은 타임아웃으로 폴링하며 매 주기
     `_drain_outbound`로 owner가 처분한 답을 활성 소켓으로 송신한다. recv 타임아웃은 정상
     흐름(TimeoutError를 삼켜 다음 폴링으로) — 미주입이면 기존 블로킹 recv 그대로.
+
+    `knowledge_sync_interval`(Phase 12 (B)·ADR 0033 ⑤): 양수면 그 초마다 지식 동기화를
+    재송신한다(지정 경계 파일 재독 → SyncKnowledge). 주기 재송신을 켜면 recv를 타임아웃
+    폴링으로 돌려(outbound 폴링과 같은 방식) 재송신 타이밍을 잰다. 0이면 주기 재송신 없음
+    (시작 시 1회만·`run_worker`가 이미 보냄·하위호환).
     """
+    import time as _time
+
     from agent_org_network.transport import Heartbeat
 
+    # 주기 재송신이 켜지면(interval>0) recv를 폴링 모드로 돌려야 재송신 타이밍을 잰다 —
+    # outbound 폴링과 같은 조건. 둘 중 하나라도 켜지면 폴링 모드.
+    polling = outbound is not None or knowledge_sync_interval > 0
+    last_sync = _time.monotonic()
     while True:
-        if outbound is not None:
-            _drain_outbound(ws, logic, outbound)
+        if knowledge_sync_interval > 0:
+            now = _time.monotonic()
+            if now - last_sync >= knowledge_sync_interval:
+                for sync in logic.knowledge_sync_frames(
+                    synced_at=datetime.now(tz=timezone.utc)
+                ):
+                    ws.send(sync.model_dump_json())
+                last_sync = now
+        if polling:
+            if outbound is not None:
+                _drain_outbound(ws, logic, outbound)
             try:
                 raw = ws.recv(timeout=0.5)
             except TimeoutError:
-                # recv 타임아웃 — 정상. 다음 루프에서 outbound flush 후 다시 대기.
+                # recv 타임아웃 — 정상. 다음 루프에서 outbound flush·주기 재송신 후 대기.
                 continue
-            frame = parse_central_frame(_loads(raw))
+            payload = _loads(raw)
         else:
-            frame = parse_central_frame(_loads(ws.recv()))
+            payload = _loads(ws.recv())
+        # 지식 동기화 회신(KnowledgeSyncAck·Phase 12 (B))은 CentralFrame이 아니라 요청-응답
+        # 회신이라 parse_central_frame이 None을 준다 — 먼저 판별해 로깅한다(관측). 거부면
+        # 사유를 찍어 owner가 지정 경계·민감 필터를 고칠 수 있게 한다(중앙 로그와 대칭).
+        if isinstance(payload, dict) and cast(dict[str, Any], payload).get("type") == "knowledge_sync_ack":
+            from agent_org_network.knowledge_sync import KnowledgeSyncAck
+
+            try:
+                ack = KnowledgeSyncAck.model_validate(payload)
+            except ValidationError:
+                continue
+            if ack.accepted:
+                print(f"[worker:{logic.owner_id}|{logic.role}] 지식 동기화 수용 agent={ack.agent_id}")
+            else:
+                print(
+                    f"[worker:{logic.owner_id}|{logic.role}] 지식 동기화 거부 "
+                    f"agent={ack.agent_id} reason={ack.reason}"
+                )
+            continue
+        frame = parse_central_frame(cast(object, payload))
         if isinstance(frame, PushWork):
             print(
                 f"[worker:{logic.owner_id}|{logic.role}] 작업 수신 "
@@ -697,12 +866,27 @@ def main() -> None:
     # 주입한다 — 답할 카드의 규약 경로(okf_root/{agent_id})에 번들이 있으면 그 디렉터리를
     # cwd로 읽어 답한다(없으면 기존 tempfile 동작). 데모는 repo okf/지만 의미상 owner 환경.
     # AON_PROVIDER=claude-api면 owner OAuth 인프로세스 SDK 스트리밍으로 교체된다(select_runtime).
+    # 지식 동기화 지정 경계(Phase 12 (B)·ADR 0033 결정 3): env `AON_KNOWLEDGE_PATHS`가
+    # 설정되면 그 경로들을 자기 소유 카드 전부에 지정한다(okf_root 상대·`;` 또는 `,` 구분).
+    # 미설정이면 각 카드의 규약 디렉터리(`{agent_id}`)를 기본 지정한다 — 데모는 okf/{agent_id}
+    # 번들이 곧 그 담당자의 명시 지식이므로 자연 기본. 담당자가 세밀 지정하려면 env로 덮는다.
+    knowledge_paths: dict[str, tuple[str, ...]]
+    _paths_env = (os.environ.get("AON_KNOWLEDGE_PATHS") or "").strip()
+    if _paths_env:
+        _specified = tuple(
+            p.strip() for p in _paths_env.replace(";", ",").split(",") if p.strip()
+        )
+        knowledge_paths = {aid: _specified for aid in cards}
+    else:
+        knowledge_paths = {aid: (aid,) for aid in cards}
+
     logic = WorkerLogic(
         owner_id=owner_id,
         cards=cards,
         runtime=select_runtime(DEMO_OKF_ROOT),
         role=role,
         okf_root=DEMO_OKF_ROOT,
+        knowledge_paths=knowledge_paths,
     )
     print(
         f"[worker:{owner_id}|{role}] 카드 {len(cards)}개({', '.join(cards) or '없음'}) — "

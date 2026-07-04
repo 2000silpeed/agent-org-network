@@ -24,8 +24,9 @@ import os
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
+from agent_org_network.knowledge_sync import SyncKnowledge
 from agent_org_network.oidc import OidcProvider
 from agent_org_network.transport import (
     Ack,
@@ -68,6 +69,8 @@ def _parse_worker_frame(raw: object) -> WorkerFrame | None:
         model = PublishIndex  # ADR 0028 §14 결정 A — 추가 한 줄(기존 분기 무회귀·새 키)
     elif frame_type == "document_content":
         model = DocumentContent  # ADR 0028 §15 결정 A — 추가 한 줄(기존 분기 무회귀·새 키)
+    elif frame_type == "sync_knowledge":
+        model = SyncKnowledge  # Phase 12 (B)·ADR 0033 결정 3 — 추가 한 줄(기존 분기 무회귀·새 키)
     elif frame_type == "heartbeat":
         model = Heartbeat
     elif frame_type == "ack":
@@ -93,12 +96,23 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
     await websocket.accept()
 
     loop = asyncio.get_running_loop()
-    outbound: asyncio.Queue[CentralFrame] = asyncio.Queue()
+    # outbound는 CentralFrame(push_work/welcome/…)뿐 아니라 KnowledgeSyncAck(지식 동기화
+    # 회신·Phase 12 (B))도 나른다 — 둘 다 pydantic BaseModel(`model_dump(mode="json")`
+    # 가능)이라 송신 루프는 타입 구분 없이 직렬화한다. 그래서 큐/콜백 타입을 BaseModel로
+    # 넓힌다(전송층 공통 상위형 — SyncKnowledge를 CentralFrame union에 넣지 않는 이유는
+    # 그 union이 "중앙→워커 정규 다운스트림"의 sealed 집합이고 ack는 요청-응답 회신이라
+    # 결이 다르기 때문. 회신은 전송 경로만 공유한다).
+    outbound: asyncio.Queue[BaseModel] = asyncio.Queue()
 
-    def send(frame: CentralFrame) -> None:
+    def send_frame(frame: BaseModel) -> None:
         # 동기 콜백(다른 컨텍스트에서 호출될 수 있음) → outbound 큐에 thread-safe하게 적재.
         # 실제 send_json은 송신 루프가 수행한다.
         loop.call_soon_threadsafe(outbound.put_nowait, frame)
+
+    def send(frame: CentralFrame) -> None:
+        # 디스패처 `SendFrame`(Callable[[CentralFrame], None]) 계약용 좁힌 콜백 — register에
+        # 넘긴다. 내부적으로 같은 outbound 큐를 쓴다(BaseModel 상위형으로 흡수).
+        send_frame(frame)
 
     # 1) 등록 — 첫 프레임은 RegisterWorker.
     try:
@@ -162,6 +176,29 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
                 # (중앙 저장 0·비소유 중계, 결정 E). 미지 request_id(타임아웃/중복)는 멱등
                 # 무시(resolve_fetch 안에서). 큐 전이 없음(읽기 중계라 작업 큐 무관).
                 dispatcher.resolve_fetch(frame)
+            elif isinstance(frame, SyncKnowledge):
+                # 지식 동기화 수용(Phase 12 (B)·ADR 0033 결정 3) — *연결 세션의 인증 owner*와
+                # 묶어 스코핑·admission·store put을 한다. owner는 프레임에 없다(소켓이 곧 그
+                # owner·PublishIndex 수용과 대칭).
+                #
+                # ⚠️ M3 계약(code-reviewer·2026-07-04): 이 수신부는 `store.put`을 *직접
+                # 호출하지 않는다* — 반드시 `dispatcher.accept_knowledge_sync_frame`
+                # (→`accept_and_store_knowledge_sync`) 경유한다. admission 판정과 보관을
+                # 한 조합 함수로 접합해 admission을 우회할 수 없게 한다(전이≠기록·수용 관문
+                # 단일화). 수용/거부 응답(`KnowledgeSyncAck`)을 워커에 회신해 재시도/수정
+                # 판단이 가능하게 한다(PublishIndex는 회신이 없지만 지식 동기화는 owner가
+                # "왜 거부됐는지"를 알아야 지정 경계·민감 필터를 고칠 수 있다). 미배선
+                # (store/registry 미주입)이면 ack=None이라 회신하지 않는다(하위호환·no-op).
+                ack = dispatcher.accept_knowledge_sync_frame(owner_id, frame)
+                if ack is not None:
+                    send_frame(ack)
+                    if not ack.accepted:
+                        _log.warning(
+                            "SyncKnowledge 거부 — owner=%s agent_id=%s reason=%s",
+                            owner_id,
+                            frame.content.agent_id,
+                            ack.reason,
+                        )
             # Heartbeat/Ack/미지 프레임은 생존 신호로만(생존 판정 보강, 6-4). 큐 전이 없음.
 
     send_task = asyncio.ensure_future(send_loop())
@@ -350,12 +387,62 @@ def create_central_app(
     from agent_org_network.console import ConsoleFeed
 
     _resolved_console_feed = console_feed if console_feed is not None else ConsoleFeed()
+    # 프레즌스 추적기(Phase 12 (A)·ADR 0033 결정 5) — 워커 WS 연결/해제를 담당자
+    # 온라인/오프라인 1급 상태로 도출한다. InMemory가 정당(프레즌스는 휘발 — 재시작하면
+    # 연결도 끊겨 있으므로 WS 연결 자체가 진실 원천). 디스패처가 register/disconnect에서
+    # observe하고 `_resolve_hitl_hint`가 프레즌스를 HITL 입력에 결합한다(결정 5).
+    from agent_org_network.presence import InMemoryPresenceTracker
+
+    _presence_tracker = InMemoryPresenceTracker()
+    # 중앙 지식 저장소(Phase 12 (B)(C)·ADR 0033 결정 1·3) — 워커가 동기화한 본문을
+    # agent_id별 보관한다. *같은 인스턴스*를 (1) 디스패처(SyncKnowledge 수신부가 M3 계약
+    # `accept_and_store_knowledge_sync` 경유로 put)와 (2) 답변 런타임(`select_runtime`에
+    # knowledge_store 주입 — 답 생성이 이 스토어를 소비, ADR 0033 결정 1) 양쪽에 물려
+    # "워커 동기화→중앙 저장→중앙 답변" 한 축이 닫힌다(단일 원천).
+    from agent_org_network.knowledge_store import InMemoryKnowledgeStore
+
+    _knowledge_store = InMemoryKnowledgeStore()
+    # 담당자 감독 저장소(Phase 12 (A)(B)·ADR 0033 결정 4) — 중앙이 낸 답의 감사 단위
+    # (`AnswerRecord`)와 그 사후 정정(`CorrectionEvent`)을 담는다. *같은 인스턴스*를
+    # `create_app`에 물려 AskOrg 적재(답 확정 시)·감독 라우트(모니터링·정정·질문자 배지)가
+    # 한 원천을 본다. InMemory 정당(정정 이력은 append-only 감사지만 durable SQLite 확장은
+    # 후속 — 이번 범위는 인메모리). 프레즌스는 `_presence_tracker.status`를 답변 적재 시
+    # 오프라인 자동발신 판정(needs_correction_review)에 물린다.
+    from agent_org_network.answer_record import (
+        InMemoryAnswerRecordStore,
+        InMemoryCorrectionStore,
+    )
+
+    _answer_record_store = InMemoryAnswerRecordStore()
+    _correction_store = InMemoryCorrectionStore()
+
+    # 중앙 답변 런타임 실 주입(Phase 12 (C)·ADR 0033 결정 1) — 위 `_knowledge_store`를
+    # 소비하는 런타임을 `select_runtime`으로 고른다. `AON_PROVIDER`가 인프로세스 공급자
+    # (claude-api·codex)면 그 어댑터가 `resolve_knowledge_text`로 중앙 지식 저장소를 우선
+    # 소비하고 부재 시 디스크로 폴백한다(스토어 우선·디스크 폴백). 미설정(레거시 claude-code)
+    # 이면 ClaudeCodeRuntime cwd 접지(스토어 미소비·하위호환). okf_root는 데모 OKF 루트(폴백원).
+    #
+    # 이 런타임을 디스패처의 **오프라인 폴백원**으로 꽂는다(Phase 12 마지막 조합 지점) —
+    # 담당 워커가 미연결이라 `dispatch`가 작업을 push하지 못하면 중앙이 이 런타임으로 답을
+    # 대신 생성해 큐에 submit하고, 이어지는 poll이 Delivered를 돌려준다. 그래야 "담당자 PC
+    # 꺼져도 답변"이 인프로세스 경로뿐 아니라 *분산 배선*에서도 성립한다. 워커가 연결돼 있으면
+    # push가 성공해 폴백은 발동하지 않는다(회귀 0 — 기존 워커 회신 경로 그대로). `create_app`은
+    # dispatcher 주입 시 runtime 인자를 무시(build_demo가 디스패처에 답 획득을 전담시킴)하므로
+    # 중앙 런타임은 이 폴백원 자리로만 실제 소비된다.
+    from agent_org_network.demo import DEMO_OKF_ROOT
+    from agent_org_network.runtime_select import select_runtime
+
+    _central_runtime = select_runtime(DEMO_OKF_ROOT, knowledge_store=_knowledge_store)
+
     dispatcher = WebSocketDispatcher(
         staleness_threshold=staleness_threshold,
         review_store=review_store,
         token_store=_resolved_token_store,
         hitl_toggles=_resolved_hitl_toggles,
         console_feed=_resolved_console_feed,
+        presence_tracker=_presence_tracker,
+        knowledge_store=_knowledge_store,
+        fallback_runtime=_central_runtime,
     )
     # 데모 owner들의 위임 스냅샷을 주입(opt-in 위임 — owner가 자기 영역을 백업에 위임).
     # 없으면 staleness_threshold가 설정된 상태에서 backup push가 거부된다(결정 9).
@@ -363,6 +450,7 @@ def create_central_app(
         dispatcher.register_delegation(snapshot)
 
     app = create_app(
+        runtime=_central_runtime,
         dispatcher=dispatcher,
         review_store=review_store,
         audit_log=audit_log,
@@ -374,6 +462,9 @@ def create_central_app(
         token_store=_resolved_token_store,
         hitl_toggles=_resolved_hitl_toggles,
         console_feed=_resolved_console_feed,
+        answer_record_store=_answer_record_store,
+        correction_store=_correction_store,
+        presence_of=_presence_tracker.status,
     )
     _mount_worker_endpoint(app, dispatcher)
     return app

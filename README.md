@@ -4,14 +4,10 @@
 중앙(MCP 서버)이 **담당·권한·판례**를 기준으로 질문을 알맞은 에이전트에 연결해 답을
 돌려주는 협업형 AI 조직 — walking skeleton(v0).
 
-중앙은 지식을 소유하지 않는다. **연결자**다. 답은 담당 에이전트(= 그 owner의 Claude Code)가
-자기 **OKF 지식 번들**을 읽어서 한다. 모르면 지어내지 않고 사람(Manager)에게 넘긴다.
-
-> 🔀 **실행 모델 전환 진행 중(Phase 12 — 계획 단계).** 아래 "현행"은 *대화 답변을 owner 워커(PC)가
-> 실행*하는 구조다(ADR 0027). 그 구멍(owner PC가 꺼지면 답 불능)을 메우려 **"중앙 답변 + 지식 동기화
-> + 담당자 감독"** 으로 옮기는 전환이 계획 단계에 있다 — [`docs/plan-central-answering.md`](docs/plan-central-answering.md).
-> 아직 미구현이므로 이 README의 실행 관련 설명은 **현행 구조**이고, 전환 방향은 아래 "실행 모델" 절에서
-> 따로 구분해 적는다.
+라우팅의 진실(담당·권한·판례)은 중앙이 쥔다. 지식은 담당자(owner)가 **명시 지정한 만큼만**
+중앙 지식 저장소(Knowledge Store)로 동기화돼 답의 접지에 쓰이고, 잘못 나간 답은 담당자가
+감독 화면에서 사후 정정한다(원 답은 불변 — 정정 이벤트만 쌓임). 모르면 지어내지 않고
+사람(Manager)에게 넘긴다.
 
 > 🎬 **전 기능 시나리오 투어**: [`docs/scenario.html`](docs/scenario.html) — 브라우저로 열면 데모 조직이
 > 모든 기능(라우팅·합의·판례·미아·승인·분산·백업·인증·모니터링·그래프·MCP·eval)을 거치는 체계적
@@ -23,35 +19,54 @@
   담당자가 바뀌어도 불변. 코드 밖 `registry/agents/*.yaml`로 등록.
 - **RoutingDecision** — 질문의 처분: `Routed`(담당 정해짐) / `Contested`(후보 다툼) / `Unowned`(미아).
 - **Precedent(판례)** — 다툼을 사람이 1인칭 합의로 풀면 `Resolution`이 판례로 쌓여 라우터가 학습한다.
-- **OKF 번들** — owner가 자기 지식을 마크다운+프론트매터로 `okf/<agent_id>/`에 둔다. 워커의 Claude Code가
-  그 디렉터리를 cwd로 *읽어* 답한다(벡터DB·RAG 0).
+- **OKF 번들** — owner가 자기 지식을 마크다운+프론트매터로 `okf/<agent_id>/`에 둔다(벡터DB·RAG 0).
+  레거시 런타임(claude-code)은 이 디렉터리를 cwd로 *읽어* 답하고, Phase 12부터는 이 지정 경계가
+  중앙 Knowledge Store로 동기화돼 중앙 답변의 접지가 된다.
+- **Knowledge Store / Knowledge Sync** — 워커(지식 공급자)가 명시 지정한 문서만 admission
+  (지정 경계 대조 + 민감정보 패턴 필터)을 거쳐 중앙에 *본문*으로 동기화된다. 라우팅 인덱스는
+  여전히 목차만 본다(ADR 0033 — 라우팅 축 vs 답변 축 분리).
+- **Answer Record / Correction Event** — 중앙이 낸 답은 Answer Record로 남고, 정정은 원 레코드를
+  고치지 않는 새 Correction Event로 쌓인다(전이 ≠ 기록). 질문자는 답변 페이지의 정정 배지(풀 방식)로 본다.
+- **Presence** — 담당자 워커의 WS 연결이 곧 하트비트. 온라인=사전 검토, 오프라인=자동 발신+사후 교정.
 - **불변식** — ① 어떤 질문도 미아로 남지 않는다(0매칭→Manager) ② 유효하지 않은 카드는 등록 안 됨
   ③ 권한은 중앙만 선언 ④ 전이 ≠ 기록 ⑤ 답엔 항상 담당·신뢰 상태(승인/초안/백업/출처)가 붙는다.
 
-## 실행 모델 (현행 vs 전환 방향)
+## 실행 모델 (현행 — Phase 12 구현·ADR 0033/0034)
 
-라우팅 계층("누가 무엇을 담당하나")은 안정적이고, 그 위에 얹히는 **실행 계층**("답을 어디서 만드나")은
-방향을 바꿔 왔다. 이 저장소의 실행 관련 코드·명령은 아래 **현행**을 따른다.
+라우팅 계층("누가 무엇을 담당하나")은 그대로이고, 실행 계층("답을 어디서 만드나")은 Phase 12에서
+**"중앙 답변 + 지식 동기화 + 담당자 감독"** 으로 옮겨졌다(ADR 0033 — 실행 위치 계보
+0010→0017→0027→0033). "owner PC가 꺼지면 그 에이전트는 답 불능"이라는 이전 구조의 가용성 구멍을
+메우는 전환이다.
 
-**현행 (구현됨 — ADR 0027, Phase 9):** 대화 답변은 **owner 워커(각 담당자 PC)** 가 만든다. 워커가
-중앙에 아웃바운드 WebSocket으로 붙고, 중앙이 라우팅한 질문을 그 워커에 push하면 워커가 자기 지식(OKF)과
-자격증명(owner OAuth 구독 토큰 또는 로컬 `claude`)으로 답해 회신한다. 중앙은 모델 키·토큰을 0개 보관한다
-(중앙 토큰 0). owner PC가 부재면 owner 위임 **백업 워커** → 둘 다 부재면 **Manager escalation**(미아 없음).
+- **지식 동기화(Knowledge Sync)** — owner 워커의 역할이 "답변 실행자"에서 **지식 공급자**로 바뀌었다.
+  워커는 자기가 명시 지정한 경계(`AON_KNOWLEDGE_PATHS`, 기본은 카드별 `okf/<agent_id>/`)의 문서만
+  시작 시(+ `AON_KNOWLEDGE_SYNC_INTERVAL_SECONDS` 주기로) 중앙에 동기화한다. 중앙은 수용 관문
+  (admission)을 통과한 본문만 Knowledge Store에 담는다 — 지정 경계 밖 경로 거부, 민감정보 패턴
+  (주민등록번호·API 키·비밀번호류) 자동 거부, 타 owner 사칭 거부.
+- **중앙 답변** — 인프로세스 공급자 런타임(`AON_PROVIDER=claude-api`·`codex`)이 Knowledge Store의
+  동기화된 본문을 우선 접지하고, 없으면 디스크 OKF로 폴백해 답을 만든다. 자격증명은 **중앙 조직
+  API 키 1개**(`AON_PROVIDER_KEY` → `ANTHROPIC_API_KEY`) — 이전의 "중앙 토큰 0" 속성은 가용성을
+  위해 ADR 0033에서 정직하게 폐기했다(키는 env로만 보관·로그 미노출·비용은 agent_id 태깅으로 사후
+  집계). `AON_PROVIDER` 미설정(레거시 `claude-code`)이면 기존 cwd 접지 그대로다. 낡은 지식
+  (`AON_KNOWLEDGE_STALE_SECONDS` 초과)이어도 답을 차단하지 않는다(낡음 표식만 — 미아 없음 보존).
+- **프레즌스(Presence)** — 워커 WS 연결이 곧 하트비트다. 담당자가 온라인이면 답이 나가기 전
+  사전 검토로 조여지고(HITL 상향 — 카드 `approval_when`이 건 것은 오프라인이어도 못 푼다),
+  오프라인이면 자동 발신 후 "검토 필요" 표식이 붙어 사후 교정 대상이 된다.
+- **담당자 감독(Supervised Answering)** — 중앙이 낸 답은 Answer Record로 남고, 담당자는 감독 화면
+  (`/supervision`)에서 열람·정정한다. 정정은 원 레코드를 고치지 않는 Correction Event append이고
+  (전이 ≠ 기록), 질문자는 답변 페이지 정정 배지(풀 방식)로 정정본을 본다. 정정은 판례·지식
+  재평가 큐(reeval)에도 적재된다.
 
-**전환 방향 (계획 — Phase 12, 미구현):** "owner PC가 꺼지면 그 에이전트는 답 불능"이라는 현행의 가용성
-구멍을 메우기 위해, 실행을 다음으로 옮기는 전환을 계획 중이다.
+기존 분산 워커 회신 경로(워커가 로컬 claude로 답해 회신·백업 워커·Manager escalation)는 호환
+경로로 남아 있다 — 아래 "분산" 절. **분산 배선에서도 담당 워커가 미연결이면 중앙 런타임이
+Knowledge Store 접지로 대신 답한다**(`WebSocketDispatcher`에 중앙 런타임을 폴백원으로 주입) —
+"담당자 PC 꺼져도 답변"이 인프로세스 경로뿐 아니라 분산에서도 성립한다. 워커가 연결돼 있으면
+폴백은 발동하지 않고 기존 워커 회신 경로 그대로다(회귀 0).
 
-- **지식 동기화** — 워커 지식을 **중앙 지식 저장소**로 계속 자동 반영. 워커 역할이 "답변 실행자"에서
-  "**지식 공급자**"로 바뀐다.
-- **중앙 답변** — 답은 **중앙 런타임**이 중앙 지식 저장소로 만든다(담당자 PC 가동 여부와 무관하게 가용).
-- **프레즌스** — 담당자 연결 상태(온라인/오프라인)를 항상 추적(워커 WS 연결 = 하트비트).
-- **담당자 감독** — 담당자가 자기 에이전트의 Q&A를 열람하고, 잘못 나간 답을 **사후 교정**한다. 정정은
-  원 답 레코드를 고치지 않고 *새 정정 이벤트*로 쌓으며(전이 ≠ 기록), 질문자에게 정정을 통지하고 판례·지식을
-  갱신한다. HITL 정책도 프레즌스에 연동 — 온라인이면 사전 검토, 오프라인이면 자동 발신 + 사후 교정.
-
-> ⚠️ 전환은 되돌리기 어려운 트레이드오프를 하나 안고 있다 — **중앙이 답하려면 자격증명이 중앙으로
-> 와야 해서 "중앙 토큰 0" 불변식이 흔들린다.** 이 결정(LLM 비용 귀속)과 "지식을 어디까지 중앙에 올리나"
-> (지식 경계·민감정보)는 **외부 결정 지점**으로, 새 ADR에서 확정하기 전엔 실 배선에 착수하지 않는다.
+**잔여(아직 안 된 것 — 정직한 구분):** ① 질문자 정정 **실 푸시/메신저 통지**(현재는 답변 페이지
+풀 방식 배지만) ② **SQLite 영속 확장** — 카드·Answer Record/Correction Event(현재 InMemory + YAML
+시드. 감사 로그·토큰은 `AON_DB` durable 경로 있음) ③ **실 SSO 운영자 role 게이트**(관리 UI 접근은
+현재 세션 신원까지 — role 구분은 실 SSO 활성 시 강화) ④ **크로스머신 실 재시연**(수동).
 
 ## 설치
 
@@ -68,7 +83,7 @@ uv sync                     # 의존성 설치(.venv)
 ## 게이트(테스트·타입·린트)
 
 ```bash
-uv run pytest        # 단위 테스트(결정론) — 1747 passed
+uv run pytest        # 단위 테스트(결정론) — 2399 passed
 uv run pyright       # 타입 검사(strict) — 0 errors
 uv run ruff check    # 린트 — 0
 ```
@@ -91,8 +106,10 @@ uv run uvicorn agent_org_network.web:app --port 8099
 | Org 그래프 | `/org/view` | 운영자 — 전체 그림(User·Card·엣지) |
 | Agent 빌더 | `/builder` | Owner — 카드 구성·검증·YAML 미리보기 |
 | OKF 저작 | `/author` | Owner — 문서 올리면 LLM이 개념 추출→검토→커밋→목차 publish |
+| 담당자 감독 | `/supervision` | Owner — 자기 에이전트 답 열람·검토 필요 필터·정정·프레즌스 배지 |
+| 관리 UI | `/admin` | 운영자 — 신규 Agent Card 라이브 등록·오너 변경(아래 "관리 UI" 절) |
 
-채팅(`/ask`)은 익명이고, **운영 면(처리함·큐·모니터링·그래프·빌더)은 인증**이 필요하다.
+채팅(`/ask`)은 익명이고, **운영 면(처리함·큐·모니터링·그래프·빌더·관리 UI)은 인증**이 필요하다.
 인증을 켜려면 세션 서명 키를 env로 준다(미설정 시 데모 인증 OFF):
 
 ```bash
@@ -119,12 +136,17 @@ AON_CLASSIFIER=llm scripts/run_central.sh 8000 0.0.0.0                          
 ```
 
 **답변 런타임·라우터 선택** — 답변 런타임 기본은 `ClaudeCodeRuntime`(로컬 `claude` CLI). `AON_PROVIDER=claude-api`로 띄우면
-owner OAuth in-process SDK(`ClaudeApiRuntime`·claude-sonnet-5)로 답한다(중앙 API 키·토큰 0은 동일). 라우팅은
+in-process SDK(`ClaudeApiRuntime`·claude-sonnet-5)가 중앙 Knowledge Store의 동기화 본문을 우선 접지해 답한다(부재 시 디스크
+OKF 폴백·자격증명은 중앙 조직 키 — `AON_PROVIDER_KEY`/`ANTHROPIC_API_KEY`, ADR 0033). 라우팅은
 `AON_ROUTER=index`로 published **목차(KnowledgeIndex) 토큰 매칭**(`TwoStageRouter`)을 켜면, owner가 `/author`로 저작·publish한
 개념이 곧바로 라우팅에 반영된다 — **크로스머신 fan-out**(owner 저작→실 git 커밋→실 WS로 중앙에 목차만 전송→중앙 수용→라우팅·판례
-재평가). 중앙은 OKF 본문·모델 토큰을 보관하지 않는다(목차만 — 중앙 토큰 0).
+재평가). 라우팅 인덱스는 여전히 목차만 본다 — 본문은 owner가 명시 지정한 만큼만 Knowledge Store에 동기화된다(답변 축 전용).
 
 ### 2) 분산 — 중앙 + owner 워커 (WebSocket)
+
+Phase 12부터 워커는 접속하자마자 자기 지정 경계(`AON_KNOWLEDGE_PATHS`, 기본 `okf/<agent_id>/`)의
+문서를 중앙 Knowledge Store로 **지식 동기화**하고, 연결 자체가 그 담당자의 **프레즌스**(온라인/오프라인)가
+된다. 워커가 라우팅된 질문을 로컬 claude로 답해 회신하는 기존 경로도 그대로 돈다.
 
 한 기기(localhost):
 
@@ -176,6 +198,71 @@ uv run python -m agent_org_network.eval --classifier llm    # 실 claude 분류(
 uv run python -m agent_org_network.registry registry        # 5장 카드·6명 유저 load + validate
 ```
 
+## 관리 UI — 신규 Agent Card 등록·오너 변경 (`/admin`)
+
+카드 등록·오너 변경을 YAML 편집·재시작 없이 브라우저에서 한다(ADR 0034). admission 검증을 통과한
+제출만 **라이브 Registry에 즉시 반영**되고, 등록·전이 이력은 감사 로그가 진다 — `registry/agents/*.yaml`
+파일은 부팅 시 초기 시드로만 쓰인다.
+
+**신규 Agent Card 등록:**
+
+1. `http://<중앙>/admin` 접속. 인증이 켜져 있으면(`OPERATOR_SESSION_SECRET`) 화면에서 로그인
+   (세션 신원 — 미로그인 요청은 401).
+2. "신규 카드 등록" 탭에서 폼 입력 — `agent_id`(불변 정체성)·owner(Registry 실재 User)·team·
+   한 줄 요약·domains(쉼표 구분)·maintainer 등.
+3. 등록 제출 → **admission 검증**: 형식·`agent_id` wire-format·참조 무결성(owner·maintainer 실재)을
+   전부 통과해야 한다. 무효면 **422 + 사유 목록**이 화면에 뜨고, 중복 `agent_id`면 **409**.
+   우회 등록 API는 없다("유효하지 않은 카드는 등록되지 않는다" 불변식).
+4. 통과 즉시 라이브 반영 + 감사 기록(`CardRegistered`). 라우터는 매 질문마다 라이브 카드를 읽으므로
+   **등록 직후 질문부터 라우팅에 잡힌다**(재시작·재색인 불요).
+
+**오너 변경(Ownership Transfer):**
+
+1. `/admin`의 "오너 변경" 탭에서 대상 카드(드롭다운)와 새 owner를 지정.
+2. 제출 → **재검증(재-admission)**: `agent_id`는 불변이고 owner 값만 교체된 카드 후보가 신규 등록과
+   같은 관문을 다시 통과해야 한다. 새 owner가 Registry에 없는 등 무효면 422 — 스위치는 일어나지 않는다.
+3. 통과 시 **스위치**(카드의 owner 교체)와 **같은 임계 구역에서** 구 owner의 **활성 워커 토큰 전부가
+   자동 revoke**되고(구 owner가 카드를 여럿 가져도 함께 — over-revoke는 owner 격리의 안전측),
+   구 owner 워커의 WS 세션이 끊긴다(프레즌스 offline·진행 중 작업은 재큐).
+4. `OwnershipTransfer` 감사 기록(누가·어느 카드·A→B·언제) append — 전이와 기록은 분리(전이 ≠ 기록).
+
+오너가 바뀌어도 **지식(Knowledge Store)·판례·HITL 토글은 유지**된다(전부 `agent_id`에 붙는 카드의
+자산 — 사람에 안 붙음). 과거 답의 `answered_by`는 불변이고, **정정 권한만 새 owner로 이동**한다
+(판정 기준 = "현재 그 카드의 owner인가").
+
+## 담당자 감독 — 답 열람·사후 정정 (`/supervision`)
+
+담당자(owner)가 자기 에이전트로 나간 답을 감독하는 화면. 중앙이 낸 답은 Answer Record로 남고,
+이 화면이 그 목록을 최신순으로 보여준다.
+
+- **열람** — 에이전트 ID를 넣으면 자기 에이전트의 질문·답·정정 이력이 뜬다(4초 폴링 — 작성 중이면
+  리렌더를 건너뛰어 입력이 날아가지 않는다).
+- **검토 필요 필터** — 담당자 오프라인 중 자동 발신된 답(`needs_correction_review`)만 추려 본다.
+- **프레즌스 배지** — 자기 워커의 온라인/오프라인 상태가 상단에 표시된다.
+- **정정 제출** — 정정본(+선택 사유)을 보내면 원 답은 그대로 두고 Correction Event가 append되고,
+  판례·지식 재평가 큐에 적재된다. 같은 정정 재제출은 멱등(중복 이벤트 없음). **정정 제출의 신원은
+  인증 활성 시 로그인 세션에서 강제**된다(클라이언트 자기보고가 아님) — 판정은 "현재 카드 owner"만
+  통과하므로, 오너 변경 후엔 새 owner 세션만 정정할 수 있고 구 owner는 403이다.
+
+**질문자 쪽 정정 배지(풀 방식):** 답변에 실려 온 `record_id`로 `GET /answer/{record_id}/correction`을
+조회하면 — 정정이 있으면 원문 + 정정본(+정정 시각), 없으면 원문만 온다. 정정 주체·사유 같은 감독
+내부값은 질문자에게 노출하지 않는다. 실 푸시/메신저 통지는 잔여(실 사용자 단계).
+
+## 환경변수 시임
+
+| env | 기본값 | 역할 |
+|---|---|---|
+| `AON_CLASSIFIER` | 미설정(키워드 규칙) | `llm`이면 실 claude(Haiku) 분류 — 자연어 질문 라우팅 |
+| `AON_ROUTER` | 미설정(분류기 라우터) | `index`면 published 목차 토큰 매칭(`TwoStageRouter`) |
+| `AON_PROVIDER` | 미설정(`claude-code`) | 답변 런타임 선택 — `claude-api`·`codex`는 in-process SDK + Knowledge Store 우선 접지 |
+| `AON_PROVIDER_KEY` | 미설정 | 중앙 조직 API 키(ADR 0033 결정 2). 미설정 시 `ANTHROPIC_API_KEY` → 그것도 없으면 SDK 기본 |
+| `AON_KNOWLEDGE_PATHS` | 카드별 `{agent_id}` 디렉터리 | 워커 지식 동기화의 명시 지정 경계(okf 루트 상대·`,`/`;` 구분) — 지정분만 올라간다 |
+| `AON_KNOWLEDGE_SYNC_INTERVAL_SECONDS` | `0`(주기 재송신 없음) | 워커의 주기 재동기화 간격(시작 시 1회는 항상 발신) |
+| `AON_KNOWLEDGE_STALE_SECONDS` | `1800`(30분) | 중앙 지식 낡음 임계 — 초과해도 답은 차단하지 않음(낡음 표식만) |
+| `AON_PRESENCE_GRACE_SECONDS` | `0`(즉시 오프라인) | 워커 연결 끊김 후 오프라인 판정 유예 |
+| `AON_DB` | 미설정(InMemory) | SQLite 영속(세션·토큰·감사 durable — 카드·답변 레코드 영속은 잔여) |
+| `OPERATOR_SESSION_SECRET` | 미설정(인증 OFF) | 운영 면 세션 서명 키 — 설정 시 로그인 필수 |
+
 ## 데모 조직 (샘플 데이터)
 
 `registry/`(유저 6·카드 5) + `samples/questions.jsonl`(골든셋 30) + `okf/`(OKF 번들).
@@ -196,10 +283,11 @@ uv run python -m agent_org_network.registry registry        # 5장 카드·6명 
 - 기술 설계: [`docs/trd-v0.md`](docs/trd-v0.md)
 - 작업 목록: [`docs/tasks-v0.md`](docs/tasks-v0.md)
 - 도메인 용어집: [`CONTEXT.md`](CONTEXT.md)
-- 아키텍처 결정: [`docs/adr/`](docs/adr/) (ADR 0001~0031)
+- 아키텍처 결정: [`docs/adr/`](docs/adr/) (ADR 0001~0034)
 
 ## 스택
 
-Python 3.12 · pydantic v2 · FastAPI/uvicorn · pytest · pyright(strict) · ruff · MCP SDK · anthropic SDK(owner OAuth·선택).
+Python 3.12 · pydantic v2 · FastAPI/uvicorn · pytest · pyright(strict) · ruff · MCP SDK · anthropic SDK(선택 extra).
 백엔드 운영 면은 빌드 없는 순수 HTML/CSS/fetch, 별도 사용자 UI는 [`frontend/`](frontend/)(Next.js 14). 답변 런타임은
-`claude -p` 헤드리스(`ClaudeCodeRuntime`) 또는 owner OAuth in-process(`ClaudeApiRuntime`) — 둘 다 중앙 API 키 0.
+`claude -p` 헤드리스(`ClaudeCodeRuntime`) 또는 in-process 공급자 SDK(`ClaudeApiRuntime`·`CodexApiRuntime`) —
+in-process 런타임은 중앙 Knowledge Store 우선 접지·디스크 폴백, 자격증명은 중앙 조직 키 1개(ADR 0033).

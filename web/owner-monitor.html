@@ -105,6 +105,8 @@
     }
     .badge.review { background: #fef3c7; color: #92400e; }
     .badge.corrected { background: #dbeafe; color: #1e40af; }
+    .badge.feedback-good { background: #dcfce7; color: #166534; }
+    .badge.feedback-bad { background: #fee2e2; color: #b91c1c; }
     .label { font-size: 12px; color: var(--muted); margin-top: 2px; }
     .question, .answer {
       font-size: 15px;
@@ -247,6 +249,15 @@
       if (a.corrections && a.corrections.length) {
         wrap.appendChild(el("span", "badge corrected", "정정됨 " + a.corrections.length));
       }
+      if (a.feedback) {
+        const isBad = a.feedback.verdict === "bad";
+        const fbBadge = el(
+          "span",
+          "badge " + (isBad ? "feedback-bad" : "feedback-good"),
+          (isBad ? "싫음" : "좋음") + " 피드백"
+        );
+        wrap.appendChild(fbBadge);
+      }
 
       wrap.appendChild(el("div", "label", "질문"));
       wrap.appendChild(el("div", "question", a.question));
@@ -265,6 +276,16 @@
           hist.appendChild(item);
         }
         wrap.appendChild(hist);
+      }
+
+      if (a.feedback && a.feedback.comment) {
+        const fbHist = el("div", "history");
+        fbHist.appendChild(el("div", "label", "질문자 피드백 코멘트"));
+        const fbItem = el("div", "item");
+        fbItem.appendChild(el("span", null, a.feedback.comment));
+        fbItem.appendChild(el("span", "when", "  — " + fmtTime(a.feedback.submitted_at)));
+        fbHist.appendChild(fbItem);
+        wrap.appendChild(fbHist);
       }
 
       wrap.appendChild(el("div", "label", "정정하기 (원 답은 지우지 않고 새 정정으로 쌓임)"));

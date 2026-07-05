@@ -41,7 +41,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
@@ -292,19 +292,89 @@ def _record_id_to_slot(record_id: str) -> int:
     return int(digest[:8], 16)
 
 
+# ── AnswerFeedback — 질문자 좋음/싫음 → 담당자 감독 표출 (계획 §10.2) ────
+
+
+FeedbackVerdict = Literal["good", "bad"]
+
+
+class AnswerFeedback(BaseModel, frozen=True):
+    """질문자가 한 답(record_id)에 남긴 좋음/싫음 — append-only(전이 ≠ 기록의 "기록").
+
+    원 `AnswerRecord`를 절대 수정하지 않는다. `record_id`는 어느 답에 대한
+    피드백인가의 *참조*일 뿐. `submitted_by`는 질문자 약한 신원(쿠키 uid 또는
+    mcp_guest) — 멱등 키((record_id, submitted_by)). 정정(Correction) 자체가
+    아니라 정정의 *트리거*일 뿐(계획 §10.6).
+    """
+
+    record_id: str
+    verdict: FeedbackVerdict
+    comment: str = ""
+    submitted_by: str
+    submitted_at: datetime
+
+
+class FeedbackStore(Protocol):
+    """`AnswerFeedback` 보관·조회 포트 — 멱등 upsert + 이력 전량 보존(계획 §10.2)."""
+
+    def upsert(self, fb: AnswerFeedback) -> None: ...
+
+    def latest_for_record(self, record_id: str) -> AnswerFeedback | None: ...
+
+    def for_record(self, record_id: str) -> list[AnswerFeedback]: ...
+
+
+class InMemoryFeedbackStore:
+    """in-memory `FeedbackStore` — (record_id, submitted_by) 키 upsert·이력 전량 보존.
+
+    멱등 정책(계획 §10.2 "최신 우선(upsert), 단 이력은 보존"): 같은 질문자가
+    같은 답에 재제출하면 최신 verdict/comment로 판정을 덮되, `for_record`는
+    append 이력 전체를 돌려준다(전이 ≠ 기록 — 판정은 최신, 기록은 전량).
+    """
+
+    def __init__(self) -> None:
+        self._latest: dict[tuple[str, str], AnswerFeedback] = {}
+        self._history: dict[str, list[AnswerFeedback]] = {}
+        self._lock = threading.Lock()
+
+    def upsert(self, fb: AnswerFeedback) -> None:
+        with self._lock:
+            self._latest[(fb.record_id, fb.submitted_by)] = fb
+            self._history.setdefault(fb.record_id, []).append(fb)
+
+    def latest_for_record(self, record_id: str) -> AnswerFeedback | None:
+        with self._lock:
+            candidates = [
+                fb for (rid, _submitted_by), fb in self._latest.items() if rid == record_id
+            ]
+            if not candidates:
+                return None
+            return max(candidates, key=lambda fb: fb.submitted_at)
+
+    def for_record(self, record_id: str) -> list[AnswerFeedback]:
+        with self._lock:
+            return list(self._history.get(record_id, []))
+
+
 # ── 담당자 모니터링 조회 (owner 스코핑 — 자기 에이전트만) ─────────────────
 
 
 @dataclass(frozen=True)
 class MonitoringItem:
-    """담당자 모니터링 한 건 — 답 레코드 + 검토 필요 표식 + 정정 이력 투영."""
+    """담당자 모니터링 한 건 — 답 레코드 + 검토 필요 표식 + 정정 이력 + 피드백 투영."""
 
     record: AnswerRecord
     corrections: list[CorrectionEvent]
+    feedback: AnswerFeedback | None = None
 
     @property
     def needs_correction_review(self) -> bool:
-        return self.record.needs_correction_review
+        # 레코드 자체 표식(오프라인 자동발신 사후교정) OR 질문자 "싫음" 피드백(계획 §10.3).
+        return self.record.needs_correction_review or self._has_bad_feedback
+
+    @property
+    def _has_bad_feedback(self) -> bool:
+        return self.feedback is not None and self.feedback.verdict == "bad"
 
 
 def monitoring_for_owner(
@@ -312,16 +382,32 @@ def monitoring_for_owner(
     correction_store: CorrectionStore,
     *,
     agent_id: str,
+    feedback_store: FeedbackStore | None = None,
 ) -> list[MonitoringItem]:
     """담당자 모니터링 조회 — 자기 에이전트의 질문/답변 목록 + 검토 필요 표시 +
-    정정 이력(ADR 0033 결정 4·계획 §3 S5).
+    정정 이력(ADR 0033 결정 4·계획 §3 S5) + 피드백 조인(계획 §10.3).
 
     owner 스코핑: `agent_id`로만 스코핑한다(담당자는 자기 에이전트 것만 본다 —
     worker-소유자 스코핑 정신 재사용). 실 owner 인증/권한 대조는 호출측(웹/MCP
     어댑터) 몫 — 이 함수는 결정론 조회 코어만 담당한다.
+
+    `feedback_store`(계획 §10.3 하위호환 핵심): 미주입(`None`)이면 각 항목의
+    `feedback`이 `None`이고 `needs_correction_review` 판정은 기존(레코드 표식만)
+    100% 보존된다. 주입 시에만 그 답의 최신 피드백을 조인해 "검토 필요" 판정을
+    두 축의 OR로 확장한다. 조인은 이 함수(코어) 안에서만 일어난다 — 웹/MCP
+    어댑터가 각자 조인하면 두 표면이 판정을 다르게 흘릴 여지가 생기므로,
+    판정 SSOT를 코어 한 곳에 둔다(계획 §10.3).
     """
     return [
-        MonitoringItem(record=rec, corrections=correction_store.for_record(rec.record_id))
+        MonitoringItem(
+            record=rec,
+            corrections=correction_store.for_record(rec.record_id),
+            feedback=(
+                feedback_store.latest_for_record(rec.record_id)
+                if feedback_store is not None
+                else None
+            ),
+        )
         for rec in answer_store.for_agent(agent_id)
     ]
 
@@ -384,6 +470,10 @@ __all__ = [
     "CorrectionStore",
     "InMemoryCorrectionStore",
     "CorrectionService",
+    "FeedbackVerdict",
+    "AnswerFeedback",
+    "FeedbackStore",
+    "InMemoryFeedbackStore",
     "MonitoringItem",
     "monitoring_for_owner",
     "AnswerCorrectionView",

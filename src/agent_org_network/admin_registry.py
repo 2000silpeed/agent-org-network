@@ -27,6 +27,7 @@ from agent_org_network.agent_card import AgentCard
 
 if TYPE_CHECKING:
     from agent_org_network.registry import Registry
+    from agent_org_network.sqlite_stores import SqliteRegistryJournal
     from agent_org_network.token import AdmissionToken, TokenStore
 
 
@@ -149,6 +150,56 @@ class AdminAuditSink(Protocol):
     def record_action(self, record: dict[str, Any]) -> None: ...
 
 
+class RegistryJournalSink(Protocol):
+    """카드 라이브 등록·오너 변경을 durable 저널에 남기는 포트(ADR 0034 결정 1·2).
+
+    `SqliteRegistryJournal`(`sqlite_stores.py`)이 실 구현. `AdminAuditSink`와
+    다른 축이다 — 감사 로그는 *사람이 읽는 이력*(who/what/when), 저널은
+    *기계가 재생하는 리플레이 원천*(재기동 시 라이브 Registry 복원). 둘을
+    분리해 각자의 목적에 맞는 포맷·소비자를 유지한다.
+    """
+
+    def append_register(
+        self,
+        *,
+        agent_id: str,
+        owner: str,
+        team: str,
+        summary: str,
+        domains: list[str],
+        last_reviewed_at: str,
+        by: str,
+        at: datetime,
+        maintainer: str | None = None,
+        can_answer: list[str] = ...,
+        cannot_answer: list[str] = ...,
+        approval_when: list[str] = ...,
+        collaborate_when: list[str] = ...,
+        knowledge_sources: list[str] = ...,
+        trust_labels: list[str] = ...,
+    ) -> None: ...
+
+    def append_transfer(
+        self,
+        *,
+        agent_id: str,
+        owner: str,
+        team: str,
+        summary: str,
+        domains: list[str],
+        last_reviewed_at: str,
+        by: str,
+        at: datetime,
+        maintainer: str | None = None,
+        can_answer: list[str] = ...,
+        cannot_answer: list[str] = ...,
+        approval_when: list[str] = ...,
+        collaborate_when: list[str] = ...,
+        knowledge_sources: list[str] = ...,
+        trust_labels: list[str] = ...,
+    ) -> None: ...
+
+
 class AdminRegistryService:
     """라이브 카드 등록 + 오너 변경 전이 서비스(ADR 0034 결정 1·2).
 
@@ -165,12 +216,14 @@ class AdminRegistryService:
         audit_sink: AdminAuditSink | None = None,
         token_store: "TokenStore | None" = None,
         disconnect_owner: Callable[[str], None] | None = None,
+        journal_sink: "RegistryJournalSink | None" = None,
         clock: Clock = _default_clock,
     ) -> None:
         self._registry = registry
         self._audit_sink = audit_sink
         self._token_store = token_store
         self._disconnect_owner = disconnect_owner
+        self._journal_sink = journal_sink
         self._clock = clock
         # 스위치 + 토큰 revoke를 원자적으로 묶는 임계 구역(ADR 0034 결정 2).
         self._lock = threading.RLock()
@@ -179,7 +232,8 @@ class AdminRegistryService:
         """신규 카드를 admission 통과 즉시 라이브 Registry에 반영한다(ADR 0034 결정 1).
 
         흐름: admission 검증(무효면 AdmissionError) → 라이브 `registry.register`(중복이면
-        DuplicateCardError) → 감사 로그 append. YAML은 초기 시드일 뿐 여기서 파일을 쓰지
+        DuplicateCardError) → 감사 로그 append (+ `journal_sink` 주입 시 durable 저널
+        append, ADR 0034 결정 1 "AON_DB 영속"). YAML은 초기 시드일 뿐 여기서 파일을 쓰지
         않는다(git 추적은 감사 로그가 대신). `by`는 등록을 낸 운영자 신원(감사 who).
         """
         from agent_org_network.registry import RegistryError
@@ -195,6 +249,9 @@ class AdminRegistryService:
                 self._registry.register(card)
             except RegistryError as exc:  # 동시 등록 경합(TOCTOU) 방어
                 raise DuplicateCardError(str(exc)) from exc
+
+        if self._journal_sink is not None:
+            self._journal_sink.append_register(**_journal_kwargs(candidate, by=by, at=self._clock()))
 
         self._record_action(
             action="CardRegistered",
@@ -247,6 +304,11 @@ class AdminRegistryService:
                 self._disconnect_owner(from_owner)
             except Exception:
                 pass
+
+        if self._journal_sink is not None:
+            self._journal_sink.append_transfer(
+                **_journal_kwargs(candidate, by=by, at=self._clock())
+            )
 
         audit_index = self._record_action(
             action="OwnershipTransfer",
@@ -311,6 +373,77 @@ class AdminRegistryService:
         return -1
 
 
+def _journal_kwargs(candidate: CardCandidate, *, by: str, at: datetime) -> dict[str, Any]:
+    """`CardCandidate`를 `RegistryJournalSink.append_*`의 kwargs 모양으로 편평화한다."""
+    return {
+        "agent_id": candidate.agent_id,
+        "owner": candidate.owner,
+        "team": candidate.team,
+        "summary": candidate.summary,
+        "domains": list(candidate.domains),
+        "last_reviewed_at": candidate.last_reviewed_at,
+        "by": by,
+        "at": at,
+        "maintainer": candidate.maintainer,
+        "can_answer": list(candidate.can_answer),
+        "cannot_answer": list(candidate.cannot_answer),
+        "approval_when": list(candidate.approval_when),
+        "collaborate_when": list(candidate.collaborate_when),
+        "knowledge_sources": list(candidate.knowledge_sources),
+        "trust_labels": list(candidate.trust_labels),
+    }
+
+
+def replay_registry_journal(journal: "SqliteRegistryJournal", registry: "Registry") -> None:
+    """durable 저널을 처음부터 순서대로 재생해 라이브 Registry를 복원한다(ADR 0034 결정 1·2).
+
+    중앙 기동 시 호출 순서: `registry.load(seed_dir)`(YAML 초기 시드) → `registry.
+    validate()` → 이 함수(저널 리플레이). 저널의 각 항목을 `admit_card`(admission
+    관문)에 그대로 태운다 — **우회 없음**("무효 카드는 등록되지 않는다" 불변식이
+    리플레이에도 그대로 적용된다). 참조 무결성이 깨진 항목(owner/maintainer가
+    당시엔 있었지만 지금 시드엔 없는 등)은 조용히 건너뛴다(복원 실패가 부팅을
+    막지 않는다 — 안전측 스킵).
+
+    `register` 항목은 `registry.register`(신규, 이미 있으면 스킵 — 멱등 방어),
+    `transfer` 항목은 `registry.replace_card`(이미 있는 agent_id 값 교체)로
+    반영한다. 순서(seq ASC)를 보존해 같은 agent_id에 여러 항목이 쌓여도(등록→
+    오너변경→오너변경…) 마지막 상태가 최종 라이브 상태가 된다(전이 순서 재현).
+    """
+    from agent_org_network.registry import RegistryError
+
+    for entry in journal.entries():
+        candidate = CardCandidate(
+            agent_id=entry.candidate.agent_id,
+            owner=entry.candidate.owner,
+            team=entry.candidate.team,
+            summary=entry.candidate.summary,
+            domains=list(entry.candidate.domains),
+            last_reviewed_at=entry.candidate.last_reviewed_at,
+            maintainer=entry.candidate.maintainer,
+            can_answer=list(entry.candidate.can_answer),
+            cannot_answer=list(entry.candidate.cannot_answer),
+            approval_when=list(entry.candidate.approval_when),
+            collaborate_when=list(entry.candidate.collaborate_when),
+            knowledge_sources=list(entry.candidate.knowledge_sources),
+            trust_labels=list(entry.candidate.trust_labels),
+        )
+        card, _errors = admit_card(candidate, registry)
+        if card is None:
+            continue  # 참조 무결성 붕괴 등 — 안전측 스킵(부팅 중단 없음).
+
+        if entry.kind == "register":
+            if registry.has_card(card.agent_id):
+                continue  # 멱등 방어(이미 존재 — 중복 재생 무시).
+            try:
+                registry.register(card)
+            except RegistryError:
+                continue
+        else:  # "transfer"
+            if not registry.has_card(card.agent_id):
+                continue  # 전이 대상 부재 — 안전측 스킵.
+            registry.replace_card(card)
+
+
 __all__ = [
     "CardCandidate",
     "admit_card",
@@ -319,5 +452,7 @@ __all__ = [
     "UnknownCardError",
     "OwnershipTransferResult",
     "AdminAuditSink",
+    "RegistryJournalSink",
     "AdminRegistryService",
+    "replay_registry_journal",
 ]

@@ -53,10 +53,12 @@ if TYPE_CHECKING:
         AnswerCorrectionView,
         AnswerRecordStore,
         CorrectionStore,
+        FeedbackStore,
         MonitoringItem,
     )
     from agent_org_network.audit import AuditReader
     from agent_org_network.presence import PresenceStatus
+    from agent_org_network.sqlite_stores import SqliteRegistryJournal
 from agent_org_network.conflict import (
     Agreed,
     ConcurOnPrimary,
@@ -135,7 +137,12 @@ from agent_org_network.two_stage_router import (
 )
 from agent_org_network.hitl import HitlToggleMap
 from agent_org_network.session import SessionAskOrg, SessionStore
-from agent_org_network.storage_select import select_session_store, select_token_store
+from agent_org_network.storage_select import (
+    select_answer_record_store,
+    select_correction_store,
+    select_session_store,
+    select_token_store,
+)
 from agent_org_network.token import TokenStore
 from agent_org_network.user import User
 
@@ -227,6 +234,17 @@ class CorrectionRequest(BaseModel):
     by_owner: str = ""
     corrected_text: str
     rationale: str = ""
+
+
+class FeedbackRequest(BaseModel):
+    """POST /answer/{record_id}/feedback 요청 바디 — 질문자 좋음/싫음(계획 §10.5).
+
+    `verdict`는 `good`|`bad` 2값(FeedbackVerdict와 같은 SSOT) — 잘못된 값은 pydantic이
+    422로 거부. `comment`는 선택("싫음" 사유 — 담당자가 정정에 참고, good도 허용).
+    """
+
+    verdict: Literal["good", "bad"]
+    comment: str = ""
 
 
 class AdminCardRegisterRequest(BaseModel):
@@ -335,8 +353,9 @@ def serialize_reply(reply: OrgReply) -> dict[str, Any]:
 def serialize_monitoring_item(item: "MonitoringItem") -> dict[str, Any]:
     """담당자 모니터링 한 건을 화면向 dict로 변환한다(Phase 12 (A)·owner 로컬 감독 면).
 
-    owner 자기 에이전트 감독 면이라 질문·답 본문·발신 mode·검토 필요 표식·정정 이력을
-    그대로 노출한다(채팅 OrgReply 노출 불변식의 반대 — 여긴 담당자가 답을 감독하는 면).
+    owner 자기 에이전트 감독 면이라 질문·답 본문·발신 mode·검토 필요 표식·정정 이력·
+    답변 피드백을 그대로 노출한다(채팅 OrgReply 노출 불변식의 반대 — 여긴 담당자가
+    답을 감독하는 면. 질문자 신원 `submitted_by`도 감독 면이라 leak 아님, 계획 §10.3).
     """
     return {
         "record_id": item.record.record_id,
@@ -356,6 +375,16 @@ def serialize_monitoring_item(item: "MonitoringItem") -> dict[str, Any]:
             }
             for ev in item.corrections
         ],
+        "feedback": (
+            {
+                "verdict": item.feedback.verdict,
+                "comment": item.feedback.comment,
+                "submitted_by": item.feedback.submitted_by,
+                "submitted_at": item.feedback.submitted_at.isoformat(),
+            }
+            if item.feedback is not None
+            else None
+        ),
     }
 
 
@@ -1082,7 +1111,9 @@ def create_app(
     console_feed: "ConsoleFeed | None" = None,
     answer_record_store: "AnswerRecordStore | None" = None,
     correction_store: "CorrectionStore | None" = None,
+    feedback_store: "FeedbackStore | None" = None,
     presence_of: "Callable[[str], PresenceStatus] | None" = None,
+    registry_journal: "SqliteRegistryJournal | None" = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -1123,6 +1154,11 @@ def create_app(
     `hitl_toggles`(T9.2(b)·T9.3(b)·ADR 0025): HITL 런타임 토글 맵. 콘솔 `/console/hitl/{agent_id}`
     라우트가 set/get하고, `build_demo`가 만드는 `AskOrg`에 *같은 인스턴스*로 전달돼 다음 답의
     mode에 반영된다. 미주입이면 `HitlToggleMap()` 내부 생성(하위호환 — 기존 동작 100% 보존).
+    `feedback_store`(계획 §10 — 답변 피드백): 질문자 좋음/싫음 저장 포트.
+    `POST /answer/{record_id}/feedback`이 upsert하고, `monitoring_for_owner`가 조인해
+    "검토 필요" 판정에 bad 피드백 축을 더한다(§10.3 OR 조인). **미주입이면 `/answer/
+    {record_id}/feedback`이 503**(정정 서비스 미배선과 동형)이고 `monitoring_for_owner`
+    호출도 `feedback_store=None`으로 나가 기존 판정 100% 보존(하위호환).
     """
     from starlette.middleware.sessions import SessionMiddleware
 
@@ -1151,23 +1187,25 @@ def create_app(
     _hitl_toggles_explicit: set[str] = set()
 
     # 담당자 감독 배선(Phase 12 (A)(B)·ADR 0033 결정 4): 답변 감사 단위·정정 이벤트 저장소.
-    # 미주입이면 이 앱이 InMemory를 만들어 `build_demo`(→AskOrg 적재)·감독 라우트가 *같은
-    # 인스턴스*를 본다(단일 원천). `presence_of`는 답의 담당 프레즌스 조회 콜백(오프라인
-    # 자동발신 → 검토 필요 표식) — 미주입이면 항상 offline 미간주(needs_correction_review는
-    # 그 조건이 성립 못 해 False). `create_central_app`이 실 `_presence_tracker.status`를 물린다.
-    from agent_org_network.answer_record import (
-        InMemoryAnswerRecordStore as _InMemoryAnswerRecordStore,
-        InMemoryCorrectionStore as _InMemoryCorrectionStore,
-    )
-
+    # 미주입이면 `select_answer_record_store()`/`select_correction_store()`로 결정
+    # (`AON_DB` 설정 시 `SqliteAnswerRecordStore`/`SqliteCorrectionStore` durable,
+    # 미설정 시 기존 InMemory — 하위호환) — `build_demo`(→AskOrg 적재)·감독 라우트가
+    # *같은 인스턴스*를 본다(단일 원천). `presence_of`는 답의 담당 프레즌스 조회 콜백
+    # (오프라인 자동발신 → 검토 필요 표식) — 미주입이면 항상 offline 미간주
+    # (needs_correction_review는 그 조건이 성립 못 해 False). `create_central_app`이
+    # 실 `_presence_tracker.status`를 물린다.
     _answer_record_store: AnswerRecordStore = (
         answer_record_store
         if answer_record_store is not None
-        else _InMemoryAnswerRecordStore()
+        else select_answer_record_store()
     )
     _correction_store: CorrectionStore = (
-        correction_store if correction_store is not None else _InMemoryCorrectionStore()
+        correction_store if correction_store is not None else select_correction_store()
     )
+    # 답변 피드백 스토어(계획 §10) — 완전 옵셔널 배선(정정 서비스와 동형): 미주입이면
+    # `None`을 그대로 유지한다(강제 생성 없음). `/answer/{record_id}/feedback`이 503,
+    # `monitoring_for_owner` 호출도 `feedback_store=None`으로 나가 기존 판정 보존.
+    _feedback_store: "FeedbackStore | None" = feedback_store
 
     bundle = build_demo(
         runtime=runtime,
@@ -1272,7 +1310,19 @@ def create_app(
     # 시 구 owner 토큰 revoke는 `_token_store`(콘솔 발급과 같은 인스턴스), 구 owner 워커 WS
     # 세션 끊기는 `WebSocketDispatcher.disconnect`(등급별 — presence offline·in-flight
     # re-queue). 디스패처가 WS가 아니면(로컬/데모) disconnect 미배선(no-op·하위호환).
-    from agent_org_network.admin_registry import AdminRegistryService as _AdminRegistryService
+    #
+    # 카드 durable 저널(Phase 12 SQLite 확장·ADR 0034 결정 1 "AON_DB 영속"): 미주입이면
+    # `select_registry_journal()`로 결정(`AON_DB` 설정 시 `SqliteRegistryJournal(path)`,
+    # 미설정 시 `None` — 하위호환·기존 InMemory Registry 그대로). 저널이 있으면 (1) 이
+    # 함수 호출 시점에 기존 저널 항목을 `bundle.registry`(하드코딩/YAML 시드 완료 상태)
+    # 위에 리플레이해 이전 프로세스의 라이브 등록·오너 변경을 복원하고(admission 경유 —
+    # 무효 항목은 스킵), (2) `AdminRegistryService(journal_sink=)`로 물려 *이후* 등록·
+    # 오너 변경도 저널에 계속 append되게 한다.
+    from agent_org_network.admin_registry import (
+        AdminRegistryService as _AdminRegistryService,
+        replay_registry_journal as _replay_registry_journal,
+    )
+    from agent_org_network.storage_select import select_registry_journal
 
     _admin_disconnect_owner: "Callable[[str], None] | None" = None
     if isinstance(dispatcher, WebSocketDispatcher):
@@ -1288,12 +1338,25 @@ def create_app(
 
         _admin_disconnect_owner = _disconnect_owner_all_roles
 
+    _registry_journal = (
+        registry_journal if registry_journal is not None else select_registry_journal()
+    )
+    if _registry_journal is not None:
+        _replay_registry_journal(_registry_journal, bundle.registry)
+
     _admin_registry_service = _AdminRegistryService(
         bundle.registry,
         audit_sink=bundle.audit,
         token_store=_token_store,
         disconnect_owner=_admin_disconnect_owner,
+        journal_sink=_registry_journal,
     )
+    # app.state 노출 — 어떤 store가 실제로 선택됐는지(InMemory/Sqlite) 배선을 관찰하는
+    # seam(`session_store`/`token_store`와 같은 패턴). 라우트는 클로저 변수를 그대로 쓴다.
+    app.state.answer_record_store = _answer_record_store
+    app.state.correction_store = _correction_store
+    app.state.feedback_store = _feedback_store
+    app.state.registry_journal = _registry_journal
     _git_gateway: GitGateway = git_gateway if git_gateway is not None else FakeGitGateway()
     # OKF 저작자(/author/run) — 주입(테스트=FakeAuthor)이면 그대로, 미주입(프로덕션)이면 실
     # `LlmAuthor`를 *지연* 생성한다. `runtime_select` 대칭: anthropic SDK는 선택 extra라 첫
@@ -1423,7 +1486,10 @@ def create_app(
         # 자기 에이전트의 답 목록(최신순)·정정 이력 투영. needs_review=true면 검토 필요만.
         # owner 스코핑: agent_id로만 스코핑(담당자는 자기 에이전트 것만 — 도메인 코어 계약).
         items = _monitoring_for_owner(
-            _answer_record_store, _correction_store, agent_id=agent_id
+            _answer_record_store,
+            _correction_store,
+            agent_id=agent_id,
+            feedback_store=_feedback_store,
         )
         items = sorted(items, key=lambda it: it.record.answered_at, reverse=True)
         if needs_review:
@@ -1475,6 +1541,47 @@ def create_app(
         if view is None:
             raise HTTPException(status_code=404, detail="알 수 없는 답변 레코드")
         return serialize_correction_view(view)
+
+    @app.post("/answer/{record_id}/feedback")
+    def answer_feedback(  # pyright: ignore[reportUnusedFunction]
+        record_id: str, req: FeedbackRequest, request: Request, response: Response
+    ) -> dict[str, Any]:
+        # 질문자 측 답변 피드백 제출(계획 §10.5) — 세션 신원 불요. submitted_by는 /ask와
+        # 같은 익명 쿠키(`_COOKIE_NAME`)에서 읽는다(없으면 새로 발급 — /ask와 동형).
+        # 검증 순서: 미배선(feedback_store 없음)이면 503 → 미존재 record면 404 →
+        # verdict enum은 pydantic이 이미 422로 거부(FeedbackRequest 필드 타입).
+        # 노출 불변식: 응답엔 접수 확인(submitted·record_id·verdict)만 싣는다 — bad
+        # 피드백이 어느 owner/agent로 갔는지·내부 판정은 절대 노출하지 않는다.
+        if _feedback_store is None:
+            raise HTTPException(status_code=503, detail="피드백 서비스가 배선되지 않았습니다")
+        if _answer_record_store.get(record_id) is None:
+            raise HTTPException(status_code=404, detail="알 수 없는 답변 레코드")
+
+        uid: str | None = request.cookies.get(_COOKIE_NAME)
+        if uid is None:
+            uid = secrets.token_urlsafe(16)
+            response.set_cookie(
+                key=_COOKIE_NAME,
+                value=uid,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+        from agent_org_network.answer_record import (
+            AnswerFeedback as _AnswerFeedback,
+            default_clock as _default_clock,
+        )
+
+        _feedback_store.upsert(
+            _AnswerFeedback(
+                record_id=record_id,
+                verdict=req.verdict,
+                comment=req.comment,
+                submitted_by=uid,
+                submitted_at=_default_clock(),
+            )
+        )
+        return {"submitted": True, "record_id": record_id, "verdict": req.verdict}
 
     # ── 관리 UI 라우트 (Phase 12 3라운드·ADR 0034) ──────────────────────────
     #

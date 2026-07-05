@@ -394,27 +394,35 @@ def create_central_app(
     from agent_org_network.presence import InMemoryPresenceTracker
 
     _presence_tracker = InMemoryPresenceTracker()
-    # 중앙 지식 저장소(Phase 12 (B)(C)·ADR 0033 결정 1·3) — 워커가 동기화한 본문을
-    # agent_id별 보관한다. *같은 인스턴스*를 (1) 디스패처(SyncKnowledge 수신부가 M3 계약
+    # 중앙 지식 저장소(Phase 12 (B)(C)·ADR 0033 결정 1·3, SQLite 확장) — 워커가 동기화한
+    # 본문을 agent_id별 보관한다. `select_knowledge_store()`로 결정(`AON_DB` 설정 시
+    # `SqliteKnowledgeStore(path)` durable, 미설정 시 기존 `InMemoryKnowledgeStore()` —
+    # 하위호환). *같은 인스턴스*를 (1) 디스패처(SyncKnowledge 수신부가 M3 계약
     # `accept_and_store_knowledge_sync` 경유로 put)와 (2) 답변 런타임(`select_runtime`에
     # knowledge_store 주입 — 답 생성이 이 스토어를 소비, ADR 0033 결정 1) 양쪽에 물려
     # "워커 동기화→중앙 저장→중앙 답변" 한 축이 닫힌다(단일 원천).
-    from agent_org_network.knowledge_store import InMemoryKnowledgeStore
-
-    _knowledge_store = InMemoryKnowledgeStore()
-    # 담당자 감독 저장소(Phase 12 (A)(B)·ADR 0033 결정 4) — 중앙이 낸 답의 감사 단위
-    # (`AnswerRecord`)와 그 사후 정정(`CorrectionEvent`)을 담는다. *같은 인스턴스*를
-    # `create_app`에 물려 AskOrg 적재(답 확정 시)·감독 라우트(모니터링·정정·질문자 배지)가
-    # 한 원천을 본다. InMemory 정당(정정 이력은 append-only 감사지만 durable SQLite 확장은
-    # 후속 — 이번 범위는 인메모리). 프레즌스는 `_presence_tracker.status`를 답변 적재 시
-    # 오프라인 자동발신 판정(needs_correction_review)에 물린다.
-    from agent_org_network.answer_record import (
-        InMemoryAnswerRecordStore,
-        InMemoryCorrectionStore,
+    from agent_org_network.storage_select import (
+        select_answer_record_store,
+        select_correction_store,
+        select_feedback_store,
+        select_knowledge_store,
     )
 
-    _answer_record_store = InMemoryAnswerRecordStore()
-    _correction_store = InMemoryCorrectionStore()
+    _knowledge_store = select_knowledge_store()
+    # 담당자 감독 저장소(Phase 12 (A)(B)·ADR 0033 결정 4, SQLite 확장) — 중앙이 낸 답의
+    # 감사 단위(`AnswerRecord`)와 그 사후 정정(`CorrectionEvent`)을 담는다.
+    # `select_answer_record_store()`/`select_correction_store()`로 결정(`AON_DB` 설정
+    # 시 `SqliteAnswerRecordStore`/`SqliteCorrectionStore` durable, 미설정 시 기존
+    # InMemory — 하위호환). *같은 인스턴스*를 `create_app`에 물려 AskOrg 적재(답 확정
+    # 시)·감독 라우트(모니터링·정정·질문자 배지)가 한 원천을 본다. 프레즌스는
+    # `_presence_tracker.status`를 답변 적재 시 오프라인 자동발신 판정
+    # (needs_correction_review)에 물린다.
+    _answer_record_store = select_answer_record_store()
+    _correction_store = select_correction_store()
+    # 답변 피드백 스토어(계획 §10) — 질문자 좋음/싫음. `monitoring_for_owner`가 조인해
+    # "검토 필요" 판정에 bad 피드백 축을 더한다(§10.3). 항상 InMemory(§10.8 — SQLite
+    # durable은 tasks 잔여).
+    _feedback_store = select_feedback_store()
 
     # 중앙 답변 런타임 실 주입(Phase 12 (C)·ADR 0033 결정 1) — 위 `_knowledge_store`를
     # 소비하는 런타임을 `select_runtime`으로 고른다. `AON_PROVIDER`가 인프로세스 공급자
@@ -464,6 +472,7 @@ def create_central_app(
         console_feed=_resolved_console_feed,
         answer_record_store=_answer_record_store,
         correction_store=_correction_store,
+        feedback_store=_feedback_store,
         presence_of=_presence_tracker.status,
     )
     _mount_worker_endpoint(app, dispatcher)

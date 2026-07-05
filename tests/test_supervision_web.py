@@ -18,8 +18,10 @@ from httpx import Response
 
 from agent_org_network.answer_record import (
     CorrectionStore,
+    FeedbackStore,
     InMemoryAnswerRecordStore,
     InMemoryCorrectionStore,
+    InMemoryFeedbackStore,
     monitoring_for_owner,
 )
 from agent_org_network.presence import PresenceStatus
@@ -63,6 +65,7 @@ def _client(
     *,
     answer_record_store: InMemoryAnswerRecordStore | None = None,
     correction_store: CorrectionStore | None = None,
+    feedback_store: FeedbackStore | None = None,
     presence_of: Any = None,
 ) -> tuple[TestClient, InMemoryAnswerRecordStore, CorrectionStore]:
     ars = answer_record_store if answer_record_store is not None else InMemoryAnswerRecordStore()
@@ -71,6 +74,7 @@ def _client(
         runtime=StubRuntime(),
         answer_record_store=ars,
         correction_store=cs,
+        feedback_store=feedback_store,
         presence_of=presence_of,
     )
     return TestClient(app), ars, cs
@@ -335,3 +339,122 @@ def test_모니터링_목록에_정정_이력이_실린다() -> None:
     # 도메인 코어와 일치(투영이 monitoring_for_owner를 소비한다).
     core = monitoring_for_owner(ars, cs, agent_id=agent_id)
     assert len(core) == 1 and len(core[0].corrections) == 1
+
+
+# ── 답변 피드백 웹 표면 — POST /answer/{record_id}/feedback (계획 §10.5) ─────
+
+
+def test_피드백_제출은_세션_불요_익명_쿠키로_동작한다() -> None:
+    fs = InMemoryFeedbackStore()
+    client, _, _ = _client(feedback_store=fs)
+    body = _seed_answer(client)
+    record_id = body["record_id"]
+
+    res = _post(client, f"/answer/{record_id}/feedback", {"verdict": "good"})
+
+    assert res.status_code == 200
+    payload = _json(res)
+    assert payload == {"submitted": True, "record_id": record_id, "verdict": "good"}
+
+
+def test_피드백_제출은_upsert로_저장된다() -> None:
+    fs = InMemoryFeedbackStore()
+    client, _, _ = _client(feedback_store=fs)
+    body = _seed_answer(client)
+    record_id = body["record_id"]
+
+    _post(client, f"/answer/{record_id}/feedback", {"verdict": "bad", "comment": "틀렸어요"})
+
+    stored = fs.latest_for_record(record_id)
+    assert stored is not None
+    assert stored.verdict == "bad"
+    assert stored.comment == "틀렸어요"
+
+
+def test_같은_질문자_재제출은_최신으로_덮이되_이력은_보존된다() -> None:
+    """마음 바꿈(좋음→싫음) — upsert 정책(계획 §10.2)."""
+    fs = InMemoryFeedbackStore()
+    client, _, _ = _client(feedback_store=fs)
+    body = _seed_answer(client)
+    record_id = body["record_id"]
+
+    res1 = _post(client, f"/answer/{record_id}/feedback", {"verdict": "good"})
+    assert res1.status_code == 200
+    # TestClient는 응답 Set-Cookie를 이후 요청에 자동 지속(같은 client 인스턴스).
+    res2 = _post(client, f"/answer/{record_id}/feedback", {"verdict": "bad"})
+    assert res2.status_code == 200
+
+    latest = fs.latest_for_record(record_id)
+    assert latest is not None and latest.verdict == "bad"
+    assert len(fs.for_record(record_id)) == 2
+
+
+def test_미존재_레코드_피드백_제출은_404() -> None:
+    fs = InMemoryFeedbackStore()
+    client, _, _ = _client(feedback_store=fs)
+
+    res = _post(client, "/answer/nope/feedback", {"verdict": "good"})
+
+    assert res.status_code == 404
+
+
+def test_잘못된_verdict는_422() -> None:
+    fs = InMemoryFeedbackStore()
+    client, _, _ = _client(feedback_store=fs)
+    body = _seed_answer(client)
+    record_id = body["record_id"]
+
+    res = _post(client, f"/answer/{record_id}/feedback", {"verdict": "great"})
+
+    assert res.status_code == 422
+
+
+def test_feedback_store_미배선이면_503() -> None:
+    client, _, _ = _client()  # feedback_store=None
+    body = _seed_answer(client)
+    record_id = body["record_id"]
+
+    res = _post(client, f"/answer/{record_id}/feedback", {"verdict": "good"})
+
+    assert res.status_code == 503
+
+
+def test_bad_피드백이_모니터링_검토_필요에_등장한다() -> None:
+    """e2e — 싫음 피드백 → 담당자 감독 면 검토 필요 축에 표출(계획 §10.3)."""
+    fs = InMemoryFeedbackStore()
+    client, _, _ = _client(feedback_store=fs)
+    body = _seed_answer(client)
+    record_id = body["record_id"]
+    agent_id = body["answered_by"]["agent_id"]
+
+    # 최초엔 검토 필요 아님.
+    items = _list(_get(client, "/supervision/answers", params={"agent_id": agent_id}))
+    assert items[0]["needs_correction_review"] is False
+
+    _post(client, f"/answer/{record_id}/feedback", {"verdict": "bad", "comment": "부정확함"})
+
+    items = _list(
+        _get(
+            client,
+            "/supervision/answers",
+            params={"agent_id": agent_id, "needs_review": "true"},
+        )
+    )
+    assert len(items) == 1
+    assert items[0]["record_id"] == record_id
+    assert items[0]["needs_correction_review"] is True
+    assert items[0]["feedback"]["verdict"] == "bad"
+    assert items[0]["feedback"]["comment"] == "부정확함"
+
+
+def test_피드백_응답은_접수_확인만_노출한다() -> None:
+    """노출 불변식 — 질문자 응답에 owner/agent/내부 판정이 실리지 않는다(계획 §10.5)."""
+    fs = InMemoryFeedbackStore()
+    client, _, _ = _client(feedback_store=fs)
+    body = _seed_answer(client)
+    record_id = body["record_id"]
+
+    res = _post(client, f"/answer/{record_id}/feedback", {"verdict": "bad", "comment": "별로"})
+
+    payload = _json(res)
+    assert set(payload.keys()) == {"submitted", "record_id", "verdict"}

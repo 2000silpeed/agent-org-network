@@ -25,11 +25,13 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from agent_org_network.answer_record import (
+    AnswerFeedback,
     AnswerRecord,
     CorrectionEvent,
     CorrectionService,
     InMemoryAnswerRecordStore,
     InMemoryCorrectionStore,
+    InMemoryFeedbackStore,
     monitoring_for_owner,
     view_answer_with_correction,
 )
@@ -560,3 +562,233 @@ def test_존재하지_않는_레코드_조회는_None():
     answer_store = InMemoryAnswerRecordStore()
     correction_store = InMemoryCorrectionStore()
     assert view_answer_with_correction(answer_store, correction_store, record_id="nope") is None
+
+
+# ── AnswerFeedback 값 객체 + FeedbackStore (plan §10.2) ──────────────────
+
+
+def _feedback(
+    *,
+    record_id: str = "rec-1",
+    verdict: str = "good",
+    comment: str = "",
+    submitted_by: str = "uid-1",
+    submitted_at: datetime = _T0,
+) -> AnswerFeedback:
+    return AnswerFeedback(
+        record_id=record_id,
+        verdict=verdict,  # type: ignore[arg-type]
+        comment=comment,
+        submitted_by=submitted_by,
+        submitted_at=submitted_at,
+    )
+
+
+def test_answer_feedback는_frozen_값_객체다():
+    fb = _feedback(verdict="bad", comment="틀렸어요")
+    assert fb.record_id == "rec-1"
+    assert fb.verdict == "bad"
+    assert fb.comment == "틀렸어요"
+    assert fb.submitted_by == "uid-1"
+    assert fb.submitted_at == _T0
+
+
+def test_answer_feedback는_수정_불가():
+    import pydantic
+
+    fb = _feedback()
+    with pytest.raises((pydantic.ValidationError, AttributeError, TypeError)):
+        fb.verdict = "bad"  # type: ignore[misc]
+
+
+def test_answer_feedback_comment_기본값은_빈문자열():
+    fb = AnswerFeedback(
+        record_id="rec-1",
+        verdict="good",
+        submitted_by="uid-1",
+        submitted_at=_T0,
+    )
+    assert fb.comment == ""
+
+
+def test_answer_feedback_verdict는_good_bad만_허용():
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        AnswerFeedback(
+            record_id="rec-1",
+            verdict="great",  # type: ignore[arg-type]
+            submitted_by="uid-1",
+            submitted_at=_T0,
+        )
+
+
+def test_feedback_store_upsert_and_latest_for_record():
+    store = InMemoryFeedbackStore()
+    fb = _feedback(verdict="good")
+    store.upsert(fb)
+    assert store.latest_for_record("rec-1") == fb
+
+
+def test_feedback_store_미존재_레코드는_latest_None():
+    store = InMemoryFeedbackStore()
+    assert store.latest_for_record("nope") is None
+
+
+def test_feedback_store_같은_질문자_재제출은_최신으로_덮인다():
+    """멱등 정책 — (record_id, submitted_by) 키 upsert, 최신 verdict/comment로 갱신."""
+    store = InMemoryFeedbackStore()
+    store.upsert(_feedback(verdict="good", submitted_at=_T0))
+    store.upsert(_feedback(verdict="bad", comment="마음이 바뀜", submitted_at=_T0 + timedelta(minutes=5)))
+
+    latest = store.latest_for_record("rec-1")
+    assert latest is not None
+    assert latest.verdict == "bad"
+    assert latest.comment == "마음이 바뀜"
+
+
+def test_feedback_store_이력은_전량_보존된다():
+    """전이 ≠ 기록 — upsert는 최신 판정을 갱신하지만, for_record는 이력 전체를 돌려준다."""
+    store = InMemoryFeedbackStore()
+    first = _feedback(verdict="good", submitted_at=_T0)
+    second = _feedback(verdict="bad", comment="마음이 바뀜", submitted_at=_T0 + timedelta(minutes=5))
+    store.upsert(first)
+    store.upsert(second)
+
+    history = store.for_record("rec-1")
+    assert history == [first, second]
+
+
+def test_feedback_store_다른_질문자는_각각_별_행으로_쌓인다():
+    store = InMemoryFeedbackStore()
+    store.upsert(_feedback(record_id="rec-1", submitted_by="uid-1", verdict="good"))
+    store.upsert(_feedback(record_id="rec-1", submitted_by="uid-2", verdict="bad"))
+
+    history = store.for_record("rec-1")
+    assert {fb.submitted_by for fb in history} == {"uid-1", "uid-2"}
+
+
+def test_feedback_store_for_record_미존재는_빈리스트():
+    store = InMemoryFeedbackStore()
+    assert store.for_record("nope") == []
+
+
+# ── monitoring_for_owner 조인 확장 — 두 축 OR(레코드 표식 OR bad 피드백) (§10.3) ──
+
+
+def test_feedback_store_미배선이면_기존_판정_100프로_보존():
+    """하위호환 핵심 — feedback_store=None이면 feedback=None·기존 판정 그대로."""
+    store = InMemoryAnswerRecordStore()
+    store.add(_record(record_id="rec-1", needs_correction_review=False))
+
+    view = monitoring_for_owner(store, correction_store=InMemoryCorrectionStore(), agent_id="refund-bot")
+
+    assert view[0].feedback is None
+    assert view[0].needs_correction_review is False
+
+
+def test_레코드_표식_없고_피드백_없으면_검토_불필요():
+    answer_store = InMemoryAnswerRecordStore()
+    answer_store.add(_record(record_id="rec-1", needs_correction_review=False))
+    feedback_store = InMemoryFeedbackStore()
+
+    view = monitoring_for_owner(
+        answer_store,
+        correction_store=InMemoryCorrectionStore(),
+        agent_id="refund-bot",
+        feedback_store=feedback_store,
+    )
+
+    assert view[0].needs_correction_review is False
+    assert view[0].feedback is None
+
+
+def test_레코드_표식_없고_bad_피드백_있으면_검토_필요():
+    """싫음 피드백이 담당자 검토 필요 축에 단독으로 합류한다(§10.3 OR 조인)."""
+    answer_store = InMemoryAnswerRecordStore()
+    answer_store.add(_record(record_id="rec-1", needs_correction_review=False))
+    feedback_store = InMemoryFeedbackStore()
+    feedback_store.upsert(_feedback(record_id="rec-1", verdict="bad"))
+
+    view = monitoring_for_owner(
+        answer_store,
+        correction_store=InMemoryCorrectionStore(),
+        agent_id="refund-bot",
+        feedback_store=feedback_store,
+    )
+
+    assert view[0].needs_correction_review is True
+    assert view[0].feedback is not None
+    assert view[0].feedback.verdict == "bad"
+
+
+def test_레코드_표식_있고_피드백_없으면_여전히_검토_필요():
+    answer_store = InMemoryAnswerRecordStore()
+    answer_store.add(_record(record_id="rec-1", needs_correction_review=True))
+    feedback_store = InMemoryFeedbackStore()
+
+    view = monitoring_for_owner(
+        answer_store,
+        correction_store=InMemoryCorrectionStore(),
+        agent_id="refund-bot",
+        feedback_store=feedback_store,
+    )
+
+    assert view[0].needs_correction_review is True
+
+
+def test_레코드_표식_있고_good_피드백이면_검토_필요_유지():
+    """good 피드백이 레코드 표식을 지우지 않는다(OR 조인·good은 검토 불필요 축에 기여 안 함)."""
+    answer_store = InMemoryAnswerRecordStore()
+    answer_store.add(_record(record_id="rec-1", needs_correction_review=True))
+    feedback_store = InMemoryFeedbackStore()
+    feedback_store.upsert(_feedback(record_id="rec-1", verdict="good"))
+
+    view = monitoring_for_owner(
+        answer_store,
+        correction_store=InMemoryCorrectionStore(),
+        agent_id="refund-bot",
+        feedback_store=feedback_store,
+    )
+
+    assert view[0].needs_correction_review is True
+    assert view[0].feedback is not None
+    assert view[0].feedback.verdict == "good"
+
+
+def test_good_피드백만_있으면_검토_불필요():
+    answer_store = InMemoryAnswerRecordStore()
+    answer_store.add(_record(record_id="rec-1", needs_correction_review=False))
+    feedback_store = InMemoryFeedbackStore()
+    feedback_store.upsert(_feedback(record_id="rec-1", verdict="good"))
+
+    view = monitoring_for_owner(
+        answer_store,
+        correction_store=InMemoryCorrectionStore(),
+        agent_id="refund-bot",
+        feedback_store=feedback_store,
+    )
+
+    assert view[0].needs_correction_review is False
+
+
+def test_피드백은_최신값이_조인된다():
+    """마음 바꿈(좋음→싫음)이 조인 판정에 반영된다 — latest_for_record 재사용."""
+    answer_store = InMemoryAnswerRecordStore()
+    answer_store.add(_record(record_id="rec-1", needs_correction_review=False))
+    feedback_store = InMemoryFeedbackStore()
+    feedback_store.upsert(_feedback(record_id="rec-1", verdict="good", submitted_at=_T0))
+    feedback_store.upsert(
+        _feedback(record_id="rec-1", verdict="bad", submitted_at=_T0 + timedelta(minutes=5))
+    )
+
+    view = monitoring_for_owner(
+        answer_store,
+        correction_store=InMemoryCorrectionStore(),
+        agent_id="refund-bot",
+        feedback_store=feedback_store,
+    )
+
+    assert view[0].needs_correction_review is True
+    assert view[0].feedback is not None
+    assert view[0].feedback.verdict == "bad"

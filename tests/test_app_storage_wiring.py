@@ -26,6 +26,18 @@ def _post(client: TestClient, url: str, json: dict[str, Any] | None = None) -> A
     return http.post(url, json=json) if json is not None else http.post(url)
 
 
+def _get(client: TestClient, url: str) -> tuple[int, Any]:
+    http: Any = client
+    res: Any = http.get(url)
+    return res.status_code, res.json()
+
+
+def _post_json(client: TestClient, url: str, payload: dict[str, Any]) -> tuple[int, Any]:
+    http: Any = client
+    res: Any = http.post(url, json=payload)
+    return res.status_code, res.json()
+
+
 def test_AON_DB_미설정이면_InMemory_기본_기존동작(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AON_DB", raising=False)
 
@@ -133,3 +145,91 @@ def test_create_central_app도_AON_DB_설정시_같은_토큰_store를_dispatche
         )
         reply = conn.receive_json()
         assert reply["type"] == "welcome"
+
+
+# ── Phase 12 확장 — AnswerRecordStore·CorrectionStore·KnowledgeStore·카드 저널 ──
+
+
+def test_AON_DB_미설정이면_감독_저장소도_InMemory_기본(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_org_network.answer_record import (
+        InMemoryAnswerRecordStore,
+        InMemoryCorrectionStore,
+    )
+
+    monkeypatch.delenv("AON_DB", raising=False)
+
+    app = create_app(runtime=StubRuntime())
+
+    assert isinstance(app.state.answer_record_store, InMemoryAnswerRecordStore)
+    assert isinstance(app.state.correction_store, InMemoryCorrectionStore)
+    assert app.state.registry_journal is None
+
+
+def test_AON_DB_설정시_감독_저장소가_Sqlite(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent_org_network.sqlite_stores import (
+        SqliteAnswerRecordStore,
+        SqliteCorrectionStore,
+        SqliteRegistryJournal,
+    )
+
+    monkeypatch.setenv("AON_DB", str(tmp_path / "aon.db"))
+
+    app = create_app(runtime=StubRuntime())
+
+    assert isinstance(app.state.answer_record_store, SqliteAnswerRecordStore)
+    assert isinstance(app.state.correction_store, SqliteCorrectionStore)
+    assert isinstance(app.state.registry_journal, SqliteRegistryJournal)
+
+
+def test_감독_저장소_명시_주입이_env보다_우선(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent_org_network.answer_record import (
+        InMemoryAnswerRecordStore,
+        InMemoryCorrectionStore,
+    )
+
+    monkeypatch.setenv("AON_DB", str(tmp_path / "aon.db"))
+    injected_answer_store = InMemoryAnswerRecordStore()
+    injected_correction_store = InMemoryCorrectionStore()
+
+    app = create_app(
+        runtime=StubRuntime(),
+        answer_record_store=injected_answer_store,
+        correction_store=injected_correction_store,
+    )
+
+    assert app.state.answer_record_store is injected_answer_store
+    assert app.state.correction_store is injected_correction_store
+
+
+def test_AON_DB_설정시_오너_변경이_앱_재생성_후에도_저널_리플레이로_복원(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """카드 라이브 오너 변경(관리 UI) → 재기동(앱 재생성) → 저널 리플레이로 새 owner
+    반영(ADR 0034 결정 1·2 durable 확장 e2e)."""
+    db_path = tmp_path / "aon.db"
+    monkeypatch.setenv("AON_DB", str(db_path))
+
+    app1 = create_app(runtime=StubRuntime(), session_secret="test-secret")
+    client1 = TestClient(app1)
+    _post(client1, "/login", {"user_id": "root_manager"})
+
+    # cs_ops의 현재 owner는 데모 시드상 cs_lead — hr_lead로 오너 변경.
+    status, _ = _post_json(client1, "/admin/cards/cs_ops/owner", {"new_owner": "hr_lead"})
+    assert status == 200
+    assert app1.state.registry_journal is not None
+
+    # 재기동(앱 재생성) — 같은 AON_DB 경로를 다시 읽어 저널을 리플레이한다.
+    app2 = create_app(runtime=StubRuntime(), session_secret="test-secret")
+    client2 = TestClient(app2)
+    _post(client2, "/login", {"user_id": "root_manager"})
+
+    _, cards = _get(client2, "/admin/cards")
+    cs_ops = next(c for c in cards if c["agent_id"] == "cs_ops")
+    assert cs_ops["owner"] == "hr_lead"
+    assert cs_ops["owner"] != "cs_lead"

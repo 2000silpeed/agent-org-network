@@ -64,9 +64,10 @@ Knowledge Store 접지로 대신 답한다**(`WebSocketDispatcher`에 중앙 런
 폴백은 발동하지 않고 기존 워커 회신 경로 그대로다(회귀 0).
 
 **잔여(아직 안 된 것 — 정직한 구분):** ① 질문자 정정 **실 푸시/메신저 통지**(현재는 답변 페이지
-풀 방식 배지만) ② **SQLite 영속 확장** — 카드·Answer Record/Correction Event(현재 InMemory + YAML
-시드. 감사 로그·토큰은 `AON_DB` durable 경로 있음) ③ **실 SSO 운영자 role 게이트**(관리 UI 접근은
-현재 세션 신원까지 — role 구분은 실 SSO 활성 시 강화) ④ **크로스머신 실 재시연**(수동).
+풀 방식 배지만) ② **실 SSO 운영자 role 게이트**(관리 UI 접근은 현재 세션 신원까지 — role 구분은
+실 SSO 활성 시 강화) ③ **크로스머신 실 재시연**(수동). `AON_DB` SQLite 영속은 세션·토큰·감사·
+Answer Record/Correction Event·Knowledge Store·카드 등록/오너 변경(durable 저널 리플레이)까지
+전부 커버한다(아래 env 표 참조).
 
 ## 설치
 
@@ -185,6 +186,12 @@ uv run python -m agent_org_network.mcp_server      # stdio 서버 — 도구 ask
 # Claude Desktop 등 MCP 클라이언트 등록은 scripts/run_mcp.sh 참고
 ```
 
+도구: `ask_org(question)`은 답을 담당·신뢰 상태·출처와 함께 돌려주고, Answered면 끝에
+"피드백 참조: {record_id}" 라인을 싣는다. `submit_feedback(record_id, verdict[good|bad], comment?)`은
+받은 답에 좋음/싫음을 남긴다 — "싫음"은 담당자 감독 면의 "검토 필요" 축으로 표출돼 정정 기회가
+된다(신원은 서버 설정값 mcp_guest·도구 파라미터 아님). `AON_DB` 설정 시 피드백이 web과 같은 SQLite
+파일로 durable 저장돼 두 표면이 같은 답변/피드백을 본다.
+
 ### 4) 골든셋 eval (분류·라우팅 정확도)
 
 ```bash
@@ -260,7 +267,7 @@ uv run python -m agent_org_network.registry registry        # 5장 카드·6명 
 | `AON_KNOWLEDGE_SYNC_INTERVAL_SECONDS` | `0`(주기 재송신 없음) | 워커의 주기 재동기화 간격(시작 시 1회는 항상 발신) |
 | `AON_KNOWLEDGE_STALE_SECONDS` | `1800`(30분) | 중앙 지식 낡음 임계 — 초과해도 답은 차단하지 않음(낡음 표식만) |
 | `AON_PRESENCE_GRACE_SECONDS` | `0`(즉시 오프라인) | 워커 연결 끊김 후 오프라인 판정 유예 |
-| `AON_DB` | 미설정(InMemory) | SQLite 영속(세션·토큰·감사 durable — 카드·답변 레코드 영속은 잔여) |
+| `AON_DB` | 미설정(InMemory) | SQLite 영속 — 세션·토큰·감사·Answer Record·Correction Event·Answer Feedback·Knowledge Store durable 저장 + 카드 등록/오너 변경 durable 저널(재기동 시 리플레이로 복원). web·MCP가 같은 파일을 공유하면 답변/피드백을 함께 본다 |
 | `OPERATOR_SESSION_SECRET` | 미설정(인증 OFF) | 운영 면 세션 서명 키 — 설정 시 로그인 필수 |
 
 ## 데모 조직 (샘플 데이터)

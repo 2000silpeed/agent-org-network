@@ -350,12 +350,20 @@ def serialize_reply(reply: OrgReply) -> dict[str, Any]:
             assert_never(never)
 
 
-def serialize_monitoring_item(item: "MonitoringItem") -> dict[str, Any]:
+def serialize_monitoring_item(
+    item: "MonitoringItem", *, current_owner: str | None = None
+) -> dict[str, Any]:
     """담당자 모니터링 한 건을 화면向 dict로 변환한다(Phase 12 (A)·owner 로컬 감독 면).
 
     owner 자기 에이전트 감독 면이라 질문·답 본문·발신 mode·검토 필요 표식·정정 이력·
     답변 피드백을 그대로 노출한다(채팅 OrgReply 노출 불변식의 반대 — 여긴 담당자가
     답을 감독하는 면. 질문자 신원 `submitted_by`도 감독 면이라 leak 아님, 계획 §10.3).
+
+    `current_owner`(크로스머신 재시연 결함 5-b): 그 답의 *현재 카드 owner*
+    (`CorrectionService`가 정정 판정에 쓰는 것과 같은 값 — 호출부가 registry에서
+    조회해 넘긴다). no-auth 모드 owner-monitor.html이 이 값을 정정 제출 body의
+    `by_owner`에 실어 보내는 폴백 출처가 된다(auth 활성이면 서버가 세션으로 덮어써
+    이 값은 무시됨 — M-1 계약 그대로 유지). 미상 카드(registry 조회 실패)면 None.
     """
     return {
         "record_id": item.record.record_id,
@@ -363,6 +371,7 @@ def serialize_monitoring_item(item: "MonitoringItem") -> dict[str, Any]:
         "answer_text": item.record.answer_text,
         "agent_id": item.record.agent_id,
         "answered_by": item.record.answered_by,
+        "current_owner": current_owner,
         "mode": item.record.mode,
         "answered_at": item.record.answered_at.isoformat(),
         "needs_correction_review": item.needs_correction_review,
@@ -1498,7 +1507,15 @@ def create_app(
         items = sorted(items, key=lambda it: it.record.answered_at, reverse=True)
         if needs_review:
             items = [it for it in items if it.needs_correction_review]
-        return [serialize_monitoring_item(it) for it in items]
+        # 현재 카드 owner(결함 5-b) — CorrectionService.submit_correction의 owner_of와
+        # 같은 조회. 요청 agent_id는 고정이라 카드 미존재/삭제 시에도 안전하게 None.
+        try:
+            current_owner: str | None = bundle.registry.get(agent_id).owner
+        except KeyError:
+            current_owner = None
+        return [
+            serialize_monitoring_item(it, current_owner=current_owner) for it in items
+        ]
 
     @app.post("/supervision/answers/{record_id}/correct")
     def supervision_correct(  # pyright: ignore[reportUnusedFunction]
@@ -1725,7 +1742,17 @@ def create_app(
         **SSO 모드(T7.1·ADR 0021 결정 4)**: `oidc_provider` 주입 시 이 무비밀번호 채널은
         403으로 거부한다 — SSO를 켰는데 신원 *선택*이 살아 있으면 SSO 증명이 무의미해지므로
         (선택 우회 차단). SSO 모드에선 `POST /login/sso`(신원 증명)만 쓴다.
+
+        **no-auth 모드(크로스머신 재시연 결함 5-a)**: `_auth_enabled`가 거짓(session_secret
+        미주입)이면 `SessionMiddleware`가 안 붙어 `request.session` 접근이 `AssertionError`를
+        내 500으로 새던 결함 — 세션이 없는 모드에선 애초에 로그인 개념이 없으므로(운영 면
+        신원이 세션 미들웨어 미부착 시 스코핑 자체가 비활성) 409로 먼저 걸러 깨끗이 안내한다.
         """
+        if not _auth_enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="no-auth 모드 — 로그인 불필요(세션 인증이 비활성화된 배포입니다)",
+            )
         if _sso_enabled:
             raise HTTPException(
                 status_code=403, detail="SSO 모드 — POST /login/sso(신원 증명)를 사용하세요"
@@ -1761,7 +1788,16 @@ def create_app(
 
     @app.post("/logout")
     def logout(request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-        """로그아웃 — 세션 클리어(ADR 0016 결정 2)."""
+        """로그아웃 — 세션 클리어(ADR 0016 결정 2).
+
+        no-auth 모드(session_secret 미주입)는 `/login`과 대칭으로 409(로그인 개념이 없어
+        로그아웃도 불필요) — `request.session` 접근 시 `AssertionError`→500이 나던 결함 방지.
+        """
+        if not _auth_enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="no-auth 모드 — 로그아웃 불필요(세션 인증이 비활성화된 배포입니다)",
+            )
         request.session.clear()
         return {"ok": True}
 

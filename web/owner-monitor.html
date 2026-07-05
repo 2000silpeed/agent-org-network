@@ -315,10 +315,19 @@
         }
         submitBtn.disabled = true;
         try {
-          // by_owner는 보내지 않는다 — 서버가 로그인 세션 신원으로 판정한다(현재 카드
-          // owner 대조, ADR 0034 결정 3). 과거 답변자(a.answered_by)를 하드코딩해 보내면
-          // 오너 변경 후 새 owner가 여기서 정정할 때 403이 나던 결함(code-reviewer M-1).
+          // by_owner는 원칙적으로 보내지 않는다 — 세션 인증이 활성인 배포에서는 서버가
+          // 로그인 세션 신원으로 판정한다(현재 카드 owner 대조, ADR 0034 결정 3). 과거
+          // 답변자(a.answered_by)를 하드코딩해 보내면 오너 변경 후 새 owner가 여기서
+          // 정정할 때 403이 나던 결함(code-reviewer M-1) — 그래서 여전히 안 보낸다.
+          //
+          // 단, no-auth 배포(세션 미들웨어 미부착)는 서버가 세션을 못 읽으므로 body의
+          // by_owner를 폴백으로 읽는다(web.py `_auth_enabled` 분기). a.current_owner는
+          // 서버가 그때그때 registry에서 조회한 *현재* 카드 owner라 하드코딩이 아니다 —
+          // 이 값이 없으면(auth 활성 배포) 빈 문자열을 보내 기존 동작 그대로 유지한다
+          // (auth 활성이면 서버가 세션으로 덮어쓰므로 이 필드는 어차피 무시됨. 크로스머신
+          // 재시연 실결함 5-b).
           await postCorrection(a.record_id, {
+            by_owner: a.current_owner || "",
             corrected_text: text,
             rationale: rationale.value.trim(),
           });

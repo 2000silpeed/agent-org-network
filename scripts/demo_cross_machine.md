@@ -96,3 +96,70 @@ curl -s -X POST http://<MAC_IP>:8000/ask \
 - 리눅스 워커의 답 생성은 로컬 `claude` 구독 인증을 쓴다(중앙 토큰 0 — owner측 자격).
   `AON_PROVIDER=claude-api`(anthropic SDK 인프로세스)를 쓰려면 `uv sync --extra claude-api`.
 - HITL 토글은 인메모리 런타임 상태 — 중앙 재시작 시 off로 리셋된다.
+
+## Phase 12 재시연 (중앙 답변 + 지식 동기화 + 담당자 감독, 2026-07-05)
+
+Phase 12(ADR 0033·0034)의 5개 시나리오(S1~S5)를 물리 2대에서 재현하는 절차. 위 1·2단계
+(중앙/워커 기동)는 그대로 전제. **검토 대기 120초 제약**: HITL 사전 검토(S1)는 owner가
+검토를 마칠 시간이 필요하므로, 큐 타임아웃 기본값(120초)보다 여유 있게
+`AON_QUEUE_TIMEOUT_SECONDS=900`(15분)으로 중앙을 띄우는 걸 권장(미조정 시 검토 중에
+타임아웃→에스컬레이션되어 시연이 끊긴다).
+
+```bash
+# 중앙 기동 시(1단계 대체) — 큐 타임아웃을 넉넉히
+export AON_DB=$HOME/.aon/aon.db
+export AON_QUEUE_TIMEOUT_SECONDS=900
+scripts/run_central.sh 8000 0.0.0.0
+```
+
+### S1 — 워커 온라인 + 사전 검토
+
+1. 워커 기동(2단계) 후 HITL on(`/console/hitl/cs_ops` 토글) — 워커가 자동 회신 대신 초안을
+   보류한다.
+2. 질문 인입(`POST /ask`) → push → 워커가 `claude -p`로 초안 생성 → 프레즌스 온라인이라
+   보류(need owner review).
+3. 리눅스 로컬 `http://127.0.0.1:8790/`에서 초안 확인·승인 → 중앙 `/ask/<tracking>` 회수 성공.
+
+### S2 — 중앙 폴백(워커 오프라인)
+
+1. 워커 프로세스 종료(disconnect).
+2. 같은 질문을 다시 `POST /ask` — 중앙이 (중앙 지식 저장소로) 즉답하고, 그 `AnswerRecord`는
+   `needs_correction_review=True`로 적재된다(오프라인 자동발신 사후교정 표식).
+
+### S3 — 사후 교정
+
+1. `http://<MAC_IP>:8000/supervision`(감독 화면)에서 S2 답을 찾아 정정 제출.
+2. 질문자가 자기 답변 페이지(`GET /answer/{record_id}/correction`)에서 정정 배지 확인 —
+   원 답은 그대로 보존(전이 ≠ 기록), 정정본이 함께 노출(풀 방식).
+
+### S4 — 피드백
+
+1. 질문자 채팅 화면에서 임의 답에 싫어요 제출(`POST /answer/{record_id}/feedback`).
+2. 감독 화면(`/supervision`) 목록에서 그 답이 "bad 피드백" 배지와 함께 검토 필요 축에
+   표출됨을 확인.
+
+### S5 — 관리 UI(`/admin`)
+
+1. `http://<MAC_IP>:8000/admin`에서 신규 Agent Card(예: `legal_ops`) 라이브 등록.
+   필수 필드(agent_id·owner·summary·domains·last_reviewed_at 등) 누락 시 422로 admission
+   검증이 동작함을 먼저 확인.
+2. 등록 완료 카드의 오너를 변경(예: `hr_lead`→`finance_lead`) — 감사 로그에 전이 기록.
+3. 중앙 프로세스를 재기동(같은 `AON_DB`) — 저널 리플레이로 오너 변경 상태가 생존함을
+   `/admin` 화면에서 재확인.
+
+### 발견 결함 5건과 처리 (2026-07-05)
+
+| # | 결함 | 처리 |
+|---|------|------|
+| 1 | registry 미바인딩 | aef95f1 수정 |
+| 2 | 큐 타임아웃 120초 하드코딩 | `AON_QUEUE_TIMEOUT_SECONDS` env 시임 신설(c1677aa) — 위 권장값 참고 |
+| 3 | 프레즌스 키 오탐(agent_id vs owner) | 조회 키를 owner로 통일(c1677aa) |
+| 4 | no-auth 모드 `POST /login`이 500 | no-auth면 409로 안내(이번 라운드) |
+| 5 | 감독 UI 정정이 no-auth 모드에서 403 | `current_owner` 노출 + UI no-auth 폴백(이번 라운드) |
+
+### 백로그로 남은 마찰
+
+**분류기 어휘가 라이브 등록을 못 따라간다.** S5에서 새 도메인 카드를 라이브 등록해도,
+기본 키워드 분류기/`LlmClassifier`는 빌드 시점 스냅샷이라 그 도메인 관련 신규 질문이
+0매칭→에스컬레이션된다(미아 없음 불변식은 지켜지나 즉시 라우팅은 안 됨). 분류기 intents의
+라이브 갱신은 별도 도메인 설계가 필요(domain-architect 백로그).

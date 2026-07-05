@@ -165,6 +165,25 @@ class TestSlice1_Login:
 # ════════════════════════════════════════════════════════════════════════════
 
 
+class TestNoAuthLogin_크로스머신_재시연_결함_5a:
+    """no-auth 모드(session_secret 미주입)에서 POST /login·/logout이 500이 아니라
+    깨끗한 4xx + 안내 메시지를 내야 한다(실 시연 재현 — SessionMiddleware 미부착 시
+    `request.session` 접근이 AssertionError→500으로 새던 결함)."""
+
+    def test_noauth_모드_login은_500이_아니라_4xx(self) -> None:
+        client = TestClient(create_app(runtime=StubRuntime()))  # session_secret 미주입
+        r = _post(client, "/login", {"user_id": "cs_lead"})
+        assert r.status != 500
+        assert 400 <= r.status < 500
+        assert "no-auth" in str(r.body.get("detail", ""))
+
+    def test_noauth_모드_logout은_500이_아니라_4xx(self) -> None:
+        client = TestClient(create_app(runtime=StubRuntime()))
+        r = _post(client, "/logout", {})
+        assert r.status != 500
+        assert 400 <= r.status < 500
+
+
 class TestSlice2_미로그인_401:
     """인증 앱에서 미로그인 상태로 운영 엔드포인트에 접근하면 401."""
 

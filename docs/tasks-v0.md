@@ -718,5 +718,14 @@ PRD §4 페르소나 면(Ask·Author·Inbox·Console)을 **별 프론트엔드 `
     - **신규 회귀**: `tests/test_presence_key_regression.py`(4개) — 실 배선과 같은 키 체계(`InMemoryPresenceTracker.observe_connect("cs_lead", ...)`owner 키만, `create_app(presence_of=tracker.status)`)로 (1) 온라인 owner 답은 `needs_correction_review=False`, (2) disconnect 후엔 `True`, (3) `GET /supervision/presence/cs_ops`가 registry로 owner(`cs_lead`)를 해석해 online 정확 반영, (4) 미등록 agent_id는 offline 기본. red 확인(수정 전 stash로 재현 — 2건 실패: online인데 True 오탐·라우트 online을 offline 오탐) → 수정 후 green.
     - **게이트**: `uv run pytest` **2491 passed**(2486+5 신규·회귀 0)·`uv run pyright` 0 errors·`uv run ruff check .` clean(직접 재확인).
     - **백로그(경미)**: `Presence.agent_id` 필드명을 `owner_id`로 rename — 실 사용 의미와 필드명이 어긋나는 근본 원인이나, `PresenceTracker` Protocol 매개변수명까지 걸친 전면 rename이라 이번엔 docstring 보강으로 최소화(과도 엔지니어링 회피). 다음 프레즌스 관련 작업 시 함께 처리 권장.
+  - **크로스머신 재시연 완료(2026-07-05)** — Phase 12 S1~S5 5개 시나리오를 실 두 머신(중앙/워커 분리)에서 재검증. 결과 요약:
+    - **S1 워커 온라인+사전 검토**: 질문→push→claude 초안→프레즌스 기반 보류(HITL)→owner 승인→회수 성공.
+    - **S2 중앙 폴백**: 워커 종료 후 같은 질문→중앙 즉답(오프라인 폴백)+`needs_correction_review=True` 적재 확인.
+    - **S3 사후 교정**: `/supervision` 정정 제출→질문자 정정 배지 확인(원 답 불변 — 전이 ≠ 기록 실증).
+    - **S4 피드백**: 싫어요 제출→감독 목록 bad 배지 표출 확인.
+    - **S5 관리 UI**: `legal_ops` 라이브 등록(+admission 필수 필드 누락 시 422 검증 동작 확인)→오너 변경(`hr_lead`→`finance_lead`, 감사 기록 확인)→중앙 재기동 후 저널 리플레이로 오너 변경 상태 생존 검증.
+    - **발견 결함 5건과 처리**: ① registry 미바인딩(aef95f1 수정) ② 큐 타임아웃 120초 하드코딩(`AON_QUEUE_TIMEOUT_SECONDS` 시임 신설, c1677aa) ③ 프레즌스 키 오탐(위 항목, c1677aa) ④ **`POST /login`이 no-auth 모드에서 500**(session_secret 미주입 시 `SessionMiddleware` 미부착 → `request.session` 접근이 `AssertionError`로 새던 결함 — `/login`·`/logout` 둘 다 no-auth면 409로 먼저 걸러 안내, tdd-engineer 수정) ⑤ **감독 UI(`owner-monitor.html`) 정정이 no-auth 모드에서 403** — M-1(세션 신원 강제) 수정 후 UI가 `by_owner`를 안 보내는데 no-auth 서버는 body 폴백을 기대해 정정 제출이 실패(실 시연 발생, 사용자가 API 직접 호출로 우회). 수정: `serialize_monitoring_item`에 `current_owner`(그 답의 *현재* 카드 owner — `CorrectionService.owner_of`와 같은 값) 노출, `owner-monitor.html`이 이 값을 **no-auth 폴백 경로로만** `by_owner`에 실어 보냄(auth 활성 배포는 서버가 세션으로 덮어써 이 값 무시 — M-1 계약 유지·회귀 0, tdd-engineer 수정).
+    - **백로그 추가**: **분류기 어휘가 라이브 등록을 못 따라감** — 기본 키워드 분류기는 고정 어휘, `LlmClassifier`도 build 시점 스냅샷이라 라이브 등록된 새 도메인(예: "법무검토") 질문이 0매칭→에스컬레이션됨(미아 없음 불변식은 유지되나 즉시 라우팅은 안 됨). 분류기 intents의 라이브 갱신은 도메인 설계가 필요(domain-architect 백로그).
+    - **게이트**: `uv run pytest` **2495 passed**(2491+4 신규·회귀 0)·`uv run pyright` 0 errors·`uv run ruff check .` clean(직접 재확인).
 
 > **의존성·권장 순서.** S0(SSOT+ADR)→S1(도메인)이 첫 타자(정면 재정의 축·되돌리기 어려운 결정을 먼저 닫음). S1 후 S3·S4 병렬 가능(지식 축 vs 연결 축 독립). self-contained·검증 쉬운 순 = **S4(순수 매핑·최소)→S3→S2→S5**. S5는 S2(중앙 답 존재) 의존이라 마지막. 게이트 밖 실 배선(S2·S3)은 외부 결정(특히 ③) 확정 후.

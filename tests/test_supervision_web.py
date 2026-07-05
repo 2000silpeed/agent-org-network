@@ -222,6 +222,44 @@ def test_같은_정정_재제출은_멱등() -> None:
     assert len(cs.for_record(record_id)) == 1
 
 
+# ── 크로스머신 재시연 결함 5-b: no-auth 모드 감독 UI 정정 경로 ────────────
+
+
+def test_모니터링_목록에_현재_owner가_실린다() -> None:
+    """serialize_monitoring_item이 current_owner를 노출한다(owner-monitor.html이
+    no-auth 폴백으로 이 값을 by_owner에 실어 보낼 근거)."""
+    client, _, _ = _client()
+    body = _seed_answer(client)
+    agent_id = body["answered_by"]["agent_id"]
+    owner = body["answered_by"]["owner"]
+    items = _list(_get(client, "/supervision/answers", params={"agent_id": agent_id}))
+    assert len(items) == 1
+    assert items[0]["current_owner"] == owner
+
+
+def test_noauth_모드에서_UI_경로처럼_current_owner를_by_owner로_보내면_정정_성공() -> None:
+    """실 시연 재현: owner-monitor.html이 GET /supervision/answers의 current_owner를
+    그대로 POST .../correct의 by_owner에 실어 보내는 경로 — no-auth 모드에서 403 없이
+    성공해야 한다(수정 전엔 by_owner가 없어 403이 나던 결함)."""
+    client, _, cs = _client()
+    body = _seed_answer(client)
+    record_id = body["record_id"]
+    agent_id = body["answered_by"]["agent_id"]
+
+    items = _list(_get(client, "/supervision/answers", params={"agent_id": agent_id}))
+    current_owner = items[0]["current_owner"]
+    assert current_owner is not None
+
+    res = _post(
+        client,
+        f"/supervision/answers/{record_id}/correct",
+        {"by_owner": current_owner, "corrected_text": "UI 경로로 정정"},
+    )
+    assert res.status_code == 200
+    assert _json(res)["submitted"] is True
+    assert len(cs.for_record(record_id)) == 1
+
+
 # ── (A) 프레즌스 배지 ────────────────────────────────────────────────────
 
 

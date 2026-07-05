@@ -159,6 +159,43 @@ def test_미등록_agent_id_동기화는_거부된다() -> None:
     assert store.get("ghost_ops") is None
 
 
+def test_통합_조립_기본_라우터_모드에서도_동기화가_수용된다() -> None:
+    """`create_app` 통합 조립이 registry를 항상 bind한다 — index 모드 아니어도 수용.
+
+    회귀 고정(2026-07-05 크로스머신 시연이 잡은 실결함): registry 바인딩이
+    `bind_published_index`(index 모드 전용) 안에만 있어, 기본 라우터 모드의 실 조립은
+    registry 미주입 → `accept_knowledge_sync_frame`이 침묵 no-op(ack 없음)이었다.
+    `bind_registry`가 라우터 모드와 무관하게 항상 불리는지를 실 조립 경로로 잠근다.
+    """
+    from agent_org_network.web import create_app
+
+    store = InMemoryKnowledgeStore()
+    # 생성자에 registry를 *일부러 안 준다* — 실 조립(create_central_app→create_app)과
+    # 같은 시점 문제(디스패처가 build_demo보다 먼저 생성됨)를 재현.
+    dispatcher = WebSocketDispatcher(
+        knowledge_store=store, presence_tracker=InMemoryPresenceTracker()
+    )
+    create_app(runtime=StubRuntime(), dispatcher=dispatcher)  # 여기서 bind_registry
+    client = TestClient(create_worker_app(dispatcher))
+    http: Any = client
+
+    with http.websocket_connect("/worker") as conn:
+        ws = cast(WebSocketTestSession, conn)
+        ws.send_json({"type": "register_worker", "owner_id": "cs_lead", "role": "primary"})
+        assert _recv(ws)["type"] == "welcome"
+        ws.send_json(
+            _sync_frame(
+                "cs_ops",
+                (KnowledgeDoc(path="cs_ops/refund.md", body="환불은 구매 후 7일 이내 가능."),),
+            )
+        )
+        ack = _recv(ws)
+        assert ack["type"] == "knowledge_sync_ack"
+        assert ack["accepted"] is True
+
+    assert store.get("cs_ops") is not None
+
+
 def test_지식_동기화_미배선_디스패처는_회신하지_않는다() -> None:
     """store/registry 미주입 디스패처는 accept_knowledge_sync_frame이 None → 회신 없음(하위호환).
 

@@ -1225,11 +1225,15 @@ def create_app(
     # 디스패처가 `WebSocketDispatcher`이고 store가 있을 때만(분산 전송·index 모드).
     from agent_org_network.transport import WebSocketDispatcher
 
-    if (
-        isinstance(dispatcher, WebSocketDispatcher)
-        and bundle.published_index_store is not None
-    ):
-        dispatcher.bind_published_index(bundle.registry, bundle.published_index_store)
+    if isinstance(dispatcher, WebSocketDispatcher):
+        # registry는 라우터 모드와 무관하게 항상 물린다 — SyncKnowledge 수용 스코핑이
+        # registry를 요구하는데, index 모드에서만 물리면 기본 모드의 지식 동기화가
+        # 침묵 no-op이 된다(2026-07-05 크로스머신 시연이 잡은 실결함).
+        dispatcher.bind_registry(bundle.registry)
+        if bundle.published_index_store is not None:
+            dispatcher.bind_published_index(
+                bundle.registry, bundle.published_index_store
+            )
     # reeval 인덱스-수용 훅 라이브 배선(T11.7e minor-1·ADR 0030 S4): 실 `StalenessPropagator`를
     # `build_demo` 완료 *후* 구성해 디스패처에 사후 주입한다(`bind_propagator` — 위 published
     # index bind와 대칭인 닭-달걀 해소). `create_central_app`이 디스패처를 이 함수 호출보다

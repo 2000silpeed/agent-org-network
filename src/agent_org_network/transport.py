@@ -599,6 +599,16 @@ class WebSocketDispatcher:
         """
         self._delegations[snapshot.owner_id] = snapshot
 
+    def bind_registry(self, registry: "Registry") -> None:
+        """카드 권위(registry)만 사후 주입한다 — 지식 동기화 수용은 라우터 모드와 무관하다.
+
+        `bind_published_index`는 index 모드(published store 존재)에서만 불려서, 기본 라우터
+        모드의 통합 조립은 registry가 영영 미주입 → `accept_knowledge_sync_frame`이 no-op
+        (ack 없음)으로 침묵했다(2026-07-05 크로스머신 시연이 잡은 실결함). SyncKnowledge
+        수용의 스코핑(card.owner 대조)은 registry만 있으면 되므로 이 seam으로 분리한다.
+        """
+        self._registry = registry
+
     def bind_published_index(
         self,
         registry: "Registry",

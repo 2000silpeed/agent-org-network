@@ -125,6 +125,22 @@
       padding: 12px 16px; font-size: 13px; background: #fff; border-top: 1px solid var(--line);
     }
     .nav a { color: var(--me); text-decoration: none; }
+    .sc-card {
+      background: #fff; border: 1px solid var(--line); border-radius: 12px;
+      padding: 16px 18px; margin-bottom: 14px;
+    }
+    .sc-card h3 { margin: 0 0 10px; font-size: 14px; font-weight: 700; }
+    .sc-axes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .sc-axis {
+      background: #f9fafb; border-radius: 8px; padding: 10px 12px; font-size: 12px;
+    }
+    .sc-axis .name { font-weight: 700; color: var(--muted); margin-bottom: 4px; }
+    .sc-axis .value { font-size: 13px; color: var(--ink); }
+    .sc-axis .trend { margin-left: 6px; font-weight: 700; }
+    .sc-axis .trend.up { color: #166534; }
+    .sc-axis .trend.down { color: #b91c1c; }
+    .sc-axis .trend.flat { color: var(--muted); }
+    .sc-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
   </style>
 </head>
 <body>
@@ -153,6 +169,7 @@
       <div class="tabs">
         <button class="tab active" id="tab-register" data-panel="panel-register">신규 카드 등록</button>
         <button class="tab" id="tab-owner" data-panel="panel-owner">오너 변경</button>
+        <button class="tab" id="tab-scorecards" data-panel="panel-scorecards">스코어카드</button>
       </div>
 
       <!-- 신규 카드 등록 -->
@@ -229,6 +246,23 @@
           <button class="submit-btn" id="owner-btn">오너 변경</button>
         </div>
         <div class="result-area" id="owner-result"></div>
+      </div>
+
+      <!-- 스코어카드 (Phase 13 SC3·ADR 0035) -->
+      <div class="panel" id="panel-scorecards">
+        <div class="notice">
+          <strong>관찰 도구입니다 — 순위표가 아닙니다.</strong> 정정은 감독의 증거로 가점 축이고,
+          품질 저하 신호는 싫음 피드백에서만 읽습니다(정정 횟수를 벌점화하지 않습니다).
+          아래 목록은 <strong>owner_id 알파벳순</strong>으로만 나열되며, 지표 기준 정렬·등수는
+          제공하지 않습니다. 각 담당자는 <strong>자기 추세</strong>(직전 동일 기간 대비)로만
+          해석하세요 — 담당자 간 절대 비교 목적이 아닙니다.
+        </div>
+        <div class="field" style="max-width:200px;">
+          <label>집계 기간(일)</label>
+          <input id="sc-days" type="number" min="1" value="30" />
+        </div>
+        <button class="submit-btn" id="sc-reload-btn" style="max-width:200px;">새로고침</button>
+        <div id="sc-list" style="margin-top:18px;"></div>
       </div>
     </div>
 
@@ -449,6 +483,114 @@
     document.getElementById("logout-btn").addEventListener("click", doLogout);
     document.getElementById("tab-register").addEventListener("click", () => switchTab("panel-register"));
     document.getElementById("tab-owner").addEventListener("click", () => switchTab("panel-owner"));
+    document.getElementById("tab-scorecards").addEventListener("click", () => {
+      switchTab("panel-scorecards");
+      loadScorecards();
+    });
+
+    // ── 스코어카드 — 운영자 전체 뷰 (Phase 13 SC3·ADR 0035) ──────────────────
+    // owner_id 알파벳순 나열(서버가 고정) — 이 화면에 정렬/랭킹 UI를 추가하지 않는다.
+
+    function fmtPct(v) {
+      return v == null ? "데이터 없음" : (v * 100).toFixed(1) + "%";
+    }
+
+    function fmtSeconds(v) {
+      if (v == null) return "데이터 없음";
+      if (v < 60) return v.toFixed(0) + "초";
+      if (v < 3600) return (v / 60).toFixed(1) + "분";
+      return (v / 3600).toFixed(1) + "시간";
+    }
+
+    function trendBadge(delta, positiveIsGood) {
+      if (delta == null) return "";
+      const flat = Math.abs(delta) < 1e-9;
+      const up = delta > 0;
+      const good = flat ? null : (positiveIsGood ? up : !up);
+      const cls = flat ? "flat" : (good ? "up" : "down");
+      const arrow = flat ? "→" : (up ? "↑" : "↓");
+      return "<span class=\"trend " + cls + "\">" + arrow + "</span>";
+    }
+
+    function axisEl(name, valueHtml) {
+      const div = document.createElement("div");
+      div.className = "sc-axis";
+      const n = document.createElement("div");
+      n.className = "name";
+      n.textContent = name;
+      const v = document.createElement("div");
+      v.className = "value";
+      v.innerHTML = valueHtml;
+      div.appendChild(n);
+      div.appendChild(v);
+      return div;
+    }
+
+    function renderScorecard(container, sc) {
+      const card = document.createElement("div");
+      card.className = "sc-card";
+      const h3 = document.createElement("h3");
+      h3.textContent = sc.owner_id;
+      card.appendChild(h3);
+
+      const axes = document.createElement("div");
+      axes.className = "sc-axes";
+      const t = sc.trend || {};
+
+      axes.appendChild(axisEl(
+        "답변 품질 (bad 피드백률)",
+        fmtPct(sc.quality.bad_feedback_rate) + trendBadge(t.quality_bad_feedback_rate_delta, false)
+        + " · 전체 " + sc.quality.total_answers + "건"
+      ));
+      axes.appendChild(axisEl(
+        "감독 성실도 (처리율)",
+        fmtPct(sc.supervision.handled_rate) + trendBadge(t.supervision_handled_rate_delta, true)
+        + " · 소요 " + fmtSeconds(sc.supervision.median_handle_seconds)
+      ));
+      axes.appendChild(axisEl(
+        "가용성 (온라인 비율)",
+        fmtPct(sc.availability.online_ratio)
+        + " · 사전검토 " + sc.availability.presend_review_count + "건"
+      ));
+      axes.appendChild(axisEl(
+        "지식 신선도 (stale 비율)",
+        fmtPct(sc.freshness.stale_ratio) + trendBadge(t.freshness_stale_ratio_delta, false)
+        + " · 카드 " + sc.freshness.total_cards + "개"
+      ));
+      card.appendChild(axes);
+
+      if (sc.weak_identity_note) {
+        const note = document.createElement("div");
+        note.className = "sc-note";
+        note.textContent = "약신원 참고치 — bad 피드백률은 실 SSO 전 쿠키 약신원 기반입니다.";
+        card.appendChild(note);
+      }
+      container.appendChild(card);
+    }
+
+    async function loadScorecards() {
+      const listEl = document.getElementById("sc-list");
+      listEl.innerHTML = "";
+      const days = document.getElementById("sc-days").value.trim();
+      const q = days ? ("?days=" + encodeURIComponent(days)) : "";
+      try {
+        const res = await fetch("/admin/scorecards" + q);
+        if (res.status === 401) {
+          document.getElementById("login-banner").style.display = "block";
+          return;
+        }
+        const scorecards = await res.json();
+        if (!scorecards.length) {
+          listEl.textContent = "표시할 스코어카드가 없습니다.";
+          return;
+        }
+        for (const sc of scorecards) renderScorecard(listEl, sc);
+      } catch (err) {
+        listEl.textContent = "불러오기 실패: " + err.message;
+      }
+    }
+
+    document.getElementById("sc-reload-btn").addEventListener("click", loadScorecards);
 
     document.getElementById("r-date").value = new Date().toISOString().slice(0, 10);
     loadCards();

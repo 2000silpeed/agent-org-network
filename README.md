@@ -56,6 +56,14 @@
   (`/supervision`)에서 열람·정정한다. 정정은 원 레코드를 고치지 않는 Correction Event append이고
   (전이 ≠ 기록), 질문자는 답변 페이지 정정 배지(풀 방식)로 정정본을 본다. 정정은 판례·지식
   재평가 큐(reeval)에도 적재된다.
+- **Owner Scorecard(담당자 스코어카드)** — 기존 Answer Record·Correction Event·Answer
+  Feedback·Presence Log·Knowledge Store를 조인해 담당자별 4축(답변 품질·감독 성실도·가용성·
+  지식 신선도)을 계산하는 **관찰 도구**다. 담당자는 감독 화면 "내 성적" 탭(`/supervision/scorecard`)
+  에서 자기 성적 + 직전 동일 기간 대비 자기 추세만 보고, 운영자는 관리 화면 "스코어카드" 탭
+  (`/admin/scorecards`)에서 전 담당자를 owner_id 알파벳순으로 나열해 본다. **순위표가 아니다**
+  (ADR 0035) — 정정은 감독의 증거로 가점 축이고 품질 저하 신호는 싫음 피드백에서만 읽으며(정정
+  횟수 벌점화 금지), 담당자 간 절대 비교·등수·정렬 파라미터는 제공하지 않는다. 인사·보상 연동은
+  범위 밖(전환하려면 별도 ADR).
 
 기존 분산 워커 회신 경로(워커가 로컬 claude로 답해 회신·백업 워커·Manager escalation)는 호환
 경로로 남아 있다 — 아래 "분산" 절. **분산 배선에서도 담당 워커가 미연결이면 중앙 런타임이
@@ -84,7 +92,7 @@ uv sync                     # 의존성 설치(.venv)
 ## 게이트(테스트·타입·린트)
 
 ```bash
-uv run pytest        # 단위 테스트(결정론) — 2399 passed
+uv run pytest        # 단위 테스트(결정론) — 2542 passed
 uv run pyright       # 타입 검사(strict) — 0 errors
 uv run ruff check    # 린트 — 0
 ```
@@ -107,8 +115,8 @@ uv run uvicorn agent_org_network.web:app --port 8099
 | Org 그래프 | `/org/view` | 운영자 — 전체 그림(User·Card·엣지) |
 | Agent 빌더 | `/builder` | Owner — 카드 구성·검증·YAML 미리보기 |
 | OKF 저작 | `/author` | Owner — 문서 올리면 LLM이 개념 추출→검토→커밋→목차 publish |
-| 담당자 감독 | `/supervision` | Owner — 자기 에이전트 답 열람·검토 필요 필터·정정·프레즌스 배지 |
-| 관리 UI | `/admin` | 운영자 — 신규 Agent Card 라이브 등록·오너 변경(아래 "관리 UI" 절) |
+| 담당자 감독 | `/supervision` | Owner — 자기 에이전트 답 열람·검토 필요 필터·정정·프레즌스 배지·"내 성적" 탭 |
+| 관리 UI | `/admin` | 운영자 — 신규 Agent Card 라이브 등록·오너 변경·"스코어카드" 탭(아래 "관리 UI" 절) |
 
 채팅(`/ask`)은 익명이고, **운영 면(처리함·큐·모니터링·그래프·빌더·관리 UI)은 인증**이 필요하다.
 인증을 켜려면 세션 서명 키를 env로 준다(미설정 시 데모 인증 OFF):

@@ -57,7 +57,9 @@ if TYPE_CHECKING:
         MonitoringItem,
     )
     from agent_org_network.audit import AuditReader
-    from agent_org_network.presence import PresenceStatus
+    from agent_org_network.knowledge_store import KnowledgeStore
+    from agent_org_network.presence import PresenceLogStore, PresenceStatus
+    from agent_org_network.scorecard import OwnerScorecard, ScorecardTrend
     from agent_org_network.sqlite_stores import SqliteRegistryJournal
 from agent_org_network.conflict import (
     Agreed,
@@ -140,6 +142,7 @@ from agent_org_network.session import SessionAskOrg, SessionStore
 from agent_org_network.storage_select import (
     select_answer_record_store,
     select_correction_store,
+    select_knowledge_store,
     select_session_store,
     select_token_store,
 )
@@ -406,6 +409,59 @@ def serialize_correction_view(view: "AnswerCorrectionView") -> dict[str, Any]:
         "corrected_text": view.corrected_text,
         "corrected_at": view.corrected_at.isoformat() if view.corrected_at is not None else None,
     }
+
+
+def serialize_scorecard(
+    scorecard: "OwnerScorecard", *, trend: "ScorecardTrend | None" = None
+) -> dict[str, Any]:
+    """`OwnerScorecard`를 화면向 dict로 변환한다(Phase 13 SC3·ADR 0035).
+
+    운영/owner 면(감독 대시보드)이라 4축 내부값 노출 OK(`serialize_org_graph`·
+    `serialize_monitoring_item`과 같은 결 — 채팅 OrgReply 노출 불변식과 무관). 온라인
+    비율(`availability.online_ratio`)·처리 소요 중앙값(`supervision.median_handle_seconds`)
+    등 **미관측 축은 `None`을 그대로 실어 "데이터 없음"을 정직하게 표기**한다(0으로
+    위장하지 않음 — ADR 0035 결정 4 프레즌스 미배선/`presence_log=None` 계약).
+    `trend`가 주어지면 축별 델타를 함께 싣는다(자기 추세, ADR 0035 결정 2 — 오너 간
+    순위 필드는 이 직렬화에 아예 없다).
+    """
+    payload: dict[str, Any] = {
+        "owner_id": scorecard.owner_id,
+        "window": {
+            "since": scorecard.window.since.isoformat(),
+            "until": scorecard.window.until.isoformat(),
+        },
+        "quality": {
+            "total_answers": scorecard.quality.total_answers,
+            "bad_feedback_answers": scorecard.quality.bad_feedback_answers,
+            "bad_feedback_rate": scorecard.quality.bad_feedback_rate,
+        },
+        "supervision": {
+            "needs_review_total": scorecard.supervision.needs_review_total,
+            "corrected_count": scorecard.supervision.corrected_count,
+            "handled_rate": scorecard.supervision.handled_rate,
+            "median_handle_seconds": scorecard.supervision.median_handle_seconds,
+        },
+        "availability": {
+            "online_ratio": scorecard.availability.online_ratio,
+            "presend_review_count": scorecard.availability.presend_review_count,
+        },
+        "freshness": {
+            "total_cards": scorecard.freshness.total_cards,
+            "stale_cards": scorecard.freshness.stale_cards,
+            "stale_ratio": scorecard.freshness.stale_ratio,
+            "oldest_synced_elapsed_seconds": scorecard.freshness.oldest_synced_elapsed_seconds,
+        },
+        "weak_identity_note": scorecard.weak_identity_note,
+        "trend": None,
+    }
+    if trend is not None:
+        payload["trend"] = {
+            "quality_total_answers_delta": trend.quality_total_answers_delta,
+            "quality_bad_feedback_rate_delta": trend.quality_bad_feedback_rate_delta,
+            "supervision_handled_rate_delta": trend.supervision_handled_rate_delta,
+            "freshness_stale_ratio_delta": trend.freshness_stale_ratio_delta,
+        }
+    return payload
 
 
 def serialize_case(
@@ -1123,6 +1179,8 @@ def create_app(
     feedback_store: "FeedbackStore | None" = None,
     presence_of: "Callable[[str], PresenceStatus] | None" = None,
     registry_journal: "SqliteRegistryJournal | None" = None,
+    knowledge_store: "KnowledgeStore | None" = None,
+    presence_log: "PresenceLogStore | None" = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -1168,6 +1226,12 @@ def create_app(
     "검토 필요" 판정에 bad 피드백 축을 더한다(§10.3 OR 조인). **미주입이면 `/answer/
     {record_id}/feedback`이 503**(정정 서비스 미배선과 동형)이고 `monitoring_for_owner`
     호출도 `feedback_store=None`으로 나가 기존 판정 100% 보존(하위호환).
+    `knowledge_store`(Phase 13 SC3·ADR 0035): `GET /supervision/scorecard`·`GET
+    /admin/scorecards`가 `compute_owner_scorecard`의 신선도 축 조회에 소비한다.
+    미주입이면 `select_knowledge_store()`로 결정(하위호환 — 기존 배선과 동형).
+    `presence_log`(Phase 13 SC2·ADR 0035): 스코어카드 가용성 축(온라인 비율)의 원천.
+    미주입이면 `None`(그 축은 `compute_owner_scorecard` 계약대로 `online_ratio=None`
+    — 판정 불가 정직 표기, 하위호환).
     """
     from starlette.middleware.sessions import SessionMiddleware
 
@@ -1215,6 +1279,14 @@ def create_app(
     # `None`을 그대로 유지한다(강제 생성 없음). `/answer/{record_id}/feedback`이 503,
     # `monitoring_for_owner` 호출도 `feedback_store=None`으로 나가 기존 판정 보존.
     _feedback_store: "FeedbackStore | None" = feedback_store
+    # 스코어카드 배선(Phase 13 SC3·ADR 0035): knowledge_store는 신선도 축 원천 —
+    # 미주입이면 `select_knowledge_store()`로 결정(하위호환 — 다른 스토어들과 동형).
+    # presence_log는 완전 옵셔널(가용성 축 온라인 비율 원천) — 미주입이면 `None`
+    # 그대로(그 축은 `compute_owner_scorecard` 계약대로 online_ratio=None).
+    _knowledge_store: "KnowledgeStore" = (
+        knowledge_store if knowledge_store is not None else select_knowledge_store()
+    )
+    _presence_log: "PresenceLogStore | None" = presence_log
 
     bundle = build_demo(
         runtime=runtime,
@@ -1729,6 +1801,107 @@ def create_app(
             "revoked_token_ids": result.revoked_token_ids,
             "audit_index": result.audit_index,
         }
+
+    # ── Owner Scorecard 면 (Phase 13 SC3·ADR 0035) ──────────────────────────
+    #
+    # 담당자 자기 성적(`/supervision/scorecard`) + 운영자 전체 뷰(`/admin/scorecards`).
+    # 관찰 대시보드다 — 인사·보상 연동이 아니다(ADR 0035 결정 3). 자기 추세만 노출하고
+    # (오너 간 순위표 없음, 결정 2), `days` 쿼리 외에 **정렬/랭킹 파라미터는 만들지
+    # 않는다**(전체 뷰는 owner_id 알파벳순 고정 — 회귀 방지, 결정 2).
+
+    from agent_org_network.answer_record import (
+        InMemoryFeedbackStore as _InMemoryFeedbackStore,
+        default_clock as _scorecard_clock,
+    )
+    from agent_org_network.scorecard import (
+        ScorecardWindow as _ScorecardWindow,
+        compute_owner_scorecard as _compute_owner_scorecard,
+        scorecard_trend as _scorecard_trend,
+    )
+
+    # `compute_owner_scorecard`는 feedback_store를 필수(non-optional)로 요구한다
+    # (scorecard.py — 소비만, 수정 금지). `create_app`의 feedback_store는 완전
+    # 옵셔널(미배선 시 `/answer/{id}/feedback`이 503)이라, 스코어카드 조회에서만
+    # 빈 in-memory 폴백을 만들어 넘긴다 — 미배선이면 항상 bad 피드백 0건으로
+    # 계산될 뿐(품질 축이 "무피드백"을 안전하게 반영, 강제 생성 없이 로컬 시임).
+    _scorecard_feedback_store: "FeedbackStore" = (
+        _feedback_store if _feedback_store is not None else _InMemoryFeedbackStore()
+    )
+
+    def _scorecard_window_days(days: int | None) -> int:
+        """`days` 쿼리 우선, 미지정이면 `AON_SCORECARD_WINDOW_DAYS` env, 둘 다 없으면 30일."""
+        if days is not None:
+            return days
+        raw = (os.environ.get("AON_SCORECARD_WINDOW_DAYS") or "").strip()
+        return int(raw) if raw else 30
+
+    def _owner_scorecard_with_trend(
+        owner_id: str, *, window_days: int, now: "_DateTime"
+    ) -> tuple["OwnerScorecard", "ScorecardTrend"]:
+        """현재·직전 두 기간을 독립 계산해 스코어카드 + 자기 추세를 낸다(결정 2 — 절대
+        비교 로직 없이 호출 조립만)."""
+        from datetime import timedelta
+
+        cards = [c for c in bundle.registry.all_cards() if c.owner == owner_id]
+        current_window = _ScorecardWindow(
+            since=now - timedelta(days=window_days), until=now
+        )
+        previous_window = _ScorecardWindow(
+            since=now - timedelta(days=window_days * 2),
+            until=now - timedelta(days=window_days),
+        )
+        common: dict[str, Any] = dict(
+            owner_id=owner_id,
+            cards=cards,
+            answer_store=_answer_record_store,
+            feedback_store=_scorecard_feedback_store,
+            correction_store=_correction_store,
+            knowledge_store=_knowledge_store,
+            presence_log=_presence_log,
+        )
+        current = _compute_owner_scorecard(window=current_window, now=now, **common)
+        previous = _compute_owner_scorecard(window=previous_window, now=now, **common)
+        trend = _scorecard_trend(current, previous)
+        return current, trend
+
+    @app.get("/supervision/scorecard")
+    def supervision_scorecard(  # pyright: ignore[reportUnusedFunction]
+        request: Request, owner_id: str = "", days: int | None = None
+    ) -> dict[str, Any]:
+        """담당자 자기 성적 — 현재 윈도(기본 rolling 30일) + 직전 동일 윈도 대비 자기 추세.
+
+        신원(기존 supervision 관례): 인증 활성 시 세션 신원을 강제(쿼리 owner_id 무시 —
+        `by_owner`/`CorrectionRequest`와 같은 계약). 미인증이면 쿼리 owner_id를 그대로
+        신뢰한다(로컬 관례). 순위·타 owner 비교 없음 — 이 owner 자신의 값만.
+        """
+        resolved_owner = _session_identity(request) if _auth_enabled else owner_id
+        current, trend = _owner_scorecard_with_trend(
+            resolved_owner, window_days=_scorecard_window_days(days), now=_scorecard_clock()
+        )
+        return serialize_scorecard(current, trend=trend)
+
+    @app.get("/admin/scorecards")
+    def admin_scorecards(  # pyright: ignore[reportUnusedFunction]
+        request: Request, days: int | None = None
+    ) -> list[dict[str, Any]]:
+        """운영자 전체 뷰 — 전 owner의 스코어카드를 **owner_id 알파벳순 고정**으로 나열.
+
+        순위표가 아니다(ADR 0035 결정 2) — 지표 기준 정렬·순위 파라미터는 만들지 않는다
+        (`sort` 등 쿼리는 이 시그니처에 아예 없어 무엇을 보내도 무시된다). 인증 활성 시
+        미로그인 401(운영 면 공통 계약).
+        """
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+        window_days = _scorecard_window_days(days)
+        now = _scorecard_clock()
+        owner_ids = sorted({c.owner for c in bundle.registry.all_cards()})
+        results: list[dict[str, Any]] = []
+        for owner_id in owner_ids:
+            current, trend = _owner_scorecard_with_trend(
+                owner_id, window_days=window_days, now=now
+            )
+            results.append(serialize_scorecard(current, trend=trend))
+        return results
 
     # ── 운영 면 인증 라우트 (T6.5 슬라이스 1) ───────────────────────────────
 

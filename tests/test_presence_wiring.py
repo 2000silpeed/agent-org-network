@@ -13,7 +13,7 @@ from typing import Callable
 
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.hitl import HitlToggleMap
-from agent_org_network.presence import InMemoryPresenceTracker
+from agent_org_network.presence import InMemoryPresenceLogStore, InMemoryPresenceTracker
 from agent_org_network.registry import Registry
 from agent_org_network.transport import (
     CentralFrame,
@@ -137,3 +137,49 @@ def test_프레즌스_미주입이면_HITL_힌트는_기존_계산() -> None:
     assert len(pushes) == 1
     # 프레즌스 결합 없음·approval 없음·토글 off → 기존 즉시 전송(hitl=False).
     assert pushes[0].ticket.hitl is False
+
+
+# ── 프레즌스 이력 배선(Phase 13 SC2) — register/disconnect → PresenceLogStore.append ──
+
+
+def test_register가_프레즌스_이력에_online_이벤트를_append한다() -> None:
+    log = InMemoryPresenceLogStore()
+    dispatcher = WebSocketDispatcher(clock=_fixed_clock(BASE_TS), presence_log=log)
+    assert log.for_owner("alice") == []
+    dispatcher.register(RegisterWorker(owner_id="alice"), _Recorder())
+    events = log.for_owner("alice")
+    assert len(events) == 1
+    assert events[0].owner_id == "alice"
+    assert events[0].status == "online"
+    assert events[0].at == BASE_TS
+
+
+def test_전_등급_disconnect가_프레즌스_이력에_offline_이벤트를_append한다() -> None:
+    log = InMemoryPresenceLogStore()
+    dispatcher = WebSocketDispatcher(clock=_fixed_clock(BASE_TS), presence_log=log)
+    dispatcher.register(RegisterWorker(owner_id="alice", role="primary"), _Recorder())
+    dispatcher.disconnect("alice", "primary")
+    events = log.for_owner("alice")
+    assert [e.status for e in events] == ["online", "offline"]
+
+
+def test_backup이_남아있으면_이력에_offline_이벤트가_안_남는다() -> None:
+    """primary만 끊기고 backup이 남아 있으면 그 owner는 여전히 online — 이력에도 offline 미기록."""
+    log = InMemoryPresenceLogStore()
+    dispatcher = WebSocketDispatcher(clock=_fixed_clock(BASE_TS), presence_log=log)
+    dispatcher.register(RegisterWorker(owner_id="alice", role="primary"), _Recorder())
+    dispatcher.register(RegisterWorker(owner_id="alice", role="backup"), _Recorder())
+    dispatcher.disconnect("alice", "primary")
+    events = log.for_owner("alice")
+    assert [e.status for e in events] == ["online", "online"]
+    dispatcher.disconnect("alice", "backup")
+    events = log.for_owner("alice")
+    assert [e.status for e in events] == ["online", "online", "offline"]
+
+
+def test_presence_log_미주입이면_기존_동작_그대로() -> None:
+    """presence_log 미주입(하위호환) — register/disconnect가 이력 없이 정상 동작."""
+    dispatcher = WebSocketDispatcher(clock=_fixed_clock(BASE_TS))
+    reply = dispatcher.register(RegisterWorker(owner_id="alice"), _Recorder())
+    assert isinstance(reply, Welcome)
+    dispatcher.disconnect("alice")

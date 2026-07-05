@@ -674,3 +674,207 @@ def answer_feedback(record_id: str, req: FeedbackRequest, request: Request) -> d
 - **외부 결정 연결**: owner 도달은 현 단계 **풀 방식**(supervision 검토 필요 축) — 실 push는 외부
   결정 ④(§5 D, 질문자↔owner 도달 채널)의 잔여로 실 사용자 단계 유지(새 통지 채널 미신설). plan §5
   D를 "정정 통지 + 피드백 표출 도달 채널"로 포괄 표기하는 게 정합적(구현자가 문구 조정).
+
+## 11. 담당자 스코어카드 — 담당자가 얼마나 잘하고 있나의 관찰 지표 (계획, planner)
+
+> **상태: SC0 설계 완료(domain-architect·2026-07-05) — SC1~SC3 구현 대기.** 사용자 승인 방향(4축
+> 지표·Goodhart 방지·자기 추세·관찰 대시보드). 아래는 슬라이스 분해·데이터 갭·외부 결정이며, SC0에서
+> 도메인 타입·용어·ADR을 확정했다. **SC0 산출**: ADR [`0035`](adr/0035-owner-scorecard-observability-not-appraisal.md)
+> (정정=가점·bad만 벌점·순위표 금지·인사 연동 아님·약신원)·CONTEXT 용어(Owner Scorecard·Supervision
+> Metric·Presence Log/Event·Self-Trend)·TRD §4 스코어카드 도메인 shape(`OwnerScorecard`·4축 값 객체·
+> `compute_owner_scorecard`·`PresenceEvent`/`PresenceLogStore`·`online_ratio`)·PRD §4·§6. Phase 12
+> S0~S5 + 관리 UI(§9) + 답변 피드백(§10)이 게이트 내 완결(main e834793·게이트 2495 passed)된 직후
+> 착수한다 — **새 수집 장치는 최소**(프레즌스 연결/해제 이력 1건·전용 `PresenceLogStore`)로 두고, 기존
+> append-only 기록(`AnswerRecord`·`CorrectionEvent`·`AnswerFeedback`·`KnowledgeStore.synced_at`)을
+> **조인해 파생 지표를 계산**하는 읽기 도구다(모니터링이 감사 로그를 순수 읽기 투영한 정신 재사용).
+>
+> **SC0 실확인 확정(2026-07-05·domain-architect)**: ① **외부 결정 C(타임아웃 티켓)** — dispatch 감사에
+> agent_id는 `decision.primary`로 *간접* 실림(dispatch 블록엔 없음). *즉시* escalation(owner 부재)은
+> 귀속 가능하나 *대기 후 timeout 만료*는 최종 escalation이 별도 감사에 안 남음(`retrieve`가 Delivered만
+> 기록·ask_org.py §488-504) → **타임아웃 티켓 수 v1 제외**(ADR 0035 결정 4·가용성은 온라인 비율·사전검토
+> 응답으로). ② **프레즌스 키 = owner_id**(필드명 agent_id이나 값은 owner_id·presence.py §34-39) →
+> SC2 `PresenceLogStore`·SC1 가용성 축은 owner 단위·나머지 3축은 agent_id 단위·스코어카드는
+> `Registry.all_cards`로 owner가 owns한 카드를 묶어 owner 단위 집계. ③ **외부 결정 D**(검토 완료 미수집)·
+> **SC2 이력 형태**(전용 `PresenceLogStore` — 감사와 별 축) 확정.
+
+### 11.1 목표 · 범위
+
+- **목표**: 담당자(owner)가 자기 에이전트를 얼마나 잘 감독·유지하는지를 4축 관찰 지표로 투영해,
+  담당자 본인(자기 성적 탭)과 운영자(전체 뷰)가 본다. 절대 평가·인사 연동이 아니라 **관찰 대시보드**.
+- **4축 지표(사용자 확정 방향)**:
+  1. **답변 품질** — bad 피드백률·정정 발생률(원천 `AnswerFeedback`·`CorrectionEvent`).
+  2. **감독 성실도** — 검토 필요 항목 처리율·처리 소요시간(`AnswerRecord.needs_correction_review`
+     ↔ `CorrectionEvent.corrected_at` 시각차).
+  3. **가용성** — 온라인 비율·사전 검토 응답 속도·검토 타임아웃 만료 티켓 수(프레즌스 이력 필요).
+  4. **지식 신선도** — 마지막 동기화 시점·stale 비율·민감정보 거부 빈도(`KnowledgeStore.synced_at`·
+     `filter_sensitive` 거부).
+- **설계 원칙(SSOT에 박을 것 — 사용자와 합의)**:
+  - **Goodhart 방지(핵심)**: "정정하는 행위"는 *감독의 증거로 가점*·품질 저하 신호는 *bad
+    피드백에서만* 읽는다. **정정 횟수를 벌점화하지 않는다** — 이 구분을 지표 정의에 명문화한다
+    (정정을 벌점화하면 담당자가 정정을 회피해 답 품질이 오히려 나빠지는 역유인).
+  - **자기 추세 중심**: 오너 간 절대 순위가 아니라 **자기 기간 대비 추세**. 도메인 난이도·질문
+    물량 차이로 절대 비교는 불공정(같은 지표라도 owner별 baseline이 다름).
+  - **관찰 대시보드로 시작**: 평가 제도화(인사·보상 연동)는 별도 사용자 결정. 지금은 관찰 도구.
+  - **피드백 약신원 한계 명시**: 실 SSO 전이라 질문자 신원이 쿠키 약신원(§10.1) — bad 피드백률은
+    질(악의·중복)에 노출된다. 지표에 "약신원 기반·참고치" 주석을 단다.
+- **범위 밖**: 인사·보상 연동·자동 알림·순위표(leaderboard)·오너 간 절대 등수·실시간 스트리밍
+  대시보드·집계 캐시/영속(매 조회 시 append-only 스토어 재계산으로 충분·과설계 회피).
+
+### 11.2 실확인한 현재 지형 · 데이터 갭 (근거·grep 실확인)
+
+**계산에 이미 쓸 수 있는 것(조인만으로 파생 가능)**:
+- **답변 품질** — `AnswerFeedback`(verdict good|bad·`FeedbackStore.for_record`·`latest_for_record`)·
+  `CorrectionEvent`(`CorrectionStore.for_record`) + `AnswerRecordStore.for_agent(agent_id)`로 그
+  에이전트 전체 답을 훑어 분모(전체 답 수)·분자(bad 있는 답·정정된 답)를 센다. ✅ 갭 없음.
+- **감독 성실도(처리 소요시간)** — `AnswerRecord.answered_at`·`needs_correction_review`(발신 시각·
+  검토 필요 표식) ↔ `CorrectionEvent.corrected_at`(정정 시각)의 **시각차로 소요시간 계산 가능**. ✅
+- **지식 신선도** — `KnowledgeStore.get(agent_id).synced_at`(마지막 동기화 시각)·`is_stale`(임계
+  초과 판정) + `filter_sensitive`(admission 거부는 `KnowledgeSyncAck.reason`에 남으나 **집계 원천은
+  갭**·아래 참조). 마지막 동기화·stale은 갭 없음(현재 `synced_at` 하나만 보관·이력은 없음).
+
+**실확인된 데이터 갭(3건 — 지표 계산에 원천이 부족)**:
+1. **[갭·핵심] 프레즌스 연결/해제 이력 없음 → 온라인 비율 계산 불가.** `InMemoryPresenceTracker._state`
+   (presence.py:65)는 owner별 **현재 Presence 하나만 덮어쓴다**(online/offline·since). 과거 연결/해제
+   구간이 없어 "기간 내 온라인 비율"을 못 구한다. `transport.py`의 `observe_connect`(957)·
+   `observe_disconnect`(987)가 **감사 이벤트를 남기지 않는다**. → **S2에서 프레즌스 전이를 감사
+   이벤트로 남기는 최소 수집 장치 1건 신설**(연결/해제를 `action_record`류 append-only 이벤트로 —
+   이것이 계획이 예고한 "새 수집 장치는 최소").
+2. **[갭] "검토 완료(정정 없이)" 이벤트 없음 → 처리율 분모/분자 왜곡.** 담당자가 답을 열람·검토하고
+   "정정 불필요"로 판단해도 그 사실이 기록되지 않는다(`CorrectionEvent`는 *정정했을 때만* 생김).
+   `needs_correction_review=True`인 답이 "처리됨"인지 "아직 안 봄"인지 구분하려면 CorrectionEvent
+   존재만으로는 부족(정정 없는 검토 종결은 관측 불가). → **domain-architect 판단**: (a) 처리율을
+   "정정된 항목 / 검토 필요 항목"으로 좁게 정의(정정=처리로 근사·수집 장치 0·Goodhart 원칙과 정합
+   — 정정이 감독의 증거) vs (b) "검토 완료" 이벤트를 새로 수집(장치 추가). **계획 권장(a)** — 최소
+   수집·Goodhart 정신(정정이 곧 감독 증거)과 정합·소요시간도 정정 시각으로 자연 계산.
+3. **[갭] 검토 타임아웃 만료 티켓의 agent_id 귀속 조회 인덱스 없음.** `DispatchOutcome.
+   EscalatedToManager`(dispatch.py:147·timeout/owner 부재)는 휘발 아웃컴이고 감사 로그(`AuditReader.
+   records()` — dispatch 기록)엔 `disposition:"escalated_to_manager"`로 남으나(audit.py:137),
+   **agent_id별로 "이 담당자가 타임아웃 낸 티켓 수"를 뽑는 색인이 없다**(감사 레코드를 owner/agent로
+   필터해 세는 순회는 가능하나 dispatch 기록에 agent_id가 실리는지 domain-architect가 확인 필요 —
+   `WorkTicket.agent_id`는 있으나 audit 투영에 실리는지 미확인). → **domain-architect 확인 과제**:
+   dispatch 감사 레코드의 agent_id 유무. 없으면 이 축(타임아웃 만료 티켓 수)은 **v1 지표에서 제외**
+   (사전 검토 응답 속도·온라인 비율로 가용성 축을 채우고, 타임아웃 티켓은 후속). 억지 수집 금지.
+
+### 11.3 슬라이스 분해
+
+각 슬라이스 = {무엇 · 게이트 내/밖 · 검증 방식 · 건드리는 불변식 · SSOT 영향}.
+
+#### SC0 — SSOT 갱신 + 지표 정의·Goodhart 원칙 명문화 (문서·게이트 밖·domain-architect ADR 판단)
+
+- **무엇**: PRD(담당자 화면에 "자기 성적" 추가·관찰 도구 명시)·TRD §4(스코어카드 도메인·읽기 파생
+  포트)·CONTEXT(§11.6 용어 확정) 갱신 + **지표 정의를 SSOT에 박음**(4축 각 지표의 분자/분모·집계
+  기간·Goodhart 방지 정정≠벌점 구분·자기 추세 중심·약신원 한계). **ADR 필요성 판단(domain-architect)**:
+  "정정은 가점·bad 피드백만 품질 벌점"·"관찰 도구지 인사 연동 아님"은 되돌리기 어려운 *정책 결정*이라
+  ADR 후보(경미하면 plan §11 참조로 갈음 — domain-architect 확정).
+- **게이트**: 밖(문서). **검증**: 문서 톤·용어 정합 수동 검토. **불변식**: 서술만.
+- **SSOT 영향**: PRD·TRD·CONTEXT·(새 ADR?)·plan §11·tasks. **넘김**: domain-architect(설계·ADR 판단)
+  → planner/기술문서작성자(본문 반영).
+
+#### SC1 — 스코어카드 도메인 코어 (게이트 내·결정론 — 첫 타자)
+
+- **무엇**: `OwnerScorecard`(가칭·§11.6) 계산 순수 함수 — 기존 스토어들(`AnswerRecordStore`·
+  `FeedbackStore`·`CorrectionStore`·`KnowledgeStore`·프레즌스 이력[SC2 후])을 **주입받아 조인**해
+  agent_id(또는 owner)별 4축 지표를 계산. `serialize_org_graph`·`monitoring_for_owner`와 같은 경계
+  (순수 파생 함수·web 분리). 집계 기간 파라미터(`since`/`until` 또는 rolling window·§11.5 A).
+  **Goodhart 정신 코드화**: 정정 발생률은 "품질 벌점"이 아니라 *별도 축(감독 성실도)*으로 계산하고,
+  품질 벌점은 bad 피드백률에서만 나온다(두 축이 코드에서 분리됨을 테스트로 고정).
+- **게이트**: 내 — Fake 스토어 주입·주입 clock·고정 record로 결정론. 프레즌스 이력 축은 SC2 후 합류
+  (그 전엔 프레즌스 축 None/미포함으로 계산·하위호환).
+- **검증**: Fake 스토어에 알려진 답/피드백/정정을 심어 각 지표 분자/분모 결정론 단언. **핵심 단언
+  (Goodhart)**: 정정만 많고 bad 피드백 0인 담당자 → 품질 축 좋음·감독 성실도 축 높음(정정이 벌점
+  아님을 코드로 고정). 자기 추세 = 두 기간 계산이 독립적으로 나오는지(절대 비교 로직 부재 확인).
+- **불변식**: 전이≠기록(순수 읽기·새 전이/기록 0)·노출 불변식(스코어카드는 owner/운영 면이라 내부값
+  노출 OK·채팅 표면엔 절대 안 감)·Authority 중앙(지표는 관찰이지 권한 재선언 아님).
+- **SSOT 영향**: TRD §4·CONTEXT. **넘김**: **domain-architect(지표 타입·계산 shape 확정)** → tdd-engineer.
+- **선행 의존**: SC0(지표 정의 확정). 프레즌스 축은 SC2 의존.
+
+#### SC2 — 프레즌스 연결/해제 이력 (게이트 내·최소 수집 장치 1건)
+
+- **무엇**: 프레즌스 전이(connect/disconnect)를 **append-only 이력 이벤트**로 남기는 최소 수집 장치.
+  `PresenceEvent`(owner_id·status·at) + 이력 스토어(Protocol+InMemory·`for_owner`) 또는 기존
+  감사 로그(`action_record`)에 프레즌스 이벤트를 얹는 방식 중 **domain-architect 선택**(계획 권장:
+  전용 `PresenceLogStore` — 감사 로그는 사람이 읽는 절차 이력, 이력은 온라인 비율 *계산 원천*이라
+  축이 다름·`SqliteRegistryJournal`이 감사와 별 축인 정신). `transport.py` observe_connect/disconnect가
+  이 이력에도 append(현재 상태 갱신 + 이력 기록·전이≠기록이되 여기선 "상태 그릇"과 "이력 원천" 둘 다).
+  온라인 비율 계산 순수 함수(`online_ratio(events, since, until)` — 구간 적분).
+- **게이트**: 내 — 주입 clock·Fake 이력으로 결정론(연결/해제 시퀀스 → 비율 계산). **실 WS 연결
+  이벤트→이력 배선은 밖**(mcp-runtime-engineer·transport.py 실 배선·수동 크로스머신).
+- **검증**: 알려진 connect/disconnect 시퀀스 → 구간 온라인 비율 결정론 단언(경계·미해제 열린 구간·
+  재연결). 미관측 owner=0% 또는 판정 불가 구분.
+- **불변식**: 전이≠기록(이력은 append-only·현재 상태 그릇과 분리)·Authority 중앙(무관)·미아 없음(무관).
+- **SSOT 영향**: TRD §4(프레즌스 이력)·CONTEXT. **넘김**: domain-architect(이력 shape·감사 vs 전용
+  판단) → tdd-engineer(순수 계산) → mcp-runtime-engineer(실 WS 배선·게이트 밖).
+- **선행 의존**: 없음(프레즌스 도메인은 Phase 12 S4 완결). SC1과 병렬 가능(SC1 가용성 축이 SC2 소비).
+
+#### SC3 — 스코어카드 화면 (게이트 내 라우트·직렬화 / 실 UI 렌더·수동)
+
+- **무엇**: `/supervision`에 "내 성적" 탭(담당자 자기 스코어카드·owner 스코핑) + `/admin`(운영자
+  전체 뷰·모든 담당자 스코어카드 목록). `serialize_scorecard`(투영)·`GET /supervision/scorecard?
+  agent_id&since&until`·`GET /admin/scorecards`. 세션 신원 스코핑(담당자는 자기 것만·§10.5 정신·운영
+  면은 전체). 자기 추세 표시(기간 대비·전 기간 델타). Goodhart 원칙을 UI 카피에 명시("정정은 감독의
+  증거·순위표 아님").
+- **게이트**: 내(TestClient 라우트·직렬화·owner 스코핑 403·노출 불변식 단언) / 실 브라우저 렌더·차트
+  UI는 밖(수동·`owner-monitor.html`·`admin.html` 결).
+- **검증**: TestClient로 자기 스코어카드 200·남의 것 403(auth 활성)·직렬화 키 노출 불변식(스코어카드는
+  운영 면이라 내부값 OK·질문자 표면 무유출)·기간 파라미터 반영.
+- **불변식**: 노출 불변식(운영/owner 면·채팅 무유출)·전이≠기록(읽기 파생). **SSOT 영향**: TRD §5·§8·
+  PRD §4. **넘김**: tdd-engineer(라우트·직렬화) + 직접(HTML). **선행 의존**: SC1·SC2.
+
+### 11.4 의존성 · 권장 순서
+
+```
+SC0(지표 정의·ADR 판단) ─▶ SC1(도메인 코어) ─┬─▶ SC3(화면)
+                          SC2(프레즌스 이력) ─┘
+```
+
+- **첫 타자 = SC0**(지표 정의를 SSOT에 박아야 SC1이 무엇을 계산할지 확정·Goodhart 원칙이 코드 형태를
+  좌우). 그다음 **SC1**(도메인 코어·self-contained·결정론 검증 쉬움). **SC2는 SC1과 병렬 가능**(프레즌스
+  이력 축은 독립 신설·SC1 가용성 축이 SC2 산출을 소비하므로 SC2 먼저 또는 동시). **SC3 마지막**(SC1·SC2
+  산출을 화면으로). 게이트 밖 실 배선(SC2 실 WS·SC3 실 렌더)은 게이트 내 그린 후.
+
+### 11.5 외부 결정 지점 (사용자가 정해야 함 — 결정 전 해당 슬라이스 "결정 대기")
+
+- **A. 집계 기간 기본값** — rolling window(예: 최근 30일)? 고정 기간(주/월)? 파라미터로 열되 기본값
+  하나 필요. *SC1·SC3 차단(경미 — 기본 30일 rolling 권장·파라미터로 조정 가능하게)*.
+- **B. 지표 노출 범위** — 담당자 본인만 자기 성적을 보나, 운영자가 전체(타 담당자 포함)를 보나. 사용자
+  방향은 "둘 다"(자기 성적 탭 + 운영자 전체 뷰)이나, **오너 간 절대 비교 노출을 어디까지 허용하나**가
+  민감(자기 추세 중심 원칙과 순위표 노출이 충돌). *SC3 차단 — 권장: 운영자 뷰도 순위표 아닌 개별
+  카드 나열·절대 등수 미노출(자기 추세 원칙 UI에서 강제)*.
+- **C. 타임아웃 만료 티켓 귀속 규칙** — §11.2 갭3. dispatch 감사에 agent_id가 있으면 그걸로 귀속,
+  없으면 v1 제외. *domain-architect 확인 후 확정 — 억지 수집 금지(가용성 축은 온라인 비율로 충분)*.
+- **D. "검토 완료(정정 없이)" 수집 여부** — §11.2 갭2. 권장 = 수집 안 함(정정=처리로 근사·Goodhart
+  정신). 사용자가 "봤지만 정정 안 함"을 처리율에 넣고 싶으면 수집 장치 추가(결정 대기). *SC0·SC1 차단*.
+- **E. 지표 제도화(인사 연동) 여부** — 범위 밖 확정이나, 관찰→평가 전환은 **별도 사용자 결정**임을
+  SSOT에 명시(지금 대시보드가 훗날 인사 지표로 오용되지 않게 경계 문구). *비차단 — 문서 경계만*.
+
+### 11.6 용어 후보 (CONTEXT.md — 제안만·확정은 domain-architect)
+
+- **Owner Scorecard (담당자 스코어카드)** — 담당자별 4축 관찰 지표의 파생 투영. 순수 읽기 파생
+  (`serialize_org_graph`·`monitoring_for_owner` 결). _Avoid_: "Performance Review/인사고과"(제도화
+  함의 — 관찰 도구임), "Ranking/순위"(절대 비교 함의 — 자기 추세 중심), "KPI"(경영 지표 뉘앙스·오용
+  위험), "Owner Score/점수"(단일 스칼라 함의 — 4축 다면임).
+- **Supervision Metric (감독 지표)** — 4축 각각(답변 품질·감독 성실도·가용성·지식 신선도). _Avoid_:
+  "Grade/등급".
+- **Presence Log / Presence Event (프레즌스 이력/이벤트)** — connect/disconnect append-only 이력
+  (현재 `Presence` 상태 그릇과 구분되는 *이력 원천*). _Avoid_: "Attendance/출석"(근태 감시 뉘앙스).
+- **Self-Trend (자기 추세)** — 오너 간 절대 비교가 아닌 자기 기간 대비 변화. 지표 해석 규칙.
+
+### 11.7 넘김 표
+
+| 슬라이스 | 게이트 | 넘김 |
+|---|---|---|
+| SC0 지표 정의·SSOT·ADR 판단 | 밖(문서) | **domain-architect**(설계·ADR 판단) → 본문 반영 |
+| SC1 도메인 코어(조인 계산) | 내 | **domain-architect**(지표 타입·shape) → tdd-engineer(red→green) |
+| SC2 프레즌스 이력(수집 장치) | 내 / 실 WS 밖 | domain-architect(이력 shape) → tdd-engineer → mcp-runtime-engineer(실 배선) |
+| SC3 화면(자기 성적·전체 뷰) | 내(라우트) / 실 렌더 밖 | tdd-engineer(라우트·직렬화) + 직접(HTML) |
+
+### 11.8 자체 점검 — 불변식 (슬라이스별)
+
+- **전이 ≠ 기록**: 스코어카드는 *읽기 파생*(새 전이/기록 0·SC1·SC3). SC2 프레즌스 이력만 append-only
+  기록 신설(상태 그릇과 분리·기록 축). 지표 계산이 원 레코드를 절대 수정하지 않음.
+- **노출 불변식**: 스코어카드는 owner/운영 면(내부값 노출 OK) — 질문자 채팅 표면엔 절대 안 감(§10
+  피드백의 질문자↔owner 방향 분리 정신 재사용·SC3 라우트 노출 불변식 단언).
+- **Authority 중앙**: 지표는 관찰이지 담당(Authority) 재선언 아님 — `routing_rules.yaml` 무관.
+- **미아 없음**: 스코어카드는 답변 흐름과 분리된 사후 관찰 — 계산 실패/미배선이 라우팅·발신을 안 막음.
+- **Goodhart 방지(이 기능 고유 불변식)**: 정정 발생률은 벌점 축이 아니라 감독 성실도 축·품질 벌점은
+  bad 피드백에서만 — 두 축이 코드에서 분리됨을 테스트로 고정(SC1 핵심 단언).

@@ -157,6 +157,32 @@
     .result.sent { color: #166534; }
     .result.error { color: #b91c1c; }
     .foot { padding: 12px 20px; font-size: 12px; color: var(--muted); }
+    .tabs { display: flex; gap: 4px; padding: 0 20px; background: #fff; border-bottom: 1px solid var(--line); }
+    .tab {
+      padding: 10px 14px; font-size: 13px; font-weight: 600; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer;
+    }
+    .tab.active { color: var(--me); border-bottom-color: var(--me); }
+    .panel { display: none; }
+    .panel.active { display: flex; flex-direction: column; }
+    #scorecard-panel { flex: 1; overflow-y: auto; padding: 16px 20px; }
+    .sc-notice {
+      background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px;
+      padding: 12px 16px; font-size: 12px; color: #1e40af; margin-bottom: 16px;
+    }
+    .sc-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+    .sc-controls input[type="number"] {
+      width: 70px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px;
+    }
+    .sc-axes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .sc-axis { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+    .sc-axis .name { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 4px; }
+    .sc-axis .value { font-size: 14px; color: var(--ink); }
+    .sc-axis .trend { margin-left: 6px; font-weight: 700; }
+    .sc-axis .trend.up { color: #166534; }
+    .sc-axis .trend.down { color: #b91c1c; }
+    .sc-axis .trend.flat { color: var(--muted); }
+    .sc-note { font-size: 11px; color: var(--muted); margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -165,19 +191,44 @@
       답변 감독
       <small>내 에이전트에 들어온 질문·나간 답을 열람하고, 잘못된 답을 정정한다(로컬).</small>
     </header>
-    <div class="controls">
-      <label for="agent-id">에이전트</label>
-      <input type="text" id="agent-id" placeholder="예: contract_ops" />
-      <span class="presence" id="presence"><span class="dot"></span><span id="presence-text">—</span></span>
-      <span class="filter">
-        <input type="checkbox" id="needs-review" />
-        <label for="needs-review">검토 필요만</label>
-      </span>
+    <div class="tabs">
+      <button class="tab active" id="tab-answers" data-panel="panel-answers">답변 감독</button>
+      <button class="tab" id="tab-scorecard" data-panel="panel-scorecard">내 성적</button>
     </div>
-    <div id="answers"></div>
-    <div class="foot">
-      이 화면은 내 PC 로컬(127.0.0.1)에서만 열린다. 정정은 원 답을 지우지 않고 새 정정으로 쌓인다.
-      질문자는 자기 답변 페이지에서 정정 배지로 정정본을 본다(풀 방식).
+
+    <div class="panel active" id="panel-answers" style="flex:1; min-height:0; display:flex; flex-direction:column;">
+      <div class="controls">
+        <label for="agent-id">에이전트</label>
+        <input type="text" id="agent-id" placeholder="예: contract_ops" />
+        <span class="presence" id="presence"><span class="dot"></span><span id="presence-text">—</span></span>
+        <span class="filter">
+          <input type="checkbox" id="needs-review" />
+          <label for="needs-review">검토 필요만</label>
+        </span>
+      </div>
+      <div id="answers"></div>
+      <div class="foot">
+        이 화면은 내 PC 로컬(127.0.0.1)에서만 열린다. 정정은 원 답을 지우지 않고 새 정정으로 쌓인다.
+        질문자는 자기 답변 페이지에서 정정 배지로 정정본을 본다(풀 방식).
+      </div>
+    </div>
+
+    <div class="panel" id="panel-scorecard">
+      <div id="scorecard-panel">
+        <div class="sc-notice">
+          <strong>관찰 도구입니다 — 순위표가 아닙니다.</strong> 정정은 감독의 증거로 가점 축이고,
+          품질 저하 신호는 싫음 피드백에서만 읽습니다. 아래 화살표는 <strong>내 직전 동일 기간
+          대비 변화</strong>일 뿐, 다른 담당자와 비교하는 값이 아닙니다.
+        </div>
+        <div class="sc-controls">
+          <label for="sc-owner-id">담당자(owner_id)</label>
+          <input type="text" id="sc-owner-id" placeholder="예: cs_lead" />
+          <label for="sc-days">기간(일)</label>
+          <input type="number" id="sc-days" min="1" value="30" />
+          <button id="sc-load-btn">조회</button>
+        </div>
+        <div id="sc-result"></div>
+      </div>
     </div>
   </div>
 
@@ -400,6 +451,101 @@
     // 간단 폴링 — 새 답/정정이 다음 주기에 반영된다(작성 중이면 isEditing 가드가 스킵).
     load();
     setInterval(load, 4000);
+
+    // ── 내 성적 (Phase 13 SC3·ADR 0035) ──────────────────────────────────────
+    // owner_id 스코핑 — 자기 성적만 조회한다(순위·타 owner 비교 없음).
+
+    function switchTab(panelId) {
+      for (const t of document.querySelectorAll(".tab")) {
+        t.classList.toggle("active", t.dataset.panel === panelId);
+      }
+      for (const p of document.querySelectorAll(".panel")) {
+        p.classList.toggle("active", p.id === panelId);
+      }
+    }
+
+    function fmtPct(v) {
+      return v == null ? "데이터 없음" : (v * 100).toFixed(1) + "%";
+    }
+
+    function fmtSeconds(v) {
+      if (v == null) return "데이터 없음";
+      if (v < 60) return v.toFixed(0) + "초";
+      if (v < 3600) return (v / 60).toFixed(1) + "분";
+      return (v / 3600).toFixed(1) + "시간";
+    }
+
+    function trendArrow(delta, positiveIsGood) {
+      if (delta == null) return "";
+      const flat = Math.abs(delta) < 1e-9;
+      const up = delta > 0;
+      const good = flat ? null : (positiveIsGood ? up : !up);
+      const cls = flat ? "flat" : (good ? "up" : "down");
+      const arrow = flat ? "→" : (up ? "↑" : "↓");
+      return el("span", "trend " + cls, arrow);
+    }
+
+    function scAxis(name, value, trendEl) {
+      const div = el("div", "sc-axis");
+      div.appendChild(el("div", "name", name));
+      const valueEl = el("div", "value", value);
+      if (trendEl) valueEl.appendChild(trendEl);
+      div.appendChild(valueEl);
+      return div;
+    }
+
+    async function loadScorecard() {
+      const resultEl = document.getElementById("sc-result");
+      const ownerId = document.getElementById("sc-owner-id").value.trim();
+      const days = document.getElementById("sc-days").value.trim();
+      resultEl.innerHTML = "";
+      if (!ownerId) {
+        resultEl.appendChild(el("div", "empty", "위에서 담당자 owner_id를 입력하세요."));
+        return;
+      }
+      const q = new URLSearchParams({ owner_id: ownerId });
+      if (days) q.set("days", days);
+      try {
+        const res = await fetch("/supervision/scorecard?" + q.toString());
+        if (!res.ok) throw new Error("요청 실패: " + res.status);
+        const sc = await res.json();
+        const t = sc.trend || {};
+        const axes = el("div", "sc-axes");
+        axes.appendChild(scAxis(
+          "답변 품질 (bad 피드백률)",
+          fmtPct(sc.quality.bad_feedback_rate) + " · 전체 " + sc.quality.total_answers + "건",
+          trendArrow(t.quality_bad_feedback_rate_delta, false)
+        ));
+        axes.appendChild(scAxis(
+          "감독 성실도 (처리율)",
+          fmtPct(sc.supervision.handled_rate) + " · 소요 " + fmtSeconds(sc.supervision.median_handle_seconds),
+          trendArrow(t.supervision_handled_rate_delta, true)
+        ));
+        axes.appendChild(scAxis(
+          "가용성 (온라인 비율)",
+          fmtPct(sc.availability.online_ratio) + " · 사전검토 " + sc.availability.presend_review_count + "건",
+          null
+        ));
+        axes.appendChild(scAxis(
+          "지식 신선도 (stale 비율)",
+          fmtPct(sc.freshness.stale_ratio) + " · 카드 " + sc.freshness.total_cards + "개",
+          trendArrow(t.freshness_stale_ratio_delta, false)
+        ));
+        resultEl.appendChild(axes);
+        if (sc.weak_identity_note) {
+          resultEl.appendChild(el("div", "sc-note", "약신원 참고치 — bad 피드백률은 실 SSO 전 쿠키 약신원 기반입니다."));
+        }
+      } catch (err) {
+        resultEl.appendChild(el("div", "empty", "불러오지 못했습니다: " + err.message));
+      }
+    }
+
+    document.getElementById("tab-answers").addEventListener("click", () => switchTab("panel-answers"));
+    document.getElementById("tab-scorecard").addEventListener("click", () => {
+      switchTab("panel-scorecard");
+      loadScorecard();
+    });
+    document.getElementById("sc-load-btn").addEventListener("click", loadScorecard);
   </script>
 </body>
 </html>

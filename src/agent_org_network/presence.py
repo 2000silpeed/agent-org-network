@@ -139,3 +139,97 @@ def resolve_mode_with_presence(
         return mode
     needs_correction_review = presence_status == "offline" and mode == "full"
     return mode, needs_correction_review
+
+
+# ── PresenceEvent + PresenceLogStore — 프레즌스 이력 (Phase 13 SC2, ADR 0035·
+#    TRD §4 스코어카드 shape 절) ──────────────────────────────────────────
+#
+# 현재 `Presence`(상태 그릇 — owner별 *현재* 상태 하나만 덮어씀)와 구분되는
+# *온라인 비율 계산 원천*. 전용 스토어 채택(감사 로그와 별 축 — 감사는 사람이
+# 읽는 절차 이력, 이 이력은 계산 원천이라 `SqliteRegistryJournal`이 감사와 별
+# 축인 정신). 키는 owner_id로 정직하게 명명(`Presence`의 필드명 agent_id·값
+# owner_id인 부채를 이 신설 타입은 안 물려받는다).
+
+
+class PresenceEvent(BaseModel, frozen=True):
+    """프레즌스 connect/disconnect 1건 — append-only 이력의 원소."""
+
+    owner_id: str
+    status: PresenceStatus
+    at: datetime
+
+
+class PresenceLogStore(Protocol):
+    """`PresenceEvent` append-only 보관·조회 포트."""
+
+    def append(self, event: PresenceEvent) -> None: ...
+
+    def for_owner(self, owner_id: str) -> list[PresenceEvent]: ...
+
+
+class InMemoryPresenceLogStore:
+    """in-memory `PresenceLogStore` — append-only, 삽입 순서(시간순) 보존."""
+
+    def __init__(self) -> None:
+        self._by_owner: dict[str, list[PresenceEvent]] = {}
+        self._lock = threading.Lock()
+
+    def append(self, event: PresenceEvent) -> None:
+        with self._lock:
+            self._by_owner.setdefault(event.owner_id, []).append(event)
+
+    def for_owner(self, owner_id: str) -> list[PresenceEvent]:
+        with self._lock:
+            return list(self._by_owner.get(owner_id, []))
+
+
+def online_ratio(
+    events: list[PresenceEvent], *, since: datetime, until: datetime
+) -> float | None:
+    """`[since, until)` 구간의 온라인 시간 / 기간 길이 — connect/disconnect 이력 구간 적분.
+
+    경계 처리:
+      - **미관측**(`events`가 비어 있음)이면 `None`(0.0과 구분 — 판정 불가. `Presence`의
+        미관측=offline 안전 기본과 달리, 여기선 "관측 자체가 없다"를 정직하게 표기한다).
+      - **since 이전 마지막 상태**를 구간 시작(`since`)의 초기 상태로 채택한다(그 이전부터
+        연결/해제 상태였던 것이 그대로 이어짐). since 이전 이벤트가 전혀 없으면 초기 상태는
+        offline(안전측 기본 — 관측 전 구간은 온라인으로 셀 근거가 없다).
+      - **미해제 열린 구간**: 구간 내 마지막 이벤트가 online이고 그 뒤로 disconnect가 없으면
+        `until`까지 온라인으로 셈한다.
+      - **재연결 반복**: online↔offline이 여러 번 바뀌어도 각 구간을 그대로 합산한다.
+      - **online→online 중복(재관측)**: 상태 변화가 없으므로 구간 경계에 영향 없음(멱등).
+
+    기간 길이가 0 이하(`until <= since`)면 `None`(구간 자체가 무의미).
+    """
+    if not events:
+        return None
+    duration = (until - since).total_seconds()
+    if duration <= 0:
+        return None
+
+    ordered = sorted(events, key=lambda e: e.at)
+
+    # since 시점의 초기 상태 — since 이전(또는 같은 시각) 마지막 이벤트를 채택, 없으면 offline.
+    status: PresenceStatus = "offline"
+    for event in ordered:
+        if event.at <= since:
+            status = event.status
+        else:
+            break
+
+    online_seconds = 0.0
+    cursor = since
+    for event in ordered:
+        if event.at <= since:
+            continue
+        if event.at >= until:
+            break
+        if status == "online":
+            online_seconds += (event.at - cursor).total_seconds()
+        cursor = event.at
+        status = event.status
+
+    if status == "online":
+        online_seconds += (until - cursor).total_seconds()
+
+    return online_seconds / duration

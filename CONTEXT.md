@@ -561,6 +561,26 @@ _Avoid_: Auto-approval(단독 — 오프라인이 승인 우회가 아니라 사
 Phase 12에서 owner 워커 역할의 재정의(ADR 0033 맥락) — "답변 실행자"(ADR 0027 — owner OAuth로 답 생성)에서 "**지식 공급자**"로 이동한다. 워커는 답을 *안 만들고* 자기 환경의 명시 지정 지식을 중앙 `Knowledge Store`로 계속 자동 동기화한다(위 Knowledge Sync). 답은 중앙 런타임이 그 저장소로 만든다(가용성 — owner PC 부재해도 답). WS 전송(ADR 0011·0012)은 ADR 0027에서 "기본 대화 경로(답 운반)"였던 것이 *지식 동기화 채널*로 재사용된다(답 운반 아님). (ADR 0033·0027·0011·0012)
 _Avoid_: Answer executor(ADR 0027 역할 — 재정의로 폐기된 위상), Worker(단독 — 역할 함의 없음), Backup worker(가용성 폴백과 혼동)
 
+### Owner Scorecard (담당자 스코어카드 — 4축 관찰 지표, Phase 13·ADR 0035)
+
+> **상태: SC0 설계(domain-architect·2026-07-05).** Phase 12 감독 루프 위에 얹는 **읽기 파생 관찰 대시보드** — 기존 append-only 기록(`Answer Record`·`Correction Event`·`Answer Feedback`·`Knowledge Store.synced_at`·`Presence Log`)을 조인해 담당자별 4축 지표를 계산한다. **라우팅·실행 계층 무변경.** 새 수집 장치는 최소(프레즌스 연결/해제 이력 1건·`Presence Log`). **Goodhart 방지 정책이 코어(ADR 0035)** — 정정=감독의 증거(가점 축)·품질 벌점은 bad 피드백률에서만·자기 추세 중심(오너 간 순위표 금지)·관찰 도구지 인사 연동 아님·약신원 참고치.
+
+**Owner Scorecard (담당자 스코어카드)**:
+담당자별 4축 관찰 지표의 순수 읽기 파생 투영(ADR 0035·계획 §11) — `serialize_org_graph`·`monitoring_for_owner`와 같은 경계(순수 파생·web 분리·전이≠기록). **4축**: ① **답변 품질**(bad 피드백률·정정 발생률 — 원천 `Answer Feedback`·`Correction Event`) · ② **감독 성실도**(검토 필요 항목 처리율·처리 소요 중앙값 — `Answer Record.needs_correction_review`↔`Correction Event.corrected_at` 시각차) · ③ **가용성**(온라인 비율[`Presence Log` 적분]·사전 검토 응답·[타임아웃 티켓 수는 v1 제외·ADR 0035 결정 4]) · ④ **지식 신선도**(마지막 `synced_at` 경과·stale 여부 — `Knowledge Store`). **스코핑 두 단위**: 품질·감독·신선도 축은 `agent_id` 단위(`Answer Record.agent_id`·`Knowledge Store` agent_id 키), 가용성(프레즌스) 축은 **owner 단위**(프레즌스는 owner PC 연결 상태 — `Presence` docstring·필드명 agent_id이나 값은 owner_id). 담당자 스코어카드는 그 owner가 owns한 카드들을 `Registry.all_cards`로 묶어 owner 단위로 집계(agent 축은 카드별 합산·프레즌스 축은 owner 직접). **Goodhart 코드 분리(핵심·ADR 0035 결정 1)**: 정정 발생률은 *품질 벌점이 아니라* 감독 성실도 축이고, 품질 벌점은 bad 피드백률에서만 — 두 축이 코드에서 분리됨을 테스트로 고정(정정만 많고 bad 0인 담당자는 품질 나쁘지 않음). **자기 추세(ADR 0035 결정 2)** — 오너 간 절대 비교·순위표 로직 부재(두 기간 독립 계산·델타만). 집계 기간 rolling 30일 기본(`AON_SCORECARD_WINDOW_DAYS` 설정값 시임·주입 `now`). **약신원 참고치**(bad 피드백률은 쿠키 약신원 노출·주석 동반). 기존 스토어 포트만 소비(`for_agent`·`for_record`·`latest_for_record`·`synced_at`·`is_stale`·`Presence Log.for_owner`) — 새 쓰기 없음. (ADR 0035·0033·계획 §11)
+_Avoid_: Performance Review/인사고과(제도화 함의 — 관찰 도구임·ADR 0035 결정 3), Ranking/순위·Leaderboard(절대 비교 함의 — 자기 추세 중심), KPI(경영 지표 뉘앙스·오용 위험), Rating/평점·성과급/등급(고과 함의), Owner Score/점수(단일 스칼라 함의 — 4축 다면임)
+
+**Supervision Metric (감독 지표 — 4축 각각)**:
+`Owner Scorecard`의 4축 각 지표(답변 품질·감독 성실도·가용성·지식 신선도). 각 축은 분자/분모가 명시된 비율 또는 시각차 파생값이다(예: bad 피드백률 = bad 피드백 있는 답 / 전체 답·처리율 = 정정된 검토필요 항목 / 검토필요 항목·처리 소요 = `corrected_at - answered_at` 중앙값·온라인 비율 = 온라인 구간 적분 / 기간 길이·stale 비율 = stale 카드 / 전체 카드). 절대 등수가 아니라 각 축을 자기 추세로 읽는다. (ADR 0035)
+_Avoid_: Grade/등급(고과 함의), Score(단일 스칼라 함의)
+
+**Presence Log / Presence Event (프레즌스 이력/이벤트 — 온라인 비율 계산 원천, Phase 13 SC2)**:
+프레즌스 connect/disconnect를 **append-only 이력**으로 남기는 최소 수집 장치(계획 §11.3 SC2) — 현재 `Presence`(상태 그릇·owner별 *현재* 상태 하나만 덮어씀·온라인 비율 계산 불가)와 **구분되는 *이력 원천***이다. `Presence Event`(owner_id·status[online/offline]·at) + 전용 `PresenceLogStore`(Protocol+InMemory·`append`/`for_owner`). **전용 스토어 채택(감사 로그와 별 축)** — 감사 로그(`AuditReader`)는 사람이 읽는 절차 이력이지만, 프레즌스 이력은 *온라인 비율 계산 원천*이라 축이 다르다(`SqliteRegistryJournal`이 감사와 별 축인 정신·`action_record`에 얹으면 계산 순회가 전체 감사 로그를 훑어야 해 비효율·오염). **키는 owner_id**(프레즌스가 owner PC 연결 상태라 — `Presence` docstring·필드명 agent_id이나 실제 owner_id). `transport.py`의 `observe_connect`(§957)/`observe_disconnect`(§987)가 현재 상태 갱신에 더해 이 이력에도 append(전이≠기록이되 여기선 "상태 그릇" 갱신과 "이력 원천" append 둘 다·이력은 append-only). 온라인 비율은 순수 함수 `online_ratio(events, since, until)`로 구간 적분(경계·미해제 열린 구간[마지막 online 이후 disconnect 없으면 until까지 온라인]·재연결·미관측 owner=판정 불가/0 구분). 실 WS 연결→이력 배선은 게이트 밖(mcp-runtime-engineer). (ADR 0035·0033·계획 §11.3 SC2)
+_Avoid_: Attendance/출석(근태 감시 뉘앙스 — 온라인 비율 계산 원천임), Presence(상태 그릇과 혼동 — 이건 *이력*), Heartbeat log(메커니즘 함의)
+
+**Self-Trend (자기 추세 — 지표 해석 규칙)**:
+오너 간 절대 비교가 아니라 자기 기간 대비 변화로 지표를 읽는 해석 규칙(ADR 0035 결정 2). 두 기간(현재 rolling window·직전 기간)을 독립적으로 계산해 델타만 낸다 — 절대 순위·등수 로직 부재. 도메인 난이도·질문 물량 차로 owner 간 baseline이 달라 절대 비교가 불공정하기 때문. (ADR 0035)
+_Avoid_: Ranking/순위·Benchmark(오너 간 절대 비교 함의)
+
 ## Flagged ambiguities
 
 **"Agent" 단독 사용 금지**: 도메인 모델·코드·이 문서에서 맨 단어 "Agent"는 쓰지 않는다 — 항상 **Owner / Agent Card / Agent Runtime** 중 하나로 한정. (제품·마케팅 산문에서는 "에이전트" 자유 사용 OK.)

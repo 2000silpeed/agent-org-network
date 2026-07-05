@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from agent_org_network.knowledge_store import KnowledgeStore
     from agent_org_network.knowledge_sync import KnowledgeSyncAck, KnowledgeSyncSpec
     from agent_org_network.notify import Notifier
-    from agent_org_network.presence import PresenceTracker
+    from agent_org_network.presence import PresenceLogStore, PresenceTracker
     from agent_org_network.registry import Registry
     from agent_org_network.review import BackupReviewStore
     from agent_org_network.runtime import AgentRuntime, Answer
@@ -415,6 +415,7 @@ class WebSocketDispatcher:
         hitl_toggles: "HitlToggleMap | None" = None,
         console_feed: "ConsoleFeed | None" = None,
         presence_tracker: "PresenceTracker | None" = None,
+        presence_log: "PresenceLogStore | None" = None,
         knowledge_store: "KnowledgeStore | None" = None,
         fallback_runtime: "AgentRuntime | None" = None,
     ) -> None:
@@ -493,6 +494,11 @@ class WebSocketDispatcher:
         # 계산으로 폴백). WS 연결이 사실상 하트비트라(0011·0012 `_connections` 재사용) 프레즌스는
         # 휘발이 정당하다 — 재시작하면 연결도 끊겨 있으므로 InMemory가 진실 원천으로 충분.
         self._presence_tracker = presence_tracker
+        # 프레즌스 이력(Phase 13 SC2·ADR 0035·TRD §4) — 현재 상태 그릇(`_presence_tracker`)
+        # 갱신과 별개로, connect/disconnect를 append-only `PresenceEvent` 이력으로도 남긴다
+        # (온라인 비율 계산 원천 — `online_ratio`가 소비). 미주입이면 no-op(하위호환 — SC2
+        # 전 기존 register/disconnect 경로는 이력 없이 그대로 동작).
+        self._presence_log = presence_log
         # 중앙 지식 저장소(Phase 12 (B)(C)·ADR 0033 결정 1·3) — 워커가 동기화한 본문을
         # agent_id별 보관한다. SyncKnowledge 수신부(`accept_knowledge_sync_frame`)가
         # `accept_and_store_knowledge_sync`(M3 계약 — store.put 직접 호출 금지·판정과 보관
@@ -955,6 +961,14 @@ class WebSocketDispatcher:
         # 미주입이면 no-op(하위호환). 관측 실패가 전송을 못 깨게 관전 emit과 같은 위치.
         if self._presence_tracker is not None:
             self._presence_tracker.observe_connect(frame.owner_id, at=self._clock())
+        # 프레즌스 이력 append(Phase 13 SC2) — 상태 그릇 갱신과 별개로 온라인 비율 계산
+        # 원천에도 남긴다. 미주입이면 no-op(하위호환).
+        if self._presence_log is not None:
+            from agent_org_network.presence import PresenceEvent
+
+            self._presence_log.append(
+                PresenceEvent(owner_id=frame.owner_id, status="online", at=self._clock())
+            )
         # 재연결 재동기: 등록 직후 그 owner의 대기 작업(미연결 동안 쌓인 것·끊김으로
         # re-queue된 것)을 우선순위 연결로 push한다.
         self._push_pending(frame.owner_id)
@@ -985,6 +999,14 @@ class WebSocketDispatcher:
         # 기본 — 연결 끊김 즉시 오프라인). 미주입이면 no-op(하위호환).
         if self._presence_tracker is not None and owner_id not in self._connections:
             self._presence_tracker.observe_disconnect(owner_id, at=self._clock())
+        # 프레즌스 이력 append(Phase 13 SC2) — 상태 그릇과 같은 조건(전 등급 연결 소멸 시)
+        # 에서만 offline 이벤트를 남긴다(상태 그릇·이력 원천 판정 일치). 미주입이면 no-op.
+        if self._presence_log is not None and owner_id not in self._connections:
+            from agent_org_network.presence import PresenceEvent
+
+            self._presence_log.append(
+                PresenceEvent(owner_id=owner_id, status="offline", at=self._clock())
+            )
         # 관전 피드(T9.2(c)): 연결 종료 emit(끊김 정리 시점). re-queue·재push와 독립 —
         # 관전엔 "그 등급 연결이 끊겼다"는 사건만 실린다.
         from agent_org_network.console import WorkerDisconnected

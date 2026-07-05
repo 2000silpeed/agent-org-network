@@ -391,9 +391,13 @@ def create_central_app(
     # 온라인/오프라인 1급 상태로 도출한다. InMemory가 정당(프레즌스는 휘발 — 재시작하면
     # 연결도 끊겨 있으므로 WS 연결 자체가 진실 원천). 디스패처가 register/disconnect에서
     # observe하고 `_resolve_hitl_hint`가 프레즌스를 HITL 입력에 결합한다(결정 5).
-    from agent_org_network.presence import InMemoryPresenceTracker
+    from agent_org_network.presence import InMemoryPresenceLogStore, InMemoryPresenceTracker
 
     _presence_tracker = InMemoryPresenceTracker()
+    # 프레즌스 이력(Phase 13 SC2·ADR 0035) — 온라인 비율 계산 원천. InMemory가 정당한
+    # 이유는 프레즌스 상태 그릇과 같다(휘발 정당 — 재시작하면 연결도 끊겨 있음). SQLite
+    # 영속은 백로그(tasks 참조 — 물량이 커지면 그때 durable 어댑터).
+    _presence_log = InMemoryPresenceLogStore()
     # 중앙 지식 저장소(Phase 12 (B)(C)·ADR 0033 결정 1·3, SQLite 확장) — 워커가 동기화한
     # 본문을 agent_id별 보관한다. `select_knowledge_store()`로 결정(`AON_DB` 설정 시
     # `SqliteKnowledgeStore(path)` durable, 미설정 시 기존 `InMemoryKnowledgeStore()` —
@@ -466,6 +470,7 @@ def create_central_app(
         hitl_toggles=_resolved_hitl_toggles,
         console_feed=_resolved_console_feed,
         presence_tracker=_presence_tracker,
+        presence_log=_presence_log,
         knowledge_store=_knowledge_store,
         fallback_runtime=_central_runtime,
     )
@@ -491,6 +496,8 @@ def create_central_app(
         correction_store=_correction_store,
         feedback_store=_feedback_store,
         presence_of=_presence_tracker.status,
+        knowledge_store=_knowledge_store,
+        presence_log=_presence_log,
     )
     _mount_worker_endpoint(app, dispatcher)
     return app

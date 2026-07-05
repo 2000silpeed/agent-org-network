@@ -1532,7 +1532,18 @@ def create_app(
     @app.get("/supervision/presence/{agent_id}")
     def supervision_presence(agent_id: str) -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
         # 자기 워커 프레즌스 배지(온라인/오프라인). 미배선이면 offline 기본(안전측·미관측 정신).
-        status: "PresenceStatus" = presence_of(agent_id) if presence_of is not None else "offline"
+        # 프레즌스는 owner(담당자 PC 연결) 키로 기록되므로(transport.py observe_connect/
+        # disconnect), agent_id를 그대로 조회 키로 쓰면 항상 offline 오탐이 난다(크로스머신
+        # 시연 실결함 4호) — registry에서 그 카드의 현재 owner를 해석해 owner 키로 조회한다.
+        # 카드가 없으면(미등록 agent_id) owner를 모르므로 offline 기본.
+        status: "PresenceStatus" = "offline"
+        if presence_of is not None:
+            try:
+                owner = bundle.registry.get(agent_id).owner
+            except KeyError:
+                owner = None
+            if owner is not None:
+                status = presence_of(owner)
         return {"agent_id": agent_id, "status": status}
 
     @app.get("/answer/{record_id}/correction")

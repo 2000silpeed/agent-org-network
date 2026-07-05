@@ -300,9 +300,11 @@ class AskOrg:
         # 답변 감사 단위 적재(Phase 12 (B)·ADR 0033 결정 4) — 중앙이 낸 답이 확정될 때마다
         # `AnswerRecord`를 append한다(담당자 모니터링·질문자 정정 배지의 데이터 원천). 미주입
         # 이면 적재 안 함(하위호환 — 기존 경로는 record_id 없이 그대로). `presence_of`는 그
-        # 답의 담당 agent_id가 오프라인인지 조회하는 콜백(디스패처 프레즌스 추적기 위임) —
-        # 오프라인 자동발신(`full`)이면 `needs_correction_review=True`로 실어 담당자 검토 필터에
-        # 노출한다(`resolve_mode_with_presence(..., return_flag=True)` 정신을 적재 지점에서 재현).
+        # 답의 담당 owner가 오프라인인지 조회하는 콜백(디스패처 프레즌스 추적기 위임 —
+        # 프레즌스는 owner PC 연결 단위라 owner 키로 조회해야 한다·크로스머신 시연 실결함
+        # 4호 정정) — 오프라인 자동발신(`full`)이면 `needs_correction_review=True`로 실어
+        # 담당자 검토 필터에 노출한다(`resolve_mode_with_presence(..., return_flag=True)`
+        # 정신을 적재 지점에서 재현).
         self._answer_record_store = answer_record_store
         self._presence_of = presence_of
         # 답 회수용 불투명 추적 토큰 → WorkTicket 매핑(ADR 0011 결정 6-5). 서버가
@@ -364,9 +366,12 @@ class AskOrg:
         미주입이면 그대로 통과(하위호환·발화 0).
 
         `needs_correction_review`(오프라인 자동발신 사후교정 플래그): `presence_of`가 그 답의
-        담당 agent_id를 offline으로 보고하고 최종 mode가 `full`(자동 발신)이면 True — 담당자가
+        담당 owner를 offline으로 보고하고 최종 mode가 `full`(자동 발신)이면 True — 담당자가
         복귀 후 "검토 필요" 필터에서 본다. `resolve_mode_with_presence(..., return_flag=True)`가
         S4에서 정한 판정을 *적재 시점*에 재현한다(온라인이거나 draft_only/backup이면 False).
+        프레즌스는 owner(담당자 PC 연결) 키로 기록되므로(`transport.py`의 `observe_connect`)
+        조회도 owner 키를 써야 한다 — agent_id로 조회하면 트래커에 없는 키라 항상 offline
+        오탐이 난다(크로스머신 시연 실결함 4호).
 
         record_id는 uuid4 hex(내부 구조 미인코딩·불투명 손잡이) — 질문자가 이 토큰으로 자기
         답변 페이지에서 정정을 조회한다.
@@ -378,7 +383,7 @@ class AskOrg:
         owner, agent_id = reply.answered_by
         needs_review = False
         if self._presence_of is not None and reply.mode == "full":
-            needs_review = self._presence_of(agent_id) == "offline"
+            needs_review = self._presence_of(owner) == "offline"
         record_id = uuid.uuid4().hex
         self._answer_record_store.add(
             AnswerRecord(
@@ -526,6 +531,7 @@ class AskOrg:
         `handle`의 즉답 경로(`_record_answer`)와 달리 여기선 record_id를 tracking에 고정한다
         — retrieve가 여러 번 호출돼도 첫 적재의 record_id를 재사용해(멱등) 질문자 정정 배지
         조회 손잡이가 안정된다. `_pending_audit`가 그 답의 질문·질문자 세션을 보관한다.
+        프레즌스 조회는 owner 키(`_record_answer`와 동일 — 트래커가 owner 단위로 기록).
         """
         if self._answer_record_store is None or not isinstance(reply, Answered):
             return reply
@@ -542,7 +548,7 @@ class AskOrg:
         owner, agent_id = reply.answered_by
         needs_review = False
         if self._presence_of is not None and reply.mode == "full":
-            needs_review = self._presence_of(agent_id) == "offline"
+            needs_review = self._presence_of(owner) == "offline"
         record_id = uuid.uuid4().hex
         self._answer_record_store.add(
             AnswerRecord(

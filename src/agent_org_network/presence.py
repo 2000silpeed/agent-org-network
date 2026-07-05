@@ -29,7 +29,15 @@ PresenceStatus = Literal["online", "offline"]
 
 
 class Presence(BaseModel, frozen=True):
-    """담당자 워커 연결 상태 — 1급 개념(ADR 0033 결정 5)."""
+    """담당자 워커 연결 상태 — 1급 개념(ADR 0033 결정 5).
+
+    주의(크로스머신 시연 실결함 4호): `agent_id` 필드명이지만 실제로 담기는 값은
+    **담당자(owner) 식별자**다 — 프레즌스는 owner PC의 연결 상태이지 Agent Card 단위가
+    아니다(`transport.py`의 `observe_connect(frame.owner_id)`/`observe_disconnect(owner_id)`
+    참고 — 어느 워커든 그 owner가 붙어 있으면 온라인). 조회도 owner 키로 해야 한다 —
+    agent_id로 조회하면 트래커에 없는 키라 항상 offline로 폴백해 오탐이 난다. 필드명
+    rename은 과한 리팩터라 보류(백로그).
+    """
 
     agent_id: str
     status: PresenceStatus
@@ -37,7 +45,11 @@ class Presence(BaseModel, frozen=True):
 
 
 class PresenceTracker(Protocol):
-    """워커 WS 연결/해제를 기록·조회하는 포트(HitlToggleMap 정신의 in-memory 상태 그릇)."""
+    """워커 WS 연결/해제를 기록·조회하는 포트(HitlToggleMap 정신의 in-memory 상태 그릇).
+
+    `agent_id` 매개변수명은 호출 관례상 유지하지만 실제로 넘기는 값은 owner 식별자다
+    (`Presence` docstring 참고). 담당 owner의 프레즌스 조회는 반드시 owner 키로 한다.
+    """
 
     def observe_connect(self, agent_id: str, *, at: datetime) -> None: ...
 

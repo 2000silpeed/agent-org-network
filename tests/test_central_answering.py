@@ -262,9 +262,10 @@ class TestOfflineOwnerStillAnswers:
         store = InMemoryKnowledgeStore()
         store.put(_content(documents=(KnowledgeDoc(path="policy.md", body="환불 정책 본문"),)))
         presence = InMemoryPresenceTracker()
-        presence.observe_disconnect(card.agent_id, at=_T0)  # 담당자 워커 연결 끊김
+        # 프레즌스는 owner(담당자) 키로 기록된다(크로스머신 시연 실결함 4호 정정).
+        presence.observe_disconnect(card.owner, at=_T0)  # 담당자 워커 연결 끊김
 
-        assert presence.status(card.agent_id) == "offline"
+        assert presence.status(card.owner) == "offline"
 
         transport = _RecordingTransport()
         # okf_root=None → 디스크 경로 완전 차단(owner PC 부재 시뮬레이션).
@@ -285,8 +286,9 @@ class TestOfflineOwnerStillAnswers:
         전달되는 배선만 결정론으로 확인한다.
         """
         presence = InMemoryPresenceTracker()
-        presence.observe_disconnect(card.agent_id, at=_T0)
-        status = presence.status(card.agent_id)
+        # 프레즌스는 owner(담당자) 키로 기록된다(크로스머신 시연 실결함 4호 정정).
+        presence.observe_disconnect(card.owner, at=_T0)
+        status = presence.status(card.owner)
 
         mode, needs_correction_review = resolve_mode_with_presence(
             requires_approval=False,

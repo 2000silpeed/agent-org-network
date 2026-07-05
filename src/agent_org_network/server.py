@@ -442,7 +442,24 @@ def create_central_app(
 
     _central_runtime = select_runtime(DEMO_OKF_ROOT, knowledge_store=_knowledge_store)
 
+    # 큐 타임아웃 env 시임(AON_QUEUE_TIMEOUT_SECONDS·기본 120초 무변경) — 2026-07-05
+    # 크로스머신 시연이 잡은 운영 결함: "온라인=사전 검토"(ADR 0033 결정 5)로 초안 보류가
+    # 기본이 되자, 사람 검토가 120초를 넘기면 티켓이 만료·에스컬레이션되고 늦은 검토 답이
+    # 멱등 무시된다. 배포 환경이 검토 호흡에 맞게 늘릴 수 있게 시임만 연다(HITL 보류 중
+    # 타임아웃 일시정지 같은 도메인 해법은 별도 백로그 — tasks 참조).
+    _queue_timeout_env = os.environ.get("AON_QUEUE_TIMEOUT_SECONDS", "").strip()
+    _queue = None
+    if _queue_timeout_env:
+        from datetime import timedelta
+
+        from agent_org_network.dispatch import InMemoryWorkQueueDispatcher
+
+        _queue = InMemoryWorkQueueDispatcher(
+            timeout=timedelta(seconds=int(_queue_timeout_env))
+        )
+
     dispatcher = WebSocketDispatcher(
+        queue=_queue,
         staleness_threshold=staleness_threshold,
         review_store=review_store,
         token_store=_resolved_token_store,

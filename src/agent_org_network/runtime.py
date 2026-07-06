@@ -30,7 +30,13 @@ class Answer:
 
 
 class AgentRuntime(Protocol):
-    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer: ...
+    def answer(
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> Answer: ...
 
 
 # 스트리밍 답 한 토막(ADR 0031 결정 1·CONTEXT AnswerChunk 절). `StreamingRuntime.answer_stream`이
@@ -56,7 +62,11 @@ class StreamingRuntime(Protocol):
     """
 
     def answer_stream(
-        self, question: str, card: AgentCard, context: str | None = None
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
     ) -> Iterator[AnswerChunk]: ...
 
 
@@ -101,17 +111,25 @@ class StreamingClaudeRunner(Protocol):
 
 
 class StubRuntime:
-    """결정론 AgentRuntime stub — canned 답·관측 seam(last_context).
+    """결정론 AgentRuntime stub — canned 답·관측 seam(last_context·last_grounding).
 
-    context를 받되 답에 싣지 않는다(canned 답 결정론 보존). 테스트가
-    "맥락이 런타임까지 닿았다"를 last_context 속성으로 단언할 수 있다.
+    context·grounding을 받되 답에 싣지 않는다(canned 답 결정론 보존). 테스트가
+    "맥락/접지가 런타임까지 닿았다"를 last_context/last_grounding 속성으로 단언할 수 있다.
     """
 
     def __init__(self) -> None:
         self.last_context: str | None = None
+        self.last_grounding: str | None = None
 
-    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
+    def answer(
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> Answer:
         self.last_context = context
+        self.last_grounding = grounding
         return Answer(
             text=f"[{card.agent_id}] {card.summary}",
             sources=tuple(card.knowledge_sources),
@@ -132,16 +150,29 @@ class StubStreamingRuntime:
     def __init__(self, deltas: tuple[str, ...] | None = None) -> None:
         self._deltas: tuple[str, ...] = deltas if deltas is not None else self._DEFAULT_DELTAS
         self.last_context: str | None = None
+        self.last_grounding: str | None = None
 
     def answer_stream(
-        self, question: str, card: AgentCard, context: str | None = None
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
     ) -> Iterator[AnswerChunk]:
         self.last_context = context
+        self.last_grounding = grounding
         for delta in self._deltas:
             yield AnswerChunk(text_delta=delta)
 
-    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
+    def answer(
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> Answer:
         self.last_context = context
+        self.last_grounding = grounding
         return Answer(
             text="".join(self._deltas),
             sources=tuple(card.knowledge_sources),
@@ -482,9 +513,17 @@ class ClaudeCodeRuntime:
         candidate = self._okf_root / card.agent_id
         return candidate if candidate.is_dir() else None
 
-    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
+    def answer(
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> Answer:
         # 노출 불변식 격리(본 작업): 페르소나·규칙은 system으로, 질문은 user로 분리해
         # `--system-prompt`(+러너 내 `--setting-sources ""`)로 dev 지침·CLAUDE.md 누출을 차단.
+        # grounding(ADR 0037): 이번 증분에선 받되 무시한다 — ClaudeCodeRuntime의 접지는
+        # cwd(owner OKF 번들)로 이뤄지고, 다중 접지 문자열 소비 배선은 mcp-runtime 슬라이스 D.
         user_prompt = self.build_user(question, card)
         system_prompt = self.build_system(card)
         sources = tuple(card.knowledge_sources)
@@ -560,7 +599,11 @@ class ClaudeCodeRuntime:
         return Answer(text=text, sources=sources, mode="full")
 
     def answer_stream(
-        self, question: str, card: AgentCard, context: str | None = None
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
     ) -> Iterator[AnswerChunk]:
         """`claude -p`를 스트리밍으로 돌려 텍스트 델타를 `AnswerChunk`로 흘린다(ADR 0031 결정 1·5).
 

@@ -348,8 +348,14 @@ class ProviderApiRuntime:
         self.last_knowledge_stale = stale
         return okf
 
-    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
-        okf = self._resolve_okf(card.agent_id)
+    def answer(
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> Answer:
+        okf = grounding if grounding is not None else self._resolve_okf(card.agent_id)
         request = build_provider_request(question, card, context=context, model=self._model, okf=okf)
 
         # transport 호출 + 스트림 소진을 한 시도 단위로 재시도한다 — assemble_stream이 청크를
@@ -363,7 +369,11 @@ class ProviderApiRuntime:
         return map_response_to_answer(text, card)
 
     def answer_stream(
-        self, question: str, card: AgentCard, context: str | None = None
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
     ) -> Iterator[AnswerChunk]:
         """`answer`의 스트리밍 형제 — 청크를 *모으지 않고* `AnswerChunk` 델타로 흘린다 (ADR 0031).
 
@@ -379,7 +389,7 @@ class ProviderApiRuntime:
         dispatch_stream이 소비 중 예외로 처리)를 그대로 탄다. 시작 전 실패(429/5xx/네트워크)만
         `run_with_retry`로 잡아 지수 백오프 재시도하고, 401/403은 `ProviderAuthError`로 승격한다.
         """
-        okf = self._resolve_okf(card.agent_id)
+        okf = grounding if grounding is not None else self._resolve_okf(card.agent_id)
         request = build_provider_request(question, card, context=context, model=self._model, okf=okf)
 
         # 스트림 시작 = transport 호출 + 첫 청크 pull. 이 지점까지의 실패만 재시도한다(부분 출력
@@ -482,5 +492,11 @@ class GeminiApiRuntime:
     ClaudeApiRuntime·CodexApiRuntime 입증 후 같은 포트·다른 transport로 추가.
     """
 
-    def answer(self, question: str, card: AgentCard, context: str | None = None) -> Answer:
+    def answer(
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> Answer:
         raise NotImplementedError("GeminiApiRuntime은 후속 공급자 슬라이스(T9.6+)에서 구현한다.")

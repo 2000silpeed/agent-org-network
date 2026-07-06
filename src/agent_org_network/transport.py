@@ -526,13 +526,24 @@ class WebSocketDispatcher:
 
     # ── 중앙측(질문 측): 내부 큐에 위임 ──────────────────────────────────────
 
-    def dispatch(self, question: str, card: "AgentCard", context: str | None = None) -> WorkTicket:
+    def dispatch(
+        self,
+        question: str,
+        card: "AgentCard",
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> WorkTicket:
         """작업을 큐에 적재하고, 그 owner 워커가 연결돼 있으면 즉시 push한다.
 
         큐 적재는 합성한 `_queue.dispatch`에 위임(도메인). 연결된 워커가 있으면 claim해
         PushWork를 send 콜백으로 내보낸다. 미연결이면 큐에 대기(기존 AwaitingWorker).
         context는 `_queue.dispatch(context=)`로 전파된다(ADR 0027 결정 13·T9.7 S1 — WS
         프레임 맥락 전파 실체화. 결정 8의 "인자 흡수(미전파)"를 이 슬라이스가 대체한다).
+
+        grounding(ADR 0037 결정 3): 이번 슬라이스는 시그니처 정합만 — WS 프레임에는
+        안 싣는다(실 KnowledgeStore 다중 조회·크로스머신 배선은 mcp-runtime 슬라이스 D).
+        오프라인 폴백 경로(`fallback_runtime`)는 중앙이 직접 답을 생성하므로 grounding을
+        그대로 전달한다.
 
         오프라인 폴백(Phase 12 마지막 조합 지점): `_push_pending` 뒤에도 이 ticket이 여전히
         `queued`면 담당 워커가 미연결(또는 backup 거부로 보낼 곳 없음)이라 push되지 못한
@@ -544,11 +555,15 @@ class WebSocketDispatcher:
         """
         ticket = self._queue.dispatch(question, card, context=context)
         self._push_pending(card.owner)
-        self._maybe_answer_with_fallback(ticket, card, context)
+        self._maybe_answer_with_fallback(ticket, card, context, grounding)
         return ticket
 
     def _maybe_answer_with_fallback(
-        self, ticket: WorkTicket, card: "AgentCard", context: str | None
+        self,
+        ticket: WorkTicket,
+        card: "AgentCard",
+        context: str | None,
+        grounding: str | None = None,
     ) -> None:
         """담당 워커에 push 못 한 작업을 중앙 폴백 런타임으로 답한다(오프라인 폴백 합류점).
 
@@ -570,7 +585,9 @@ class WebSocketDispatcher:
         if self._queue.status_of(ticket.ticket_id) != "queued":
             # 워커로 push됨(claimed) — 기존 회신 경로가 답을 낸다(폴백 미발동).
             return
-        answer = self._fallback_runtime.answer(ticket.question, card, context=context)
+        answer = self._fallback_runtime.answer(
+            ticket.question, card, context=context, grounding=grounding
+        )
         self._queue.submit(ticket.ticket_id, answer)
 
     def poll(self, ticket: WorkTicket) -> DispatchOutcome:

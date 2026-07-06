@@ -6,6 +6,8 @@
 
 > **정식 승격 (2026-07-06)**: 이 문서의 종합 판정(§9)이 정식 ADR로 승격됐다 — [**ADR 0036 — 지식 계층 전략: TrustGraph/EKOS 미채택·이중 표현 원칙·북극성**](adr/0036-knowledge-layer-strategy-dual-representation-and-north-star.md). 이 문서는 그 ADR의 근거 본체다(결정 5건의 실측·스파이크 실증). 되돌리기 어려운 전략 방향이라 사용자 명시 승인으로 박음.
 
+> **첫 액션 shape 확정 (2026-07-06)**: ADR 0036 결정 5의 첫 코드 액션(다중 에이전트 접지·§3·§9-3의 D1→D2 정조준)이 [**ADR 0037 — Co-grounding(다중 접지): Authority primary 단일 귀속·포트 최소 진화·답+합의 병행**](adr/0037-co-grounding-multi-agent-knowledge-answer-and-consensus-parallel.md)로 도메인 shape가 확정됐다(`GroundingSet`·`GroundingSelector`·`grounding` 옵셔널 인자·Contested 답+합의 병행). 구현은 후속(tdd·mcp-runtime).
+
 ## 최종 결정 한눈에 (§9 상세)
 
 - **AON 지금 = `assemble_context`(T9.1b) 완성** — 측정된 통증(경계 넘는 관계형 답변)의 정답. 외부 아님.

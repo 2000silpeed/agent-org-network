@@ -58,7 +58,13 @@ class FakeDispatcher:
         self._tickets: dict[str, WorkTicket] = {}
         self._answers: dict[str, Answer] = {}
 
-    def dispatch(self, question: str, card: AgentCard, context: str | None = None) -> WorkTicket:
+    def dispatch(
+        self,
+        question: str,
+        card: AgentCard,
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> WorkTicket:
         ticket = WorkTicket(
             owner_id=card.owner,
             agent_id=card.agent_id,

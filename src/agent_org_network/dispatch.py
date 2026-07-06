@@ -187,7 +187,13 @@ class RuntimeDispatcher(Protocol):
     포트 패턴은 ConflictCaseStore·PrecedentStore와 동일(Protocol + InMemory).
     """
 
-    def dispatch(self, question: str, card: "AgentCard", context: str | None = None) -> WorkTicket: ...
+    def dispatch(
+        self,
+        question: str,
+        card: "AgentCard",
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> WorkTicket: ...
 
     def poll(self, ticket: WorkTicket) -> DispatchOutcome: ...
 
@@ -255,7 +261,16 @@ class InMemoryWorkQueueDispatcher:
         """
         return self._clock()
 
-    def dispatch(self, question: str, card: "AgentCard", context: str | None = None) -> WorkTicket:
+    def dispatch(
+        self,
+        question: str,
+        card: "AgentCard",
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> WorkTicket:
+        # grounding(ADR 0037): 이번 슬라이스는 시그니처 흡수만 — WorkTicket에 실 배선은
+        # mcp-runtime 슬라이스 D(실 KnowledgeStore 다중 조회·크로스머신 조립) 영역이다.
+        del grounding
         ticket = WorkTicket(
             owner_id=card.owner,
             agent_id=card.agent_id,
@@ -484,16 +499,25 @@ class LocalRuntimeDispatcher:
         self._answers: dict[str, "Answer"] = {}
         self.history: list[WorkTicket] = []
 
-    def dispatch(self, question: str, card: "AgentCard", context: str | None = None) -> WorkTicket:
+    def dispatch(
+        self,
+        question: str,
+        card: "AgentCard",
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> WorkTicket:
         """그 자리에서 로컬 런타임으로 답을 만들고, 회신 완료 상태의 추적표를 돌려준다.
 
         디제너레이트 케이스(워커=중앙 한몸): 큐 길이 0, 미회신/timeout 구조적 불가.
         dispatch 시점에 runtime.answer를 동기 호출해 _answers에 저장, poll은 항상 Delivered.
-        로컬 경로(ADR 0027 결정 7): context를 runtime.answer(context=)로 즉시 전달한다.
+        로컬 경로(ADR 0027 결정 7·ADR 0037 결정 3): context·grounding을
+        runtime.answer(context=, grounding=)로 즉시 전달한다.
         """
         from agent_org_network.runtime import Answer as _Answer  # 순환 import 회피
 
-        answer: _Answer = self._runtime.answer(question, card, context=context)
+        answer: _Answer = self._runtime.answer(
+            question, card, context=context, grounding=grounding
+        )
         ticket = WorkTicket(
             owner_id=card.owner,
             agent_id=card.agent_id,
@@ -549,9 +573,15 @@ class LocalStreamingDispatcher:
         self._answers: dict[str, "Answer"] = {}
         self.history: list[WorkTicket] = []
 
-    def dispatch(self, question: str, card: "AgentCard", context: str | None = None) -> WorkTicket:
+    def dispatch(
+        self,
+        question: str,
+        card: "AgentCard",
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> WorkTicket:
         """블로킹 폴백: 그 자리에서 runtime.answer로 답을 만들고 회신 완료 추적표를 돌려준다."""
-        answer = self._runtime.answer(question, card, context=context)
+        answer = self._runtime.answer(question, card, context=context, grounding=grounding)
         ticket = WorkTicket(
             owner_id=card.owner,
             agent_id=card.agent_id,
@@ -573,7 +603,11 @@ class LocalStreamingDispatcher:
         """로컬 즉답엔 외부 회신이 없다 — no-op."""
 
     def dispatch_stream(
-        self, question: str, card: "AgentCard", context: str | None = None
+        self,
+        question: str,
+        card: "AgentCard",
+        context: str | None = None,
+        grounding: str | None = None,
     ) -> "StreamedAnswer":
         """런타임 능력에 따라 델타를 흘리는 *스트림 핸들*을 돌려준다(완성 `Answer` 확정 포함).
 
@@ -586,7 +620,7 @@ class LocalStreamingDispatcher:
         반환값을 직접 iterate하면 델타가 흐르고, 다 흐른 뒤 `.completed`가 완성 답을 든다.
         폴백 런타임은 `answer`를 *정확히 1회만* 호출해 그 답을 완성 답으로 보관한다(이중 호출 0).
         """
-        return StreamedAnswer(self._runtime, question, card, context)
+        return StreamedAnswer(self._runtime, question, card, context, grounding)
 
 
 class StreamedAnswer:
@@ -604,11 +638,13 @@ class StreamedAnswer:
         question: str,
         card: "AgentCard",
         context: str | None,
+        grounding: str | None = None,
     ) -> None:
         self._runtime = runtime
         self._question = question
         self._card = card
         self._context = context
+        self._grounding = grounding
         self._completed: "Answer | None" = None
 
     def __iter__(self) -> Iterator["AnswerChunk"]:
@@ -621,7 +657,7 @@ class StreamedAnswer:
         if isinstance(self._runtime, StreamingRuntime):
             deltas: list[_AnswerChunk] = []
             for chunk in self._runtime.answer_stream(
-                self._question, self._card, context=self._context
+                self._question, self._card, context=self._context, grounding=self._grounding
             ):
                 deltas.append(chunk)
                 yield chunk
@@ -631,7 +667,9 @@ class StreamedAnswer:
                 mode="full",
             )
         else:
-            answer = self._runtime.answer(self._question, self._card, context=self._context)
+            answer = self._runtime.answer(
+                self._question, self._card, context=self._context, grounding=self._grounding
+            )
             self._completed = answer
             yield _AnswerChunk(text_delta=answer.text)
 
@@ -678,10 +716,16 @@ class DispatchingRuntime:
         self._dispatcher = dispatcher
         self._worker = worker
 
-    def answer(self, question: str, card: "AgentCard", context: str | None = None) -> "Answer":
+    def answer(
+        self,
+        question: str,
+        card: "AgentCard",
+        context: str | None = None,
+        grounding: str | None = None,
+    ) -> "Answer":
         from agent_org_network.runtime import Answer as _Answer
 
-        ticket = self._dispatcher.dispatch(question, card, context=context)
+        ticket = self._dispatcher.dispatch(question, card, context=context, grounding=grounding)
 
         if self._worker is not None:
             self._worker(self._dispatcher)

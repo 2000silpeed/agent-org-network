@@ -780,3 +780,20 @@ PRD §4 페르소나 면(Ask·Author·Inbox·Console)을 **별 프론트엔드 `
 
 > **Phase 13 완결(SC0~SC3, 2026-07-05).** 담당자 스코어카드 관찰 대시보드가 게이트 내에서 닫혔다 — 지표 정의(SC0·ADR 0035)→도메인 코어(SC1)→프레즌스 이력(SC2)→화면(SC3) 전 슬라이스 green. 라우팅·실행 계층 무변경(읽기 파생), Goodhart 방지(정정=가점·bad만 벌점)·자기 추세 중심(순위표 없음)·관찰 도구(인사 연동 범위 밖)가 코드·UI 문구로 고정됐다. 게이트 밖 잔여: 실 브라우저 렌더 수동 확인·프레즌스 이력 SQLite 영속(백로그)·크로스머신 실 시연.
 - [ ] (백로그·리뷰 N-2) `web/admin.html` 스코어카드 렌더를 owner-monitor의 textContent 조립로 통일 — 현재 innerHTML은 서버 계산 숫자·정적 span뿐이라 실질 안전(2026-07-05 리뷰 승인·비차단)
+
+### 지식 계층 스케일 — TrustGraph 평가·retrieval 포트 (2026-07-06 분석)
+
+> **방향 확정 = [ADR 0036](adr/0036-knowledge-layer-strategy-dual-representation-and-north-star.md)** (지식 계층 전략·이중 표현·북극성·2026-07-06 정식 승격). 아래 백로그는 그 ADR의 결정을 태스크로 편다.
+
+종합 분석: [`docs/trustgraph-eval-2026-07-06.md`](trustgraph-eval-2026-07-06.md) (rev2·Opus 실측 확정·ADR 0036 근거 본체). 판정: **TrustGraph 지금 미채택 + 사이드카도 최후.** 근거 실측: (1) 라우팅 병목은 지식 깊이가 아님(S11 커버리지 기각). (2) 답변 통증은 컨텍스트 초과가 아니라(30배 여유) "라우팅×단일 에이전트 접지" 경계 — 정답은 우리 미구현 `assemble_context`. (3) TrustGraph 경량 사이드카 불가(Pulsar 하드 의존·풀스택), 단 GraphRAG 알고리즘(5단계)은 자체 재구현이 사이드카보다 우세. **에스컬레이션 사다리**로 관리(각 단계는 앞이 부족함이 실측될 때만):
+
+- [ ] (백로그·**우선·첫 액션**) **`assemble_context`(T9.1b) 완성 — 다중 에이전트 접지** — 현재 `answer()`는 라우팅된 단일 에이전트 본문만 주입(`provider_runtime.py:351`), `assemble_context`는 미구현(항상 None). 관계형/contested 질문(근거가 두 도메인에 갈림·골든셋 "환불불가↔청약철회" 등 ambiguous 18·contested 5)이 구조적으로 절반만 답됨. 인접 에이전트 문서도 함께 접지해 통증 정조준. 노출 불변식·owner 격리 유지 확인 필요(domain-architect·tdd-engineer).
+- [ ] (백로그·②·30배 뒤) **`KnowledgeRetriever` 포트 + 청크 retrieval** — 단일 에이전트 지식이 컨텍스트 윈도를 위협할 때(현재 30배 여유·지금 불요). `WholeBundleRetriever`(현행 포트화·리팩터만)→`ChunkEmbeddingRetriever`(fastembed 재사용). 이 포트가 ③④의 공통 접목점.
+- [ ] (백로그·③·관계 추론 복잡화 시) **자체 경량 GraphRAG** — 나이브 다중 접지(`assemble_context`)가 부족해지면. TrustGraph 5단계 알고리즘 차용(개념분해→벡터 seed→hop-and-filter 2-hop→합성·파라미터 소스 노출), 우리 포트 뒤 자체 구현(cross-encoder는 LLM 스코어링 대체 가능·~2~4주). **별도 레포 아님 — 우리 retriever 어댑터.**
+- [ ] (조건부·④·최후) **TrustGraph 사이드카(HTTP)** — `POST /api/v1/flow/{flow}/graph-rag` 블랙박스. 자체 GraphRAG 구축이 그들 풀스택 운영보다 비쌀 때만(우리 규모엔 비현실적). 리스크: 풀스택 운영·2인 버스팩터·breaking 추종.
+- [ ] (백로그·라우팅 별개 트랙) **KnowledgeIndex 관계 확장(계층 가지치기)** — 개념 100배 시 압축 cosine 필드에서 절대-τ 게이트가 단일 승자 못 고름(S8 구조적 한계). 팀→도메인→에이전트 계층으로 후보 가지치기. **EKOS "닫힌 상위 온톨로지 + 열린 subtype" 패턴 차용**(인프라 0). 대규모 라우팅 신호 관측 시 착수.
+
+**EKOS 패턴 흡수 (사용자 자매 프로젝트 `~/ai-projects/Enterprise-knowledge-Operating-System`·검증된 사상·as-is 통합은 ❌[SAP 타입 소스 전제·우리 산문 안 맞음]):**
+- [ ] (백로그) **Answer Record에 evidence+confidence 강화** — EKOS "모든 사실 ≥1 evidence + confidence"를 우리 출처·신뢰(책임)에 매핑. 답변 origin에 근거 종류·신뢰도 첨부.
+- [ ] (백로그) **reeval을 bitemporal 방향 상향** — EKOS valid_from/valid_to를 참고해 Correction Event·staleness(ADR 0019)를 2축 시간(유효시간 vs 기록시간)으로. stale 사실 감지 원리화.
+- [ ] (전략 옵션·북극성·**기술 실현성 검증됨·빌드는 연기**) **OKF 저작을 타입화 evidence-backed 사실로 진화** — 지식 규모·관계형 답변 통증이 커지면, TrustGraph도 EKOS-import도 아니라 OKF 저작면(ADR 0029/0030)을 확장해 저작 단계에서 결정론 그래프가 나오게. **디리스크 스파이크 2라운드 완료(2026-07-06·실 claude)**: 산문→타입화 사실+관계+span근거 추출이 접지 100%·장문 무열화·재현 안정·어휘 정제 가능, 그리고 **그래프 엣지(COMPLEMENTS)가 "절반 답→완전한 답"을 실 답변으로 실증**(D1 단일 접지 vs D2 이중 접지). "될까?"는 풀렸고 남은 미지는 제품/스케일(실 산문 지저분함·문서 쌍 후보생성·검토 UX·비용)—실 빌드라야 답함. 트리거 시 첫 설계 질문=**문서 쌍 후보 생성**(contested 후보집합/임베딩 이웃). 단기 액션(assemble_context)이 COMPLEMENTS로 구동되는 다리 입증. 분석: [`docs/trustgraph-eval-2026-07-06.md`](trustgraph-eval-2026-07-06.md) §9. 방향 결정: [ADR 0036](adr/0036-knowledge-layer-strategy-dual-representation-and-north-star.md)(이중 표현 원칙·북극성·에스컬레이션 사다리).

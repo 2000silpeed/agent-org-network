@@ -741,11 +741,12 @@
 <span class="k">curl</span> -X POST :8099/cases/&lt;case_id&gt;/concur -d <span class="s">'{"on_agent":"cs_ops"}'</span>
 <span class="c"># finance_lead 는 cs_ops로 양보(concede)하되, 자기 관점은 계속 필요하다고 선언</span>
 <span class="k">curl</span> -X POST :8099/cases/&lt;case_id&gt;/concur -d <span class="s">'{"on_agent":"cs_ops","stance":"keep_as_complement"}'</span></pre>
-      <div class="note">양보 시 <code>stance</code>는 진 Owner가 정한다 — 기본 <code>withdraw</code>(완전 이관)면 엣지 없음, <code>keep_as_complement</code>면 상보 관계를 남긴다(오등록엔 잘못된 엣지 안 생기게 <b>양성 신호를 요구</b>·ADR 0038 결정 3).</div></div>
-    <div class="step"><div class="lbl">③ 결과 — 합의가 두 대칭 산물을 남긴다 (판례 + 상보 엣지)</div>
-      <div class="result"><span class="arrow">→</span> <span class="o">Agreed</span> → <code>Resolution(보상→cs_ops)</code>가 <b>Precedent</b>(라우팅 기억)로 기록. 케이스 closed. <b>동시에</b> finance_lead의 <code>keep_as_complement</code>가 <code>ComplementEdge(cs_ops→finance_ops)</code>를 <b>접지 기억</b>으로 남긴다.
-        <br><span class="arrow">→</span> 다음 "보상" 질문은 이제 <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>(cs_ops·판례 학습)지만, 그 엣지가 finance_ops 지식을 다시 끌어와 <b>여전히 완전한 답</b> — 합의 후에도 반쪽으로 돌아가지 않는다.</div></div>
-    <div class="proves"><span class="lead">증명</span> — 걸친 질문도 반쪽이 아니라 양쪽 지식으로 완전하게 답하되, 담당 정리는 서두르지 않는다. 답은 즉시 나가고, 당사자들이 1인칭으로 합의하면 그 합의가 <b>두 대칭 산물</b>을 남긴다 — <b>Precedent : 라우팅 :: ComplementEdge : 접지</b>. 판례가 "다음엔 누가 답하나"를, 엣지가 "그 front를 누가 보완하나"를 학습해, 담당이 정해져 <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>가 된 뒤에도 완전한 답이 유지된다(지식은 <b>전이하지 않고 관계만</b> 남긴다 — owner 소유 불변). 답(<code>AnswerRecord</code>)·다툼(<code>ConflictCase</code>)·판례(<code>Precedent</code>)·엣지(<code>ComplementEdge</code>)는 서로 다른 축이라 겹치지 않는다 — 합의는 <b>전이</b>, 기록은 <b>append-only</b>(불변식 ④). 답을 낸 책임은 <b>한 담당(primary)</b>에 남고 상대 지식은 출처로만 붙는다(권한은 중앙만 선언·불변식 ③).</div>
+      <div class="note">양보하는 담당자가 정한다 — 그냥 넘기고 빠지거나(기본), <b>"내 지식은 앞으로도 이 질문에 필요하니 계속 참고해달라"</b>고 남기거나(<code>keep_as_complement</code>). 잘못 끼어든 경우엔 아무 표시 안 하면 되니, 계속 참고 연결은 담당자가 <b>직접 남길 때만</b> 생긴다.</div></div>
+    <div class="step"><div class="lbl">③ 결과 — 합의하면 두 가지가 정해진다</div>
+      <div class="result"><span class="arrow">→</span> <b>(1)</b> 앞으로 "보상" 질문은 cs_ops가 답한다(판례로 학습·케이스 종료).
+        <br><span class="arrow">→</span> <b>(2)</b> finance_lead가 "계속 참고"를 남겼으니, cs_ops가 보상 답을 만들 때 <b>finance_ops 지식도 같이 본다</b>는 연결이 생긴다.
+        <br><span class="arrow">→</span> 그래서 다음 보상 질문은 cs_ops로 가지만(<span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>), 그 연결 덕에 finance_ops 지식까지 끌어와 <b>여전히 완전하게 답한다</b> — 합의했다고 반쪽 답으로 돌아가지 않는다.</div></div>
+    <div class="proves"><span class="lead">증명</span> — 걸친 질문도 반쪽이 아니라 양쪽 지식으로 완전하게 답하되, 담당 정리는 서두르지 않는다. 핵심은 이것 — 합의가 <b>담당만 정하고 끝나면</b> 다음부터 한 사람 지식만 써서 반쪽 답으로 돌아간다. 그래서 합의는 "누가 답하나"와 함께 <b>"누구 지식을 계속 참고하나"</b>도 같이 남긴다. 지식을 옮기는 게 아니라 — <b>각자 자기 지식은 그대로 두고 참고 연결만</b> 남기는 것이라, 담당자 소유는 흔들리지 않는다. 답을 낸 책임은 <b>한 담당에게만</b> 있고(권한은 중앙만 정함·불변식 ③), 답·다툼·기록·연결은 서로 다른 곳에 남아 섞이지 않는다(불변식 ④).</div>
   </section>
 
   <!-- SCENE 8 — reeval 인덱스-수용 훅 (신규 C) -->

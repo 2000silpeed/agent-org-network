@@ -14,7 +14,8 @@ from typing import Protocol
 from pydantic import BaseModel, model_validator
 
 from agent_org_network.agent_card import AgentCard
-from agent_org_network.decision import Contested, RoutingDecision
+from agent_org_network.complement import EdgeStore
+from agent_org_network.decision import Contested, Routed, RoutingDecision
 
 # tie-break 정책 seam(ADR 0037 결정 5) — 동률 후보에서 결정론으로 primary 하나를
 # 고른다. stage-2 실 신뢰도는 게이트 밖이므로 여기선 *주입 가능한 정책*으로만 둔다.
@@ -83,6 +84,68 @@ class ContestedGroundingSelector:
         primary = self._tie_break(candidates)
         supporting = tuple(card for card in candidates if card.agent_id != primary.agent_id)
         return GroundingSet(primary=primary, supporting=supporting)
+
+
+class EdgeGroundingSelector:
+    """합의-소싱 `ComplementEdge` 이웃을 `Routed`에서도 접지하는 selector(ADR 0038 결정 4).
+
+    `decision.intent`+`decision.primary.agent_id`로 `EdgeStore.neighbors`를 조회해
+    이웃 agent_id들을 얻고 `card_lookup`(보통 Registry.get)으로 카드를 해소한다.
+
+    **선택시점 재검증(생애주기 소멸 규칙, ADR 0038 결정 5)**: `decision.intent in
+    card.domains`인 이웃만 supporting에 넣는다 — 카드가 사라졌거나(card_lookup이
+    None) 그 사이 domain을 카드에서 뺐으면 자연히 skip된다(watcher·삭제 API 불요,
+    publish 수용 시 `concept.domain ∈ card.domains` 재검증과 동형).
+
+    `Routed`가 아니거나 유효 이웃이 0이면 `None`(단일 접지 폴백 — 회귀 0).
+    `answered_by`는 여전히 primary 단일(Authority 정합) — supporting은 접지
+    출처일 뿐 authority 0.
+    """
+
+    def __init__(
+        self,
+        edge_store: EdgeStore,
+        card_lookup: Callable[[str], AgentCard | None],
+    ) -> None:
+        self._edge_store = edge_store
+        self._card_lookup = card_lookup
+
+    def select(self, decision: RoutingDecision) -> GroundingSet | None:
+        if not isinstance(decision, Routed):
+            return None
+        neighbor_ids = self._edge_store.neighbors(decision.intent, decision.primary.agent_id)
+        supporting: list[AgentCard] = []
+        for agent_id in neighbor_ids:
+            card = self._card_lookup(agent_id)
+            if card is None:
+                continue
+            if decision.intent not in card.domains:
+                continue
+            supporting.append(card)
+        if not supporting:
+            return None
+        return GroundingSet(primary=decision.primary, supporting=tuple(supporting))
+
+
+class ChainGroundingSelector:
+    """여러 `GroundingSelector`를 순서대로 시도하는 합성 selector(ADR 0038 결정 4).
+
+    각 selector를 튜플 순서대로 시도해 첫 non-None `GroundingSet`을 돌린다. 전부
+    `None`이면 `None`. `AskOrg`의 **단일** `grounding_selector` seam(ADR 0037 결정 4)을
+    보존하며 `EdgeGroundingSelector`(Routed 전용)·`ContestedGroundingSelector`
+    (Contested 전용)처럼 처분이 배타인 selector들을 합성한다 — 순서 무관이되 명시
+    순서로 결정론을 보장한다. 자신도 `GroundingSelector`를 만족한다(구조적 타이핑).
+    """
+
+    def __init__(self, selectors: "tuple[GroundingSelector, ...]") -> None:
+        self._selectors = selectors
+
+    def select(self, decision: RoutingDecision) -> GroundingSet | None:
+        for selector in self._selectors:
+            result = selector.select(decision)
+            if result is not None:
+                return result
+        return None
 
 
 def assemble_grounding_text(

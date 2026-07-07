@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal, Protocol
 
+from agent_org_network.complement import ComplementEdge, EdgeStore
+
 Clock = Callable[[], datetime]
 
 
@@ -235,6 +237,19 @@ class ConflictCase:
 # 후순위; 지금 필요한 건 "전원이 한 명을 가리켰나"뿐.)
 
 
+# concede stance(ADR 0038 결정 3) — 진 후보 owner가 자기 지식의 상보 관련성을
+# 자기보고하는 신호. "withdraw"(기본·엣지 없음)와 "keep_as_complement"(양성 신호·
+# ComplementEdge 방출) 두 값. 개념상 concede 표(자기 카드가 아닌 남을 지목한 표)를
+# 겨냥하지만, **코드는 claim/concede를 구분해 가드하지 않는다** — `_emit_complement_
+# edges`는 Agreed 불변식(전원이 같은 agent_id를 지목)에 기대어 *진 후보 카드마다*
+# 그 카드 owner가 이 케이스에 던진 단일 표의 stance를 그대로 적용한다(owner가 이
+# 다툼에서 primary 카드와 진 카드를 동시에 소유해도 같은 규칙 — 그 owner의 단일
+# 표가 두 카드 관계를 스스로 선언하는 셈이라 무해, `test_owner가_같은_다툼에서_
+# primary_카드와_진_카드를_모두_소유하면_stance로_엣지방출된다`가 이 경계를 고정).
+# 기본값이 withdraw라 기존 생성처는 100% 무영향(회귀 0).
+ConcessionStance = Literal["withdraw", "keep_as_complement"]
+
+
 @dataclass(frozen=True)
 class ConcurOnPrimary:
     """후보 Owner 한 명의 1인칭 합의 표.
@@ -242,11 +257,22 @@ class ConcurOnPrimary:
     `by_owner`(표를 던진 Owner User.id) 가 `on_agent`(primary로 지목한 카드의
     agent_id) 를 담당으로 지목한다. rationale은 합의 근거(선택).
     by_owner는 그 케이스의 후보 Owner여야 유효(해소 서비스가 강제).
+
+    `stance`(ADR 0038 결정 3): 진 후보 owner가 자기 카드의 상보 관련성을
+    자기보고하는 신호. 개념상 concede 표(자기 카드가 아닌 다른 primary를 지목한
+    표)를 겨냥하지만, **코드가 claim/concede를 구분해 가드하지는 않는다** —
+    `ConsensusService._emit_complement_edges`가 Agreed 성립 후 *진 후보 카드마다*
+    그 카드 owner가 이 케이스에 던진 단일 표의 stance를 그대로 읽는다(owner가
+    이 다툼에서 primary 카드와 진 카드를 동시에 소유해도 동일 규칙). 기본
+    `"withdraw"` = 상보 엣지 없음(안전 기본). `"keep_as_complement"` = "내 관점은
+    계속 필요"라는 양성 선언 — 이때만 `ComplementEdge`가 방출된다(Option A: 진
+    owner 단독 선언, 이긴 front 수락 불요).
     """
 
     by_owner: str
     on_agent: str
     rationale: str = ""
+    stance: ConcessionStance = "withdraw"
 
 
 class ConflictCaseStore(Protocol):
@@ -338,12 +364,23 @@ class ConsensusService:
 
     Authority는 중앙(표→Resolution→Precedent). 카드 자기보고 금지.
     표 누적은 서비스 내부 상태(_votes)에 둔다 — ConflictCase는 단순 유지.
+
+    `edge_store`(ADR 0038 결정 2, 옵셔널 주입): 주입되면 `Agreed` 분기에서
+    `Precedent`(라우팅 학습) 곁에 `ComplementEdge`(접지 학습)도 방출한다(진 후보
+    owner가 `stance="keep_as_complement"`로 명시 선언한 경우만 — 결정 3). 기본
+    `None`이면 방출 로직 자체가 안 돈다(회귀 0 — 기존 생성처·테스트 100% 무영향).
     """
 
-    def __init__(self, case_store: ConflictCaseStore, precedents: PrecedentStore) -> None:
+    def __init__(
+        self,
+        case_store: ConflictCaseStore,
+        precedents: PrecedentStore,
+        edge_store: EdgeStore | None = None,
+    ) -> None:
         self._case_store = case_store
         self._precedents = precedents
-        self._votes: dict[str, dict[str, str]] = {}
+        self._edge_store = edge_store
+        self._votes: dict[str, dict[str, ConcurOnPrimary]] = {}
 
     def concur(self, case_id: str, vote: ConcurOnPrimary) -> ConsensusOutcome:
         case = self._case_store.get(case_id)
@@ -354,7 +391,7 @@ class ConsensusService:
 
         if case_id not in self._votes:
             self._votes[case_id] = {}
-        self._votes[case_id][vote.by_owner] = vote.on_agent
+        self._votes[case_id][vote.by_owner] = vote
 
         candidate_owners = tuple(dict.fromkeys(c.owner for c in case.candidates))
         current_votes = self._votes[case_id]
@@ -363,16 +400,53 @@ class ConsensusService:
         if pending:
             return StillOpen(case=case, pending_owners=pending)
 
-        targets = set(current_votes.values())
+        targets = set(v.on_agent for v in current_votes.values())
         if len(targets) > 1:
             return Deadlocked(case=case, reason=f"표 갈림: {targets}")
 
         primary = next(iter(targets))
         rationale = "; ".join(
-            f"{o}→{a}" for o, a in current_votes.items()
+            f"{o}→{v.on_agent}" for o, v in current_votes.items()
         )
         resolution = Resolution(intent=case.intent, primary=primary, rationale=rationale)
         precedent = self._precedents.record(resolution)
         resolved_case = case.resolve(resolution)
         self._case_store.mark_resolved(resolved_case)
+        if self._edge_store is not None:
+            self._emit_complement_edges(case, resolution, current_votes)
         return Agreed(resolution=resolution, precedent=precedent)
+
+    def _emit_complement_edges(
+        self,
+        case: ConflictCase,
+        resolution: Resolution,
+        votes: dict[str, ConcurOnPrimary],
+    ) -> None:
+        """`Agreed` 직후 진 후보 카드마다 그 카드 owner가 던진 표의 stance를 보고
+        상보 엣지를 방출한다(ADR 0038 결정 3 — `precedents.record` 바로 곁의 방출
+        지점).
+
+        primary 카드는 건너뛴다(자기 자신에겐 안 감). **claim/concede를 코드가
+        구분해 가드하지 않는다** — Agreed 전제(전원이 같은 agent_id를 지목)에
+        기대어, 각 진 후보 카드의 owner가 이 케이스에 던진 *단일* 표(`votes[owner]`,
+        Agreed 전제상 반드시 존재)의 `stance`가 `"keep_as_complement"`일 때만
+        `ComplementEdge(primary→supporting)`를 `edge_store`에 record한다. 한 owner가
+        이 다툼에서 primary 카드와 진 카드를 동시에 소유해도 같은 규칙이 적용된다
+        (그 owner의 단일 표가 두 카드 관계를 스스로 선언하는 셈 — 무해·의도된 경계
+        동작, `test_owner가_같은_다툼에서_primary_카드와_진_카드를_모두_소유하면_
+        stance로_엣지방출된다`가 고정). 기본 `"withdraw"`면 방출 안 함.
+        """
+        assert self._edge_store is not None
+        for candidate in case.candidates:
+            if candidate.agent_id == resolution.primary:
+                continue
+            vote = votes.get(candidate.owner)
+            if vote is None or vote.stance != "keep_as_complement":
+                continue
+            self._edge_store.record(
+                ComplementEdge(
+                    intent=case.intent,
+                    primary_id=resolution.primary,
+                    supporting_id=candidate.agent_id,
+                )
+            )

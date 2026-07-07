@@ -346,6 +346,27 @@ _Avoid_: candidates(단독 — Contested의 담당 미정 후보와 혼동·Grou
 `RoutingDecision`을 받아 `GroundingSet | None`을 고르는 정책 포트(주입 seam·`select(decision) -> GroundingSet | None`) — 접지 원천 선택 정책을 하드코딩 안 함. **v0 = `ContestedGroundingSelector`**(`Contested`→candidates 전원·primary는 주입 `tie_break` 정책이 결정론으로 고른 top-1[stage-2 실 신뢰도는 게이트 밖이라 기본값 `first_by_agent_id`(agent_id 사전순)·정책 자체를 주입 seam으로 둠]·`Routed`/`Unowned`→`None`=단일 접지 폴백). **후속 = `EdgeGroundingSelector`**(`Routed`에서도 primary의 COMPLEMENTS 엣지 이웃을 supporting으로 견인·non-contested 관계형·ADR 0036 §9·북극성). 같은 포트라 v0→후속이 이 selector 교체 하나로 끝난다(에스컬레이션 사다리 ①→③ seam·포트 시그니처는 후속 selector가 그래프 스토어를 생성자 주입으로 받아도 그대로 견딤). **슬라이스 A+B(순수 기계장치+포트 인자 스레딩) green(2026-07-06)** — `grounding.py`(`GroundingSet`·`GroundingSelector`·`ContestedGroundingSelector`·`assemble_grounding_text`)와 `answer`/`dispatch` 전 구현체 `grounding: str|None=None` 스레딩 완료. **슬라이스 C(Contested arm 답+합의 병행 실 배선) green(2026-07-06)** — `AskOrg`/`SessionAskOrg`가 `grounding_selector`+`grounding_resolver`(agent_id→접지 본문 텍스트 resolver seam) 둘 다 주입됐을 때만 Contested가 co-grounded `Answered`+`ConflictCase`를 동시 산출한다(하위호환 게이트 — 미주입이면 기존 `Pending`/`PendingEvent` 100% 보존·회귀 0). **`sources` = primary+supporting `knowledge_sources` 병합(합집합·순서 결정론·중복 제거 — 결정 6 충족)**: 접지 본문은 A+B에서 이미 병합되는데 출처 노출이 primary 단일로 새던 간극을 닫음(agent_id·candidate는 여전히 미노출). 실 `KnowledgeStore` 다중 조회·크로스머신 조립·프로덕션 활성 배선은 슬라이스 D(mcp-runtime-engineer)로 남음. (ADR 0037)
 _Avoid_: Router(단독 — 라우팅 결정이 아니라 접지 원천 선택), Matcher(단독 — 후보 매칭은 KnowledgeIndexMatcher·이건 접지 대상 선택)
 
+### 합의-소싱 COMPLEMENTS 엣지 (ADR 0038 — Precedent와 대칭인 두 번째 학습 산물)
+
+**핵심 대칭**: `Precedent` : 라우팅 :: `ComplementEdge` : 접지. co-grounding(ADR 0037)은 Contested일 때만 다중 접지한다 — 사람 합의로 `Precedent`가 쌓이면 다음 질문은 Routed 단독이 돼 다시 반쪽 답으로 회귀한다(측정된 통증의 두 번째 반쪽). 이 엣지가 그 회귀를 막는다. **엣지의 출처가 사람 합의**(이미 후보 2명을 앎)지 LLM 추출이 아니라, ADR 0036이 연기한 무거운 북극성(LLM 산문 추출·문서쌍 후보 생성)을 하나도 짓지 않고 co-grounding 기계장치를 재사용하는 경량 룽이다.
+
+**ComplementEdge (상보 엣지)**:
+합의가 방출하는 frozen 값 객체 — `intent`(관계가 성립하는 라우팅 라벨) · `primary_id`(라우팅된 front) · `supporting_id`(함께 접지할 이웃 카드). **유향**(primary → supporting) — front가 답하고 complement가 접지하는 관계는 한 방향이고, 역방향은 그 intent의 판례가 primary를 잠가 발생하지 않는다. N후보 → 1 primary + (N−1) 잠재 supporting이라 패자 카드당 1엣지(pairwise). model_validator: 자기 접지 거부(`primary_id != supporting_id`)·빈 intent 거부. (ADR 0038 결정 1)
+_Avoid_: `ConceptEdge`(ADR 0028 — from/to가 개념-id인 목차 관계·LLM 소싱·재사용 기각. `COMPLEMENTS`라는 *관계명*은 어휘로 공유하되 *운반체*는 별개), Transfer(카드 *소유권* 재지정 — 엣지는 두 카드의 *지식 관계*(둘 다 owner 유지))
+
+**EdgeStore**:
+`ComplementEdge` 보관·조회 포트 — `PrecedentStore`·`ConflictCaseStore`와 같은 패턴(Protocol + `InMemoryEdgeStore`). `record(edge)`(멱등 — 중복 supporting은 무시) · `neighbors(intent, primary_id) -> tuple[str, ...]`(그 intent에서 primary를 front로 둔 supporting agent_id들·순서 결정론=삽입 순). **전이 ≠ 기록** — 엣지는 미래 접지 결정(`EdgeGroundingSelector`)이 읽는 학습된 관계(도메인 상태)지 절차 로그(AuditLog)가 아니다(`Precedent`와 동렬). **방출 지점**: `ConsensusService.concur`의 `Agreed` 분기(`precedents.record` 바로 곁 — 판례와 엣지가 같은 합의 종결에서 함께 태어난다). `edge_store`는 `ConsensusService`에 **옵셔널 주입**(기본 `None` → 방출 0·회귀 0). (ADR 0038 결정 2)
+
+**ConcurOnPrimary.stance (concede stance — 상보 vs 오등록 급소)**:
+`ConcurOnPrimary`에 추가된 `stance: Literal["withdraw", "keep_as_complement"]` 필드(기본 `"withdraw"`). concede 표(자기 카드가 아닌 남을 지목한 표)에서만 의미 있고 claim 표에선 무시된다. 합의 "보상→cs_ops"는 **(a) 진짜 걸침**("cs_ops가 front지만 finance 관점 계속 필요" → 엣지 방출) 대 **(b) 오등록**("보상은 사실 cs_ops 것·finance가 잘못 주장" → 엣지 방출 안 함, finance가 카드 domain에서 빼야) 두 뜻일 수 있다 — 신호는 **진 후보 owner의 concede stance**(지식 관련성의 판단 주체는 그 지식을 소유한 owner). **기본값 = `withdraw` = 엣지 없음(안전 기본)** — 엣지는 양성 신호를 요구한다(진 owner가 명시적으로 `keep_as_complement`를 선언할 때만 방출). **패자 선언(Option A)** — 진 후보 owner 혼자 "나는 상보로 남는다"를 선언(이긴 front의 수락까지 요구하는 양자 합의 Option B는 마찰↑라 관측된 필요 전까지 연기). under-claim 정합: complement 선언은 권한 주장이 아니라 자기 지식의 관련성 자기보고다(양보로 primary는 이미 넘김·접지를 더할 뿐 authority 0). (ADR 0038 결정 3)
+
+**EdgeGroundingSelector**:
+`GroundingSelector` v1 구현 — `Routed(primary)`에서 `decision.intent`+`primary.agent_id`로 `EdgeStore.neighbors`를 조회 → `card_lookup`(Registry.get)으로 카드 해소 → `GroundingSet(primary, supporting)`. **선택시점 재검증(생애주기 소멸 규칙, 결정 5)**: `intent ∈ card.domains`인 이웃만 supporting에 넣는다 — 이웃이 나중에 그 domain을 카드에서 빼면 skip → 엣지 자연 중성화(watcher·삭제 API 불요, publish 수용 시 `concept.domain ∈ card.domains` 재검증과 동형). `Routed` 아님/이웃 0/유효 이웃 0 → `None`(단일 접지 폴백·회귀 0). **Authority 정합**: primary는 라우팅된 front라 명확(판례/매처가 확정 — `ContestedGroundingSelector`의 tie-break 애매함이 여기선 없다). `answered_by`=primary 단일 불변, supporting authority 0. **슬라이스 A+B(순수 기계장치) green(2026-07-07)** — `AskOrg` 배선(Routed arm co-grounding 활성화)은 슬라이스 C(이번 범위 밖). (ADR 0038 결정 4)
+
+**ChainGroundingSelector**:
+여러 `GroundingSelector`를 순서대로 시도해 첫 non-None을 돌리는 합성 selector(자신도 `GroundingSelector`) — `AskOrg`의 **단일** `grounding_selector` seam(ADR 0037 결정 4)을 보존하며 `ChainGroundingSelector((EdgeGroundingSelector(...), ContestedGroundingSelector()))`를 주입할 수 있게 한다. Edge(Routed 전용)·Contested(Contested 전용)는 처분이 배타라 순서 무관이되, 명시 순서로 결정론을 보장한다. (ADR 0038 결정 4)
+_Avoid_: Router·GroundingSelector 재정의(합성일 뿐 새 정책 없음)
+
 ### User-facing outcome (실 사용자向 투영)
 
 라우팅 기계장치(RoutingDecision·Candidate·Confidence·trace)는 실 사용자에게 감춘다. 사용자는 *처분의 결과*만 사용자 말로 받는다. `ask_org` 핸들러가 `RoutingDecision`을 아래 결과 타입으로 투영한다 — 도메인(RoutingDecision)과 표현(OrgReply)의 경계.

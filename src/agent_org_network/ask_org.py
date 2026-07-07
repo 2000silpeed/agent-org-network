@@ -513,10 +513,14 @@ class AskOrg:
         if isinstance(reply, Answered):
             return dataclasses.replace(reply, sources=merged_sources), outcome
         # 로컬 즉답 디스패처(LocalRuntimeDispatcher/LocalStreamingDispatcher)는 항상
-        # Delivered이므로 여기 도달은 분산 디스패처 주입 시에만 이론상 가능하다(슬라이스 D
-        # 영역 — 실 분산 co-grounding 배선은 이번 범위 밖). 방어적으로 중립 Answered로
-        # 감싸 계약을 지킨다(assert_never 대신 — Contested arm은 Pending을 이미 밀어냈으므로
-        # 여기서 또 Pending을 내면 사용자向 계약이 흔들린다).
+        # Delivered이므로 여기 도달은 분산 디스패처(WebSocketDispatcher) 주입 + 담당 워커
+        # 온라인 async 수령 시에만 가능하다. **Routed arm**(ADR 0038 슬라이스 D)은 호출 전에
+        # `outcome`을 검사해 non-Delivered면 이 헬퍼의 반환을 쓰지 않고 tracking/Pending
+        # 폴백으로 안전 처리하므로(handle·`_stream_co_grounded_routed`) 여기 빈 Answered에
+        # 도달하지 않는다. **Contested arm**(ADR 0037)만 이 방어 분기에 도달할 수 있는데,
+        # Contested는 이미 Pending(contested)을 밀어낸 뒤라 여기서 또 Pending을 내면 사용자向
+        # 계약이 흔들린다 — 그래서 중립 Answered로 감싼다(assert_never 대신). Contested
+        # 분산 non-Delivered의 완전한 처리는 ADR 0037 후속(0038 범위 밖·정직 표기).
         return (
             Answered(
                 text="",
@@ -897,10 +901,32 @@ class AskOrg:
                     reply, outcome = self._dispatch_co_grounded_answer(
                         question, grounding_set, context
                     )
-                    reply = self._apply_approval_gate(reply, decision)
-                    reply = self._record_answer(reply, question, user.id)
-                    if isinstance(outcome, EscalatedToManager):
-                        self._enqueue_dispatch(outcome)
+                    if isinstance(outcome, Delivered):
+                        reply = self._apply_approval_gate(reply, decision)
+                        reply = self._record_answer(reply, question, user.id)
+                    else:
+                        # 분산 non-Delivered 처리(ADR 0038 슬라이스 D·code-reviewer 관찰 3):
+                        # co-grounded 답을 *즉답으로 못 받은* 경우다 — WS 워커가 온라인이라
+                        # 작업을 async로 받아갔고, grounding은 WS 프레임으로 전송되지 않는다
+                        # (ADR 0037 결정 3 유예 transport 제약). 빈 co-grounded 답
+                        # (`_dispatch_co_grounded_answer`의 방어적 text="")을 사용자에 내보내는
+                        # 대신, 기존 tracking/Pending 폴백으로 안전 처리한다 — *같은 ticket*을
+                        # 재사용해 이중 dispatch 없이 워커가 나중에 낸 (단일 접지) 답을 retrieve로
+                        # 회수한다(미아 없음). 즉 co-grounding은 중앙/로컬 즉답 경로(항상 Delivered·
+                        # WS 오프라인 폴백은 grounding을 fallback_runtime에 전달)에서만 실효하고,
+                        # 온라인 워커 async 경로는 명시적으로 범위 밖(단일 접지 폴백)이다.
+                        tracking = uuid.uuid4().hex
+                        self._tracking[tracking] = outcome.ticket
+                        self._pending_audit[tracking] = (user.id, question, decision)
+                        tracking_token = tracking
+                        reply = self._project_outcome(
+                            outcome,
+                            decision.primary.owner,
+                            decision.primary.agent_id,
+                            tracking,
+                        )
+                        if isinstance(outcome, EscalatedToManager):
+                            self._enqueue_dispatch(outcome)
                 else:
                     ticket = self._dispatcher.dispatch(
                         question, decision.primary, context=context
@@ -1206,6 +1232,25 @@ class AskOrg:
         )
 
         reply, outcome = self._dispatch_co_grounded_answer(question, grounding_set, context)
+        if not isinstance(outcome, Delivered):
+            # 분산 non-Delivered 처리(ADR 0038 슬라이스 D·code-reviewer 관찰 3·handle 대칭):
+            # 빈 token(`reply.text==""`) 대신 기존 tracking/PendingEvent 폴백으로 종착한다 —
+            # *같은 ticket* 재사용·retrieve 회수·미아 없음(`_stream_routed`의 비스트림 미회신
+            # 폴백과 동형). meta는 이미 나갔으므로 순서는 meta→pending(`_stream_routed`가
+            # meta 뒤 pending을 내는 것과 같은 패턴). co-grounding은 즉답 경로 한정·온라인 워커
+            # async는 범위 밖(단일 접지)임을 handle과 같은 근거로 안전 처리.
+            tracking = uuid.uuid4().hex
+            self._tracking[tracking] = outcome.ticket
+            self._pending_audit[tracking] = (user.id, question, decision)
+            if isinstance(outcome, EscalatedToManager):
+                self._enqueue_dispatch(outcome)
+            self._audit_routed(question, user, decision, outcome, tracking)
+            pending = self._project_outcome(outcome, primary.owner, primary.agent_id, tracking)
+            if isinstance(pending, Pending):
+                yield PendingEvent(
+                    kind=pending.kind, message=pending.message, tracking=pending.tracking
+                )
+            return
         yield TokenEvent(text=reply.text)
 
         # Approval 게이트를 *완성 답*에 적용(델타마다 아님) — done의 mode가 최종 권위

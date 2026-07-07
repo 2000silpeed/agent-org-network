@@ -36,7 +36,12 @@ from agent_org_network.index_matcher import (
     recommended_stage2_margin,
     select_matcher,
 )
-from agent_org_network.grounding import ContestedGroundingSelector
+from agent_org_network.complement import EdgeStore, InMemoryEdgeStore
+from agent_org_network.grounding import (
+    ChainGroundingSelector,
+    ContestedGroundingSelector,
+    EdgeGroundingSelector,
+)
 from agent_org_network.okf_index import build_knowledge_index_from_okf
 from agent_org_network.provider_runtime import make_grounding_resolver
 from agent_org_network.reeval import (
@@ -203,6 +208,11 @@ class DemoBundle:
     precedents: PrecedentStore
     consensus: ConsensusService
     registry: Registry
+    # 합의-소싱 상보 엣지 저장소(ADR 0038 슬라이스 D·결정 2) — `consensus`(쓰기)와
+    # `ask`의 `EdgeGroundingSelector`(읽기)가 공유하는 *바로 그* 인스턴스를 노출하는
+    # 관찰 손잡이. co-grounding 비활성(knowledge_store 미주입)이어도 consensus는 이
+    # 인스턴스에 엣지를 방출하므로 항상 채워 노출한다(테스트가 공유를 실증).
+    edge_store: "EdgeStore | None" = None
     review_store: "BackupReviewStore | None" = None
     audit_reader: AuditReader | None = None
     # audit_reader와 *같은 인스턴스*의 쓰기 손잡이 — 처리함 처분 *행위* 기록용(전이 ≠ 기록:
@@ -368,6 +378,12 @@ def build_demo(
             classifier = RuleBasedClassifier(_KEYWORD_INTENTS)
     precedents = InMemoryPrecedentStore()
     case_store = InMemoryConflictCaseStore()
+    # 공유 EdgeStore(ADR 0038 슬라이스 D·결정 2): 합의(ConsensusService)가
+    # keep_as_complement 표에서 `ComplementEdge`를 *쓰고*, 라우팅(EdgeGroundingSelector)이
+    # 그 엣지를 *읽는다*. 반드시 같은 인스턴스여야 "합의→엣지→다음 Routed 질문 co-ground"가
+    # 성립한다 — 다른 통이면 영원히 빈 결과(ADR 0030 minor-1 배선 무력화 선례). precedents·
+    # case_store와 같은 공유 결(Router·AskOrg·ConsensusService가 한 상태를 본다).
+    edge_store = InMemoryEdgeStore()
     # 라우터 선택(AON_ROUTER 플래그·기본 무회귀). 미설정/기타 → 기존 Router(분류기 기반),
     # AON_ROUTER=index → TwoStageRouter(인덱스 기반·OKF 시드). 선택은 select_router가
     # 결정론으로 한다(게이트 내 테스트). 데모 지름길 주석은 select_router·okf_index 참조.
@@ -412,16 +428,34 @@ def build_demo(
         audit_log if audit_log is not None else JsonlAuditLog(_DEFAULT_AUDIT_LOG_PATH)
     )
 
-    # co-grounding 활성화(ADR 0037 슬라이스 D·결정 5): `knowledge_store`가 주입되면
-    # Contested 질문이 "답+합의 병행"(co-ground 답 + ConflictCase 병존)으로 진화한다.
-    # selector = ContestedGroundingSelector(candidates 전원 접지·primary=사전순 tie-break),
-    # resolver = 중앙 KnowledgeStore만 읽는 make_grounding_resolver(okf_root=None 고정·owner
-    # 격리). 미주입(build_demo_ask_org·단위 테스트)이면 둘 다 None → 기존 Pending(contested)
-    # 동작 100% 보존(하위호환·회귀 0의 옵트인 스위치 — 끄려면 knowledge_store 미주입으로 복귀).
+    # co-grounding 활성화(ADR 0037 슬라이스 D·ADR 0038 슬라이스 D): `knowledge_store`가
+    # 주입되면
+    #   - Contested 질문이 "답+합의 병행"(co-ground 답 + ConflictCase 병존)으로 진화하고
+    #     (ADR 0037·`ContestedGroundingSelector`가 candidates 전원 접지·primary=사전순 tie-break),
+    #   - Routed 질문도 합의-소싱 `ComplementEdge` 이웃이 있으면 co-ground된다
+    #     (ADR 0038·`EdgeGroundingSelector`가 `edge_store` 이웃을 primary 곁에 접지).
+    # 둘을 `ChainGroundingSelector`로 합성해 `AskOrg`의 단일 `grounding_selector` seam을 보존
+    # 하면서 순서대로 시도한다(Edge=Routed 전용·Contested=Contested 전용이라 처분 배타·순서
+    # 무관이되 명시 순서로 결정론 — ADR 0038 결정 4). resolver = 중앙 KnowledgeStore만 읽는
+    # make_grounding_resolver(okf_root=None 고정·owner 격리). `EdgeGroundingSelector`의
+    # card_lookup은 registry 해소(등록분 카드만·미등록/삭제 카드는 None → 선택시점 자연 소멸,
+    # ADR 0038 결정 5). 미주입(build_demo_ask_org·단위 테스트)이면 둘 다 None → 기존 Pending
+    # (contested)·단일 접지 Routed 동작 100% 보존(하위호환·회귀 0의 옵트인 스위치).
     grounding_selector: "GroundingSelector | None" = None
     grounding_resolver: "GroundingTextResolver | None" = None
     if knowledge_store is not None:
-        grounding_selector = ContestedGroundingSelector()
+        def _card_lookup(agent_id: str) -> AgentCard | None:
+            try:
+                return registry.get(agent_id)
+            except KeyError:
+                return None
+
+        grounding_selector = ChainGroundingSelector(
+            (
+                EdgeGroundingSelector(edge_store, _card_lookup),
+                ContestedGroundingSelector(),
+            )
+        )
         grounding_resolver = make_grounding_resolver(knowledge_store)
 
     ask = AskOrg(
@@ -440,7 +474,12 @@ def build_demo(
         grounding_selector=grounding_selector,
         grounding_resolver=grounding_resolver,
     )
-    consensus = ConsensusService(case_store=case_store, precedents=precedents)
+    # 합의가 `Agreed`에서 판례(라우팅) 곁에 상보 엣지(접지)도 방출하도록 *공유* edge_store를
+    # 주입한다(ADR 0038 결정 2·3 — 진 owner가 keep_as_complement로 명시 선언한 경우만).
+    # EdgeGroundingSelector가 읽는 바로 그 인스턴스라 합의→엣지→다음 Routed co-ground가 닫힌다.
+    consensus = ConsensusService(
+        case_store=case_store, precedents=precedents, edge_store=edge_store
+    )
     # 재평가(세 번째 탭) store/service — review_store(둘째 탭)와 동형으로 항상 구성해
     # 번들에 담는다(web 라우트가 꺼내 씀). 자동 적재(StalenessPropagator)는 데모 흐름에
     # 없으므로 가시성은 시드(create_central_app→seed_demo_reeval_items)가 댄다.
@@ -461,6 +500,7 @@ def build_demo(
         reeval_store=reeval_store,
         reeval_service=reeval_service,
         answer_record_store=answer_record_store,
+        edge_store=edge_store,
     )
 
 

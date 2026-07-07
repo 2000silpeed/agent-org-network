@@ -10,7 +10,7 @@ from agent_org_network.console import (
     QuestionReceived as _QuestionReceived,
     RoutingDecisionRecorded as _RoutingDecisionRecorded,
 )
-from agent_org_network.decision import Contested, Routed, Unowned
+from agent_org_network.decision import Contested, Routed, RoutingDecision, Unowned
 from agent_org_network.dispatch import (
     AwaitingWorker,
     Delivered,
@@ -316,11 +316,13 @@ class AskOrg:
         # 정신을 적재 지점에서 재현).
         self._answer_record_store = answer_record_store
         self._presence_of = presence_of
-        # co-grounding 하위호환 게이트(ADR 0037 결정 5·슬라이스 C): 둘 다 주입됐을
-        # 때만 Contested arm이 "답+합의 병행"으로 진화한다. 하나라도 미주입이면
-        # 기존 Pending 동작 100% 보존(하위호환 — context/knowledge_store/propagator
-        # 옵셔널 주입 선례와 동형). selector가 GroundingSet 대신 None을 반환해도
-        # 같은 폴백(단일 접지 불가 판단은 selector 정책 소관).
+        # co-grounding 하위호환 게이트(ADR 0037 결정 5·슬라이스 C·ADR 0038 결정 4·슬라이스 C):
+        # 둘 다 주입됐을 때만 Contested arm이 "답+합의 병행"으로, Routed arm이 "co-grounded
+        # 답(ConflictCase 없음)"으로 진화한다. 하나라도 미주입이면 기존 Pending/단일 접지
+        # 동작 100% 보존(하위호환 — context/knowledge_store/propagator 옵셔널 주입 선례와
+        # 동형). selector가 GroundingSet 대신 None을 반환해도 같은 폴백(어느 arm에 co-grounding을
+        # 적용할지는 주입된 selector 정책 소관 — 프로덕션 기본 `ContestedGroundingSelector`는
+        # Routed엔 항상 None을 돌려 Routed 행동이 그대로다).
         self._grounding_selector = grounding_selector
         self._grounding_resolver = grounding_resolver
         # 답 회수용 불투명 추적 토큰 → WorkTicket 매핑(ADR 0011 결정 6-5). 서버가
@@ -418,12 +420,17 @@ class AskOrg:
 
         return dataclasses.replace(reply, record_id=record_id)
 
-    def _select_grounding_set(self, decision: Contested) -> "GroundingSet | None":
-        """co-grounding 하위호환 게이트(ADR 0037 결정 5) — selector+resolver 둘 다
-        주입됐고 selector가 `GroundingSet`을 반환할 때만 값을 돌려준다.
+    def _select_grounding_set(self, decision: "RoutingDecision") -> "GroundingSet | None":
+        """co-grounding 하위호환 게이트(ADR 0037 결정 5·ADR 0038 결정 4) — selector+resolver
+        둘 다 주입됐고 selector가 `GroundingSet`을 반환할 때만 값을 돌려준다.
 
-        하나라도 미주입이거나 selector가 `None`을 반환하면 `None` — 호출자(handle·
-        handle_stream)는 이걸 "기존 Pending 폴백" 신호로 쓴다(회귀 0의 결정 지점).
+        파라미터가 `Contested` → `RoutingDecision`으로 넓혀졌다(ADR 0038 슬라이스 C) —
+        Contested arm뿐 아니라 Routed(Delivered) arm에서도 호출된다. 엣지-소싱 Routed 전용
+        selector는 `Routed`만, `ContestedGroundingSelector`는 `Contested`만 매칭해 처분이
+        배타이므로 어느 arm에서 호출해도 안전하다(selector 자신이 타입 판별 — 합성 selector가
+        둘을 순서대로 시도해 첫 non-None을 돌린다·`grounding.py` 참고). 하나라도 미주입이거나
+        selector가 `None`을 반환하면 `None` — 호출자(handle·handle_stream)는 이걸 "기존
+        Pending/단일 접지 폴백" 신호로 쓴다(회귀 0의 결정 지점).
         """
         if self._grounding_selector is None or self._grounding_resolver is None:
             return None
@@ -478,10 +485,11 @@ class AskOrg:
         dispatch한다. 실 KnowledgeStore 다중 조회·크로스머신 조립은 이 함수 밖(슬라이스 D) —
         여기선 결정론 resolver(StubKnowledgeStore/fake)만 소비한다.
 
-        Contested arm 전용 — Approval 게이트는 적용하지 않는다(Contested엔 `requires_approval`
-        축이 없다·Routed 전용 게이트). `_record_answer`는 호출자(handle)가 공통 지점에서 건다.
-        `DispatchOutcome` 원형도 함께 돌려줘 audit이 그 절차 사실을 정직하게 남긴다
-        (decision은 여전히 Contested — ADR 0037 결정 5-a).
+        Contested·Routed 양 arm 공용(ADR 0037 Contested 답+합의 병행 + ADR 0038 Routed 엣지
+        co-grounding). Approval 게이트·`_record_answer`는 **호출자 책임** — Contested arm은
+        `requires_approval` 축이 없어 게이트를 안 걸고, Routed arm은 호출자가 `_apply_approval_gate`를
+        건다(이 헬퍼는 게이트를 적용하지 않는다). `DispatchOutcome` 원형도 함께 돌려줘 audit이
+        절차 사실을 정직하게 남긴다(Contested면 decision은 여전히 Contested — ADR 0037 결정 5-a).
 
         `sources`는 primary 카드에서만 파생되는 런타임 기본 투영을 **덮어써**
         `_merged_grounding_sources`(primary+supporting 합집합)로 교체한다(code-reviewer
@@ -876,42 +884,62 @@ class AskOrg:
         tracking_token: str | None = None
         match decision:
             case Routed():
-                ticket = self._dispatcher.dispatch(question, decision.primary, context=context)
-                outcome = self._dispatcher.poll(ticket)
-                # 미회신(AwaitingWorker/EscalatedToManager)이면 답 회수용 불투명 토큰을
-                # 발급해 ticket을 서버에 보관한다 — 사용자가 나중에 retrieve로 답을 가져올
-                # 길(6-5). Delivered(즉답)면 토큰 불요(None). 토큰은 ticket_id와 *분리된*
-                # 별도 uuid4 hex라 사용자向에 ticket_id조차 노출되지 않는다(노출 불변식).
-                tracking: str | None = None
-                if not isinstance(outcome, Delivered):
-                    tracking = uuid.uuid4().hex
-                    self._tracking[tracking] = ticket
-                    # 모니터 answered 기록을 위해 상관키·맥락을 보관한다.
-                    # retrieve가 Delivered를 처음 관측할 때 answered 엔트리를 기록한다.
-                    self._pending_audit[tracking] = (user.id, question, decision)
-                    tracking_token = tracking
-                reply = self._project_outcome(
-                    outcome,
-                    decision.primary.owner,
-                    decision.primary.agent_id,
-                    tracking,
-                )
-                # Approval 게이트 강제(T2.5, ADR 0012 mode 강제 패턴): Routed에 Approval이
-                # 붙었으면 *라우팅 결정*이 답을 draft_only로 내린다 — 워커 자기보고가 아니라
-                # 라우팅이 강제한다(디스패처가 backup을 강제 하향하듯). Delivered(실 답이
-                # 도착)에만 적용하고, 아직 답이 없는 Pending(dispatched)엔 무관(답 자체가
-                # 없으니 mode도 없음). mode 우선순위(ADR 0012): backup이 더 강한 하향이라
-                # draft_only로 *덮지 않는다* — backup 답은 owner 미검토라 승인 대기보다 약한
-                # 신뢰가 맞다. full→draft_only만 격상(게이트 표시), backup은 보존.
-                reply = self._apply_approval_gate(reply, decision)
-                # 답변 감사 단위 적재(Phase 12 (B)·ADR 0033 결정 4) — 즉답(Delivered) 경로에서
-                # Answered가 확정된 직후. 오프라인 자동발신이면 needs_correction_review=True.
-                # 분산 회신(Pending dispatched)은 아직 답이 없어 여기선 적재 안 하고 retrieve가
-                # Delivered 첫 관측 시 적재한다(retrieve 참조).
-                reply = self._record_answer(reply, question, user.id)
-                # EscalatedToManager면 Manager 큐에도 적재(T5.2 ADR 0014).
-                if isinstance(outcome, EscalatedToManager):
-                    self._enqueue_dispatch(outcome)
+                # Routed co-grounding(ADR 0038 결정 4·슬라이스 C): selector+resolver가 둘
+                # 다 주입되고 selector가(예: 엣지-소싱 Routed 전용 selector) 합의-소싱
+                # `ComplementEdge` 이웃을 골랐을 때만 co-grounded 답을 낸다. Contested가
+                # 아니라 이미 라우팅된 질문이므로 **ConflictCase는 열지 않는다**(다툼 아님). Approval 게이트·
+                # `_record_answer`·audit은 일반 Routed와 *동일 적용*(co-grounding이 게이트를
+                # 우회하지 않는다). 하나라도 미주입/None이면 기존 단일 접지 Routed로 폴백
+                # (하위호환 게이트 — 프로덕션 기본 `ContestedGroundingSelector`는 Routed에
+                # 항상 None을 돌려 회귀 0).
+                grounding_set = self._select_grounding_set(decision)
+                if grounding_set is not None:
+                    reply, outcome = self._dispatch_co_grounded_answer(
+                        question, grounding_set, context
+                    )
+                    reply = self._apply_approval_gate(reply, decision)
+                    reply = self._record_answer(reply, question, user.id)
+                    if isinstance(outcome, EscalatedToManager):
+                        self._enqueue_dispatch(outcome)
+                else:
+                    ticket = self._dispatcher.dispatch(
+                        question, decision.primary, context=context
+                    )
+                    outcome = self._dispatcher.poll(ticket)
+                    # 미회신(AwaitingWorker/EscalatedToManager)이면 답 회수용 불투명 토큰을
+                    # 발급해 ticket을 서버에 보관한다 — 사용자가 나중에 retrieve로 답을 가져올
+                    # 길(6-5). Delivered(즉답)면 토큰 불요(None). 토큰은 ticket_id와 *분리된*
+                    # 별도 uuid4 hex라 사용자向에 ticket_id조차 노출되지 않는다(노출 불변식).
+                    tracking: str | None = None
+                    if not isinstance(outcome, Delivered):
+                        tracking = uuid.uuid4().hex
+                        self._tracking[tracking] = ticket
+                        # 모니터 answered 기록을 위해 상관키·맥락을 보관한다.
+                        # retrieve가 Delivered를 처음 관측할 때 answered 엔트리를 기록한다.
+                        self._pending_audit[tracking] = (user.id, question, decision)
+                        tracking_token = tracking
+                    reply = self._project_outcome(
+                        outcome,
+                        decision.primary.owner,
+                        decision.primary.agent_id,
+                        tracking,
+                    )
+                    # Approval 게이트 강제(T2.5, ADR 0012 mode 강제 패턴): Routed에 Approval이
+                    # 붙었으면 *라우팅 결정*이 답을 draft_only로 내린다 — 워커 자기보고가 아니라
+                    # 라우팅이 강제한다(디스패처가 backup을 강제 하향하듯). Delivered(실 답이
+                    # 도착)에만 적용하고, 아직 답이 없는 Pending(dispatched)엔 무관(답 자체가
+                    # 없으니 mode도 없음). mode 우선순위(ADR 0012): backup이 더 강한 하향이라
+                    # draft_only로 *덮지 않는다* — backup 답은 owner 미검토라 승인 대기보다 약한
+                    # 신뢰가 맞다. full→draft_only만 격상(게이트 표시), backup은 보존.
+                    reply = self._apply_approval_gate(reply, decision)
+                    # 답변 감사 단위 적재(Phase 12 (B)·ADR 0033 결정 4) — 즉답(Delivered) 경로에서
+                    # Answered가 확정된 직후. 오프라인 자동발신이면 needs_correction_review=True.
+                    # 분산 회신(Pending dispatched)은 아직 답이 없어 여기선 적재 안 하고 retrieve가
+                    # Delivered 첫 관측 시 적재한다(retrieve 참조).
+                    reply = self._record_answer(reply, question, user.id)
+                    # EscalatedToManager면 Manager 큐에도 적재(T5.2 ADR 0014).
+                    if isinstance(outcome, EscalatedToManager):
+                        self._enqueue_dispatch(outcome)
             case Contested():
                 # co-grounding 답+합의 병행(ADR 0037 결정 5·슬라이스 C): selector+resolver가
                 # 둘 다 주입되고 selector가 GroundingSet을 골랐을 때만 co-grounded 답을
@@ -970,14 +998,20 @@ class AskOrg:
     ) -> Iterator[AskEvent]:
         """질문을 스트리밍으로 처리한다 — `Iterator[AskEvent]`(ADR 0031 결정 2·3).
 
-        `handle`의 *형제 메서드*(handle은 무변경). decide↔answer 분리·audit-once:
+        `handle`의 *형제 메서드*(Routed/Contested co-grounding 하위호환 게이트는 `handle`과
+        대칭 진화 — 두 메서드가 같은 `_select_grounding_set` 결정 지점을 공유). decide↔answer
+        분리·audit-once:
           1. decide: `route(question)` 정확히 1회(맨 질문만 — 맥락은 dispatch로만).
           2. 분기(sealed sum match):
              - Contested/Unowned: 기존 `handle`의 그 분기 부수효과를 *그대로 1회*
                (ConflictCase open·push 통지·Manager 큐 적재) 후 **단일 pending 이벤트**를
-               yield하고 종료(Pending 비스트림). audit 1회 후 종료.
+               yield하고 종료(Pending 비스트림). audit 1회 후 종료. co-grounding 활성(selector
+               가 GroundingSet을 고름)이면 Contested도 meta→token*→done(ConflictCase는
+               side-effect로 그대로 열림 — `_stream_co_grounded_contested`).
              - Routed: `dispatch_stream`으로 meta → token*(델타) → 완성 Answer 확정 →
                Approval 게이트(_apply_approval_gate)를 완성 답에 적용 → audit 1회 → done.
+               co-grounding 활성(엣지-소싱 Routed 전용 selector 등이 GroundingSet을 고름)이면
+               ConflictCase 없이 co-grounded meta→token*→done(`_stream_co_grounded_routed`).
           3. audit-once: 스트림을 다 흘린 뒤 done 직전 `self._audit.record`를 정확히 1회.
 
         `handle`/`handle_stream`은 상호 배타(한 질문은 둘 중 하나·web 엔드포인트가 가름)라
@@ -988,7 +1022,17 @@ class AskOrg:
 
         match decision:
             case Routed():
-                yield from self._stream_routed(question, user, decision, context)
+                # Routed co-grounding 스트림(ADR 0038 결정 4·슬라이스 C): handle과 같은
+                # 하위호환 게이트 — selector+resolver 둘 다 주입되고 selector가 GroundingSet을
+                # 골랐을 때만 meta→token*→done(co-grounded 답)을 흘린다. ConflictCase는 열지
+                # 않는다(Contested가 아니다). 아니면 기존 `_stream_routed`(단일 접지) 폴백.
+                grounding_set = self._select_grounding_set(decision)
+                if grounding_set is not None:
+                    yield from self._stream_co_grounded_routed(
+                        question, user, decision, grounding_set, context
+                    )
+                else:
+                    yield from self._stream_routed(question, user, decision, context)
             case Contested():
                 # co-grounding 답+합의 병행(ADR 0037 결정 5-c·슬라이스 C): handle과 같은
                 # 하위호환 게이트 — selector+resolver 둘 다 주입되고 selector가 GroundingSet을
@@ -1130,6 +1174,51 @@ class AskOrg:
                 tracking=None,
             )
         )
+
+        yield DoneEvent(mode=final.mode, sources=final.sources)
+
+    def _stream_co_grounded_routed(
+        self,
+        question: str,
+        user: User,
+        decision: Routed,
+        grounding_set: "GroundingSet",
+        context: str | None,
+    ) -> Iterator[AskEvent]:
+        """Routed co-grounded 답 스트림 — meta→token*→done(ADR 0038 결정 4·슬라이스 C).
+
+        `_stream_co_grounded_contested`의 Routed 대칭형이나 **ConflictCase는 열지 않는다**
+        (다툼이 아니라 이미 라우팅된 질문 — Contested가 아니다). Approval 게이트는 Routed
+        전용 축이라 완성 답에 적용한다(`_stream_routed`와 동형 — done의 mode가 최종 권위).
+        `_stream_routed`가 `_record_answer`를 호출하지 않는 것과 대칭으로(스트리밍 Routed
+        경로는 아직 record_id 미적재 — 기존 gap 그대로 보존, 이 슬라이스가 새로 도입한
+        비대칭 아님) 여기서도 호출하지 않는다. audit은 decision(Routed 원형) 그대로 남긴다.
+        """
+        primary = grounding_set.primary
+
+        # sources는 primary 단일이 아니라 GroundingSet 전 카드의 병합(ADR 0037 결정 2·6
+        # 재사용) — 완성 Answered·done과 3자 정합.
+        merged_sources = self._merged_grounding_sources(grounding_set)
+        yield MetaEvent(
+            answered_by=(primary.owner, primary.agent_id),
+            mode="full",
+            sources=merged_sources,
+        )
+
+        reply, outcome = self._dispatch_co_grounded_answer(question, grounding_set, context)
+        yield TokenEvent(text=reply.text)
+
+        # Approval 게이트를 *완성 답*에 적용(델타마다 아님) — done의 mode가 최종 권위
+        # (`_stream_routed`와 동형).
+        gated = self._apply_approval_gate(reply, decision)
+        final = gated if isinstance(gated, Answered) else reply
+
+        # EscalatedToManager면 Manager 큐에도 적재(T5.2 ADR 0014·`_stream_routed` 비스트림
+        # 폴백과 동형 — 이 슬라이스의 결정론 테스트는 항상 Delivered라 실도달은 후속).
+        if isinstance(outcome, EscalatedToManager):
+            self._enqueue_dispatch(outcome)
+
+        self._audit_routed(question, user, decision, outcome, None)
 
         yield DoneEvent(mode=final.mode, sources=final.sources)
 

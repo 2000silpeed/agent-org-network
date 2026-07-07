@@ -215,13 +215,19 @@ class TestChainGroundingSelector:
         assert result_ba is not None and result_ba.primary.agent_id == "finance_ops"
 
 
-# ── 회귀 0 — ask_org.py 무변경(슬라이스 C 아님) ───────────────────────────
+# ── 구조적 결합 0 — ask_org.py는 selector 구현 클래스명을 하드 임포트하지 않는다 ──
 
 
-def test_ask_org는_EdgeGroundingSelector를_배선하지_않는다() -> None:
-    """이번 슬라이스(A+B)는 ask_org.py에 EdgeGroundingSelector를 안 꽂는다(슬라이스 C 영역).
+def test_ask_org는_EdgeGroundingSelector_클래스명을_직접_임포트하지_않는다() -> None:
+    """ADR 0038 슬라이스 C(`AskOrg` Routed arm 배선) green 이후에도 유효한 불변식.
 
-    소스 텍스트에 식별자가 등장하지 않는지 grep으로 확인 — inert-but-tested 계약.
+    `AskOrg`는 `_select_grounding_set`이 `GroundingSelector` Protocol(구조적 타이핑)
+    하나만 통해 co-grounding을 소비한다 — 엣지-소싱 Routed 전용 selector·합성 selector
+    구현 클래스를 알 필요가 없다(주입 seam이 결합을 끊는다, ADR 0037 결정 4). 소스에
+    그 두 클래스명이 리터럴로 등장하지 않는지가 이 결합-0을 grep으로 잠근다 — 슬라이스 C가
+    `RoutingDecision`으로 파라미터를 넓히고 Routed arm에서도 호출하는 *배선 변경*은 하되,
+    구체 클래스 임포트는 여전히 0이어야 한다(`test_co_grounding_routed.py`가 배선 자체는
+    별도로 검증).
     """
     import inspect
 

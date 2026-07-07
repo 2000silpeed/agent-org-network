@@ -513,7 +513,7 @@
   <div class="thesis">
     중앙 AI가 모든 걸 아는 구조가 아니다. 중앙은 <b>연결자</b>다 — "누가 무엇을 담당하는가"와
     그 연결·기록만 안다. 답은 <b>담당자(owner)의 Claude</b>가 자기 <b>OKF 지식 번들</b>을 읽어서 한다.
-    모르면 지어내지 않고 사람(Manager)에게 넘긴다. 두 담당 영역에 걸친 질문은 <b>양쪽 지식을 함께 써서</b> 완전하게 답하고(다중 접지), 담당 정리는 그와 별개로 사람이 합의한다 — 그 합의가 <b>판례</b>로 쌓여 라우터가 학습한다.
+    모르면 지어내지 않고 사람(Manager)에게 넘긴다. 두 담당 영역에 걸친 질문은 <b>양쪽 지식을 함께 써서</b> 완전하게 답하고, 담당 정리는 그와 별개로 사람이 합의한다 — 그 합의가 <b>판례</b>로 쌓여 다음부터 알아서 연결된다.
   </div>
 </header>
 
@@ -566,6 +566,17 @@
 </nav>
 
 <div class="wrap">
+
+  <!-- 말풀이 -->
+  <div class="note" style="border:1px solid var(--ds-color-border-subtle,#8883);border-radius:10px;padding:14px 16px;margin:4px 0 26px;line-height:1.75">
+    <b style="font-size:15px">이 투어에 자주 나오는 말</b> — 편히 읽으시라고 먼저 풀어둡니다.<br>
+    <b>라우팅</b> : 들어온 질문을 맞는 담당자에게 연결하는 것. &nbsp;·&nbsp;
+    <b>정해짐 / 다툼 / 미아</b> : 질문은 셋 중 하나가 된다 — 담당이 <b>정해짐</b>, 후보가 여럿이라 <b>다툼</b>, 아무도 담당 아닌 <b>미아</b>(→ 사람에게 올림). &nbsp;·&nbsp;
+    <b>지식으로 답한다</b> : 답을 지어내지 않고 담당자가 적어둔 문서를 근거로 만든다는 뜻. "두 지식으로 답한다"는 두 담당자의 문서를 <b>같이</b> 근거로 쓴다는 것. &nbsp;·&nbsp;
+    <b>판례</b> : "이건 이 팀 담당"이라 합의한 걸 기억해뒀다가, 다음에 비슷한 질문이 오면 자동으로 그쪽에 연결. &nbsp;·&nbsp;
+    <b>처리함</b> : 담당자가 합의하거나 검토할 거리가 쌓이는 자기 공간. &nbsp;·&nbsp;
+    <b>OKF</b> : 담당자가 자기 지식을 적어두는 문서 묶음(그냥 마크다운 파일들).
+  </div>
 
   <!-- CAST -->
   <h2 class="sec" id="cast">등장 — 데모 조직과 네 페르소나</h2>
@@ -732,9 +743,9 @@
     <div class="head"><div class="num">7</div><h3>그레이 영역 — 걸친 질문은 양쪽 지식으로 답하고, 담당은 사람이 합의한다</h3>
       <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ④</span><span class="tag-inv">ADR 0037</span><span class="tag-inv">ADR 0038</span></div></div>
     <div class="sub"><code>보상</code>은 cs_ops·finance_ops 둘 다의 영역 → <span class="disp contested"><span class="ic" aria-hidden="true">◑</span>Contested</span>.
-      <b>답+합의 병행</b> — 답은 양쪽 지식을 함께 써서 즉시 나가고(다중 접지·co-grounding), 담당 정리는 후보 Owner들이 처리함에서 <b>1인칭</b>으로 합의한다.</div>
+      <b>답과 합의를 동시에</b> — 답은 양쪽 지식을 함께 써서 즉시 나가고, 담당 정리는 후보 담당자들이 처리함에서 <b>직접</b> 합의한다.</div>
     <div class="step"><div class="lbl">① 사용자가 보상 질문 → 두 지식으로 답 + 다툼 케이스 병행</div>
-      <div class="result"><span class="arrow">→</span> cs_ops·finance_ops <b>양쪽 지식을 함께 접지</b>해 하나의 완전한 답을 즉시 돌려준다(반쪽 답이 아니라 두 담당 영역 종합·출처엔 양쪽이 다 붙는다). 사용자에겐 <b>다툼이라는 사실은 여전히 감춘다</b> — 정상 답 하나만 나간다.
+      <div class="result"><span class="arrow">→</span> cs_ops·finance_ops <b>양쪽 지식을 함께 근거로 삼아</b> 하나의 완전한 답을 즉시 돌려준다(반쪽이 아니라 두 담당 영역을 종합·출처엔 양쪽이 다 붙는다). 사용자에겐 <b>다툼이라는 사실은 여전히 감춘다</b> — 정상 답 하나만 나간다.
         <b>동시에</b> cs_lead·finance_lead 처리함에 <code>ConflictCase</code> 한 건이 열려 담당 정리는 사람 합의에 남는다(안전망 유지).</div></div>
     <div class="step"><div class="lbl">② 각 Owner가 처리함에서 1인칭 합의 (세션 로그인 후)</div>
       <pre><span class="c"># cs_lead 로그인 → 자기 카드 지목(claim)</span>

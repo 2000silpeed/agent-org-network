@@ -513,8 +513,7 @@
   <div class="thesis">
     중앙 AI가 모든 걸 아는 구조가 아니다. 중앙은 <b>연결자</b>다 — "누가 무엇을 담당하는가"와
     그 연결·기록만 안다. 답은 <b>담당자(owner)의 Claude</b>가 자기 <b>OKF 지식 번들</b>을 읽어서 한다.
-    모르면 지어내지 않고 사람(Manager)에게 넘긴다. 다툼은 사람이 합의하고, 그 합의가 <b>판례</b>로 쌓여
-    라우터가 학습한다.
+    모르면 지어내지 않고 사람(Manager)에게 넘긴다. 두 담당 영역에 걸친 질문은 <b>양쪽 지식을 함께 써서</b> 완전하게 답하고(다중 접지), 담당 정리는 그와 별개로 사람이 합의한다 — 그 합의가 <b>판례</b>로 쌓여 라우터가 학습한다.
   </div>
 </header>
 
@@ -730,13 +729,13 @@
 
   <!-- SCENE 7 — 다툼·판례 (기존 6) -->
   <section class="scene" id="s7">
-    <div class="head"><div class="num">7</div><h3>그레이 영역 — 다툼을 사람이 합의하고, 판례로 학습한다</h3>
-      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ④</span></div></div>
+    <div class="head"><div class="num">7</div><h3>그레이 영역 — 걸친 질문은 양쪽 지식으로 답하고, 담당은 사람이 합의한다</h3>
+      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ④</span><span class="tag-inv">ADR 0037</span></div></div>
     <div class="sub"><code>보상</code>은 cs_ops·finance_ops 둘 다의 영역 → <span class="disp contested"><span class="ic" aria-hidden="true">◑</span>Contested</span>.
-      후보 Owner들이 각자 처리함에서 <b>1인칭</b>으로 담당을 합의한다.</div>
-    <div class="step"><div class="lbl">① 사용자가 보상 질문 → Contested</div>
-      <div class="result"><span class="arrow">→</span> "담당을 확인하고 있어요." (사용자에겐 <b>다툼이라는 사실조차 감춤</b>) —
-        동시에 cs_lead·finance_lead 처리함에 <code>ConflictCase</code> 한 건이 열린다.</div></div>
+      <b>답+합의 병행</b> — 답은 양쪽 지식을 함께 써서 즉시 나가고(다중 접지·co-grounding), 담당 정리는 후보 Owner들이 처리함에서 <b>1인칭</b>으로 합의한다.</div>
+    <div class="step"><div class="lbl">① 사용자가 보상 질문 → 두 지식으로 답 + 다툼 케이스 병행</div>
+      <div class="result"><span class="arrow">→</span> cs_ops·finance_ops <b>양쪽 지식을 함께 접지</b>해 하나의 완전한 답을 즉시 돌려준다(반쪽 답이 아니라 두 담당 영역 종합·출처엔 양쪽이 다 붙는다). 사용자에겐 <b>다툼이라는 사실은 여전히 감춘다</b> — 정상 답 하나만 나간다.
+        <b>동시에</b> cs_lead·finance_lead 처리함에 <code>ConflictCase</code> 한 건이 열려 담당 정리는 사람 합의에 남는다(안전망 유지).</div></div>
     <div class="step"><div class="lbl">② 각 Owner가 처리함에서 1인칭 합의 (세션 로그인 후)</div>
       <pre><span class="c"># cs_lead 로그인 → 자기 처리함 조회 → 합의 표</span>
 <span class="k">curl</span> -X POST :8099/cases/&lt;case_id&gt;/concur -d <span class="s">'{"on_agent":"cs_ops"}'</span>
@@ -745,8 +744,8 @@
       <div class="result"><span class="arrow">→</span> <span class="o">Agreed</span> → <code>Resolution(보상→cs_ops)</code>가
         <b>Precedent</b>로 기록. 케이스 closed. <b>다음 "보상" 질문은 자동으로</b>
         <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>(cs_ops) — 라우터가 학습했다.</div></div>
-    <div class="proves"><span class="lead">증명</span> — 충돌을 한 번에 닫지 않는다. 당사자들이 1인칭으로 합의하고, 그 합의가 판례로 쌓여
-      라우터가 점점 똑똑해진다. 합의는 <b>전이</b>(처리함 상태), 판례는 <b>기록</b>(append-only) — 둘은 다르다(불변식 ④).</div>
+    <div class="proves"><span class="lead">증명</span> — 걸친 질문도 반쪽이 아니라 양쪽 지식으로 완전하게 답하되, 담당 정리는 서두르지 않는다. 답은 즉시 나가고, 당사자들이 1인칭으로 합의하면 그 합의가 판례로 쌓여
+      라우터가 점점 똑똑해진다. 답(<code>AnswerRecord</code>)·다툼(<code>ConflictCase</code>)·판례(<code>Precedent</code>)는 서로 다른 축이라 겹치지 않는다 — 합의는 <b>전이</b>, 기록은 <b>append-only</b>(불변식 ④). 답을 낸 책임은 <b>한 담당(primary)</b>에 남고 상대 지식은 출처로만 붙는다(권한은 중앙만 선언·불변식 ③).</div>
   </section>
 
   <!-- SCENE 8 — reeval 인덱스-수용 훅 (신규 C) -->

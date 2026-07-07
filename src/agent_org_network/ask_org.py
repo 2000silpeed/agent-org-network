@@ -28,12 +28,19 @@ if TYPE_CHECKING:
     from datetime import datetime
     from agent_org_network.answer_record import AnswerRecordStore
     from agent_org_network.console import ConsoleEvent, ConsoleFeed
+    from agent_org_network.grounding import GroundingSelector, GroundingSet
     from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.notify import Notifier
     from agent_org_network.presence import PresenceStatus
     from agent_org_network.review import BackupReview, BackupReviewItem, BackupReviewStore
     from agent_org_network.runtime import Answer
+
+# 접지 텍스트 resolver seam(ADR 0037 결정 3) — agent_id 하나를 그 접지 본문
+# 텍스트로 해소하는 함수. 실 KnowledgeStore 다중 조회 배선은 mcp-runtime
+# 슬라이스 D 영역이라, 이번 슬라이스는 주입 함수 타입만 여기 선언한다
+# (`assemble_grounding_text`가 이 타입의 `lookup` 인자를 받는다).
+GroundingTextResolver = Callable[[str], str]
 
 
 @dataclass(frozen=True)
@@ -265,6 +272,8 @@ class AskOrg:
         console_feed: "ConsoleFeed | None" = None,
         answer_record_store: "AnswerRecordStore | None" = None,
         presence_of: "Callable[[str], PresenceStatus] | None" = None,
+        grounding_selector: "GroundingSelector | None" = None,
+        grounding_resolver: "GroundingTextResolver | None" = None,
     ) -> None:
         # [Minor 2] manager_root 기본값 "root" 주의: 데모의 실제 root는 "root_manager".
         # manager_queue_store 를 주입할 때 manager_root 도 함께 주입하지 않으면
@@ -307,6 +316,13 @@ class AskOrg:
         # 정신을 적재 지점에서 재현).
         self._answer_record_store = answer_record_store
         self._presence_of = presence_of
+        # co-grounding 하위호환 게이트(ADR 0037 결정 5·슬라이스 C): 둘 다 주입됐을
+        # 때만 Contested arm이 "답+합의 병행"으로 진화한다. 하나라도 미주입이면
+        # 기존 Pending 동작 100% 보존(하위호환 — context/knowledge_store/propagator
+        # 옵셔널 주입 선례와 동형). selector가 GroundingSet 대신 None을 반환해도
+        # 같은 폴백(단일 접지 불가 판단은 selector 정책 소관).
+        self._grounding_selector = grounding_selector
+        self._grounding_resolver = grounding_resolver
         # 답 회수용 불투명 추적 토큰 → WorkTicket 매핑(ADR 0011 결정 6-5). 서버가
         # ticket을 보관하고 사용자엔 *불투명 토큰만* 준다 — 사용자向 응답에 ticket_id·
         # owner 등 내부 구조가 새지 않게 한다(노출 불변식). 토큰은 uuid4 hex(미인코딩).
@@ -401,6 +417,107 @@ class AskOrg:
         import dataclasses
 
         return dataclasses.replace(reply, record_id=record_id)
+
+    def _select_grounding_set(self, decision: Contested) -> "GroundingSet | None":
+        """co-grounding 하위호환 게이트(ADR 0037 결정 5) — selector+resolver 둘 다
+        주입됐고 selector가 `GroundingSet`을 반환할 때만 값을 돌려준다.
+
+        하나라도 미주입이거나 selector가 `None`을 반환하면 `None` — 호출자(handle·
+        handle_stream)는 이걸 "기존 Pending 폴백" 신호로 쓴다(회귀 0의 결정 지점).
+        """
+        if self._grounding_selector is None or self._grounding_resolver is None:
+            return None
+        return self._grounding_selector.select(decision)
+
+    def _open_conflict_case(self, decision: Contested, question: str) -> ConflictCase | None:
+        """Contested 부수효과(ConflictCase open·push 통지)를 수행한다(멱등·기존 handle과 동형).
+
+        `handle`(co-grounded 답 경로·기존 Pending 경로)·`_handle_contested_stream`이
+        공유한다 — 답+합의 병행이든 아니든 이 부수효과는 *항상 그대로*(ADR 0037 결정 5:
+        "동시에 ConflictCase도 그대로 연다"). 이미 열려 있으면(`open_for_intent` 중복
+        가드) None을 반환하고 아무것도 하지 않는다.
+        """
+        if self._case_store is None or self._case_store.open_for_intent(decision.intent) is not None:
+            return None
+        case = ConflictCase(
+            intent=decision.intent,
+            question=question,
+            candidates=tuple(
+                Candidate(agent_id=c.agent_id, owner=c.owner) for c in decision.candidates
+            ),
+            opened_at=self._clock(),
+        )
+        self._case_store.open_case(case)
+        self._push_conflict_notification(case)
+        return case
+
+    def _merged_grounding_sources(self, grounding_set: "GroundingSet") -> tuple[str, ...]:
+        """GroundingSet primary+supporting 전 카드의 `knowledge_sources`(출처 레이블)를
+
+        합집합·순서 결정론(primary 먼저·그다음 supporting 순서)·중복 제거해 병합한다
+        (ADR 0037 결정 2·6 — "supporting의 knowledge_sources를 primary의 것과 병합해
+        sources에 투영. agent_id·confidence·candidate는 절대 안 실림"). 코드베이스의
+        기존 "순서 보존 중복 제거" 관용구(`dict.fromkeys`, ask_org.py `_push_conflict_
+        notification`·conflict.py 참고)를 재사용한다. 레이블(str)만 다루므로 새 노출
+        표면 0 — 과소노출(primary만)을 정합으로 교정할 뿐이다.
+        """
+        all_labels = (
+            label
+            for card in (grounding_set.primary, *grounding_set.supporting)
+            for label in card.knowledge_sources
+        )
+        return tuple(dict.fromkeys(all_labels))
+
+    def _dispatch_co_grounded_answer(
+        self, question: str, grounding_set: "GroundingSet", context: str | None
+    ) -> tuple[Answered, DispatchOutcome]:
+        """co-grounded 답을 조립·dispatch해 `Answered`(answered_by=primary)로 투영한다.
+
+        `assemble_grounding_text`(grounding.py, ADR 0037 결정 3 재사용)로 GroundingSet의
+        각 agent_id를 `_grounding_resolver`(주입 seam)로 해소·병합한 뒤, primary 카드로
+        dispatch한다. 실 KnowledgeStore 다중 조회·크로스머신 조립은 이 함수 밖(슬라이스 D) —
+        여기선 결정론 resolver(StubKnowledgeStore/fake)만 소비한다.
+
+        Contested arm 전용 — Approval 게이트는 적용하지 않는다(Contested엔 `requires_approval`
+        축이 없다·Routed 전용 게이트). `_record_answer`는 호출자(handle)가 공통 지점에서 건다.
+        `DispatchOutcome` 원형도 함께 돌려줘 audit이 그 절차 사실을 정직하게 남긴다
+        (decision은 여전히 Contested — ADR 0037 결정 5-a).
+
+        `sources`는 primary 카드에서만 파생되는 런타임 기본 투영을 **덮어써**
+        `_merged_grounding_sources`(primary+supporting 합집합)로 교체한다(code-reviewer
+        Minor 1 수정 — ADR 0037 결정 2·6: "supporting의 knowledge_sources를 primary의
+        것과 병합". 접지 본문은 이미 A+B에서 병합되는데 sources 레이블만 primary 단일로
+        새던 간극을 닫는다).
+        """
+        import dataclasses
+
+        from agent_org_network.grounding import assemble_grounding_text
+
+        assert self._grounding_resolver is not None
+        grounding_text = assemble_grounding_text(grounding_set, self._grounding_resolver)
+        primary = grounding_set.primary
+        merged_sources = self._merged_grounding_sources(grounding_set)
+        ticket = self._dispatcher.dispatch(
+            question, primary, context=context, grounding=grounding_text
+        )
+        outcome = self._dispatcher.poll(ticket)
+        reply = self._project_outcome(outcome, primary.owner, primary.agent_id, None)
+        if isinstance(reply, Answered):
+            return dataclasses.replace(reply, sources=merged_sources), outcome
+        # 로컬 즉답 디스패처(LocalRuntimeDispatcher/LocalStreamingDispatcher)는 항상
+        # Delivered이므로 여기 도달은 분산 디스패처 주입 시에만 이론상 가능하다(슬라이스 D
+        # 영역 — 실 분산 co-grounding 배선은 이번 범위 밖). 방어적으로 중립 Answered로
+        # 감싸 계약을 지킨다(assert_never 대신 — Contested arm은 Pending을 이미 밀어냈으므로
+        # 여기서 또 Pending을 내면 사용자向 계약이 흔들린다).
+        return (
+            Answered(
+                text="",
+                answered_by=(primary.owner, primary.agent_id),
+                mode="full",
+                sources=merged_sources,
+            ),
+            outcome,
+        )
 
     def _apply_approval_gate(self, reply: OrgReply, decision: Routed) -> OrgReply:
         """Approval 게이트를 사용자向 답에 강제 반영한다(T2.5, ADR 0012 mode 강제 패턴).
@@ -796,25 +913,24 @@ class AskOrg:
                 if isinstance(outcome, EscalatedToManager):
                     self._enqueue_dispatch(outcome)
             case Contested():
-                reply = Pending(
-                    kind="contested",
-                    message="담당을 확인하고 있어요. 정해지면 답변드릴게요.",
-                )
-                if self._case_store is not None and self._case_store.open_for_intent(decision.intent) is None:
-                    case = ConflictCase(
-                        intent=decision.intent,
-                        question=question,
-                        candidates=tuple(
-                            Candidate(agent_id=c.agent_id, owner=c.owner)
-                            for c in decision.candidates
-                        ),
-                        opened_at=self._clock(),
+                # co-grounding 답+합의 병행(ADR 0037 결정 5·슬라이스 C): selector+resolver가
+                # 둘 다 주입되고 selector가 GroundingSet을 골랐을 때만 co-grounded 답을
+                # 낸다. 하나라도 미주입/None이면 기존 Pending(kind="contested") 폴백 —
+                # 하위호환 게이트(회귀 0).
+                grounding_set = self._select_grounding_set(decision)
+                if grounding_set is not None:
+                    reply, outcome = self._dispatch_co_grounded_answer(
+                        question, grounding_set, context
                     )
-                    self._case_store.open_case(case)
-                    # 실시간 push 발화(T7.4·ADR 0022 결정 4) — 다툼 적재 직후 후보 owner들에게
-                    # push 통지를 쏜다(처리함 pull 전에도 알리게). notifier 미주입이면 실행 경로
-                    # 밖(게이트 보존). 본동작은 tdd-engineer red→green(슬라이스 3).
-                    self._push_conflict_notification(case)
+                    reply = self._record_answer(reply, question, user.id)
+                else:
+                    reply = Pending(
+                        kind="contested",
+                        message="담당을 확인하고 있어요. 정해지면 답변드릴게요.",
+                    )
+                # ConflictCase는 co-grounded 답이든 기존 Pending이든 *항상 그대로 연다*
+                # (ADR 0037 결정 5 — "동시에 ConflictCase도 그대로 연다", 미아 없음 안전망 보존).
+                self._open_conflict_case(decision, question)
             case Unowned():
                 reply = Pending(
                     kind="unowned",
@@ -874,8 +990,18 @@ class AskOrg:
             case Routed():
                 yield from self._stream_routed(question, user, decision, context)
             case Contested():
-                yield self._handle_contested_stream(question, decision)
-                self._audit_simple(question, user, decision)
+                # co-grounding 답+합의 병행(ADR 0037 결정 5-c·슬라이스 C): handle과 같은
+                # 하위호환 게이트 — selector+resolver 둘 다 주입되고 selector가 GroundingSet을
+                # 골랐을 때만 meta→token→done(co-grounded 답)을 흘린다. 아니면 기존 단일
+                # PendingEvent 폴백(회귀 0).
+                grounding_set = self._select_grounding_set(decision)
+                if grounding_set is not None:
+                    yield from self._stream_co_grounded_contested(
+                        question, user, decision, grounding_set, context
+                    )
+                else:
+                    yield self._handle_contested_stream(question, decision)
+                    self._audit_simple(question, user, decision)
             case Unowned():
                 yield self._handle_unowned_stream(question, decision)
                 self._audit_simple(question, user, decision)
@@ -950,24 +1076,62 @@ class AskOrg:
 
         기존 `handle`의 Contested arm과 동형 부수효과 — 같은 책임을 한 곳에서.
         """
-        if (
-            self._case_store is not None
-            and self._case_store.open_for_intent(decision.intent) is None
-        ):
-            case = ConflictCase(
-                intent=decision.intent,
-                question=question,
-                candidates=tuple(
-                    Candidate(agent_id=c.agent_id, owner=c.owner) for c in decision.candidates
-                ),
-                opened_at=self._clock(),
-            )
-            self._case_store.open_case(case)
-            self._push_conflict_notification(case)
+        self._open_conflict_case(decision, question)
         return PendingEvent(
             kind="contested",
             message="담당을 확인하고 있어요. 정해지면 답변드릴게요.",
         )
+
+    def _stream_co_grounded_contested(
+        self,
+        question: str,
+        user: User,
+        decision: Contested,
+        grounding_set: "GroundingSet",
+        context: str | None,
+    ) -> Iterator[AskEvent]:
+        """Contested co-grounding 답 스트림 — meta→token*→done(ADR 0037 결정 5-c).
+
+        `_stream_routed`의 Contested 대칭형: 사용자向은 `done` 하나만(§117 배타 보존) —
+        ConflictCase open은 side-effect일 뿐 스트림 프레임이 아니다. Approval 게이트는
+        적용하지 않는다(Contested엔 `requires_approval` 축이 없다). audit은 decision
+        (Contested 원형)을 그대로 남긴다(5-a — 답이 나가도 Routed로 위장하지 않는다).
+        """
+        primary = grounding_set.primary
+
+        # sources는 primary 단일이 아니라 GroundingSet 전 카드의 병합(ADR 0037 결정 2·6·
+        # code-reviewer Minor 1 수정) — `_dispatch_co_grounded_answer`가 돌려주는 완성
+        # Answered와 *같은* 병합값을 meta에도 싣는다(비스트림 Answered.sources·done.sources와
+        # 3자 정합 — meta는 초기 추정이지만 sources는 접지 결정 시점에 이미 확정돼 있다).
+        merged_sources = self._merged_grounding_sources(grounding_set)
+        yield MetaEvent(
+            answered_by=(primary.owner, primary.agent_id),
+            mode="full",
+            sources=merged_sources,
+        )
+
+        reply, outcome = self._dispatch_co_grounded_answer(question, grounding_set, context)
+        yield TokenEvent(text=reply.text)
+
+        recorded = self._record_answer(reply, question, user.id)
+        final = recorded if isinstance(recorded, Answered) else reply
+
+        # ConflictCase는 side-effect로 그대로 연다(사용자向 프레임 아님 — 결정 5-c).
+        self._open_conflict_case(decision, question)
+
+        self._audit.record(
+            AuditEntry(
+                timestamp=self._clock(),
+                user_id=user.id,
+                question=question,
+                intent=decision.intent,
+                decision=decision,
+                dispatch_outcome=outcome,
+                tracking=None,
+            )
+        )
+
+        yield DoneEvent(mode=final.mode, sources=final.sources)
 
     def _handle_unowned_stream(self, question: str, decision: Unowned) -> PendingEvent:
         """Unowned 부수효과(Manager 큐 적재)를 1회 수행하고 pending 이벤트를 만든다."""

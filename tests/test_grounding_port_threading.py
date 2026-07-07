@@ -309,23 +309,12 @@ class TestLocalDispatcherGroundingDelivery:
 
 
 class TestContestedArmUnchanged:
-    """Contested arm은 이번 슬라이스에서 무변경 — 여전히 Pending을 반환한다(회귀 0의 증거)."""
+    """Contested arm은 co-grounding *미주입*이면 무변경 — 여전히 Pending을 반환한다.
 
-    def test_ContestedGroundingSelector는_AskOrg에_아직_배선되지_않는다(self) -> None:
-        """grounding 모듈을 import해도 ask_org 모듈이 그것에 의존하지 않는다(inert)."""
-        import ast
-        import inspect
-
-        from agent_org_network import ask_org
-
-        source = inspect.getsource(ask_org)
-        tree = ast.parse(source)
-        imported_names: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == "agent_org_network.grounding":
-                for alias in node.names:
-                    imported_names.add(alias.name)
-        assert imported_names == set(), (
-            "이번 슬라이스에선 ask_org가 grounding 모듈을 import하면 안 된다"
-            "(Contested arm 행동 변경은 슬라이스 C·이번 범위 밖)"
-        )
+    슬라이스 B(이 파일 작성 시점) 당시엔 ask_org가 grounding 모듈을 아예 import하지
+    않는 inert 계약이었다. 슬라이스 C(ADR 0037 결정 5)에서 Contested arm이 "답+합의
+    병행"으로 진화하며 ask_org가 grounding 모듈에 의존하게 됐다 — 단 이는 *주입
+    의존* 옵트인(하위호환 게이트)이라, selector/resolver 미주입이면 이 클래스가
+    보장하는 회귀 0(기존 Pending 동작)은 그대로 유지된다(`test_co_grounding_contested.py`
+    가 co-grounding *활성* 경로를 별도로 검증한다).
+    """

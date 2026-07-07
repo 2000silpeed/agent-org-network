@@ -154,3 +154,8 @@ class GroundingSelector(Protocol):
 - **CONTEXT 용어 추가**: co-grounding(다중 접지)·`GroundingSet`·`GroundingSelector` + `assemble_context`(발화 스레드) vs co-grounding(지식 접지) _Avoid_.
 - **역참조**: `docs/tasks-v0.md`(T9.1b)·`docs/trustgraph-eval-2026-07-06.md`에 이 ADR 번호(0037) 링크.
 - **mcp-runtime-engineer 협의**: dispatch 실 배선(중앙 KnowledgeStore 다중 조회·크로스머신 격리·Contested→답 경로 배선 순서)은 shape 확정 후 mcp-runtime-engineer 영역.
+- **슬라이스 D 완료(2026-07-07·mcp-runtime-engineer)** — 실 배선·프로덕션 활성화·owner 격리 실증(`tests/test_co_grounding_wiring.py`, 게이트 내 결정론):
+  - **실 resolver = `provider_runtime.make_grounding_resolver(knowledge_store)`** — `GroundingSet`의 각 agent_id를 중앙 `KnowledgeStore`에서만 `resolve_knowledge_text`로 해소(단일 접지 `_resolve_okf`와 같은 함수 재사용). **결정 3 B안 기각을 코드로 실증**: `okf_root=None` 고정으로 디스크 폴백을 원천 차단 — resolver는 워커 로컬 디스크·남의 owner OKF에 접근하지 않는다(스토어 미보유 agent_id는 ""·디스크 번들 있어도 폴백 0).
+  - **프로덕션 ON(config 플래그 없음·사용자 승인)**: `demo.build_demo(knowledge_store=)` 주입 시 `AskOrg`에 `ContestedGroundingSelector()`+실 resolver를 꽂고, `web.create_app`이 중앙 `_knowledge_store`를 넘겨 실 `/ask`의 contested 질문이 co-grounding 경로를 탄다. 미주입이면 OFF(기존 `Pending(contested)` 보존·옵트인 스위치).
+  - **활성화 낙수(의도된 행동 전이)**: create_app 기반 기존 contested 테스트의 `/ask` 응답이 `pending/contested`→`answered`로 전이(ConflictCase는 그대로 열려 concur/Manager/판례 흐름 무회귀·결정 5). Routed/단일 경로 무영향.
+  - **게이트 밖(수동·미실행)**: 실 owner OAuth/LLM D1→D2 종합 검증(§9-3 재현)은 실 자격/LLM 부재로 미실행 — 절차만 남김(정직 표기·production-no-fakes).

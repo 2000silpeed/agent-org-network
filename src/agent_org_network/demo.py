@@ -36,7 +36,9 @@ from agent_org_network.index_matcher import (
     recommended_stage2_margin,
     select_matcher,
 )
+from agent_org_network.grounding import ContestedGroundingSelector
 from agent_org_network.okf_index import build_knowledge_index_from_okf
+from agent_org_network.provider_runtime import make_grounding_resolver
 from agent_org_network.reeval import (
     Clock,
     InMemoryReevalStore,
@@ -58,8 +60,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from agent_org_network.answer_record import AnswerRecordStore
+    from agent_org_network.ask_org import GroundingTextResolver
     from agent_org_network.console import ConsoleFeed
+    from agent_org_network.grounding import GroundingSelector
     from agent_org_network.hitl import HitlToggleMap
+    from agent_org_network.knowledge_store import KnowledgeStore
     from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.presence import PresenceStatus
     from agent_org_network.review import BackupReviewStore
@@ -314,6 +319,7 @@ def build_demo(
     console_feed: "ConsoleFeed | None" = None,
     answer_record_store: "AnswerRecordStore | None" = None,
     presence_of: "Callable[[str], PresenceStatus] | None" = None,
+    knowledge_store: "KnowledgeStore | None" = None,
 ) -> DemoBundle:
     """하드코딩 샘플로 조립한 데모 한 벌(공유 store)을 돌려준다.
 
@@ -406,6 +412,18 @@ def build_demo(
         audit_log if audit_log is not None else JsonlAuditLog(_DEFAULT_AUDIT_LOG_PATH)
     )
 
+    # co-grounding 활성화(ADR 0037 슬라이스 D·결정 5): `knowledge_store`가 주입되면
+    # Contested 질문이 "답+합의 병행"(co-ground 답 + ConflictCase 병존)으로 진화한다.
+    # selector = ContestedGroundingSelector(candidates 전원 접지·primary=사전순 tie-break),
+    # resolver = 중앙 KnowledgeStore만 읽는 make_grounding_resolver(okf_root=None 고정·owner
+    # 격리). 미주입(build_demo_ask_org·단위 테스트)이면 둘 다 None → 기존 Pending(contested)
+    # 동작 100% 보존(하위호환·회귀 0의 옵트인 스위치 — 끄려면 knowledge_store 미주입으로 복귀).
+    grounding_selector: "GroundingSelector | None" = None
+    grounding_resolver: "GroundingTextResolver | None" = None
+    if knowledge_store is not None:
+        grounding_selector = ContestedGroundingSelector()
+        grounding_resolver = make_grounding_resolver(knowledge_store)
+
     ask = AskOrg(
         router=router,
         dispatcher=dispatcher_impl,
@@ -419,6 +437,8 @@ def build_demo(
         console_feed=console_feed,
         answer_record_store=answer_record_store,
         presence_of=presence_of,
+        grounding_selector=grounding_selector,
+        grounding_resolver=grounding_resolver,
     )
     consensus = ConsensusService(case_store=case_store, precedents=precedents)
     # 재평가(세 번째 탭) store/service — review_store(둘째 탭)와 동형으로 항상 구성해

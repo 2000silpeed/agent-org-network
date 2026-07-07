@@ -560,10 +560,11 @@ def test_create_central_app_실_판례_합의_후_재publish가_precedent_reeval
         finance_ws.send_json({"type": "heartbeat"})  # 펜스(응답 없음)
 
         # "보상" 질문 → cs_ops·finance_ops 둘 다 매칭 → Contested(케이스 열림, 판례 아직 없음).
+        # co-grounding 활성(ADR 0037 슬라이스 D) 이후 다툼 응답은 `answered`(답+합의 병행)지만
+        # ConflictCase는 여전히 열려 아래 concur→Agreed→판례 record 흐름을 그대로 탄다(결정 5).
         r = http.post("/ask", json={"question": "보상 기준이 어떻게 되나요?"})
         assert r.status_code == 200
-        assert r.json()["type"] == "pending"
-        assert r.json()["kind"] == "contested"
+        assert r.json()["type"] == "answered"
 
         # cs_lead·finance_lead 둘 다 cs_ops를 primary로 지목 → 전원 합의 → Agreed →
         # 실 precedents.record(Resolution(intent="보상", primary="cs_ops")).

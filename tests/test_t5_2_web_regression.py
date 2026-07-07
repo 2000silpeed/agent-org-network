@@ -86,7 +86,7 @@ class TestB1_Concur_Deadlocked_Manager_큐_적재:
     """[Blocker 1] web concur → Deadlocked → Manager 큐에 항목이 생겨야 한다.
 
     시나리오:
-      1. POST /ask "보상 기준이 어떻게 되나요?" → Pending(contested)
+      1. POST /ask "보상 기준이 어떻게 되나요?" → Answered(co-grounded) + ConflictCase 개방(결정 5)
       2. POST /cases/{case_id}/concur by cs_lead on cs_ops
       3. POST /cases/{case_id}/concur by finance_lead on finance_ops (표 갈림 → Deadlocked)
       4. GET /manager/root_manager → 항목 1건 (Deadlocked from_deadlock 출처)
@@ -104,8 +104,9 @@ class TestB1_Concur_Deadlocked_Manager_큐_적재:
             "/ask", json={"question": "보상 기준이 어떻게 되나요?"}
         )))
         assert r1.status == 200
-        assert r1.body["type"] == "pending"
-        assert r1.body["kind"] == "contested", f"contested 여야 하는데 {r1.body['kind']}"
+        # co-grounding 활성(ADR 0037 슬라이스 D) 이후 다툼 응답은 `answered`(답+합의 병행)지만
+        # ConflictCase는 여전히 열려 아래 concur/Deadlocked/Manager 큐 흐름을 그대로 탄다(결정 5).
+        assert r1.body["type"] == "answered", f"answered 여야 하는데 {r1.body['type']}"
 
         # 2. case_id 조회 — inbox API 사용
         # cs_lead 또는 finance_lead 처리함에서 case 조회

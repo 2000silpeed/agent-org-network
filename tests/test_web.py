@@ -485,10 +485,15 @@ def _client() -> TestClient:
 
 
 def _open_case_id(client: TestClient) -> str:
-    """채팅에 다툼 질문을 던져 ConflictCase를 열고 cs_lead 처리함의 case_id를 돌려준다."""
+    """채팅에 다툼 질문을 던져 ConflictCase를 열고 cs_lead 처리함의 case_id를 돌려준다.
+
+    co-grounding 활성(ADR 0037 슬라이스 D) 이후 프로덕션 `/ask`의 다툼 질문은 "답+합의
+    병행"으로 `answered`를 돌려주되 ConflictCase는 *여전히 그대로 열린다*(결정 5). 이 헬퍼는
+    후자(케이스 개방)만 쓰므로 응답 타입은 answered로 단언한다.
+    """
     contested = _post(client, "/ask", {"question": _CONTESTED_Q})
     assert contested.status == 200
-    assert contested.body["kind"] == "contested"
+    assert contested.body["type"] == "answered"
     cases: list[dict[str, Any]] = _get(client, "/inbox/cs_lead").body
     assert len(cases) == 1
     case_id: str = cases[0]["case_id"]

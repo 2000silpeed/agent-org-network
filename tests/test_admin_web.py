@@ -220,8 +220,15 @@ class TestLiveRegistrationRouting:
         )
         assert status == 200
         # 등록 직후 같은 질문이 이제 후보 2건 → Contested(라이브 카드가 라우팅에 즉시 잡힘).
+        # co-grounding 활성(ADR 0037 슬라이스 D) 이후 다툼 응답은 `answered`(답+합의 병행)지만
+        # ConflictCase는 여전히 열린다(결정 5) — 새 카드 owner(hr_lead) 처리함에 그 케이스가
+        # 뜨는 것으로 "라이브 카드가 라우팅에 즉시 잡혔다"를 단언한다.
         _, after = _post(client, "/ask", {"question": "환불 문의"})
-        assert after.get("kind") == "contested", after
+        assert after.get("type") == "answered", after
+        _login(client, "hr_lead")  # refund_ops2 owner 세션으로 자기 처리함 조회.
+        _, cases = _get(client, "/inbox/cases")
+        assert len(cases) == 1, cases
+        assert {c["agent_id"] for c in cases[0]["candidates"]} == {"cs_ops", "refund_ops2"}
 
 
 # ── 종단: 오너 변경 후 정정 판정 교체 ──────────────────────────────────────

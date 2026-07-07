@@ -196,6 +196,38 @@ def resolve_knowledge_text(
     return read_okf_bundle(okf_root, agent_id), False
 
 
+def make_grounding_resolver(
+    knowledge_store: "KnowledgeStore",
+    *,
+    clock: Clock = _default_clock,
+) -> Callable[[str], str]:
+    """co-grounding 다중 접지용 `GroundingTextResolver`(agent_id → 접지 본문) 팩토리 — ADR 0037 결정 3.
+
+    `assemble_grounding_text`(grounding.py)가 `GroundingSet`의 각 agent_id를 이 함수로
+    해소해 "### {agent_id}\\n{body}"로 병합한다. 본체는 단일 접지 `_resolve_okf`와 **같은**
+    `resolve_knowledge_text`를 재사용한다(재발명 0) — 다중 접지는 "단일 조회를 agent_id별로
+    반복"일 뿐이다.
+
+    **owner 격리 핵심(ADR 0037 결정 3 B안 기각 실증)**: `okf_root=None`을 고정해 디스크
+    폴백(`read_okf_bundle`)을 원천 차단한다 — resolver는 오직 중앙 `KnowledgeStore`만 읽는다.
+    워커 로컬 디스크·남의 owner OKF 접근 0(크로스머신 격리·ADR 0033). 스토어에 그 agent_id
+    지식이 없으면 ""(빈 접지) — 워커 디스크로 새지 않는다. stale 관측값은 접지 텍스트에
+    싣지 않는다(노출 불변식 — grounding은 프롬프트 접지 문자열일 뿐).
+    """
+
+    def _resolve(agent_id: str) -> str:
+        text, _stale = resolve_knowledge_text(
+            knowledge_store,
+            None,  # okf_root=None 고정 — 디스크 폴백 차단(owner 격리·B안 기각 실증).
+            agent_id,
+            now=clock(),
+            threshold_s=knowledge_stale_seconds(),
+        )
+        return text
+
+    return _resolve
+
+
 # ---------------------------------------------------------------------------
 # 슬라이스 (b) — 순수 함수 (SDK/IO 0)
 # ---------------------------------------------------------------------------

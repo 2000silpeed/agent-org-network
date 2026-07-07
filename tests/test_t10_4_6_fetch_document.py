@@ -441,10 +441,14 @@ def _ask(client: TestClient, question: str) -> Response:
 
 
 def _open_contested_case(client: TestClient) -> str:
-    """다툼 질문으로 케이스를 열고 cs_lead 처리함에서 case_id를 읽는다."""
+    """다툼 질문으로 케이스를 열고 cs_lead 처리함에서 case_id를 읽는다.
+
+    co-grounding 활성(ADR 0037 슬라이스 D) 이후 `/ask` 다툼 응답은 `answered`(답+합의 병행)
+    지만 ConflictCase는 여전히 열린다(결정 5). 이 헬퍼는 케이스 개방만 쓴다.
+    """
     res = _ask(client, _CONTESTED_Q)
     body: dict[str, Any] = res.json()
-    assert body["kind"] == "contested"
+    assert body["type"] == "answered"
     # cs_lead로 로그인해 자기 처리함에서 case_id를 본다.
     _login(client, "cs_lead")
     http: Any = client

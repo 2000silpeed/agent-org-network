@@ -1298,6 +1298,10 @@ def create_app(
         console_feed=_console_feed,
         answer_record_store=_answer_record_store,
         presence_of=presence_of,
+        # co-grounding 활성화(ADR 0037 슬라이스 D): 프로덕션 앱은 항상 중앙 KnowledgeStore를
+        # 갖는다(스코어카드 축과 같은 인스턴스). 이걸 build_demo에 넘기면 Contested 질문이
+        # "답+합의 병행" 경로를 탄다(사용자 승인·config 플래그 없이 ON). 끄려면 이 인자만 제거.
+        knowledge_store=_knowledge_store,
     )
     # 라이브 publish 배선(T10.4 Blocker B1·ADR 0028 §14 결정 F): index 모드면 라우터가
     # 보는 *바로 그* published 인덱스 스토어를 디스패처에 같이 꽂는다 — 그래야 워커

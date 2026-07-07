@@ -730,22 +730,22 @@
   <!-- SCENE 7 — 다툼·판례 (기존 6) -->
   <section class="scene" id="s7">
     <div class="head"><div class="num">7</div><h3>그레이 영역 — 걸친 질문은 양쪽 지식으로 답하고, 담당은 사람이 합의한다</h3>
-      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ④</span><span class="tag-inv">ADR 0037</span></div></div>
+      <div class="tags"><span class="badge b-user"><span class="ic" aria-hidden="true">◆</span>실 사용자</span><span class="badge b-owner"><span class="ic" aria-hidden="true">●</span>Owner</span><span class="tag-inv">불변식 ④</span><span class="tag-inv">ADR 0037</span><span class="tag-inv">ADR 0038</span></div></div>
     <div class="sub"><code>보상</code>은 cs_ops·finance_ops 둘 다의 영역 → <span class="disp contested"><span class="ic" aria-hidden="true">◑</span>Contested</span>.
       <b>답+합의 병행</b> — 답은 양쪽 지식을 함께 써서 즉시 나가고(다중 접지·co-grounding), 담당 정리는 후보 Owner들이 처리함에서 <b>1인칭</b>으로 합의한다.</div>
     <div class="step"><div class="lbl">① 사용자가 보상 질문 → 두 지식으로 답 + 다툼 케이스 병행</div>
       <div class="result"><span class="arrow">→</span> cs_ops·finance_ops <b>양쪽 지식을 함께 접지</b>해 하나의 완전한 답을 즉시 돌려준다(반쪽 답이 아니라 두 담당 영역 종합·출처엔 양쪽이 다 붙는다). 사용자에겐 <b>다툼이라는 사실은 여전히 감춘다</b> — 정상 답 하나만 나간다.
         <b>동시에</b> cs_lead·finance_lead 처리함에 <code>ConflictCase</code> 한 건이 열려 담당 정리는 사람 합의에 남는다(안전망 유지).</div></div>
     <div class="step"><div class="lbl">② 각 Owner가 처리함에서 1인칭 합의 (세션 로그인 후)</div>
-      <pre><span class="c"># cs_lead 로그인 → 자기 처리함 조회 → 합의 표</span>
+      <pre><span class="c"># cs_lead 로그인 → 자기 카드 지목(claim)</span>
 <span class="k">curl</span> -X POST :8099/cases/&lt;case_id&gt;/concur -d <span class="s">'{"on_agent":"cs_ops"}'</span>
-<span class="c"># finance_lead 도 같은 on_agent 지목 → 전원 일치</span></pre></div>
-    <div class="step"><div class="lbl">③ 결과 — 합의 → 판례 학습</div>
-      <div class="result"><span class="arrow">→</span> <span class="o">Agreed</span> → <code>Resolution(보상→cs_ops)</code>가
-        <b>Precedent</b>로 기록. 케이스 closed. <b>다음 "보상" 질문은 자동으로</b>
-        <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>(cs_ops) — 라우터가 학습했다.</div></div>
-    <div class="proves"><span class="lead">증명</span> — 걸친 질문도 반쪽이 아니라 양쪽 지식으로 완전하게 답하되, 담당 정리는 서두르지 않는다. 답은 즉시 나가고, 당사자들이 1인칭으로 합의하면 그 합의가 판례로 쌓여
-      라우터가 점점 똑똑해진다. 답(<code>AnswerRecord</code>)·다툼(<code>ConflictCase</code>)·판례(<code>Precedent</code>)는 서로 다른 축이라 겹치지 않는다 — 합의는 <b>전이</b>, 기록은 <b>append-only</b>(불변식 ④). 답을 낸 책임은 <b>한 담당(primary)</b>에 남고 상대 지식은 출처로만 붙는다(권한은 중앙만 선언·불변식 ③).</div>
+<span class="c"># finance_lead 는 cs_ops로 양보(concede)하되, 자기 관점은 계속 필요하다고 선언</span>
+<span class="k">curl</span> -X POST :8099/cases/&lt;case_id&gt;/concur -d <span class="s">'{"on_agent":"cs_ops","stance":"keep_as_complement"}'</span></pre>
+      <div class="note">양보 시 <code>stance</code>는 진 Owner가 정한다 — 기본 <code>withdraw</code>(완전 이관)면 엣지 없음, <code>keep_as_complement</code>면 상보 관계를 남긴다(오등록엔 잘못된 엣지 안 생기게 <b>양성 신호를 요구</b>·ADR 0038 결정 3).</div></div>
+    <div class="step"><div class="lbl">③ 결과 — 합의가 두 대칭 산물을 남긴다 (판례 + 상보 엣지)</div>
+      <div class="result"><span class="arrow">→</span> <span class="o">Agreed</span> → <code>Resolution(보상→cs_ops)</code>가 <b>Precedent</b>(라우팅 기억)로 기록. 케이스 closed. <b>동시에</b> finance_lead의 <code>keep_as_complement</code>가 <code>ComplementEdge(cs_ops→finance_ops)</code>를 <b>접지 기억</b>으로 남긴다.
+        <br><span class="arrow">→</span> 다음 "보상" 질문은 이제 <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>(cs_ops·판례 학습)지만, 그 엣지가 finance_ops 지식을 다시 끌어와 <b>여전히 완전한 답</b> — 합의 후에도 반쪽으로 돌아가지 않는다.</div></div>
+    <div class="proves"><span class="lead">증명</span> — 걸친 질문도 반쪽이 아니라 양쪽 지식으로 완전하게 답하되, 담당 정리는 서두르지 않는다. 답은 즉시 나가고, 당사자들이 1인칭으로 합의하면 그 합의가 <b>두 대칭 산물</b>을 남긴다 — <b>Precedent : 라우팅 :: ComplementEdge : 접지</b>. 판례가 "다음엔 누가 답하나"를, 엣지가 "그 front를 누가 보완하나"를 학습해, 담당이 정해져 <span class="disp routed"><span class="ic" aria-hidden="true">✓</span>Routed</span>가 된 뒤에도 완전한 답이 유지된다(지식은 <b>전이하지 않고 관계만</b> 남긴다 — owner 소유 불변). 답(<code>AnswerRecord</code>)·다툼(<code>ConflictCase</code>)·판례(<code>Precedent</code>)·엣지(<code>ComplementEdge</code>)는 서로 다른 축이라 겹치지 않는다 — 합의는 <b>전이</b>, 기록은 <b>append-only</b>(불변식 ④). 답을 낸 책임은 <b>한 담당(primary)</b>에 남고 상대 지식은 출처로만 붙는다(권한은 중앙만 선언·불변식 ③).</div>
   </section>
 
   <!-- SCENE 8 — reeval 인덱스-수용 훅 (신규 C) -->

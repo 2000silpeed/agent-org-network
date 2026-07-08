@@ -2167,9 +2167,9 @@ def test_T11_6_다중_순서_보존():
 
 
 def test_T11_6_포트_준수_Ingestor_Protocol():
-    """TextIngestor가 Ingestor Protocol을 구조적으로 만족한다."""
+    """TextIngestor가 Ingestor[str] Protocol을 구조적으로 만족한다."""
 
-    def _accept_ingestor(i: Ingestor) -> None:
+    def _accept_ingestor(i: Ingestor[str]) -> None:
         pass
 
     _accept_ingestor(TextIngestor())

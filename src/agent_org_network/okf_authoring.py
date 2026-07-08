@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 import yaml
 from pydantic import BaseModel, field_validator, model_validator
@@ -664,21 +664,25 @@ def prepare_commit_request(admitted: OkfDraft, *, owner: str) -> BuilderCommitRe
 
 # ── T11.6: Ingestor 포트 + 텍스트 어댑터(MVP) ────────────────────────────────
 
+_IngestPayload = TypeVar("_IngestPayload", contravariant=True)
 
-class Ingestor(Protocol):
+
+class Ingestor(Protocol[_IngestPayload]):
     """인제스트 포트 — N 입력 → N RawSource(1:1·분할 안 함).
 
-    각 원소 = (source_id, raw_text). 분할은 OkfAuthor.split 책임.
-    구현: TextIngestor(MVP·IO 0)·실 PDF/위키 어댑터는 T11.7.
+    각 원소 = (source_id, payload). payload 타입은 어댑터별로 다르다(제네릭 —
+    ADR 0039 결정 3: Confluence는 이 포트의 실 어댑터). 분할은 OkfAuthor.split 책임.
+    구현: TextIngestor(Ingestor[str]·MVP·IO 0)·ConfluenceIngestor
+    (Ingestor[Mapping[str, object]]·confluence_ingestor.py)·실 PDF 어댑터는 T11.7.
     """
 
-    def ingest(self, items: Sequence[tuple[str, str]]) -> tuple[RawSource, ...]:
-        """(source_id, raw_text) 시퀀스 → RawSource 튜플(순서 보존)."""
+    def ingest(self, items: Sequence[tuple[str, _IngestPayload]]) -> tuple[RawSource, ...]:
+        """(source_id, payload) 시퀀스 → RawSource 튜플(순서 보존)."""
         ...
 
 
 class TextIngestor:
-    """Ingestor MVP 어댑터 — 순수 결정론·IO 0.
+    """Ingestor[str] MVP 어댑터 — 순수 결정론·IO 0.
 
     각 (source_id, content) → RawSource(source_id=source_id.strip(), content=content.strip()).
     content 앞뒤 공백만 trim — 내부 개행/공백 보존(마크다운 구조).

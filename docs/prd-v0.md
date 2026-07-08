@@ -1,6 +1,6 @@
 # Agent Org Network — PRD v0
 
-작성일: 2026-06-20 · rev6(2026-07-02 — 근거 ADR 최신화: 대화 답변 = owner OAuth 인프로세스[0027], OKF 자동 저작·크로스머신[0029·0030], 멱등 publish·의미 dedup[0032]) · 근거: [initial-planning.md](initial-planning.md), [CONTEXT.md](../CONTEXT.md), ADR 0001~0032([docs/adr/](adr/) — 핵심 전환점: 0017 중앙 실행 → 0027 owner측 실행 부활)
+작성일: 2026-06-20 · rev6(2026-07-02 — 근거 ADR 최신화: 대화 답변 = owner OAuth 인프로세스[0027], OKF 자동 저작·크로스머신[0029·0030], 멱등 publish·의미 dedup[0032]) · **rev7(2026-07-08 — 전략 피벗: 실조직(자사) 배포 확정 → Confluence-우선 채택 경로·왕관 보석 = 논쟁 해소 루프·채택 성공기준 신설, ADR 0039)** · 근거: [initial-planning.md](initial-planning.md), [CONTEXT.md](../CONTEXT.md), ADR 0001~0039([docs/adr/](adr/) — 핵심 전환점: 0017 중앙 실행 → 0027 owner측 실행 부활 → 0033 중앙 답변 복귀 → **0039 Confluence-우선 채택 트리거**)
 
 ## 1. 문제
 
@@ -46,6 +46,7 @@
 
 ## 6. 범위 밖 / 후순위
 
+- **⭐ 전략 피벗 — Confluence-우선 채택 경로가 다음 착수 궤도(ADR 0039·2026-07-08).** 이 제품의 목적이 **실조직(자사) 배포**로 확정됐다. 사활 기준이 "기능 완성"에서 **"조직이 채택하나"**로 이동한다. 세 가지가 결정으로 박혔다: **(1) 왕관 보석 = 논쟁 해소 루프** — 제품의 얼굴은 "분류 정확도"가 아니라 `Contested → 후보 합의 → Precedent 학습`이다("누구 건지 못 맞혀도 미아로 안 두고, 최선 후보에게 물리고, 한 번 합의하면 판례로 자동 라우팅·재논쟁 없음"). 이미 구현·green(0002/0008/0037/0038)이라 새로 짓지 않고 실 조직 지식으로 실증한다. 정치 리스크(논쟁이 합의로 안 닫히고 고임)의 안전장치 = Manager 백스톱(미아 없음)+판례 축적. **(2) Confluence를 정문 인제스트로** — owner에게 OKF를 새로 *저작*시키지 않고 기존 Confluence를 *인제스트*해 owner는 **검토·승인만**(비용 "저작→승인" 역전·콜드스타트/유지부담 동시 완화). ADR 0029 S4가 예약한 `Ingestor` 어댑터를 후속→정문으로 승격(아키텍처 무변경·어댑터 하나 추가). **(3) 오너십 부트스트랩** — Confluence 스페이스 관리자·기여자·라벨 → Agent Card/라우팅 *후보* 자동 도출(카드 손등록 비용 절감). **불변식 보존**: 후보 생성일 뿐 권한은 여전히 중앙(routing_rules)·over-claim은 admission 필터. **쐐기 = Rovo 방어선**: 우위는 지식 검색(Rovo 소관)이 아니라 책임 라우팅·미아 없음·판례·경계 넘는 접지. **첫 파일럿 = 소규모(owner 3~5·스페이스 1~2)**. 슬라이스 분해·성공기준 수치는 tasks Phase 14. 무거운 북극성(LLM 산문 타입화 추출·evidence span·문서쌍 후보)은 계속 연기(0036 결정 4 유지).
 - **분산 전송 = 사설 데이터 커넥터 옵션 B로 재포지셔닝(ADR 0017).** 각 Owner PC의 Claude Code 연결(owner 워커·아웃바운드 WS·작업 큐)은 *기본 경로가 아니라* 답이 owner의 사설·실시간 데이터/도구(자기 DB·메일·사내 API·자격증명)에 의존해 *중앙이 가질 수 없을* 때만 *데이터 접근을 노출*하는 옵션이다(구현물 보존·재활용 — T6.3 완료). 기본 답 실행은 중앙 `claude -p`가 owner OKF 최신을 읽기(§3·§5). Phase 7 T7.5에서 옵션 B로 문서화·강등. **옵션 B 진입 판단 게이트(세 질문, ADR 0020)**: 답이 OKF 커밋 스냅샷만으로 grounding되면 *기본 경로*(중앙 실행) · owner의 사설·실시간 데이터에 의존하면 **B-1 사설 데이터 커넥터**(데이터 접근만 노출·실행은 중앙) · "중앙이 읽는 것조차" 정책상 금지면 **B-2 하드 데이터 격리**(owner 환경 실행 — 이때만 분산이 강제). 데이터가 사설이란 사실만으로 곧장 전체 분산(B-2)으로 점프 금지(B-1이 먼저).
 - **가용성 = 중앙 실행이 기본(ADR 0017).** 중앙이 owner 통제 지식으로 24/7 실행하므로 "owner PC가 잠들어 못 답한다"는 가용성 구멍이 기본 경로엔 없다. **owner 위임 백업 워커**(ADR 0012, T6.6 완료)는 옵션 B 하위 케이스로 강등 — 단 백업의 **복귀 검토 루프(승인·정정·무시)는 owner 거버넌스로 승격·보존**(처리함에서 백업 답 검토). timeout 예산·staleness 거부·cold 기동 hook 등 4축 인프라는 보존(옵션 B·푸시 통지 재활용).
 - **살아있는 지식·SSO·실시간 충돌 = 다음 방향의 핵심(ADR 0017·Phase 7).** ① **SSO 신원 binding**(owner 종속 실재화 — 지금 무비밀번호라 명목뿐, T7.1 — **구현 완료(red→green·실 OIDC 연동은 게이트 밖 후속), ADR 0021**: `OidcProvider` 포트(공급자 중립·표준 claim만·`FakeOidcProvider` 결정론/`HttpOidcProvider` 게이트 밖)·`OidcClaims` frozen 값 객체·신원 매핑 baseline = *verified email → registry User*(`resolve_identity` 순수 함수·`User.email` SSOT 신설)·인증 모드 3단(OFF/무비밀번호/SSO — SSO 모드면 무비밀번호 `/login` 403 거부로 선택 우회 차단). ADR 0016이 신원 출처를 세션으로 격리한 덕에 "세션에 박기 직전의 검증"만 선택→증명으로 바뀌고 나머지는 무변경) ② **git 저장 + 빌더 UI 편집**(owner는 git 몰라도 됨·커밋 스냅샷 실행, T7.2 — **설계·shape 완료, ADR 0018**: 빌더가 자동 커밋하는 본체는 *OKF 번들 마크다운*(카드는 admission 경계라 검증→YAML→PR 유지)·`GitGateway` 포트 추상·`git archive` 커밋 스냅샷 실행·`Answer.snapshot_sha` 감사) ③ **지식 신선도·변경 전파**(정책 변경→관련 Precedent·답 자동 재검토, T7.3 — **설계·shape 완료, ADR 0019**: OKF 커밋=변경 이벤트(`OkfChangeEvent`)→`StalenessPropagator`가 agent_id 거친 매칭으로 영향 과거 Precedent·답 식별(과검출 허용·놓침 0)→stale 플래그(`Precedent.needs_review` — **무효화 아님**, 라우터가 안 봐 계속 라우팅·미아 없음)·owner 처리함 *세 번째 탭*(`ReevalStore`)에 재평가 적재→owner 1인칭 처분(`ReevalOutcome` — Keep/Invalidate/Supersede·Acknowledge/ReAnswer). 무효화는 owner 명시 후만) ④ **실시간 충돌 푸시 통지**(지금 pull→push, T7.4 — **구현 완료(red→green·실 어댑터는 게이트 밖 후속), ADR 0022**: 처리함/큐에 항목이 *적재되는 사건*(다툼 open·백업 답 add·재평가 add·escalation enqueue)에서 owner/manager에게 push 통지. `NotificationChannel` 포트(채널 중립·결정론 `FakeChannel`/실 Slack·Email·MCP 어댑터는 게이트 밖·NotImplementedError — 특정 벤더 1급 금지)·`Notification` frozen 값 객체(`kind`는 Literal·sealed sum 아님)·`Notifier`(구독 주입 맵·멱등 `(recipient,kind,subject_ref)`). **push는 pull을 대체하지 않고 *추가*한다** — 통지 채널 전체 실패해도 처리함 pull 그대로라 미아 없음(가시성 이중 보장). 발화 지점은 `notifier: Notifier | None = None` 옵셔널 주입(None=기존 동작·`commit_okf_bundle propagator=None`과 동형). 분산 인프라(ADR 0011·0012)는 *코드 재사용 아니라 패턴*(멱등 정신)만 — 통지는 fire-and-forget push라 작업 디스패치와 다른 도메인. MVP 슬라이스는 ConflictCase·Reeval 두 발화 지점부터·실 어댑터/비동기 전달/구독 관리는 게이트 밖).
@@ -74,3 +75,11 @@
 - Contested를 후보 합의로 풀어 Precedent로 학습한다.
 - 운영자가 모든 질문의 절차·답을 모니터링한다.
 - 유효하지 않은 카드는 등록되지 않는다(필수 필드·owner 참조 무결성 + **`agent_id` wire-format admission** — `^[A-Za-z0-9][A-Za-z0-9_-]*\Z`·≤64자를 `AgentCard` 구성 시점에 근본 강제해 경로 탈출·빈·공백·후행 개행 형태를 *구성 불가*로 막음, ADR 0023; 형식 강제는 식별자 위생이지 권한 선언 아님).
+
+### 채택 기준 (실조직 배포 — ADR 0039·소규모 파일럿 owner 3~5·스페이스 1~2·4주)
+
+위 성공 기준은 전부 *기능* 기준이다. 실조직 배포 목적 확정으로 **채택** 기준을 신설한다 — 기계가 도는가가 아니라 조직이 실제로 쓰는가를 잰다.
+
+- **owner 자발 유지 = 3명** — 3~5명 중 3명이 4주 중 ≥2주 활동하고 제거 요청 0. (유지부담이 감당 가능하다는 증거. "자발적 유지"의 조작적 정의는 파일럿 준비에서 확정 — 외부결정.)
+- **사람 개입 없는 종결 = 종결된 질문 중 ≥70%** — 종결에 도달한 질문(in-flight/awaiting 제외) 중 담당 신뢰답으로 종결(HITL·escalation·합의 개입 없이)된 비율. in-flight는 분모에서 빼고 별도 계상해 최근 질문이 비율을 저평가하지 않게 한다(리뷰 m2 확정). 저물량 왜곡을 피해 절대건수보다 비율을 기본으로 둔다(참고 절대값 ~20건/4주).
+- **논쟁 판례 종결 = 3건 + 그 intent 재논쟁 0** — 왕관 보석(논쟁 해소 루프)의 실작동 증거. 실 조직에서 논쟁 3건이 합의→판례로 닫히고 같은 intent가 재논쟁되지 않으면 루프가 산다. **선행 사망신호로 "N일 이상 안 닫힌 Contested"를 함께 관측**(정치 고임 조기 경보).

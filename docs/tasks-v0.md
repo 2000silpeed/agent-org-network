@@ -846,3 +846,30 @@ PRD §4 페르소나 면(Ask·Author·Inbox·Console)을 **별 프론트엔드 `
 - **R1 정치 고임(사망원인 1순위)** — 논쟁이 합의로 안 닫히고 쌓임. 안전장치 = Manager 백스톱(미아 없음)+판례 축적. 관측 = "N일 이상 열린 Contested" 선행지표(S3).
 - **R2 오너십 over-claim** — 중앙 admission 필터+owner 검토 게이트가 자동 방어(소규모는 수동 큐레이션).
 - **R3 OKF 추출 품질** — owner 승인 게이트(0029)·골든셋 eval. · **R4 Rovo 비교** — 데모 주인공을 검색 품질 아닌 왕관 보석으로. · **R5 승인 부담** — 거친 오너십 도출·최소 범위로 낮추고 축1 유지율로 관측.
+
+## Phase 15 — 메일 질문 채널 + 큐레이션 골든셋 검증
+
+> **새 워크스트림(2026-07-08).** Phase 14 파일럿 척추(Confluence 지식→답) 위에 (A) 메일 질문 입출력 채널과 (B) 답변 품질 검증을 **가산**. 사용자 결정: 둘 다·검증은 큐레이션 골든셋(메일 자동재생 아님). 라우팅/실행 계층·4대 불변식 무손상. **ADR 0040**(메일 신원·프라이버시·제안)·**ADR 0041**(큐레이션 골든셋 검증·제안 — 사용자 확정 후 채택). 계획: `plan-phase15-mail-and-curated-golden.md`.
+>
+> **핵심 발견**: `SampleQuestion`은 라우팅 기대치만·`run_eval`은 classify+route만 재생 → B의 진짜 신규 = **답변 품질 축**(답변 경로 재생 + 채점). 나머지는 재사용(`AskOrg.handle` 무변경·`reply_to_mcp_text` 투영·ADR 0003 골든셋 골격). A·B는 게이트 내 완전 독립.
+
+### 게이트 내 (결정론·외부결정 불필요)
+
+- [x] **A1 메일→질문 추출** — `extract_mail_question(payload)` → `MailExtraction` sealed sum(`MailQuestion`·`NotAQuestion`[empty/fyi/scheduling/auto_reply]·`AmbiguousMail`[multi_topic/unclear]). 관대 파싱·비질문 필터·`ConfluenceIngestor` 동형. **설계 완료(domain-architect·mail.py shape). 넘김 tdd.**
+- [x] **A2 OrgReply→메일 회신 투영** — `project_reply_to_mail` → `MailReply(subject, body)`. body=`reply_to_mcp_text` 재사용·subject 상태 분기 없음(에코 or 중립). **노출 불변식 핵심(subject·body 양쪽 leaky 단언). 넘김 tdd.**
+- [x] **A3 `MailChannel` 포트+`FakeMailChannel`** — poll+send·`InboundMail`/`OutboundMail`·실 `ImapMailChannel` 게이트 밖. 발신자=회신 목적지로만(ADR 0040·기본 guest). **설계 완료. 넘김 tdd.**
+- [x] **B1 골든 스키마 확장** — `AnswerExpectation`(criteria·match·**`CurationProvenance` 필수**)·`SampleQuestion.answer_expectation` 옵셔널(하위호환). **라벨 무결성 타입 강제**(Answer→라벨 자동생성 불가). **설계 완료(golden.py 확장). 넘김 tdd.**
+- [x] **B2 eval 답변 품질 축** — `AnswerGrader` 포트(`FakeGrader`·결정론 `SubstringGrader`·게이트 밖 `LlmGrader`)·`EvalReport.answer_quality_accuracy`·`run_eval` 답변 경로 재생(Routed만·StubRuntime). 임계 0.8 공유. **설계 완료(eval.py 확장). 넘김 tdd.**
+- [x] **B3 라우팅 검증 + 자동라벨 금지 구조 가드** — `_routing_matches` 재사용 + (1)Answer→라벨 파생함수 부재 (2)golden/eval이 mail 미import (3)provenance 타입 강제 단언. **설계 완료. 넘김 tdd.**
+
+> **게이트 내 tdd green(2026-07-08)** — A1/A2/A3·B1/B2/B3 red→green. 게이트 2758 passed(+55·A 28·B 27)·pyright 0·ruff clean. B3 자동라벨 금지를 AST 가드로 구현. **batch 코드리뷰 완료** — Blocker 0·Major 0·5개 판정 전부 PASS(A2 노출 불변식 강함·B 라벨 무결성·ADR 0040/0041 준수). **fix 번들 3 green(2026-07-08)**: M1(AST 가드 우회 홀 강화)·M2(fullwidth ？ 인식·CJK)·M3(질문 마커 있으면 약신호 fyi보다 질문 우선·실 질문 드롭=채널 미아 방지·정책 확정)·M4(다주제 `?` 오탐 완화·URL 마스킹)·N1~N3(docstring·서명마커 RFC 3676·빈 criteria 테스트). 게이트 **2767 passed(+9)·pyright 0·ruff clean**(메인 직접 재확인·Phase 15 테스트 64 green). **✅ Phase 15 게이트 내 완결(A·B).**
+
+### 게이트 밖 (실 인프라·**사용자 명시 승인 선행** — 특히 PII)
+
+- [ ] **A4 실 메일 수신**(IMAP/Graph·poll/webhook)→A1 · **A5 실 메일 송신**(A2 회신·발신 전 노출 검수) — mcp-runtime. ADR 0040 결정 3(owner 동의·스코프·PII) 선결.
+- [ ] **B4 큐레이션**(실 메일/Slack 질문 추출→사람이 정답담당+기대기준 확정→골든 JSONL) — 사용자·운영 · **B5 실 LLM eval**(큐레이션셋→실 Router+Runtime+`LlmGrader`) — mcp-runtime.
+
+### ADR 상태 · 외부 결정
+
+- **ADR 0040·0041 = 제안(Proposed)** — 게이트 내 빌드는 진행(실 PII 무접촉·픽스처/Fake), **실 메일/PII 접근(A4/A5·B4/B5) 전 사용자 명시 승인 시 채택 확정.**
+- 외부결정 6: 메일 시스템·수신방식 / 발신자→User 매핑 활성(기본 guest·옵트인) / PII 스코프·동의·보존 / 큐레이션 주체·규모 / grader 방식(substring vs LLM-judge)·임계 / A·B 우선순위.

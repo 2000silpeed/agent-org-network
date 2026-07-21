@@ -96,9 +96,7 @@ def test_backpressure_drops_oldest_over_capacity() -> None:
     # 상한 3 큐에 5건 넣으면 오래된 2건이 버려지고 최신 3건만 남는다(drop-oldest).
     feed = ConsoleFeed(maxsize=3)
     sub = feed.subscribe()
-    events = [
-        QuestionReceived(question=f"q{i}", session_id=f"s{i}", at=T0) for i in range(5)
-    ]
+    events = [QuestionReceived(question=f"q{i}", session_id=f"s{i}", at=T0) for i in range(5)]
     for ev in events:
         feed.emit(ev)
     drained: list[str] = []
@@ -152,10 +150,7 @@ def test_thread_safe_concurrent_subscribe_and_emit() -> None:
         barrier.wait()
         feed.emit(_q())
 
-    threads = [
-        threading.Thread(target=subscriber if i % 2 == 0 else emitter)
-        for i in range(8)
-    ]
+    threads = [threading.Thread(target=subscriber if i % 2 == 0 else emitter) for i in range(8)]
     for t in threads:
         t.start()
     for t in threads:
@@ -393,17 +388,17 @@ def test_console_view_route_serves_html() -> None:
 # ── 배선(질문 1건 → 피드에 3사건 순서) ──────────────────────────────────────
 
 
-def test_wiring_ask_endpoint_flows_events_to_feed() -> None:
+def test_P17_ask_endpoint는_legacy_console_feed_side_effect를_만들지_않는다() -> None:
     feed = _SpyFeed()
     app = create_app(runtime=StubRuntime(), console_feed=feed)
     client = TestClient(app)
     http = cast(Any, client)
     res = cast(Response, http.post("/ask", json={"question": "환불 처리 방법"}))
     assert res.status_code == 200
-    kinds = [type(e).__name__ for e in feed.events]
-    assert kinds[0] == "QuestionReceived"
-    assert kinds[1] == "RoutingDecisionRecorded"
-    assert "AnswerSent" in kinds
+    body = res.json()
+    assert body["request_id"]
+    assert body["record_id"]
+    assert feed.events == []
 
 
 # ── 헬퍼 ────────────────────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ from pydantic import BaseModel, model_validator
 from agent_org_network.agent_card import AgentCard
 from agent_org_network.complement import EdgeStore
 from agent_org_network.decision import Contested, Routed, RoutingDecision
+from agent_org_network.knowledge_store import GroundingKnowledgeFound
 
 # tie-break 정책 seam(ADR 0037 결정 5) — 동률 후보에서 결정론으로 primary 하나를
 # 고른다. stage-2 실 신뢰도는 게이트 밖이므로 여기선 *주입 가능한 정책*으로만 둔다.
@@ -148,9 +149,7 @@ class ChainGroundingSelector:
         return None
 
 
-def assemble_grounding_text(
-    grounding_set: GroundingSet, lookup: Callable[[str], str]
-) -> str:
+def assemble_grounding_text(grounding_set: GroundingSet, lookup: Callable[[str], str]) -> str:
     """`GroundingSet`의 각 agent_id 접지 텍스트를 `read_okf_bundle`/`resolve_knowledge_text`와
     같은 포맷("### {agent_id}\\n{body}")으로 조립한다(순서: `agent_ids()` 결정론).
 
@@ -159,3 +158,22 @@ def assemble_grounding_text(
     """
     sections = [f"### {agent_id}\n{lookup(agent_id)}" for agent_id in grounding_set.agent_ids()]
     return "\n\n".join(sections)
+
+
+def assemble_grounding_knowledge_text(
+    found: tuple[GroundingKnowledgeFound, ...],
+) -> str:
+    """S4 typed Grounding Knowledge를 입력 순서 그대로 문서 단위로 조립한다.
+
+    호출자가 ``(primary, *supporting)`` 순서로 건넨 canonical ``Found``만 소비한다.
+    legacy ``assemble_grounding_text``의 bare string lookup 경계는 변경하지 않는다.
+    """
+    if not found:
+        raise ValueError("primary Grounding Knowledge가 필요합니다.")
+    agent_sections: list[str] = []
+    for knowledge in found:
+        document_sections = [
+            f"#### {document.path}\n{document.body}" for document in knowledge.content.documents
+        ]
+        agent_sections.append(f"### {knowledge.agent_id}\n" + "\n\n".join(document_sections))
+    return "\n\n".join(agent_sections)

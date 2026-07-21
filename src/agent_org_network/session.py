@@ -45,6 +45,33 @@ class SessionTurn:
     answer_text: str
     answered_by: str
     at: datetime
+    request_id: str | None = None
+
+    def __post_init__(self) -> None:
+        from agent_org_network.request_correlation import validate_optional_request_id
+
+        validate_optional_request_id(self.request_id)
+
+    @classmethod
+    def for_request(
+        cls,
+        *,
+        request_id: str,
+        question: str,
+        answer_text: str,
+        answered_by: str,
+        at: datetime,
+    ) -> "SessionTurn":
+        """Request-aware transcript 턴 생성 관문."""
+        from agent_org_network.request_correlation import require_request_id
+
+        return cls(
+            question=question,
+            answer_text=answer_text,
+            answered_by=answered_by,
+            at=at,
+            request_id=require_request_id(request_id),
+        )
 
 
 @dataclass(frozen=True)

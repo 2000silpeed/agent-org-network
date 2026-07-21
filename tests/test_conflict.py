@@ -1,10 +1,16 @@
 from datetime import datetime, timezone
+from dataclasses import replace
+
+import pytest
 
 from agent_org_network.conflict import (
     Candidate,
+    ConcurOnPrimary,
     ConflictCase,
+    ConsensusService,
     InMemoryConflictCaseStore,
     InMemoryPrecedentStore,
+    Precedent,
     Resolution,
 )
 
@@ -13,7 +19,9 @@ def fixed_clock() -> datetime:
     return datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _case(case_id: str = "case-001", intent: str = "환불", owners: list[str] | None = None) -> ConflictCase:
+def _case(
+    case_id: str = "case-001", intent: str = "환불", owners: list[str] | None = None
+) -> ConflictCase:
     if owners is None:
         owners = ["owner_A", "owner_B"]
     candidates = tuple(Candidate(agent_id=f"agent_{o}", owner=o) for o in owners)
@@ -70,6 +78,34 @@ def test_resolve된_케이스는_후보와_intent_보존():
     assert resolved.candidates == case.candidates
 
 
+def test_request_aware_case는_round와_네상태_조합을_검증한다() -> None:
+    case = ConflictCase.for_request(
+        request_id="request-1",
+        intent="refund",
+        question="환불 기준은?",
+        candidates=(Candidate(agent_id="refund-card", owner="owner-a"),),
+        opened_at=fixed_clock(),
+        case_id="case-request",
+    )
+    assert case.concurrence_round == 1
+
+    with pytest.raises(ValueError, match="concurrence_round"):
+        replace(case, concurrence_round=0)
+    with pytest.raises(ValueError, match="manager_item_id"):
+        ConflictCase(
+            intent=case.intent,
+            question=case.question,
+            candidates=case.candidates,
+            opened_at=case.opened_at,
+            case_id=case.case_id,
+            request_id=case.request_id,
+            status="escalated",
+            concurrence_round=1,
+        )
+    with pytest.raises(ValueError, match="알 수 없는"):
+        replace(case, status="bogus")  # type: ignore[arg-type]
+
+
 # ── InMemoryConflictCaseStore 단위 ─────────────────────────────────────
 
 
@@ -77,7 +113,8 @@ def test_open_case_후_get으로_조회된다():
     store = InMemoryConflictCaseStore()
     case = _case(case_id="case-001")
     store.open_case(case)
-    assert store.get("case-001") is case
+    assert store.get("case-001") == case
+    assert store.get("case-001") is not case
 
 
 def test_없는_case_id는_None():
@@ -107,7 +144,8 @@ def test_open_for_intent가_같은_intent_케이스_반환():
     case = _case(case_id="case-001", intent="환불")
     store.open_case(case)
     result = store.open_for_intent("환불")
-    assert result is case
+    assert result == case
+    assert result is not case
 
 
 def test_open_for_intent가_없으면_None():
@@ -143,6 +181,71 @@ def test_mark_resolved_후_history에는_남는다():
     resolved = case.resolve(resolution)
     store.mark_resolved(resolved)
     assert any(c.case_id == "case-001" for c in store.history)
+
+
+def test_request_aware_case는_legacy_mutator와_intent_dedup을_차단한다() -> None:
+    store = InMemoryConflictCaseStore()
+    case = ConflictCase.for_request(
+        request_id="request-1",
+        intent="환불",
+        question="환불 되나요?",
+        candidates=(Candidate(agent_id="refund-card", owner="owner-a"),),
+        opened_at=fixed_clock(),
+        case_id="case-request",
+    )
+    with pytest.raises(ValueError, match="request-aware"):
+        store.open_case(case)
+    store.create_or_get_for_request(case)
+    assert store.open_for_intent("환불") is None
+    with pytest.raises(ValueError, match="request-aware"):
+        store.mark_resolved(case.resolve(Resolution(intent="환불", primary="refund-card")))
+
+
+def test_legacy_consensus는_request_aware_case를_side_effect_0으로_조기거부한다() -> None:
+    class SpyCaseStore(InMemoryConflictCaseStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mark_calls = 0
+
+        def mark_resolved(self, case: ConflictCase) -> None:
+            self.mark_calls += 1
+            super().mark_resolved(case)
+
+    class SpyPrecedents(InMemoryPrecedentStore):
+        def __init__(self) -> None:
+            super().__init__(clock=fixed_clock)
+            self.record_calls = 0
+
+        def record(self, resolution: Resolution) -> Precedent:
+            self.record_calls += 1
+            return super().record(resolution)
+
+    class SpyConsensusService(ConsensusService):
+        def has_votes(self) -> bool:
+            return bool(self._votes)
+
+    store = SpyCaseStore()
+    case = ConflictCase.for_request(
+        request_id="request-1",
+        intent="환불",
+        question="환불 되나요?",
+        candidates=(Candidate(agent_id="refund-card", owner="owner-a"),),
+        opened_at=fixed_clock(),
+        case_id="case-request",
+    )
+    store.create_or_get_for_request(case)
+    precedents = SpyPrecedents()
+    service = SpyConsensusService(store, precedents)
+
+    with pytest.raises(ValueError, match="request-aware"):
+        service.concur(
+            case.case_id,
+            ConcurOnPrimary(by_owner="owner-a", on_agent="refund-card"),
+        )
+
+    assert service.has_votes() is False
+    assert precedents.record_calls == 0
+    assert store.mark_calls == 0
 
 
 def test_record_후_lookup이_같은_intent의_Precedent를_반환한다():

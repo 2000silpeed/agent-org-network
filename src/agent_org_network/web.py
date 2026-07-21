@@ -1,9 +1,10 @@
-"""웹 백엔드 — 이미 완성된 AskOrg 핸들러를 감싸는 얇은 어댑터.
+"""웹 백엔드 — P17 Request-first 사용자 표면과 운영 화면을 조립한다.
 
-비즈니스 로직 없음: POST /ask 가 질문을 받아 핸들러를 호출하고
-OrgReply(Answered | Pending)를 JSON으로 직렬화해 돌려준다.
-내부값(confidence·candidates·escalated_to)은 Answered/Pending에 필드 자체가
-없으므로 구조적으로 새지 않는다. 사용자에겐 담당·모드·출처(또는 안내)만 간다.
+`/ask*`와 `/requests*`는 같은 Question Surface application을 사용한다. legacy URI는
+호환 JSON 이름만 유지하며 AskOrg·OrgReply·SessionStore·WebSocketDispatcher를 다시
+호출하지 않는다. 사용자 결과는 canonical Request/Completion 조회에서만 투영하고,
+내부 route·candidate·policy·감사·outbox 값은 싣지 않는다. 기존 AskOrg 직렬화 함수는
+아직 남은 단위 호환 코드와 운영 기능을 위해 보존한다.
 
 처리함(Inbox)은 Owner向 *운영 화면*이라 다른 면이다 — 케이스의 후보·intent 등
 내부값을 그대로 노출한다(실 사용자 채팅 OrgReply의 노출 불변식은 여기 적용 안 됨).
@@ -24,25 +25,36 @@ OrgReply(Answered | Pending)를 JSON으로 직렬화해 돌려준다.
 """
 
 import os
+import re
 import secrets
-from collections.abc import Callable, Iterator
+from hashlib import sha256
+from collections.abc import Awaitable, Callable
+from functools import wraps
+from inspect import signature
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, assert_never, cast
+from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, assert_never, cast
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, StrictInt, ValidationError, field_validator
 
 from agent_org_network.ask_org import (
     Answered,
-    ErrorEvent,
     OrgReply,
     Pending,
     project_answered,
     project_pending,
-    serialize_sse_event,
 )
 from agent_org_network.audit import InMemoryAuditLog, JsonlAuditLog, action_record
+from agent_org_network.answer_record import (
+    AnswerRecordReader,
+    CompositeAnswerRecordReader,
+)
+from agent_org_network.approval import ApproverPrincipal
+from agent_org_network.approval_http import (
+    ApproverNotAuthenticatedError,
+    create_approval_router,
+)
 from agent_org_network.console import ConsoleFeed, stream_console_frames
 
 if TYPE_CHECKING:
@@ -60,7 +72,7 @@ if TYPE_CHECKING:
     from agent_org_network.knowledge_store import KnowledgeStore
     from agent_org_network.presence import PresenceLogStore, PresenceStatus
     from agent_org_network.scorecard import OwnerScorecard, ScorecardTrend
-    from agent_org_network.sqlite_stores import SqliteRegistryJournal
+    from agent_org_network.sqlite_stores import SqliteRegistryJournal, SqliteUserJournal
 from agent_org_network.conflict import (
     Agreed,
     ConcurOnPrimary,
@@ -70,6 +82,10 @@ from agent_org_network.conflict import (
     StillOpen,
 )
 from agent_org_network.demo import DEMO_OKF_ROOT, build_demo, seed_demo_reeval_items
+from agent_org_network.demo_question_surfaces import (
+    DEMO_ORG_ID,
+    build_demo_question_surface_composition,
+)
 from agent_org_network.dispatch import RuntimeDispatcher
 from agent_org_network.git_gateway import (
     BuilderCommitRequest,
@@ -81,6 +97,10 @@ from agent_org_network.git_gateway import (
 from agent_org_network.manager_queue import (
     AssignOwner as MgrAssignOwner,
     Dismiss as MgrDismiss,
+    FromDeadlock,
+    FromDispatch,
+    FromUnowned,
+    InMemoryManagerQueueStore,
     ManagerAction,
     ManagerItem,
     ManagerQueueService,
@@ -88,10 +108,84 @@ from agent_org_network.manager_queue import (
     ManagerResolution,
     Reroute as MgrReroute,
 )
+from agent_org_network.p17_conflict_disposition import (
+    ConcurOnConflict,
+    ConcurrencePending,
+    ConflictDispositionConflict,
+    ConflictDispositionDependency,
+    ConflictDispositionError,
+    ConflictDispositionForbidden,
+    ConflictDispositionInProgress,
+    ConflictDispositionIntegrity,
+    ConflictDispositionInvalid,
+    ConflictDispositionNotFound,
+    ConflictDispositionNotFoundOrDenied,
+    ConflictAuthorizationUnavailable,
+    ConflictEscalated,
+    ConflictResolved,
+    OwnerPrincipal,
+    P17ConcurrenceResult,
+    ConsensusRouteRejected,
+)
+from agent_org_network.p17_manager_disposition import (
+    AssignDeadlockedOwner,
+    AssignUnownedOwner,
+    DismissDeadlocked,
+    DismissUnowned,
+    ManagerDispositionConflict,
+    ManagerDispositionDependency,
+    ManagerDispositionError,
+    ManagerDispositionForbidden,
+    ManagerDispositionInProgress,
+    ManagerDispositionIntegrity,
+    ManagerDispositionInvalid,
+    ManagerDispositionNotFound,
+    ManagerDispositionNotFoundOrDenied,
+    ManagerAuthorizationUnavailable,
+    ManagerPrincipal,
+)
+from agent_org_network.central_authority import AuthenticatedPrincipal, ResourceRef
+from agent_org_network.operational_authorization import (
+    OperationalAction,
+    OperationalAuthorization,
+)
+from agent_org_network.operational_application import (
+    OperationalApplication,
+    OperationalDeniedError,
+    MutationApprovalProvider,
+    OperationalNotFoundError,
+    OperationalUnavailableError,
+)
+from agent_org_network.authoring_application import AuthoringApplication, AuthoringMutation
 from agent_org_network.oidc import (
     OidcProvider,
     OidcVerificationError,
     resolve_identity,
+)
+from agent_org_network.question_resolution import (
+    AskQuestion,
+    QuestionAuthorizationDeniedError,
+    RequesterPrincipal,
+)
+from agent_org_network.question_stream import QuestionStreamSubscription
+from agent_org_network.question_stream_execution import (
+    AnsweredQuestionLookup,
+    DeclinedQuestionLookup,
+    FailedQuestionLookup,
+    OpenQuestionStream,
+    PendingQuestionLookup,
+    QuestionStreamLookup,
+    QuestionStreamRequestNotFoundError,
+    QuestionStreamUnavailableError,
+    QuestionSurfaceInterruptedError,
+)
+from agent_org_network.question_stream_http import (
+    build_question_streaming_response,
+    create_question_stream_router,
+)
+from agent_org_network.question_surface_composition import (
+    QuestionSurfaceComposition,
+    QuestionSurfaceCompositionError,
 )
 from agent_org_network.review import (
     ApproveBackup,
@@ -138,7 +232,7 @@ from agent_org_network.two_stage_router import (
     accept_published_index,
 )
 from agent_org_network.hitl import HitlToggleMap
-from agent_org_network.session import SessionAskOrg, SessionStore
+from agent_org_network.session import SessionStore
 from agent_org_network.storage_select import (
     select_answer_record_store,
     select_correction_store,
@@ -286,15 +380,34 @@ class AdminOwnerChangeRequest(BaseModel):
     new_owner: str
 
 
+class AdminUserRegisterRequest(BaseModel):
+    """POST /admin/users 요청 바디 — 신규 User 라이브 등록(ADR 0064 결정 ①②③④).
+
+    `AdminCardRegisterRequest`의 User 판(폼→User 후보 미러). 핸들러가 `UserCandidate`로
+    변환해 admission 관문(`admit_user`)에 그대로 태운다 — 우회 등록 API 없음(ADR 0023
+    계승). `user_id`는 관리자가 직접 입력하는 사람이 읽는 id(ADR 0064 결정 ② — nonblank +
+    중복 거부만). `email`은 실 프로비저닝 정책상 필수지만(admit_user require_email=True),
+    없거나 형식 오류면 422로 거부한다(request 모델이 아니라 admission이 판정 — 사유 노출).
+    `manager`는 기존 User 실재를 검사하며 None/빈값이면 루트(0..1 manager·ADR 0005).
+    """
+
+    user_id: str
+    email: str | None = None
+    manager: str | None = None
+
+
 class ConcurRequest(BaseModel):
     """POST /cases/{case_id}/concur 요청 바디.
 
-    인증 활성 시: by_owner는 세션에서 채워진다(body 값 무시). on_agent·rationale만 읽음.
+    인증 활성 시: by_owner는 세션에서 채워진다(body 값 무시). request-aware Case는
+    서버가 직전에 공개한 expected_round와 stance까지 읽어 generation-bound 처분에 쓴다.
     하위호환(미인증): by_owner를 body에서 읽는다(기존 테스트 보존).
     """
 
     on_agent: str
     rationale: str = ""
+    expected_round: StrictInt | None = Field(default=None, ge=1)
+    stance: Literal["withdraw", "keep_as_complement"] = "withdraw"
     by_owner: str = ""  # 하위호환 — 인증 활성 시 무시, 미활성 시 body에서 읽음
 
 
@@ -349,6 +462,52 @@ def serialize_reply(reply: OrgReply) -> dict[str, Any]:
             return project_answered(reply)
         case Pending():
             return project_pending(reply)
+        case _ as never:
+            assert_never(never)
+
+
+def serialize_legacy_question_lookup(result: QuestionStreamLookup) -> dict[str, Any]:
+    """P17 사용자 결과를 legacy URI의 안전한 JSON 봉투로만 투영한다."""
+    match result:
+        case AnsweredQuestionLookup():
+            return {
+                "type": "answered",
+                "request_id": result.request_id,
+                "record_id": result.record_id,
+                "text": result.answer_text,
+                "answered_by": {
+                    "owner": result.answered_by,
+                    "agent_id": result.agent_id,
+                },
+                "mode": result.mode,
+                "sources": list(result.sources),
+                "review_status": result.review_status,
+            }
+        case PendingQuestionLookup():
+            kind = "dispatched" if result.kind in ("routing", "routed") else result.kind
+            return {
+                "type": "pending",
+                "request_id": result.request_id,
+                "kind": kind,
+                "state": result.state,
+                "retryable": result.retryable,
+                "message": result.message,
+                "tracking": result.request_id,
+            }
+        case DeclinedQuestionLookup():
+            return {
+                "type": "declined",
+                "request_id": result.request_id,
+                "reason_code": result.reason_code,
+                "message": result.message,
+            }
+        case FailedQuestionLookup():
+            return {
+                "type": "failed",
+                "request_id": result.request_id,
+                "error_code": result.error_code,
+                "message": result.message,
+            }
         case _ as never:
             assert_never(never)
 
@@ -494,12 +653,21 @@ def serialize_case(
                     for rc in concepts
                 ]
         candidates.append(cand)
-    return {
+    payload: dict[str, Any] = {
         "case_id": case.case_id,
         "intent": case.intent,
         "question": case.question,
         "candidates": candidates,
     }
+    if case.request_id is not None:
+        payload.update(
+            {
+                "request_id": case.request_id,
+                "status": case.status,
+                "current_round": case.concurrence_round,
+            }
+        )
+    return payload
 
 
 def serialize_outcome(outcome: ConsensusOutcome) -> dict[str, Any]:
@@ -518,6 +686,46 @@ def serialize_outcome(outcome: ConsensusOutcome) -> dict[str, Any]:
             }
         case Deadlocked():
             return {"type": "deadlocked"}
+        case _:
+            assert_never(outcome)
+
+
+def serialize_p17_concurrence(outcome: P17ConcurrenceResult) -> dict[str, Any]:
+    """P17 concurrence 결과에서 재시도마다 달라질 수 있는 wake를 제거한다."""
+    match outcome:
+        case ConcurrencePending():
+            return {
+                "type": "still_open",
+                "request_id": outcome.request_id,
+                "case_id": outcome.case_id,
+                "current_round": outcome.current_round,
+                "pending_owners": list(outcome.pending_owners),
+            }
+        case ConsensusRouteRejected():
+            return {
+                "type": "route_rejected",
+                "request_id": outcome.request_id,
+                "case_id": outcome.case_id,
+                "current_round": outcome.current_round,
+                "next_round": outcome.next_round,
+                "reason_code": outcome.reason_code,
+            }
+        case ConflictResolved():
+            return {
+                "type": "agreed",
+                "request_id": outcome.request_id,
+                "case_id": outcome.case_id,
+                "primary": outcome.route.agent_id,
+                "intent": outcome.route.intent,
+            }
+        case ConflictEscalated():
+            return {
+                "type": "deadlocked",
+                "request_id": outcome.request_id,
+                "case_id": outcome.case_id,
+                "current_round": outcome.cause.round,
+                "manager_item_id": outcome.manager_item_id,
+            }
         case _:
             assert_never(outcome)
 
@@ -665,6 +873,7 @@ def serialize_manager_item(item: ManagerItem) -> dict[str, Any]:
                 "type": "from_unowned",
                 "question": source.question,
                 "escalated_to": source.decision.escalated_to,
+                "intent": source.decision.intent.strip() or None,
             }
         case FromDeadlock():
             source_dict = {
@@ -688,6 +897,7 @@ def serialize_manager_item(item: ManagerItem) -> dict[str, Any]:
 
     d: dict[str, Any] = {
         "item_id": item.item_id,
+        "request_id": item.request_id,
         "manager_id": item.manager_id,
         "status": item.status,
         "created_at": item.created_at.isoformat(),
@@ -856,9 +1066,7 @@ class BuilderValidateRequest(BaseModel):
     trust_labels: list[str] = []
 
 
-def validate_card_for_builder(
-    req: BuilderValidateRequest, registry: "Registry"
-) -> dict[str, Any]:
+def validate_card_for_builder(req: BuilderValidateRequest, registry: "Registry") -> dict[str, Any]:
     """빌더 카드 후보를 admission 규칙으로 검증해 결과 dict를 낸다(T5.3, 순수 함수).
 
     절차: ① `AgentCard.model_validate`(필수 필드·타입·date 파싱) — 실패면
@@ -1072,6 +1280,150 @@ def _parse_manager_action(req: ManagerActionRequest, by_manager: str) -> Manager
         return MgrDismiss(by_manager=by_manager, rationale=req.rationale)
 
 
+def _conflict_disposition_http_error(error: ConflictDispositionError) -> HTTPException:
+    """닫힌 P17.5 오류 타입만 신뢰해 고정 HTTP 상태·메시지로 변환한다."""
+    headers: dict[str, str] | None = None
+    if isinstance(error, (ConflictDispositionNotFound, ConflictDispositionNotFoundOrDenied)):
+        status = 404
+        code = "conflict_disposition_not_found"
+        retryable = False
+        message = "다툼 케이스를 찾을 수 없습니다."
+    elif isinstance(error, ConflictDispositionForbidden):
+        status = 403
+        code = "conflict_disposition_forbidden"
+        retryable = False
+        message = "이 다툼 케이스에 합의할 권한이 없습니다."
+    elif isinstance(error, ConflictDispositionInvalid):
+        status = 400
+        code = "conflict_disposition_invalid"
+        retryable = False
+        message = "다툼 합의 요청이 유효하지 않습니다."
+    elif isinstance(error, ConflictDispositionInProgress):
+        status = 409
+        code = "conflict_disposition_in_progress"
+        retryable = True
+        message = "같은 다툼 합의가 진행 중입니다."
+        headers = {"Retry-After": "1"}
+    elif isinstance(error, ConflictDispositionConflict):
+        status = 409
+        code = "conflict_disposition_conflict"
+        retryable = False
+        message = "다툼 케이스에 다른 합의가 이미 적용되었습니다."
+    elif isinstance(error, ConflictAuthorizationUnavailable):
+        status = 503
+        code = "conflict_authorization_unavailable"
+        retryable = True
+        message = "다툼 처리 권한을 일시적으로 확인할 수 없습니다."
+        headers = {"Retry-After": "1"}
+    elif isinstance(error, ConflictDispositionDependency):
+        status = 503
+        code = "conflict_disposition_dependency"
+        retryable = True
+        message = "다툼 합의 의존성을 일시적으로 확인할 수 없습니다."
+        headers = {"Retry-After": "1"}
+    elif isinstance(error, ConflictDispositionIntegrity):
+        status = 500
+        code = "conflict_disposition_integrity"
+        retryable = False
+        message = "다툼 합의의 저장 증거가 일치하지 않습니다."
+    else:
+        status = 500
+        code = "conflict_disposition_error"
+        retryable = False
+        message = "다툼 합의를 완료하지 못했습니다."
+    return HTTPException(
+        status_code=status,
+        detail={
+            "code": code,
+            "message": message,
+            "retryable": retryable,
+        },
+        headers=headers,
+    )
+
+
+def _manager_disposition_http_error(error: ManagerDispositionError) -> HTTPException:
+    """닫힌 P17.4 오류 타입만 신뢰해 고정 HTTP 상태·메시지로 변환한다."""
+    headers: dict[str, str] | None = None
+    if isinstance(error, (ManagerDispositionNotFound, ManagerDispositionNotFoundOrDenied)):
+        status = 404
+        code = "manager_disposition_not_found"
+        retryable = False
+        message = "Manager 처리 항목을 찾을 수 없습니다."
+    elif isinstance(error, ManagerDispositionForbidden):
+        status = 403
+        code = "manager_disposition_forbidden"
+        retryable = False
+        message = "이 Manager 처리 항목을 처분할 권한이 없습니다."
+    elif isinstance(error, ManagerDispositionInvalid):
+        status = 400
+        code = "manager_disposition_invalid"
+        retryable = False
+        message = "Manager 처분 요청이 유효하지 않습니다."
+    elif isinstance(error, ManagerDispositionInProgress):
+        status = 409
+        code = "manager_disposition_in_progress"
+        retryable = True
+        message = "같은 Manager 처분이 진행 중입니다."
+        headers = {"Retry-After": "1"}
+    elif isinstance(error, ManagerDispositionConflict):
+        status = 409
+        code = "manager_disposition_conflict"
+        retryable = False
+        message = "Manager 처리 항목에 다른 처분이 이미 적용되었습니다."
+    elif isinstance(error, ManagerAuthorizationUnavailable):
+        status = 503
+        code = "manager_authorization_unavailable"
+        retryable = True
+        message = "Manager 처리 권한을 일시적으로 확인할 수 없습니다."
+        headers = {"Retry-After": "1"}
+    elif isinstance(error, ManagerDispositionDependency):
+        status = 503
+        code = "manager_disposition_dependency"
+        retryable = True
+        message = "Manager 처분 의존성을 일시적으로 확인할 수 없습니다."
+        headers = {"Retry-After": "1"}
+    elif isinstance(error, ManagerDispositionIntegrity):
+        status = 500
+        code = "manager_disposition_integrity"
+        retryable = False
+        message = "Manager 처분의 저장 증거가 일치하지 않습니다."
+    else:
+        status = 500
+        code = "manager_disposition_error"
+        retryable = False
+        message = "Manager 처분을 완료하지 못했습니다."
+    return HTTPException(
+        status_code=status,
+        detail={
+            "code": code,
+            "message": message,
+            "retryable": retryable,
+        },
+        headers=headers,
+    )
+
+
+def _close_question_surface_after_assembly_error(
+    composition: QuestionSurfaceComposition,
+    assembly_error: BaseException,
+) -> None:
+    """앱이 인수한 Question Surface를 조립 실패에서도 재시도 포함 정리한다."""
+    try:
+        composition.close()
+    except BaseException as close_error:
+        assembly_error.add_note(
+            f"QuestionSurfaceComposition 첫 정리가 실패했습니다: {type(close_error).__name__}"
+        )
+        try:
+            composition.close()
+        except BaseException as retry_error:
+            assembly_error.add_note(
+                "QuestionSurfaceComposition 정리 재시도도 실패했습니다: "
+                f"{type(retry_error).__name__}"
+            )
+
+
 class BackupReviewRequest(BaseModel):
     """POST /backup-reviews/{item_id} 요청 바디.
 
@@ -1157,6 +1509,79 @@ class TokenIssueRequest(BaseModel):
     role: Literal["primary", "backup"] = "primary"
 
 
+_QUESTION_COOKIE_NAME = "aon_uid"
+_QUESTION_SUBJECT_PATTERN = re.compile(r"\A[A-Za-z0-9_-]{16,128}\Z")
+_QUESTION_REQUEST_ID_PATTERN = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._~-]{0,127}\Z")
+_QUESTION_PRINCIPAL_STATE = "question_requester_principal"
+QuestionRequestHandler = Callable[[Request], Awaitable[Response]]
+_CreateAppParams = ParamSpec("_CreateAppParams")
+_CreateAppResult = TypeVar("_CreateAppResult")
+
+
+def _bind_anonymous_question_principal(
+    request: Request,
+    *,
+    org_id: str,
+) -> tuple[RequesterPrincipal, str | None]:
+    """서버 조직과 안전한 익명 cookie만으로 canonical 질문자 신원을 결박한다."""
+    raw_subject = request.cookies.get(_QUESTION_COOKIE_NAME)
+    if raw_subject is None or _QUESTION_SUBJECT_PATTERN.fullmatch(raw_subject) is None:
+        subject_id = secrets.token_urlsafe(24)
+        set_cookie = subject_id
+    else:
+        subject_id = raw_subject
+        set_cookie = None
+    principal = RequesterPrincipal(org_id=org_id, subject_id=subject_id)
+    setattr(request.state, _QUESTION_PRINCIPAL_STATE, principal)
+    return principal, set_cookie
+
+
+def _question_principal_from_state(request: Request) -> RequesterPrincipal:
+    """middleware가 결박한 신원만 읽는다. body·path·cookie를 다시 해석하지 않는다."""
+    principal = getattr(request.state, _QUESTION_PRINCIPAL_STATE, None)
+    if type(principal) is not RequesterPrincipal:
+        raise RuntimeError("질문자 신원이 요청 상태에 결박되지 않았습니다.")
+    assert isinstance(principal, RequesterPrincipal)
+    return principal
+
+
+def _question_request_headers(request_id: str) -> dict[str, str]:
+    if _QUESTION_REQUEST_ID_PATTERN.fullmatch(request_id) is None:
+        raise ValueError("HTTP 표면에 안전하지 않은 request_id입니다.")
+    return {"X-Request-ID": request_id}
+
+
+def _own_injected_question_surface(
+    factory: Callable[_CreateAppParams, _CreateAppResult],
+) -> Callable[_CreateAppParams, _CreateAppResult]:
+    """`create_app` 진입 시 주입 composition의 수명을 인수한다.
+
+    성공해 app이 반환되면 shutdown handler가 닫고, 반환 전 어느
+    조립 단계에서든 실패하면 원래 예외을 유지한 채 즉시 회수한다.
+    """
+    factory_signature = signature(factory)
+
+    @wraps(factory)
+    def guarded(
+        *args: _CreateAppParams.args, **kwargs: _CreateAppParams.kwargs
+    ) -> _CreateAppResult:
+        bound = factory_signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        composition = cast(
+            QuestionSurfaceComposition | None,
+            bound.arguments["question_surface_composition"],
+        )
+        try:
+            return factory(*args, **kwargs)
+        except BaseException as assembly_error:
+            if composition is not None:
+                _close_question_surface_after_assembly_error(composition, assembly_error)
+            raise
+
+    return guarded
+
+
+@_own_injected_question_surface
 def create_app(
     runtime: AgentRuntime | None = None,
     dispatcher: RuntimeDispatcher | None = None,
@@ -1179,8 +1604,14 @@ def create_app(
     feedback_store: "FeedbackStore | None" = None,
     presence_of: "Callable[[str], PresenceStatus] | None" = None,
     registry_journal: "SqliteRegistryJournal | None" = None,
+    user_journal: "SqliteUserJournal | None" = None,
     knowledge_store: "KnowledgeStore | None" = None,
     presence_log: "PresenceLogStore | None" = None,
+    question_surface_composition: QuestionSurfaceComposition | None = None,
+    question_org_id: str = DEMO_ORG_ID,
+    governance_principal_resolver: Callable[[Request], AuthenticatedPrincipal] | None = None,
+    operational_authorization: OperationalAuthorization | None = None,
+    operational_mutation_approval: MutationApprovalProvider | None = None,
 ) -> FastAPI:
     """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
 
@@ -1193,8 +1624,10 @@ def create_app(
     `oidc_provider`(T7.1·ADR 0021): SSO 신원 검증 포트. 주입 시 **SSO 모드**(`POST /login/sso`
     활성·무비밀번호 `POST /login`은 403 거부 — 신원 *선택* 우회 차단). 미주입이면 기존 동작
     (인증 모드 3단 중 OFF/무비밀번호 — ADR 0021 결정 4). 결정론 테스트는 `FakeOidcProvider` 주입.
-    `session_store`(Phase 9·ADR 0024 결정 A): 채팅 세션 저장소 관찰 seam. 주입 시
-    그 store를 쓴다(테스트가 active_for_user 등으로 세션 상태를 직접 검사). 미주입이면
+    `session_store`(Phase 9·ADR 0024 결정 A): legacy 채팅 세션 저장소 관찰 seam. 주입 시
+    legacy 운영 호환 코드가 그 store를 쓴다. P17.2c-2 사용자 `/ask*`·`/requests*`는 이
+    활성 SessionStore에 이중 기록하지 않고 Finalization의 request-correlated SessionTurn만
+    남긴다. 활성 세션 투영은 P17.9 projector 범위다. 미주입이면
     `select_session_store()`(`storage_select.py`)가 고른다 — `AON_DB`(SQLite 파일 경로)
     env 설정 시 `SqliteSessionStore(path)`(durable, T9.8), 미설정 시 기존
     `InMemorySessionStore()`(하위호환 — 기존 동작 무변경). 명시 주입이 항상 env보다 우선.
@@ -1232,10 +1665,188 @@ def create_app(
     `presence_log`(Phase 13 SC2·ADR 0035): 스코어카드 가용성 축(온라인 비율)의 원천.
     미주입이면 `None`(그 축은 `compute_owner_scorecard` 계약대로 `online_ratio=None`
     — 판정 불가 정직 표기, 하위호환).
+    `question_surface_composition`은 P17 native Request/SSE/조회와 호환 `/ask*`가 공유할
+    조립이며, MCP adapter에도 같은 application을 주입할 수 있다. 명시 주입과 기본 데모
+    조립 모두 앱이 수명을 인수해 shutdown에서 닫는다.
+    `question_org_id`는 익명 질문 principal의 서버측 고정 조직이며 body·path 입력으로 받지 않는다.
     """
     from starlette.middleware.sessions import SessionMiddleware
 
     app = FastAPI(title="Agent Org Network — 채팅·처리함(데모)")
+
+    if (
+        not question_org_id.strip()
+        or len(question_org_id) > 512
+        or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in question_org_id)
+    ):
+        raise ValueError("question_org_id는 안전한 nonblank 조직 식별자여야 합니다.")
+    if governance_principal_resolver is not None and not callable(governance_principal_resolver):
+        raise ValueError("governance_principal_resolver는 callable이어야 합니다.")
+    if (
+        operational_authorization is not None
+        and type(operational_authorization) is not OperationalAuthorization
+    ):
+        raise ValueError("operational_authorization은 OperationalAuthorization이어야 합니다.")
+    if operational_mutation_approval is not None and not callable(operational_mutation_approval):
+        raise ValueError("operational_mutation_approval은 callable이어야 합니다.")
+
+    def _governance_principal(request: Request) -> AuthenticatedPrincipal:
+        resolver = governance_principal_resolver
+        if resolver is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "governance_principal_unavailable",
+                    "message": "운영 신원을 일시적으로 확인할 수 없습니다.",
+                    "retryable": True,
+                },
+                headers={"Retry-After": "1"},
+            )
+        try:
+            raw = resolver(request)
+            if type(raw) is not AuthenticatedPrincipal:
+                raise TypeError
+            return AuthenticatedPrincipal.model_validate(raw, strict=True)
+        except HTTPException:
+            raise
+        except Exception as error:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "governance_principal_unavailable",
+                    "message": "운영 신원을 일시적으로 확인할 수 없습니다.",
+                    "retryable": True,
+                },
+                headers={"Retry-After": "1"},
+            ) from error
+
+    # S4 중앙 운영 모드는 resolver와 Authority 경계가 함께 있어야 한다. 하나만 주입한
+    # 조립은 demo의 body/session actor로 되돌아가지 않고 unavailable로 닫는다.
+    _operational_central_mode = (
+        governance_principal_resolver is not None or operational_authorization is not None
+    )
+
+    def _operational_unavailable() -> HTTPException:
+        return HTTPException(
+            status_code=503,
+            detail={
+                "code": "operational_authorization_unavailable",
+                "message": "운영 권한을 일시적으로 확인할 수 없습니다.",
+                "retryable": True,
+            },
+            headers={"Retry-After": "1"},
+        )
+
+    def _operational_not_found_or_denied() -> HTTPException:
+        # 카드/레코드 부재와 타 조직·타 Owner·권한 거부를 같은 외부 의미로 둔다.
+        return HTTPException(status_code=404, detail="운영 대상을 찾을 수 없습니다.")
+
+    def _require_operational_composition() -> None:
+        """중앙 모드의 두 권한 의존성이 모두 있는지, 조회 전에 확인한다."""
+        if _operational_central_mode and (
+            governance_principal_resolver is None
+            or operational_authorization is None
+            or _operational_application is None
+        ):
+            raise _operational_unavailable()
+
+    def _current_agent_card(agent_id: str) -> "AgentCard | None":
+        try:
+            return bundle.registry.get(agent_id)
+        except KeyError:
+            return None
+
+    def _authorize_operational_resource(
+        request: Request,
+        *,
+        action: OperationalAction,
+        resource: ResourceRef,
+        principal: AuthenticatedPrincipal | None = None,
+    ) -> AuthenticatedPrincipal | None:
+        """현재 authoritative ResourceRef로 action을 확인한다.
+
+        demo 모드에서는 ``None``을 돌려 기존 세션/body 호환을 보존한다. 중앙 모드에서는
+        sealed grant 검증을 수행하는 OperationalAuthorization에만 판단을 맡긴다.
+        """
+        if not _operational_central_mode:
+            return None
+        _require_operational_composition()
+        assert operational_authorization is not None
+        resolved_principal = principal if principal is not None else _governance_principal(request)
+        outcome = operational_authorization.authorize(resolved_principal, action, resource)
+        if outcome == "unavailable":
+            raise _operational_unavailable()
+        if outcome != "allowed":
+            raise _operational_not_found_or_denied()
+        return resolved_principal
+
+    def _authorize_operational_card(
+        request: Request,
+        *,
+        action: OperationalAction,
+        agent_id: str,
+        principal: AuthenticatedPrincipal | None = None,
+    ) -> AuthenticatedPrincipal | None:
+        """현재 Registry 카드와 owner로 card-scoped action을 확인한다."""
+        if not _operational_central_mode:
+            return None
+        _require_operational_composition()
+        resolved_principal = principal if principal is not None else _governance_principal(request)
+        card = _current_agent_card(agent_id)
+        if card is None:
+            raise _operational_not_found_or_denied()
+        return _authorize_operational_resource(
+            request,
+            action=action,
+            resource=ResourceRef(
+                org_id=resolved_principal.org_id,
+                kind="agent_card",
+                resource_id=card.agent_id,
+                owner_subject_id=card.owner,
+            ),
+            principal=resolved_principal,
+        )
+
+    def _authorize_operational_org(
+        request: Request,
+        *,
+        action: OperationalAction,
+        principal: AuthenticatedPrincipal | None = None,
+    ) -> AuthenticatedPrincipal | None:
+        """조직 전역 read 표면은 현재 인증 조직 자체를 리소스로 삼는다."""
+        if not _operational_central_mode:
+            return None
+        resolved_principal = principal if principal is not None else _governance_principal(request)
+        return _authorize_operational_resource(
+            request,
+            action=action,
+            resource=ResourceRef(
+                org_id=resolved_principal.org_id,
+                kind="organization",
+                resource_id=resolved_principal.org_id,
+            ),
+            principal=resolved_principal,
+        )
+
+    @app.middleware("http")
+    async def bind_question_principal(  # pyright: ignore[reportUnusedFunction]
+        request: Request,
+        call_next: QuestionRequestHandler,
+    ) -> Response:
+        _, set_cookie = _bind_anonymous_question_principal(
+            request,
+            org_id=question_org_id,
+        )
+        response = await call_next(request)
+        if set_cookie is not None:
+            response.set_cookie(
+                key=_QUESTION_COOKIE_NAME,
+                value=set_cookie,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+        return response
 
     # SessionMiddleware 부착 (T6.5 슬라이스 1 — ADR 0016 결정 1).
     # session_secret 주입 시에만 붙인다(미주입이면 인증 없이 동작 — 하위호환).
@@ -1246,9 +1857,7 @@ def create_app(
     # 콘솔 seam(T9.2(b)·T9.3(b)·T9.5(c)): 미주입이면 `select_token_store()`로 결정
     # (`AON_DB` 설정 시 SqliteTokenStore, 미설정 시 기존 InMemoryTokenStore — 하위호환).
     _token_store: TokenStore = token_store if token_store is not None else select_token_store()
-    _hitl_toggles: HitlToggleMap = (
-        hitl_toggles if hitl_toggles is not None else HitlToggleMap()
-    )
+    _hitl_toggles: HitlToggleMap = hitl_toggles if hitl_toggles is not None else HitlToggleMap()
     # 콘솔 관전 피드(T9.2(c)·ADR 0024): 미주입이면 이 앱이 한 인스턴스를 만들어 AskOrg
     # (build_demo 경유)·SSE 라우트(GET /console/feed)에 *같이* 물린다(단일 원천 — 질문
     # 처리가 emit하는 그 피드를 관전 스트림이 구독). `create_central_app`은 dispatcher에도
@@ -1268,9 +1877,7 @@ def create_app(
     # (needs_correction_review는 그 조건이 성립 못 해 False). `create_central_app`이
     # 실 `_presence_tracker.status`를 물린다.
     _answer_record_store: AnswerRecordStore = (
-        answer_record_store
-        if answer_record_store is not None
-        else select_answer_record_store()
+        answer_record_store if answer_record_store is not None else select_answer_record_store()
     )
     _correction_store: CorrectionStore = (
         correction_store if correction_store is not None else select_correction_store()
@@ -1287,12 +1894,36 @@ def create_app(
         knowledge_store if knowledge_store is not None else select_knowledge_store()
     )
     _presence_log: "PresenceLogStore | None" = presence_log
+    # Manager 큐 기본 조립(P17.1·P17.4): 질문 조립을 명시 주입했다면 그 조립이 실제로
+    # Request 항목을 쓰는 store를 운영 라우트도 그대로 본다. 별도 명시 store와 둘 다
+    # 주어졌는데 identity가 다르면 앱 시작 단계에서 거부해 교차-store 처분을 막는다.
+    injected_manager_store = (
+        question_surface_composition.manager_store
+        if question_surface_composition is not None
+        else None
+    )
+    if (
+        manager_queue_store is not None
+        and injected_manager_store is not None
+        and manager_queue_store is not injected_manager_store
+    ):
+        assembly_error = QuestionSurfaceCompositionError(
+            "웹 Manager Store와 Question Surface Manager Store는 같은 인스턴스여야 합니다."
+        )
+        raise assembly_error
+    _manager_queue_store: ManagerQueueStore = (
+        manager_queue_store
+        if manager_queue_store is not None
+        else injected_manager_store
+        if injected_manager_store is not None
+        else InMemoryManagerQueueStore()
+    )
 
     bundle = build_demo(
         runtime=runtime,
         dispatcher=dispatcher,
         review_store=review_store,
-        manager_queue_store=manager_queue_store,
+        manager_queue_store=_manager_queue_store,
         audit_log=audit_log,
         hitl_toggles=_hitl_toggles,
         console_feed=_console_feed,
@@ -1316,17 +1947,16 @@ def create_app(
         # 침묵 no-op이 된다(2026-07-05 크로스머신 시연이 잡은 실결함).
         dispatcher.bind_registry(bundle.registry)
         if bundle.published_index_store is not None:
-            dispatcher.bind_published_index(
-                bundle.registry, bundle.published_index_store
-            )
+            dispatcher.bind_published_index(bundle.registry, bundle.published_index_store)
     # reeval 인덱스-수용 훅 라이브 배선(T11.7e minor-1·ADR 0030 S4): 실 `StalenessPropagator`를
     # `build_demo` 완료 *후* 구성해 디스패처에 사후 주입한다(`bind_propagator` — 위 published
     # index bind와 대칭인 닭-달걀 해소). `create_central_app`이 디스패처를 이 함수 호출보다
     # 먼저 만들어야 하므로 생성자 시점엔 실 `precedents`가 없다 — 여기서 그 시점 문제를 푼다.
     # `bundle.precedents`(build_demo가 실제로 판례를 채우는 그 store — 빈 새 통 아님)와
-    # `bundle.audit_reader`(build_demo가 만든 audit 인스턴스 — `create_app`이 build_demo에
-    # 넘긴 `audit_log`와 같은 것이라 `/ask`가 쓰는 바로 그 로그, Answer 축 정합)를 그대로
-    # 물린다. `owner_of`는 `bundle.registry.get(agent_id).owner`(미등록 agent_id는 방어적으로
+    # `bundle.audit_reader`(build_demo가 만든 legacy AuditLog read view)를 그대로 물린다.
+    # P17 `/ask*`는 Finalization의 `TerminalAnswerAudit`만 쓰며 이 legacy 로그에 이중 기록하지
+    # 않으므로, P17 답의 Answer 축 연결은 P17.10/P17.13 잔여다. `owner_of`는
+    # `bundle.registry.get(agent_id).owner`(미등록 agent_id는 방어적으로
     # None — reeval.py "manager_of 정신"). `reeval_store`가 주입돼 있을 때만 구성한다 —
     # 미주입(`_ws_demo_app`류 기존 WebSocketDispatcher 단위 테스트)이면 배선하지 않아 기존
     # 동작(하위호환·발화 0) 그대로 보존된다.
@@ -1335,6 +1965,7 @@ def create_app(
         and reeval_store is not None
         and bundle.audit_reader is not None
     ):
+
         def _owner_of(agent_id: str) -> str | None:
             try:
                 return bundle.registry.get(agent_id).owner
@@ -1348,30 +1979,44 @@ def create_app(
             owner_of=_owner_of,
         )
         dispatcher.bind_propagator(propagator)
-    # T9.1(d): 세션 층 래퍼 — AskOrg를 *수정하지 않고* 감싸기로 세션을 붙인다.
-    # /ask 엔드포인트만 교체. retrieve·dispatched·mcp_server는 이번 스코프 밖.
-    # Phase 9 쿠키 세션 seam: 주입 store가 있으면 그것을, 없으면 `select_session_store()`로
-    # 결정(`AON_DB` 설정 시 SqliteSessionStore, 미설정 시 기존 InMemorySessionStore — 하위호환).
-    _session_store: SessionStore = session_store if session_store is not None else select_session_store()
+    # legacy Session Store는 운영 세션 조회 호환을 위해 보존하지만, 사용자 질문 표면은
+    # P17 Finalization의 request-correlated SessionTurn만 쓰고 이 Store에 이중 기록하지 않는다.
+    _session_store: SessionStore = (
+        session_store if session_store is not None else select_session_store()
+    )
+    # P17.8 P0: HTTP와 별도 운영 MCP가 같은 protected application을 사용한다.
+    # 중앙 모드 mutation은 명시적인 사람 승인/HITL 증거 포트 없이는 이 application을
+    # 만들지 않아 fail-closed(503)한다. 데모 모드는 기존 경로를 유지한다.
+    _operational_application: OperationalApplication | None = None
     # app.state 노출 — 어떤 store가 실제로 선택됐는지(InMemory/Sqlite) 배선을 관찰하는
     # seam(FastAPI 표준 확장점). 라우트는 여전히 클로저 변수 `_session_store`/`_token_store`를
     # 쓴다(무변경) — 이 노출은 순수 관찰용.
     app.state.session_store = _session_store
     app.state.token_store = _token_store
-    _session_ask = SessionAskOrg(ask=bundle.ask, session_store=_session_store)
+    app.state.hitl_toggles = _hitl_toggles
+    app.state.operational_application = _operational_application
+    # 저작은 raw/staged 본문을 OperationalApplication에 섞지 않는다. 중앙 모드에서만
+    # 별도 AuthoringApplication을 조립해 카드/owner/권한 재확인의 단일 경계를 둔다.
+    _authoring_application: AuthoringApplication | None = None
+    if operational_authorization is not None:
+        _authoring_application = AuthoringApplication(
+            authorization=operational_authorization,
+            registry=bundle.registry,
+            mutation_approval=operational_mutation_approval,
+            audit_log=bundle.audit,
+        )
+    app.state.authoring_application = _authoring_application
     _review_store = review_store
     _review_service = review_service
     _reeval_store = reeval_store
     _reeval_service = reeval_service
-    _manager_queue_store = manager_queue_store
     # 정정 상태기계(Phase 12 (A)·ADR 0033 결정 4): `submit_correction`이 원 레코드 불변으로
     # `CorrectionEvent`를 append하고 정정 지식을 재평가 큐에 얹는다. reeval 적재 대상은
     # bundle이 항상 구성하는 reeval_store(주입 없으면 그것) — 정정→판례/지식 갱신 고리.
     from agent_org_network.answer_record import CorrectionService as _CorrectionService
 
-    _correction_reeval_store = (
-        reeval_store if reeval_store is not None else bundle.reeval_store
-    )
+    _correction_reeval_store = reeval_store if reeval_store is not None else bundle.reeval_store
+
     # 정정 판정 교체(Phase 12 3라운드·ADR 0034 결정 3): `submit_correction`이 "현재 카드
     # owner" 기준으로 정정 권한을 판정하도록 `owner_of`(레지스트리 조회)를 주입한다. 오너
     # 변경 후 새 owner가 과거 답을 정정 가능·구 owner는 거부. 카드가 사라지면 None → 정정
@@ -1382,16 +2027,8 @@ def create_app(
         except KeyError:
             return None
 
-    _correction_service = (
-        _CorrectionService(
-            _answer_record_store,
-            _correction_store,
-            _correction_reeval_store,
-            owner_of=_card_owner_of,
-        )
-        if _correction_reeval_store is not None
-        else None
-    )
+    _answer_record_reader: AnswerRecordReader
+    _correction_service: _CorrectionService | None
     # 관리 UI 서비스(Phase 12 3라운드·ADR 0034 결정 1·2): 라이브 카드 등록 + 오너 변경
     # 전이. 같은 `bundle.registry`를 Router가 라이브로 읽으므로(라우터는 매 route마다
     # `all_cards()` — 재색인 불요) 등록·전이가 다음 라우팅에 즉시 잡힌다. 감사는
@@ -1411,7 +2048,14 @@ def create_app(
         AdminRegistryService as _AdminRegistryService,
         replay_registry_journal as _replay_registry_journal,
     )
-    from agent_org_network.storage_select import select_registry_journal
+    from agent_org_network.admin_users import (
+        AdminUserService as _AdminUserService,
+        replay_user_journal as _replay_user_journal,
+    )
+    from agent_org_network.storage_select import (
+        select_registry_journal,
+        select_user_journal,
+    )
 
     _admin_disconnect_owner: "Callable[[str], None] | None" = None
     if isinstance(dispatcher, WebSocketDispatcher):
@@ -1427,6 +2071,16 @@ def create_app(
 
         _admin_disconnect_owner = _disconnect_owner_all_roles
 
+    # User durable 저널(ADR 0064 결정 ⑦): 카드 저널의 형제. 미주입이면 `select_user_journal()`
+    # (`AON_DB` 설정 시 `SqliteUserJournal(path)`, 미설정 시 `None` — 하위호환·기존 InMemory
+    # Registry 그대로). 명시 주입(테스트 Fake/tmp SQLite)이 항상 우선.
+    _user_journal = user_journal if user_journal is not None else select_user_journal()
+    # **부팅 리플레이 순서(하드 계약): user → card**(ADR 0064 결정 ⑦). 라이브 카드의 owner가
+    # 라이브 등록 User를 참조할 수 있으므로 User가 카드보다 먼저 복원돼야 카드 admission의
+    # owner 실재가 통과한다. 둘 다 admission 경유(무효 항목은 안전측 스킵 — 부팅 중단 없음).
+    if _user_journal is not None:
+        _replay_user_journal(_user_journal, bundle.registry)
+
     _registry_journal = (
         registry_journal if registry_journal is not None else select_registry_journal()
     )
@@ -1440,12 +2094,29 @@ def create_app(
         disconnect_owner=_admin_disconnect_owner,
         journal_sink=_registry_journal,
     )
+    # 라이브 User 등록 서비스(ADR 0064 결정 ①⑧): `_admin_registry_service`의 형제(별도
+    # 서비스·별도 lock). 같은 `bundle.registry`를 Router·AskOrg가 라이브로 읽으므로 등록이
+    # 반영되면 즉시 그래프·escalation·신원 매핑에 잡힌다. 감사는 `bundle.audit`(UserRegistered
+    # append-only), durable 복원은 `_user_journal`. 실 프로비저닝이라 require_email 기본 True
+    # (email 없으면 admission 422). 프로덕션 기본=실 구현이며 테스트는 create_app(user_journal=)
+    # 주입 seam으로 Fake/관찰한다.
+    _admin_user_service = _AdminUserService(
+        bundle.registry,
+        audit_sink=bundle.audit,
+        journal_sink=_user_journal,
+    )
+    # 카드 관리도 운영 MCP와 같은 application 경계를 거친다. Registry journal replay와
+    # AdminRegistryService 조립이 끝난 뒤 bind하므로 두 채널은 정확히 같은 live Registry,
+    # admission, owner-token revoke를 사용한다.
+    if _operational_application is not None:
+        _operational_application.bind_admin_registry_service(_admin_registry_service)
     # app.state 노출 — 어떤 store가 실제로 선택됐는지(InMemory/Sqlite) 배선을 관찰하는
     # seam(`session_store`/`token_store`와 같은 패턴). 라우트는 클로저 변수를 그대로 쓴다.
     app.state.answer_record_store = _answer_record_store
     app.state.correction_store = _correction_store
     app.state.feedback_store = _feedback_store
     app.state.registry_journal = _registry_journal
+    app.state.user_journal = _user_journal
     _git_gateway: GitGateway = git_gateway if git_gateway is not None else FakeGitGateway()
     # OKF 저작자(/author/run) — 주입(테스트=FakeAuthor)이면 그대로, 미주입(프로덕션)이면 실
     # `LlmAuthor`를 *지연* 생성한다. `runtime_select` 대칭: anthropic SDK는 선택 extra라 첫
@@ -1460,6 +2131,7 @@ def create_app(
         built = _make_default_author()  # anthropic 미설치면 여기서 명확한 SystemExit
         _author_holder[0] = built
         return built
+
     # SSO 모드(T7.1·ADR 0021 결정 4) — oidc_provider 주입 시 SSO 모드(POST /login/sso 활성·
     # 무비밀번호 POST /login은 403 거부). 미주입이면 기존 동작(OFF/무비밀번호).
     _oidc_provider = oidc_provider
@@ -1475,83 +2147,104 @@ def create_app(
     ) -> JSONResponse:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
 
-    _COOKIE_NAME = "aon_uid"
+    def _question_unavailable_response(request_id: str | None = None) -> JSONResponse:
+        try:
+            headers = None if request_id is None else _question_request_headers(request_id)
+        except ValueError:
+            headers = None
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "질문 요청을 처리할 수 없습니다."},
+            headers=headers,
+        )
 
-    @app.post("/ask")
+    def _question_forbidden_response() -> JSONResponse:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "질문 권한이 없습니다."},
+        )
+
+    @app.post("/ask", response_model=None)
     def ask_endpoint(  # pyright: ignore[reportUnusedFunction]
         req: AskRequest,
         request: Request,
-        response: Response,
-    ) -> dict[str, Any]:
-        uid: str | None = request.cookies.get(_COOKIE_NAME)
-        if uid is None:
-            uid = secrets.token_urlsafe(16)
-            response.set_cookie(
-                key=_COOKIE_NAME,
-                value=uid,
-                httponly=True,
-                samesite="lax",
-                path="/",
+    ) -> Response:
+        principal = _question_principal_from_state(request)
+        try:
+            result = _question_surface.application.ask(
+                AskQuestion(principal=principal, question=req.question)
             )
-        reply = _session_ask.handle(req.question, User(id=uid))
-        return serialize_reply(reply)
+        except QuestionAuthorizationDeniedError:
+            return _question_forbidden_response()
+        except QuestionSurfaceInterruptedError as error:
+            return _question_unavailable_response(error.request_id)
+        except Exception:
+            return _question_unavailable_response()
+        try:
+            headers = _question_request_headers(result.request_id)
+            content = serialize_legacy_question_lookup(result)
+        except Exception:
+            return _question_unavailable_response()
+        return JSONResponse(status_code=200, content=content, headers=headers)
 
-    @app.post("/ask/stream")
+    @app.post("/ask/stream", response_model=None)
     def ask_stream_endpoint(  # pyright: ignore[reportUnusedFunction]
         req: AskRequest,
         request: Request,
-    ) -> StreamingResponse:
-        """`/ask`의 SSE 스트리밍 형제 — 답을 토큰 단위로 점진 푸시한다(ADR 0031 결정 2·3·5).
-
-        요청 본문·익명 세션 쿠키(`_COOKIE_NAME`)는 `/ask`와 동일 패턴. `handle_stream`을 순회해
-        각 `AskEvent`를 `serialize_sse_event`로 SSE 프레임으로 흘린다. 런타임 예외·timeout 시
-        내부 예외·스택을 절대 노출하지 않고(노출 불변식) 마지막에 `ErrorEvent` 1프레임만 흘리고
-        종료한다. 기본 런타임이 이미 `ClaudeCodeRuntime`(이제 `answer_stream` 구현)이라 스트리밍
-        디스패처면 여러 델타가, 미지원이면 한 델타가 흐른다(폴백 규약).
-        """
-        uid: str | None = request.cookies.get(_COOKIE_NAME)
-        set_cookie_uid: str | None = None
-        if uid is None:
-            uid = secrets.token_urlsafe(16)
-            set_cookie_uid = uid
-        user = User(id=uid)
-        question = req.question
-
-        def generate() -> Iterator[str]:
-            try:
-                for event in _session_ask.handle_stream(question, user):
-                    yield serialize_sse_event(event)
-            except Exception:
-                # 런타임 실패·timeout — 내부 예외·스택은 절대 노출하지 않고(노출 불변식)
-                # 중립 안내 ErrorEvent 1프레임만 흘리고 종료한다. 부분 출력은 이미 흘러간 뒤다.
-                yield serialize_sse_event(
-                    ErrorEvent(message="답변을 생성하는 중 문제가 발생했어요. 잠시 후 다시 시도해 주세요.")
-                )
-
-        headers = {
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        }
-        sse = StreamingResponse(
-            generate(), media_type="text/event-stream", headers=headers
-        )
-        if set_cookie_uid is not None:
-            sse.set_cookie(
-                key=_COOKIE_NAME,
-                value=set_cookie_uid,
-                httponly=True,
-                samesite="lax",
-                path="/",
+    ) -> Response:
+        """URI만 호환하고 P17 sealed SSE 계약과 producer 수명을 그대로 사용한다."""
+        principal = _question_principal_from_state(request)
+        try:
+            opened = _question_surface.application.open_stream(
+                AskQuestion(principal=principal, question=req.question)
             )
-        return sse
+        except QuestionAuthorizationDeniedError:
+            return _question_forbidden_response()
+        except QuestionStreamUnavailableError as error:
+            return _question_unavailable_response(error.request_id)
+        except Exception:
+            return _question_unavailable_response()
+        if type(opened) is not OpenQuestionStream:
+            subscription = getattr(opened, "subscription", None)
+            if isinstance(subscription, QuestionStreamSubscription):
+                subscription.close()
+            return _question_unavailable_response()
+        assert isinstance(opened, OpenQuestionStream)
+        try:
+            _question_request_headers(opened.request_id)
+            if opened.subscription.request_id != opened.request_id:
+                raise ValueError("Question Stream subscription ID가 다릅니다.")
+            return build_question_streaming_response(
+                opened.subscription,
+                request_id=opened.request_id,
+                max_polls=80,
+                poll_timeout=15.0,
+            )
+        except Exception:
+            opened.subscription.close()
+            return _question_unavailable_response(opened.request_id)
 
-    @app.get("/ask/{tracking}")
-    def retrieve_endpoint(tracking: str) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-        reply = bundle.ask.retrieve(tracking)
-        if reply is None:
-            raise HTTPException(status_code=404, detail="알 수 없는 추적 토큰")
-        return serialize_reply(reply)
+    @app.get("/ask/{tracking}", response_model=None)
+    def retrieve_endpoint(  # pyright: ignore[reportUnusedFunction]
+        tracking: str,
+        request: Request,
+    ) -> Response:
+        principal = _question_principal_from_state(request)
+        try:
+            result = _question_surface.application.lookup(tracking, principal)
+        except QuestionStreamRequestNotFoundError:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "질문 요청을 찾을 수 없습니다."},
+            )
+        except Exception:
+            return _question_unavailable_response()
+        try:
+            headers = _question_request_headers(result.request_id)
+            content = serialize_legacy_question_lookup(result)
+        except Exception:
+            return _question_unavailable_response()
+        return JSONResponse(status_code=200, content=content, headers=headers)
 
     # ── 담당자 감독(Supervised Answering) 면 — Phase 12 (A)·ADR 0033 결정 4 ────
     #
@@ -1570,15 +2263,27 @@ def create_app(
 
     @app.get("/supervision/answers")
     def supervision_answers(  # pyright: ignore[reportUnusedFunction]
-        agent_id: str, needs_review: bool = False
+        request: Request, agent_id: str, needs_review: bool = False
     ) -> list[dict[str, Any]]:
         # 자기 에이전트의 답 목록(최신순)·정정 이력 투영. needs_review=true면 검토 필요만.
         # owner 스코핑: agent_id로만 스코핑(담당자는 자기 에이전트 것만 — 도메인 코어 계약).
+        principal = _authorize_operational_card(
+            request, action="supervision.read", agent_id=agent_id
+        )
         items = _monitoring_for_owner(
-            _answer_record_store,
+            _answer_record_reader,
             _correction_store,
             agent_id=agent_id,
             feedback_store=_feedback_store,
+        )
+        # store를 읽은 직후, 어떤 정렬·필터·DTO 투영보다 먼저 현재 카드와 새 sealed
+        # grant를 확인한다. 읽는 동안의 owner 전이/정책 변경이면 이미 읽은 값도 넘기지
+        # 않는다.
+        _authorize_operational_card(
+            request,
+            action="supervision.read",
+            agent_id=agent_id,
+            principal=principal,
         )
         items = sorted(items, key=lambda it: it.record.answered_at, reverse=True)
         if needs_review:
@@ -1589,13 +2294,11 @@ def create_app(
             current_owner: str | None = bundle.registry.get(agent_id).owner
         except KeyError:
             current_owner = None
-        return [
-            serialize_monitoring_item(it, current_owner=current_owner) for it in items
-        ]
+        return [serialize_monitoring_item(it, current_owner=current_owner) for it in items]
 
     @app.post("/supervision/answers/{record_id}/correct")
-    def supervision_correct(  # pyright: ignore[reportUnusedFunction]
-        record_id: str, req: CorrectionRequest, request: Request
+    async def supervision_correct(  # pyright: ignore[reportUnusedFunction]
+        record_id: str, request: Request
     ) -> dict[str, Any]:
         # 정정 제출 — 미배선(reeval 부재)이면 503, 미존재 레코드면 404, 남의 에이전트
         # 정정(1인칭 위반)이면 403. 원 레코드는 불변으로 CorrectionEvent만 append된다.
@@ -1605,9 +2308,57 @@ def create_app(
         # 구 owner 세션은 여전히 자기 신원(구 owner)으로만 보내므로 도메인 판정에서
         # 403이 난다. 미인증 로컬 관례에선 body의 by_owner를 읽되, 도메인 `owner_of`
         # 현재 owner 대조가 최종 방어선(위조돼도 현재 owner가 아니면 거부).
+        # 중앙 모드는 본문 검증보다 먼저 서버측 principal을 확정한다. 첫 읽기는 권한 대상
+        # (현재 card owner)을 만들기 위한 것이고, 직전 재읽기까지 통과하기 전에는 어떤
+        # CorrectionEvent도 append하지 않는다.
+        # 이 legacy CorrectionStore/AnswerRecordStore 조립은 tenant source capability가
+        # 아니다. 중앙 mode에서 resolver·body·legacy record를 읽기 전에 닫아 raw source를
+        # central operational capability로 오인하지 않는다(ADR 0053).
+        if _operational_central_mode:
+            raise _operational_unavailable()
+        governance_principal: AuthenticatedPrincipal | None = None
+        if _operational_central_mode:
+            # 존재하지 않는 record라도 principal을 먼저 확정해 HTTP body/path에 따른
+            # 인증 순서 차이가 생기지 않게 한다.
+            governance_principal = _governance_principal(request)
+            record = _answer_record_reader.get(record_id)
+            if record is None:
+                raise _operational_not_found_or_denied()
+            _authorize_operational_card(
+                request,
+                action="supervision.correct",
+                agent_id=record.agent_id,
+                principal=governance_principal,
+            )
+        try:
+            raw_body = await request.json()
+            req = CorrectionRequest.model_validate(raw_body)
+        except Exception:
+            # 중앙 경계에서는 malformed body도 principal/정책 정보보다 먼저 평가하지
+            # 않는다. body 원문이나 pydantic 내부 오류는 외부에 싣지 않는다.
+            raise HTTPException(
+                status_code=422, detail="정정 요청 형식이 올바르지 않습니다."
+            ) from None
         if _correction_service is None:
             raise HTTPException(status_code=503, detail="정정 서비스가 배선되지 않았습니다")
-        by_owner = _session_identity(request) if _auth_enabled else req.by_owner
+        if governance_principal is not None:
+            reread = _answer_record_reader.get(record_id)
+            if reread is None:
+                raise _operational_not_found_or_denied()
+            # owner transfer/policy drift는 첫 grant를 재사용하지 못한다. Registry와
+            # sealed grant를 submit 바로 앞에서 새로 확인한다.
+            _authorize_operational_card(
+                request,
+                action="supervision.correct",
+                agent_id=reread.agent_id,
+                principal=governance_principal,
+            )
+            card = _current_agent_card(reread.agent_id)
+            if card is None or card.owner != governance_principal.subject_id:
+                raise _operational_not_found_or_denied()
+            by_owner = governance_principal.subject_id
+        else:
+            by_owner = _session_identity(request) if _auth_enabled else req.by_owner
         try:
             event = _correction_service.submit_correction(
                 record_id=record_id,
@@ -1616,6 +2367,9 @@ def create_app(
                 rationale=req.rationale,
             )
         except ValueError as exc:
+            if governance_principal is not None:
+                # 중앙 모드에서는 존재/귀속 판정의 내부 문자열을 외부로 보내지 않는다.
+                raise _operational_not_found_or_denied() from None
             # 미존재 레코드 vs 1인칭 위반을 메시지로 가른다(도메인이 두 경우 다 ValueError).
             if "미존재" in str(exc):
                 raise HTTPException(status_code=404, detail=str(exc))
@@ -1623,12 +2377,17 @@ def create_app(
         return {"submitted": True, "event_id": event.event_id, "record_id": record_id}
 
     @app.get("/supervision/presence/{agent_id}")
-    def supervision_presence(agent_id: str) -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
+    def supervision_presence(  # pyright: ignore[reportUnusedFunction]
+        request: Request, agent_id: str
+    ) -> dict[str, str]:
         # 자기 워커 프레즌스 배지(온라인/오프라인). 미배선이면 offline 기본(안전측·미관측 정신).
         # 프레즌스는 owner(담당자 PC 연결) 키로 기록되므로(transport.py observe_connect/
         # disconnect), agent_id를 그대로 조회 키로 쓰면 항상 offline 오탐이 난다(크로스머신
         # 시연 실결함 4호) — registry에서 그 카드의 현재 owner를 해석해 owner 키로 조회한다.
         # 카드가 없으면(미등록 agent_id) owner를 모르므로 offline 기본.
+        principal = _authorize_operational_card(
+            request, action="supervision.read", agent_id=agent_id
+        )
         status: "PresenceStatus" = "offline"
         if presence_of is not None:
             try:
@@ -1637,6 +2396,14 @@ def create_app(
                 owner = None
             if owner is not None:
                 status = presence_of(owner)
+        # presence 저장소를 읽은 직후, 반환 DTO를 만들기 전에 현재 owner/grant를 다시
+        # 확인한다.
+        _authorize_operational_card(
+            request,
+            action="supervision.read",
+            agent_id=agent_id,
+            principal=principal,
+        )
         return {"agent_id": agent_id, "status": status}
 
     @app.get("/answer/{record_id}/correction")
@@ -1644,7 +2411,7 @@ def create_app(
         # 질문자 정정 배지(풀 방식·ADR 0033 결정 4) — 원문 + (있으면) 정정 배지·정정본.
         # 노출 불변식: 정정 주체(by_owner)·사유 등 감독 내부값은 싣지 않는다(원문·정정본만).
         view = _view_answer_with_correction(
-            _answer_record_store, _correction_store, record_id=record_id
+            _answer_record_reader, _correction_store, record_id=record_id
         )
         if view is None:
             raise HTTPException(status_code=404, detail="알 수 없는 답변 레코드")
@@ -1652,29 +2419,20 @@ def create_app(
 
     @app.post("/answer/{record_id}/feedback")
     def answer_feedback(  # pyright: ignore[reportUnusedFunction]
-        record_id: str, req: FeedbackRequest, request: Request, response: Response
+        record_id: str, req: FeedbackRequest, request: Request
     ) -> dict[str, Any]:
         # 질문자 측 답변 피드백 제출(계획 §10.5) — 세션 신원 불요. submitted_by는 /ask와
-        # 같은 익명 쿠키(`_COOKIE_NAME`)에서 읽는다(없으면 새로 발급 — /ask와 동형).
+        # 같은 middleware 결박 익명 principal에서 읽는다(쿠키 발급·검증은 한 곳에서 수행).
         # 검증 순서: 미배선(feedback_store 없음)이면 503 → 미존재 record면 404 →
         # verdict enum은 pydantic이 이미 422로 거부(FeedbackRequest 필드 타입).
         # 노출 불변식: 응답엔 접수 확인(submitted·record_id·verdict)만 싣는다 — bad
         # 피드백이 어느 owner/agent로 갔는지·내부 판정은 절대 노출하지 않는다.
         if _feedback_store is None:
             raise HTTPException(status_code=503, detail="피드백 서비스가 배선되지 않았습니다")
-        if _answer_record_store.get(record_id) is None:
+        if _answer_record_reader.get(record_id) is None:
             raise HTTPException(status_code=404, detail="알 수 없는 답변 레코드")
 
-        uid: str | None = request.cookies.get(_COOKIE_NAME)
-        if uid is None:
-            uid = secrets.token_urlsafe(16)
-            response.set_cookie(
-                key=_COOKIE_NAME,
-                value=uid,
-                httponly=True,
-                samesite="lax",
-                path="/",
-            )
+        uid = _question_principal_from_state(request).subject_id
         from agent_org_network.answer_record import (
             AnswerFeedback as _AnswerFeedback,
             default_clock as _default_clock,
@@ -1704,6 +2462,10 @@ def create_app(
         DuplicateCardError as _DuplicateCardError,
         UnknownCardError as _UnknownCardError,
     )
+    from agent_org_network.admin_users import (
+        DuplicateUserError as _DuplicateUserError,
+        UserCandidate as _UserCandidate,
+    )
 
     @app.get("/admin")
     def admin_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
@@ -1716,28 +2478,102 @@ def create_app(
         운영 면이라 내부값(agent_id·owner·team·domains) 노출 OK(채팅 OrgReply 불변식의
         반대·`serialize_org_graph` 결). 인증 활성 시 미로그인 401.
         """
-        if _auth_enabled:
+        # partial central composition은 principal resolver나 Registry보다 먼저 닫는다.
+        # 목록은 존재 여부 자체가 운영 메타데이터이므로 한쪽 의존성만 있는 조립에서
+        # 카드 ID를 읽어서는 안 된다.
+        if _operational_central_mode:
+            _require_operational_composition()
+        principal = _governance_principal(request) if _operational_central_mode else None
+        if principal is not None:
+            operational = _operational_application
+            if operational is None:
+                raise _operational_unavailable()
+            operational = cast(OperationalApplication, operational)
+            try:
+                authorized_cards = operational.list_cards(principal)
+            except OperationalUnavailableError:
+                raise _operational_unavailable() from None
+            except (OperationalDeniedError, OperationalNotFoundError):
+                raise _operational_not_found_or_denied() from None
+            return [
+                {
+                    "agent_id": card.agent_id,
+                    "owner": card.owner,
+                    "team": card.team,
+                    "domains": list(card.domains),
+                }
+                for card in authorized_cards
+            ]
+        if _auth_enabled and not _operational_central_mode:
             _session_identity(request)  # 미로그인 401
-        return [
-            {
-                "agent_id": c.agent_id,
-                "owner": c.owner,
-                "team": c.team,
-                "domains": list(c.domains),
-            }
-            for c in sorted(bundle.registry.all_cards(), key=lambda c: c.agent_id)
-        ]
+
+        # 중앙 모드에서는 목록 스냅샷을 DTO로 바로 내보내지 않는다. 첫 grant 뒤 소유권이
+        # 바뀌어도 새 Registry 값으로 다시 grant를 검증한 뒤에만 각 항목을 투영한다.
+        agent_ids = sorted(card.agent_id for card in bundle.registry.all_cards())
+        cards: list[dict[str, Any]] = []
+        for agent_id in agent_ids:
+            current_principal = _authorize_operational_card(
+                request,
+                action="card.read",
+                agent_id=agent_id,
+                principal=principal,
+            )
+            card = _current_agent_card(agent_id)
+            if card is None:
+                raise _operational_not_found_or_denied()
+            _authorize_operational_card(
+                request,
+                action="card.read",
+                agent_id=agent_id,
+                principal=current_principal,
+            )
+            cards.append(
+                {
+                    "agent_id": card.agent_id,
+                    "owner": card.owner,
+                    "team": card.team,
+                    "domains": list(card.domains),
+                }
+            )
+        return cards
 
     @app.post("/admin/cards")
-    def admin_register_card(  # pyright: ignore[reportUnusedFunction]
-        req: AdminCardRegisterRequest, request: Request
+    async def admin_register_card(  # pyright: ignore[reportUnusedFunction]
+        request: Request,
     ) -> dict[str, Any]:
         """신규 카드 라이브 등록 — admission 통과 즉시 반영(ADR 0034 결정 1).
 
         무효 카드는 422(사유 목록)·중복 agent_id는 409·미로그인 401. 우회 없이
         `admit_card` 관문을 통과해야 라이브에 들어간다("무효 카드 등록 금지" 불변식).
         """
-        operator = _session_identity(request) if _auth_enabled else "operator"
+        # FastAPI의 모델 인자는 endpoint 진입 전에 검증된다. 중앙 모드에서는 malformed
+        # body보다 구성 불가/서버 principal을 먼저 판단해야 하므로 Request를 직접 읽는다.
+        if _operational_central_mode:
+            _require_operational_composition()
+        principal = _governance_principal(request) if _operational_central_mode else None
+        try:
+            req = AdminCardRegisterRequest.model_validate(await request.json())
+        except Exception:
+            raise HTTPException(
+                status_code=422, detail="카드 등록 요청 본문이 유효하지 않습니다."
+            ) from None
+        operator = (
+            principal.subject_id
+            if principal is not None
+            else (_session_identity(request) if _auth_enabled else "operator")
+        )
+        resource = ResourceRef(
+            org_id=principal.org_id if principal is not None else question_org_id,
+            kind="agent_card",
+            resource_id=req.agent_id,
+            owner_subject_id=req.owner,
+        )
+        _authorize_operational_resource(
+            request,
+            action="card.register",
+            resource=resource,
+            principal=principal,
+        )
         candidate = _CardCandidate(
             agent_id=req.agent_id,
             owner=req.owner,
@@ -1753,7 +2589,30 @@ def create_app(
             knowledge_sources=list(req.knowledge_sources),
             trust_labels=list(req.trust_labels),
         )
+        if principal is not None:
+            operational = _operational_application
+            if operational is None:
+                raise _operational_unavailable()
+            try:
+                card = operational.register_card(principal, candidate, channel="http")
+            except OperationalUnavailableError:
+                raise _operational_unavailable() from None
+            except OperationalDeniedError:
+                raise _operational_not_found_or_denied() from None
+            except _AdmissionError as exc:
+                raise HTTPException(status_code=422, detail={"errors": exc.errors}) from None
+            except _DuplicateCardError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from None
+            return {"registered": True, "agent_id": card.agent_id, "owner": card.owner}
         try:
+            # 신규 card는 아직 Registry에 없으므로 후보 ResourceRef를 다시 봉인 확인한다.
+            # 첫 확인 뒤 policy가 바뀐 경우 admission/등록 전이를 시작하지 않는다.
+            _authorize_operational_resource(
+                request,
+                action="card.register",
+                resource=resource,
+                principal=principal,
+            )
             card = _admin_registry_service.register_card(candidate, by=operator)
         except _AdmissionError as exc:
             raise HTTPException(status_code=422, detail={"errors": exc.errors})
@@ -1761,9 +2620,79 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc))
         return {"registered": True, "agent_id": card.agent_id, "owner": card.owner}
 
+    # ── 사용자 프로비저닝 면 (ADR 0064 — 카드 등록 면의 User 축 형제) ────────────
+    #
+    # `POST /admin/users`(등록)·`GET /admin/users`(목록). register-only(edit/삭제/재-parent
+    # 없음·ADR 0064 결정 ⑤). Depth A는 `_session_identity` 게이트, 중앙 모드(Depth B)는
+    # User operational application이 아직 미배선이라 카드 R2a와 같은 fail-closed(503).
+
+    @app.get("/admin/users")
+    def admin_list_users(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+        """등록된 User 목록(운영 면) — 사용자 탭 목록 + manager 드롭다운 원천.
+
+        운영 면이라 내부값(user_id·email·manager) 노출 OK(채팅 OrgReply 불변식의 반대·
+        `admin_list_cards` 결). 인증 활성 시 미로그인 401. 중앙 모드는 사용자 프로비저닝
+        Depth B가 미배선이라 fail-closed(503·카드 R2a 미러).
+        """
+        if _operational_central_mode:
+            # 중앙 모드 사용자 프로비저닝(Depth B)은 아직 operational application에 없다.
+            # 부분 조립은 503, 완전 조립이어도 User 경로 미배선이라 fail-closed(503).
+            _require_operational_composition()
+            raise _operational_unavailable()
+        if _auth_enabled:
+            _session_identity(request)  # 미로그인 401
+        return [
+            {"user_id": user.id, "email": user.email, "manager": user.manager}
+            for user in sorted(bundle.registry.all_users(), key=lambda u: u.id)
+        ]
+
+    @app.post("/admin/users")
+    async def admin_register_user(  # pyright: ignore[reportUnusedFunction]
+        request: Request,
+    ) -> dict[str, Any]:
+        """신규 User 라이브 등록 — admission 통과 즉시 반영(ADR 0064 결정 ①).
+
+        무효 User는 422(사유 목록)·중복 user_id는 409·중복/무효 email은 422·미로그인 401.
+        우회 없이 `admit_user` 관문을 통과해야 라이브에 들어간다("무효 User 등록 금지"
+        불변식). 중앙 모드는 사용자 프로비저닝 Depth B가 미배선이라 fail-closed(503·카드
+        R2a 미러) — `user.register` 인가 관문은 Depth B 승격 시 이 자리에서 재사용한다.
+        """
+        # 중앙 모드(Depth B) 사용자 프로비저닝은 아직 operational application에 없다 —
+        # 여기서 fail-closed(503)해 우회 등록을 막는다(카드 R2a 미러). Depth B 승격 시
+        # 이 자리에서 카드 `card.register`와 같은 관문(`user.register` 인가 →
+        # `operational.register_user`)을 재사용한다(ADR 0064 결정 ⑥ — 우회 API 금지).
+        # 데모 모드(Depth A)의 인가 관문은 `_session_identity`(미로그인 401)다.
+        if _operational_central_mode:
+            _require_operational_composition()
+            raise _operational_unavailable()
+        operator = _session_identity(request) if _auth_enabled else "operator"
+        try:
+            req = AdminUserRegisterRequest.model_validate(await request.json())
+        except Exception:
+            raise HTTPException(
+                status_code=422, detail="사용자 등록 요청 본문이 유효하지 않습니다."
+            ) from None
+        candidate = _UserCandidate(
+            user_id=req.user_id,
+            email=req.email,
+            manager=req.manager,
+        )
+        try:
+            user = _admin_user_service.register_user(candidate, by=operator)
+        except _AdmissionError as exc:
+            raise HTTPException(status_code=422, detail={"errors": exc.errors})
+        except _DuplicateUserError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {
+            "registered": True,
+            "user_id": user.id,
+            "email": user.email,
+            "manager": user.manager,
+        }
+
     @app.post("/admin/cards/{agent_id}/owner")
-    def admin_change_owner(  # pyright: ignore[reportUnusedFunction]
-        agent_id: str, req: AdminOwnerChangeRequest, request: Request
+    async def admin_change_owner(  # pyright: ignore[reportUnusedFunction]
+        agent_id: str, request: Request
     ) -> dict[str, Any]:
         """오너 변경 전이 — 재-admission + 스위치 + 구 owner 토큰 revoke(ADR 0034 결정 2).
 
@@ -1771,27 +2700,94 @@ def create_app(
         교체) 재-admission을 태운다. 무효 새 owner는 422·미존재 카드는 404·미로그인 401.
         스위치와 revoke는 도메인 서비스가 같은 임계 구역에서 실행(owner 격리 보안 계약).
         """
-        operator = _session_identity(request) if _auth_enabled else "operator"
-        try:
-            current = bundle.registry.get(agent_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail=f"미존재 agent_id: {agent_id!r}")
-        candidate = _CardCandidate(
-            agent_id=current.agent_id,
-            owner=req.new_owner,
-            team=current.team,
-            summary=current.summary,
-            domains=list(current.domains),
-            last_reviewed_at=current.last_reviewed_at.isoformat(),
-            maintainer=current.maintainer,
-            can_answer=list(current.can_answer),
-            cannot_answer=list(current.cannot_answer),
-            approval_when=list(current.approval_when),
-            collaborate_when=list(current.collaborate_when),
-            knowledge_sources=list(current.knowledge_sources),
-            trust_labels=list(current.trust_labels),
+        # owner 변경은 path의 현재 카드가 권한 대상이다. 중앙 모드에서는 composition과
+        # principal, 현재 ResourceRef grant를 먼저 확정하고 그 다음에만 본문을 읽는다.
+        if _operational_central_mode:
+            _require_operational_composition()
+        principal = _governance_principal(request) if _operational_central_mode else None
+        operator = (
+            principal.subject_id
+            if principal is not None
+            else (_session_identity(request) if _auth_enabled else "operator")
         )
+        _authorize_operational_card(
+            request,
+            action="card.transfer_owner",
+            agent_id=agent_id,
+            principal=principal,
+        )
+        if principal is not None:
+            # 중앙 모드는 path의 현재 카드 확인 뒤에만 body를 읽는다. 변경은 공통
+            # application이 current/candidate ResourceRef를 다시 만들고 승인·감사를 적용한다.
+            try:
+                req = AdminOwnerChangeRequest.model_validate(await request.json())
+            except Exception:
+                raise HTTPException(
+                    status_code=422, detail="오너 변경 요청 본문이 유효하지 않습니다."
+                ) from None
+            operational = _operational_application
+            if operational is None:
+                raise _operational_unavailable()
+            try:
+                result = operational.transfer_card_owner(
+                    principal, agent_id, req.new_owner, channel="http"
+                )
+            except OperationalUnavailableError:
+                raise _operational_unavailable() from None
+            except (OperationalDeniedError, OperationalNotFoundError):
+                raise _operational_not_found_or_denied() from None
+            except _AdmissionError as exc:
+                raise HTTPException(status_code=422, detail={"errors": exc.errors}) from None
+            except _UnknownCardError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from None
+            return {
+                "transferred": True,
+                "agent_id": result.agent_id,
+                "from_owner": result.from_owner,
+                "to_owner": result.to_owner,
+                "revoked_token_ids": result.revoked_token_ids,
+                "audit_index": result.audit_index,
+            }
         try:
+            req = AdminOwnerChangeRequest.model_validate(await request.json())
+        except Exception:
+            raise HTTPException(
+                status_code=422, detail="오너 변경 요청 본문이 유효하지 않습니다."
+            ) from None
+        current = _current_agent_card(agent_id)
+        if current is None:
+            if _operational_central_mode:
+                raise _operational_not_found_or_denied()
+            raise HTTPException(status_code=404, detail=f"미존재 agent_id: {agent_id!r}")
+        try:
+            # ownership transfer는 Registry 값과 sealed grant를 바로 직전에 다시 읽는다.
+            # 따라서 첫 확인 뒤 카드 owner 또는 정책이 달라지면 write는 0건이다.
+            current = _current_agent_card(agent_id)
+            if current is None:
+                if _operational_central_mode:
+                    raise _operational_not_found_or_denied()
+                raise HTTPException(status_code=404, detail=f"미존재 agent_id: {agent_id!r}")
+            _authorize_operational_card(
+                request,
+                action="card.transfer_owner",
+                agent_id=agent_id,
+                principal=principal,
+            )
+            candidate = _CardCandidate(
+                agent_id=current.agent_id,
+                owner=req.new_owner,
+                team=current.team,
+                summary=current.summary,
+                domains=list(current.domains),
+                last_reviewed_at=current.last_reviewed_at.isoformat(),
+                maintainer=current.maintainer,
+                can_answer=list(current.can_answer),
+                cannot_answer=list(current.cannot_answer),
+                approval_when=list(current.approval_when),
+                collaborate_when=list(current.collaborate_when),
+                knowledge_sources=list(current.knowledge_sources),
+                trust_labels=list(current.trust_labels),
+            )
             result = _admin_registry_service.transfer_ownership(candidate, by=operator)
         except _AdmissionError as exc:
             raise HTTPException(status_code=422, detail={"errors": exc.errors})
@@ -1847,9 +2843,7 @@ def create_app(
         from datetime import timedelta
 
         cards = [c for c in bundle.registry.all_cards() if c.owner == owner_id]
-        current_window = _ScorecardWindow(
-            since=now - timedelta(days=window_days), until=now
-        )
+        current_window = _ScorecardWindow(since=now - timedelta(days=window_days), until=now)
         previous_window = _ScorecardWindow(
             since=now - timedelta(days=window_days * 2),
             until=now - timedelta(days=window_days),
@@ -1857,7 +2851,7 @@ def create_app(
         common: dict[str, Any] = dict(
             owner_id=owner_id,
             cards=cards,
-            answer_store=_answer_record_store,
+            answer_store=_answer_record_reader,
             feedback_store=_scorecard_feedback_store,
             correction_store=_correction_store,
             knowledge_store=_knowledge_store,
@@ -1867,6 +2861,39 @@ def create_app(
         previous = _compute_owner_scorecard(window=previous_window, now=now, **common)
         trend = _scorecard_trend(current, previous)
         return current, trend
+
+    def _authorize_scorecard_owner(
+        request: Request,
+        owner_id: str,
+        *,
+        principal: AuthenticatedPrincipal | None = None,
+    ) -> AuthenticatedPrincipal | None:
+        """한 Owner의 현재 모든 Agent Card를 권한 대상으로 다시 확인한다.
+
+        스코어카드는 답변·피드백·정정 store를 여러 번 읽으므로, 그 전에 Registry의
+        현재 card/owner별로 봉인 grant를 확인한다. collection은 이 helper가 허용한
+        Owner만 계산해 다른 Owner의 존재·지표를 새지 않는다.
+        """
+        if not _operational_central_mode:
+            return None
+        cards = [card for card in bundle.registry.all_cards() if card.owner == owner_id]
+        if not cards:
+            raise _operational_not_found_or_denied()
+        resolved_principal = principal
+        for card in cards:
+            current = _authorize_operational_card(
+                request,
+                action="scorecard.read",
+                agent_id=card.agent_id,
+                principal=resolved_principal,
+            )
+            if current is None:
+                raise _operational_not_found_or_denied()
+            if resolved_principal is None:
+                resolved_principal = current
+            elif current != resolved_principal:
+                raise _operational_unavailable()
+        return resolved_principal
 
     @app.get("/supervision/scorecard")
     def supervision_scorecard(  # pyright: ignore[reportUnusedFunction]
@@ -1878,10 +2905,23 @@ def create_app(
         `by_owner`/`CorrectionRequest`와 같은 계약). 미인증이면 쿼리 owner_id를 그대로
         신뢰한다(로컬 관례). 순위·타 owner 비교 없음 — 이 owner 자신의 값만.
         """
-        resolved_owner = _session_identity(request) if _auth_enabled else owner_id
+        principal: AuthenticatedPrincipal | None = None
+        if _operational_central_mode:
+            if governance_principal_resolver is None or operational_authorization is None:
+                raise _operational_unavailable()
+            # 중앙 모드에서 query owner_id와 legacy session은 권한의 원천이 아니다.
+            principal = _governance_principal(request)
+            resolved_owner = principal.subject_id
+            _authorize_scorecard_owner(request, resolved_owner, principal=principal)
+        else:
+            resolved_owner = _session_identity(request) if _auth_enabled else owner_id
         current, trend = _owner_scorecard_with_trend(
             resolved_owner, window_days=_scorecard_window_days(days), now=_scorecard_clock()
         )
+        # 두 윈도의 store 계산이 끝난 직후, 직렬화 전에 같은 요청 principal로 재인가한다.
+        # 계산 중 owner 전이 또는 정책 변경이 생기면 self scorecard도 숨긴다.
+        if _operational_central_mode:
+            _authorize_scorecard_owner(request, resolved_owner, principal=principal)
         return serialize_scorecard(current, trend=trend)
 
     @app.get("/admin/scorecards")
@@ -1894,16 +2934,39 @@ def create_app(
         (`sort` 등 쿼리는 이 시그니처에 아예 없어 무엇을 보내도 무시된다). 인증 활성 시
         미로그인 401(운영 면 공통 계약).
         """
-        if _auth_enabled:
+        if _operational_central_mode:
+            if governance_principal_resolver is None or operational_authorization is None:
+                raise _operational_unavailable()
+            # 목록을 만들기 전에 principal을 확정한다. 개별 Owner는 아래에서 따로
+            # authorize해 permission은 있어도 귀속이 없는 항목이 섞이지 않게 한다.
+            principal = _governance_principal(request)
+        elif _auth_enabled:
             _session_identity(request)  # 미로그인 401
+            principal = None
+        else:
+            principal = None
         window_days = _scorecard_window_days(days)
         now = _scorecard_clock()
         owner_ids = sorted({c.owner for c in bundle.registry.all_cards()})
         results: list[dict[str, Any]] = []
         for owner_id in owner_ids:
-            current, trend = _owner_scorecard_with_trend(
-                owner_id, window_days=window_days, now=now
-            )
+            if _operational_central_mode:
+                try:
+                    _authorize_scorecard_owner(request, owner_id, principal=principal)
+                except HTTPException as error:
+                    if error.status_code == 404:
+                        continue
+                    raise
+            current, trend = _owner_scorecard_with_trend(owner_id, window_days=window_days, now=now)
+            # 각 owner의 계산이 끝난 직후 다시 현재 Registry/grant를 확인한다. 여기서
+            # 404가 되면 그 항목은 아직 response list에 넣지 않는다.
+            if _operational_central_mode:
+                try:
+                    _authorize_scorecard_owner(request, owner_id, principal=principal)
+                except HTTPException as error:
+                    if error.status_code == 404:
+                        continue
+                    raise
             results.append(serialize_scorecard(current, trend=trend))
         return results
 
@@ -1986,6 +3049,60 @@ def create_app(
     def inbox_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
         return FileResponse(_INBOX_HTML)
 
+    def _request_aware_case(case_id: str) -> ConflictCase | None:
+        """조립이 소유한 request-aware Case를 terminal 상태까지 조회한다."""
+        store = _question_surface.conflict_store
+        if store is None:
+            return None
+        try:
+            return store.get_request_case(case_id)
+        except ConflictDispositionError as error:
+            raise _conflict_disposition_http_error(error) from error
+        except Exception as error:
+            dependency = ConflictDispositionDependency()
+            raise _conflict_disposition_http_error(dependency) from error
+
+    def _cases_for_owner(owner_id: str) -> list[ConflictCase]:
+        """legacy와 P17 Case Store가 다르면 두 처리함을 안전하게 합친다."""
+        legacy_cases = bundle.case_store.open_for_owner(owner_id)
+        store = _question_surface.conflict_store
+        if store is None or cast(object, store) is cast(object, bundle.case_store):
+            return legacy_cases
+        read = getattr(store, "open_for_owner", None)
+        if not callable(read):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "conflict_inbox_unavailable",
+                    "message": "다툼 처리함을 일시적으로 확인할 수 없습니다.",
+                    "retryable": True,
+                },
+                headers={"Retry-After": "1"},
+            )
+        try:
+            request_cases = cast(list[ConflictCase], read(owner_id))
+        except Exception as error:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "conflict_inbox_unavailable",
+                    "message": "다툼 처리함을 일시적으로 확인할 수 없습니다.",
+                    "retryable": True,
+                },
+                headers={"Retry-After": "1"},
+            ) from error
+        by_id = {case.case_id: case for case in legacy_cases}
+        by_id.update({case.case_id: case for case in request_cases})
+        return list(by_id.values())
+
+    def _serialize_surface_case(case: ConflictCase) -> dict[str, Any]:
+        registry = (
+            _question_surface.registry
+            if case.request_id is not None and _question_surface.registry is not None
+            else bundle.registry
+        )
+        return serialize_case(case, registry, bundle.published_index_store)
+
     # ── T6.5 슬라이스 2: 신원을 세션에서 읽는 운영 엔드포인트 ──────────────────
 
     @app.get("/inbox/cases")
@@ -1994,12 +3111,18 @@ def create_app(
 
         path param 제거 — 세션 신원으로 자기 처리함만(남의 것 지목 표면 없음).
         """
+        if governance_principal_resolver is not None:
+            principal = _governance_principal(request)
+            application = _question_surface.conflict_disposition
+            if application is None:
+                raise _conflict_disposition_http_error(ConflictAuthorizationUnavailable())
+            try:
+                cases = application.pending_for(principal)
+            except ConflictDispositionError as error:
+                raise _conflict_disposition_http_error(error) from error
+            return [_serialize_surface_case(case) for case in cases]
         owner_id = _session_identity(request)
-        cases = bundle.case_store.open_for_owner(owner_id)
-        return [
-            serialize_case(c, bundle.registry, bundle.published_index_store)
-            for c in cases
-        ]
+        return [_serialize_surface_case(case) for case in _cases_for_owner(owner_id)]
 
     @app.get("/inbox/backup-reviews")
     def inbox_backup_reviews(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
@@ -2025,25 +3148,75 @@ def create_app(
         if _reeval_store is None:
             return []
         items = _reeval_store.pending_for_owner(owner_id)
-        return [
-            serialize_reeval_item(it, bundle.registry, bundle.audit_reader)
-            for it in items
-        ]
+        return [serialize_reeval_item(it, bundle.registry, bundle.audit_reader) for it in items]
 
     @app.post("/cases/{case_id}/concur")
-    def concur(case_id: str, req: ConcurRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+    async def concur(case_id: str, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """1인칭 합의 표 — 인증 활성 시 by_owner를 세션에서, 미활성 시 body에서.
 
         스코프(인증 활성): 세션 owner가 그 case의 후보가 아니면 ValueError → 403.
         """
-        if _auth_enabled:
+        governance_principal = (
+            _governance_principal(request) if governance_principal_resolver is not None else None
+        )
+        try:
+            req = ConcurRequest.model_validate(await request.json())
+        except Exception as error:
+            raise HTTPException(
+                status_code=422, detail="다툼 합의 요청 본문이 유효하지 않습니다."
+            ) from error
+        if governance_principal is not None:
+            by_owner = governance_principal.subject_id
+        elif _auth_enabled:
             by_owner = _session_identity(request)
         else:
             by_owner = req.by_owner
+
+        request_case = _request_aware_case(case_id)
+        if governance_principal is not None and request_case is None:
+            raise _conflict_disposition_http_error(ConflictDispositionNotFoundOrDenied())
+        if request_case is not None:
+            application = _question_surface.conflict_disposition
+            if application is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "conflict_disposition_unavailable",
+                        "message": "Request-aware 다툼 합의 기능을 사용할 수 없습니다.",
+                        "retryable": True,
+                    },
+                    headers={"Retry-After": "1"},
+                )
+            if req.expected_round is None or not by_owner.strip():
+                raise _conflict_disposition_http_error(ConflictDispositionInvalid())
+            try:
+                command = ConcurOnConflict(
+                    principal=(
+                        governance_principal
+                        if governance_principal is not None
+                        else OwnerPrincipal(
+                            org_id=question_org_id,
+                            subject_id=by_owner,
+                        )
+                    ),
+                    case_id=case_id,
+                    expected_round=req.expected_round,
+                    on_agent=req.on_agent,
+                    stance=req.stance,
+                    rationale=req.rationale,
+                )
+                outcome = application.concur(command)
+            except ConflictDispositionError as error:
+                raise _conflict_disposition_http_error(error) from error
+            except ValueError as error:
+                raise _conflict_disposition_http_error(ConflictDispositionInvalid()) from error
+            return serialize_p17_concurrence(outcome)
+
         vote = ConcurOnPrimary(
             by_owner=by_owner,
             on_agent=req.on_agent,
             rationale=req.rationale,
+            stance="withdraw",
         )
         try:
             outcome = bundle.consensus.concur(case_id, vote)
@@ -2056,13 +3229,16 @@ def create_app(
             raise HTTPException(status_code=400, detail=msg) from exc
         if isinstance(outcome, Deadlocked):
             case = bundle.case_store.get(case_id)
-            if case is not None:
+            # P17 request-aware 케이스는 원 request_id를 잃지 않는 후속
+            # workflow가 담당한다. request_id 필드가 없는 legacy ManagerItem으로
+            # 재적재하면 ConflictCase/ManagerItem 상관 불변식을 깨므로 금지한다.
+            if case is not None and case.request_id is None:
                 bundle.ask.enqueue_deadlock(case, reason=outcome.reason)
         return serialize_outcome(outcome)
 
     @app.post("/inbox/cases/{case_id}/document")
-    def inbox_fetch_document(  # pyright: ignore[reportUnusedFunction]
-        case_id: str, req: FetchDocumentRequest, request: Request
+    async def inbox_fetch_document(  # pyright: ignore[reportUnusedFunction]
+        case_id: str, request: Request
     ) -> dict[str, Any]:
         """on-demand 문서 fetch — 연관 개념 클릭 시 owner 워커에서 문서 본문을 끌어온다.
 
@@ -2079,11 +3255,36 @@ def create_app(
         """
         from agent_org_network.transport import WebSocketDispatcher as _WSD
 
-        case = bundle.case_store.get(case_id)
+        governance_principal = (
+            _governance_principal(request) if governance_principal_resolver is not None else None
+        )
+        try:
+            req = FetchDocumentRequest.model_validate(await request.json())
+        except Exception as error:
+            raise HTTPException(
+                status_code=422, detail="문서 조회 요청 본문이 유효하지 않습니다."
+            ) from error
+
+        case = _request_aware_case(case_id)
+        if governance_principal is not None:
+            application = _question_surface.conflict_disposition
+            if application is None:
+                raise _conflict_disposition_http_error(ConflictAuthorizationUnavailable())
+            try:
+                case = application.document(case_id, governance_principal)
+            except ConflictDispositionError as error:
+                raise _conflict_disposition_http_error(error) from error
+        if case is None:
+            case = bundle.case_store.get(case_id)
         if case is None:
             raise HTTPException(status_code=404, detail=f"미존재 케이스: {case_id!r}")
-        if _auth_enabled:
+        if governance_principal is not None:
+            session_owner = governance_principal.subject_id
+        elif _auth_enabled:
             session_owner = _session_identity(request)  # 미로그인 → 401
+        else:
+            session_owner = None
+        if session_owner is not None:
             if not case.involves_owner(session_owner):
                 raise HTTPException(
                     status_code=403,
@@ -2113,40 +3314,182 @@ def create_app(
 
         path param 제거 — 세션 신원의 큐만.
         """
-        manager_id = _session_identity(request)
-        if _manager_queue_store is None:
-            return []
-        items = _manager_queue_store.pending_for_manager(manager_id)
+        if governance_principal_resolver is not None:
+            principal = _governance_principal(request)
+            manager_application = _question_surface.manager_disposition
+            if manager_application is None:
+                raise _manager_disposition_http_error(ManagerAuthorizationUnavailable())
+            try:
+                items = manager_application.pending_for(principal)
+            except ManagerDispositionError as error:
+                raise _manager_disposition_http_error(error) from error
+        else:
+            manager_id = _session_identity(request)
+            items = _manager_queue_store.pending_for_manager(manager_id)
         return [serialize_manager_item(it) for it in items]
 
     @app.post("/manager/items/{item_id}/act")
-    def manager_act(item_id: str, req: ManagerActionRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+    async def manager_act(item_id: str, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """Manager 처분 — 인증 활성 시 by_manager를 세션에서, 미활성 시 body에서.
 
         스코프(인증 활성): 세션 신원 ≠ item.manager_id면 ValueError → 403.
         """
-        if _auth_enabled:
+        governance_principal = (
+            _governance_principal(request) if governance_principal_resolver is not None else None
+        )
+        try:
+            req = ManagerActionRequest.model_validate(await request.json())
+        except Exception as error:
+            raise HTTPException(
+                status_code=422, detail="Manager 처분 요청 본문이 유효하지 않습니다."
+            ) from error
+        if governance_principal is not None:
+            by_manager = governance_principal.subject_id
+        elif _auth_enabled:
             by_manager = _session_identity(request)
         else:
             by_manager = req.by_manager
-        if _manager_queue_store is None:
-            raise HTTPException(status_code=404, detail="Manager 큐가 비활성화되어 있습니다.")
-        action = _parse_manager_action(req, by_manager)
-        svc = ManagerQueueService(
-            queue_store=_manager_queue_store,
-            precedents=bundle.precedents,
-            case_store=bundle.case_store,
+        item = _manager_queue_store.get(item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Manager 처리 항목을 찾을 수 없습니다.")
+
+        if governance_principal is not None and item.request_id is None:
+            raise _manager_disposition_http_error(ManagerDispositionNotFoundOrDenied())
+
+        # request_id 없는 기존 항목은 종전 ManagerQueueService 행위를 그대로 유지한다.
+        if item.request_id is None:
+            action = _parse_manager_action(req, by_manager)
+            svc = ManagerQueueService(
+                queue_store=_manager_queue_store,
+                precedents=bundle.precedents,
+                case_store=bundle.case_store,
+            )
+            try:
+                resolved = svc.act(item_id, action)
+            except ValueError as exc:
+                msg = str(exc)
+                if "미존재" in msg:
+                    raise HTTPException(status_code=404, detail=msg) from exc
+                if "1인칭 위반" in msg:
+                    raise HTTPException(status_code=403, detail=msg) from exc
+                raise HTTPException(status_code=400, detail=msg) from exc
+            return serialize_manager_item(resolved)
+
+        if isinstance(item.source, FromDispatch):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "unsupported_request_aware_manager_source",
+                    "message": "이 request-aware Manager 출처는 처분할 수 없습니다.",
+                    "retryable": False,
+                },
+            )
+        if req.type == "reroute":
+            if isinstance(item.source, FromDeadlock):
+                code = "unsupported_deadlock_manager_action"
+                message = "교착 Request에는 담당 지정 또는 dismiss만 허용됩니다."
+            else:
+                code = "unsupported_unowned_manager_action"
+                message = "Unowned Request에는 담당 지정 또는 dismiss만 허용됩니다."
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": code,
+                    "message": message,
+                    "retryable": False,
+                },
+            )
+        if not by_manager.strip() or (req.type == "assign_owner" and not req.primary.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "manager_disposition_invalid",
+                    "message": "Manager 처분 요청이 유효하지 않습니다.",
+                    "retryable": False,
+                },
+            )
+        principal = (
+            governance_principal
+            if governance_principal is not None
+            else ManagerPrincipal(
+                org_id=question_org_id,
+                subject_id=by_manager,
+            )
         )
-        try:
-            resolved = svc.act(item_id, action)
-        except ValueError as exc:
-            msg = str(exc)
-            if "미존재" in msg:
-                raise HTTPException(status_code=404, detail=msg) from exc
-            if "1인칭 위반" in msg:
-                raise HTTPException(status_code=403, detail=msg) from exc
-            raise HTTPException(status_code=400, detail=msg) from exc
-        return serialize_manager_item(resolved)
+        outcome: Any
+        if isinstance(item.source, FromUnowned):
+            manager_application = _question_surface.manager_disposition
+            if manager_application is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "manager_disposition_unavailable",
+                        "message": "Request-aware Manager 처분 기능을 사용할 수 없습니다.",
+                        "retryable": True,
+                    },
+                    headers={"Retry-After": "1"},
+                )
+            unowned_command = (
+                AssignUnownedOwner(
+                    principal=principal,
+                    item_id=item_id,
+                    agent_id=req.primary,
+                    rationale=req.rationale,
+                )
+                if req.type == "assign_owner"
+                else DismissUnowned(
+                    principal=principal,
+                    item_id=item_id,
+                    rationale=req.rationale,
+                )
+            )
+            try:
+                outcome = manager_application.act(unowned_command)
+            except ManagerDispositionError as error:
+                raise _manager_disposition_http_error(error) from error
+        else:
+            deadlock_application = _question_surface.deadlock_manager_disposition
+            if deadlock_application is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "manager_disposition_unavailable",
+                        "message": "Request-aware Manager 처분 기능을 사용할 수 없습니다.",
+                        "retryable": True,
+                    },
+                    headers={"Retry-After": "1"},
+                )
+            deadlock_command = (
+                AssignDeadlockedOwner(
+                    principal=principal,
+                    item_id=item_id,
+                    agent_id=req.primary,
+                    rationale=req.rationale,
+                )
+                if req.type == "assign_owner"
+                else DismissDeadlocked(
+                    principal=principal,
+                    item_id=item_id,
+                    rationale=req.rationale,
+                )
+            )
+            try:
+                outcome = deadlock_application.act(deadlock_command)
+            except ManagerDispositionError as error:
+                raise _manager_disposition_http_error(error) from error
+        resolved = _manager_queue_store.get(item_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "manager_disposition_integrity",
+                    "message": "Manager 처분의 저장 증거가 일치하지 않습니다.",
+                    "retryable": False,
+                },
+            )
+        body = serialize_manager_item(resolved)
+        body["request_outcome"] = outcome.kind
+        return body
 
     @app.post("/backup-reviews/{item_id}")
     def review_backup(item_id: str, req: BackupReviewRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
@@ -2233,11 +3576,24 @@ def create_app(
     @app.get("/monitor")
     def monitor_logs(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
         """운영 모니터링 — 인증 활성 시 로그인 필요(ADR 0016 결정 5: 인증만)."""
+        if _operational_central_mode:
+            principal = _governance_principal(request)
+            operational = _operational_application
+            if operational is None:
+                raise _operational_unavailable()
+            try:
+                return operational.monitor(principal)
+            except OperationalUnavailableError:
+                raise _operational_unavailable() from None
+            except (OperationalDeniedError, OperationalNotFoundError):
+                raise _operational_not_found_or_denied() from None
+        principal = _authorize_operational_org(request, action="monitor.read")
         if _auth_enabled:
             _session_identity(request)  # 미로그인 401
         if bundle.audit_reader is None:
             return []
         records = bundle.audit_reader.records()
+        _authorize_operational_org(request, action="monitor.read", principal=principal)
         return [summarize_audit_record(i, r) for i, r in dedupe_audit_records(records)]
 
     # 정적 경로(/monitor/view)를 동적(/monitor/{index})보다 *먼저* 등록한다 —
@@ -2249,6 +3605,18 @@ def create_app(
     @app.get("/monitor/{index}")
     def monitor_detail(index: int, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """운영 모니터링 상세 — 인증 활성 시 로그인 필요(ADR 0016 결정 5)."""
+        if _operational_central_mode:
+            principal = _governance_principal(request)
+            operational = _operational_application
+            if operational is None:
+                raise _operational_unavailable()
+            try:
+                return operational.audit_detail(principal, index)
+            except OperationalUnavailableError:
+                raise _operational_unavailable() from None
+            except (OperationalDeniedError, OperationalNotFoundError):
+                raise _operational_not_found_or_denied() from None
+        principal = _authorize_operational_org(request, action="audit.read")
         if _auth_enabled:
             _session_identity(request)  # 미로그인 401
         if bundle.audit_reader is None:
@@ -2256,6 +3624,7 @@ def create_app(
         record = bundle.audit_reader.record_at(index)
         if record is None:
             raise HTTPException(status_code=404, detail="알 수 없는 로그 인덱스")
+        _authorize_operational_org(request, action="audit.read", principal=principal)
         return record
 
     # ── T5.3: Org 그래프(운영자 면 — 레지스트리 순수 파생) ───────────────────────
@@ -2267,9 +3636,23 @@ def create_app(
         모니터링과 같은 인증 결(인증 활성 시 로그인 필요, 세분 역할 없이 인증만 —
         ADR 0016 결정 5). 새 전이·기록 0(레지스트리 읽기 파생). 운영 면이라 내부값 노출 OK.
         """
+        if _operational_central_mode:
+            principal = _governance_principal(request)
+            operational = _operational_application
+            if operational is None:
+                raise _operational_unavailable()
+            try:
+                return operational.graph(principal)
+            except OperationalUnavailableError:
+                raise _operational_unavailable() from None
+            except (OperationalDeniedError, OperationalNotFoundError):
+                raise _operational_not_found_or_denied() from None
+        principal = _authorize_operational_org(request, action="org_graph.read")
         if _auth_enabled:
             _session_identity(request)  # 미로그인 401
-        return serialize_org_graph(bundle.registry)
+        graph = serialize_org_graph(bundle.registry)
+        _authorize_operational_org(request, action="org_graph.read", principal=principal)
+        return graph
 
     @app.get("/org/view")
     def org_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
@@ -2289,6 +3672,22 @@ def create_app(
     @app.post("/console/sessions/{session_id}/end")
     def console_end_session(session_id: str, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """운영자 세션 종료(ADR 0024 결정 4) — `SessionStore.end`를 그대로 부른다."""
+        if _operational_central_mode:
+            principal = _governance_principal(request)
+            operational = _operational_application
+            if operational is None:
+                raise _operational_unavailable()
+            try:
+                ended = operational.end_session(principal, session_id, channel="http")
+            except OperationalUnavailableError:
+                raise _operational_unavailable() from None
+            except (OperationalDeniedError, OperationalNotFoundError):
+                raise _operational_not_found_or_denied() from None
+            return {
+                "session_id": ended.session_id,
+                "user_id": ended.user_id,
+                "status": ended.status,
+            }
         if _auth_enabled:
             _session_identity(request)  # 미로그인 401
         ended = _session_store.end(session_id)
@@ -2309,44 +3708,132 @@ def create_app(
         반영해 운영자가 "이 카드는 원래 어떤 기본값인가"를 볼 수 있게 한다). 카드 미존재
         시 404.
         """
-        try:
-            card = bundle.registry.get(agent_id)
-        except KeyError:
+        if _operational_central_mode:
+            principal = _governance_principal(request)
+            operational = _operational_application
+            if operational is None:
+                raise _operational_unavailable()
+            try:
+                return {"agent_id": agent_id, "on": operational.hitl(principal, agent_id)}
+            except OperationalUnavailableError:
+                raise _operational_unavailable() from None
+            except (OperationalDeniedError, OperationalNotFoundError):
+                raise _operational_not_found_or_denied() from None
+        principal = _authorize_operational_card(request, action="hitl.read", agent_id=agent_id)
+        if _current_agent_card(agent_id) is None:
             raise HTTPException(status_code=404, detail=f"미존재 agent_id: {agent_id!r}")
         if _auth_enabled:
             _session_identity(request)  # 미로그인 401
         from agent_org_network.hitl import seed_from_card
 
-        on = _hitl_toggles.is_on(agent_id) if agent_id in _hitl_toggles_explicit else seed_from_card(card)
+        # 최초 grant 뒤 카드 정책 자체가 바뀔 수 있으므로, 투영할 값도 현재 카드에서 읽는다.
+        card = _current_agent_card(agent_id)
+        if card is None:
+            raise _operational_not_found_or_denied()
+        on = (
+            _hitl_toggles.is_on(agent_id)
+            if agent_id in _hitl_toggles_explicit
+            else seed_from_card(card)
+        )
+        _authorize_operational_card(
+            request, action="hitl.read", agent_id=agent_id, principal=principal
+        )
         return {"agent_id": agent_id, "on": on}
 
     @app.post("/console/hitl/{agent_id}")
-    def console_set_hitl(  # pyright: ignore[reportUnusedFunction]
-        agent_id: str, req: HitlToggleRequest, request: Request
+    async def console_set_hitl(  # pyright: ignore[reportUnusedFunction]
+        agent_id: str, request: Request
     ) -> dict[str, Any]:
         """HITL 토글 set — `HitlToggleMap.set`을 그대로 부른다(ADR 0025). 카드 미존재 404."""
+        # 중앙 경계에서는 body 검증보다 먼저 조립·서버 principal·현재 카드 권한을
+        # 확인한다. FastAPI 파라미터 모델을 쓰면 이 순서가 framework validation에 의해
+        # 역전되어, malformed body로도 resolver/권한 실패를 우회 관측할 수 있다.
+        if _operational_central_mode:
+            _require_operational_composition()
+        principal = _authorize_operational_card(request, action="hitl.write", agent_id=agent_id)
         try:
-            bundle.registry.get(agent_id)
-        except KeyError:
+            req = HitlToggleRequest.model_validate(await request.json())
+        except Exception:
+            raise HTTPException(
+                status_code=422, detail="HITL 토글 요청 형식이 올바르지 않습니다."
+            ) from None
+        if _current_agent_card(agent_id) is None:
             raise HTTPException(status_code=404, detail=f"미존재 agent_id: {agent_id!r}")
         if _auth_enabled:
             _session_identity(request)  # 미로그인 401
+        if _operational_central_mode:
+            assert principal is not None
+            operational = _operational_application
+            if operational is None:
+                raise _operational_unavailable()
+            try:
+                on = operational.set_hitl(principal, agent_id, req.on, channel="http")
+            except OperationalUnavailableError:
+                raise _operational_unavailable() from None
+            except (OperationalDeniedError, OperationalNotFoundError):
+                raise _operational_not_found_or_denied() from None
+            return {"agent_id": agent_id, "on": on}
+        # Registry owner 변경과 권한 정책 변경을 write 직전에 다시 확인한다.
+        _authorize_operational_card(
+            request, action="hitl.write", agent_id=agent_id, principal=principal
+        )
         _hitl_toggles.set(agent_id, req.on)
         _hitl_toggles_explicit.add(agent_id)
         return {"agent_id": agent_id, "on": req.on}
 
     @app.post("/console/tokens")
-    def console_issue_token(req: TokenIssueRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+    async def console_issue_token(request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """워커 admission 토큰 발급 — 평문 raw token은 이 응답 1회만(ADR 0026).
 
         `owner_id`는 Registry 실재 User여야 한다(없으면 404). 저장은 해시만
         (`TokenStore.issue` 계약) — 이후 `GET /console/tokens`는 절대 평문을 다시 보여주지
         않는다.
         """
+        if _operational_central_mode:
+            _require_operational_composition()
+        governance_principal = _governance_principal(request) if _operational_central_mode else None
+        # 운영 principal을 확정한 뒤에만 body를 읽는다. owner_id는 credential resource를
+        # 만들 때 필요하므로, body 형식은 resource authorization 직전까지의 유일한 입력이다.
+        try:
+            req = TokenIssueRequest.model_validate(await request.json())
+        except Exception:
+            raise HTTPException(
+                status_code=422, detail="토큰 발급 요청 형식이 올바르지 않습니다."
+            ) from None
+        principal = _authorize_operational_resource(
+            request,
+            action="worker_credential.issue",
+            resource=ResourceRef(
+                org_id=(
+                    governance_principal.org_id
+                    if governance_principal is not None
+                    else question_org_id
+                ),
+                kind="worker_credential",
+                owner_subject_id=req.owner_id,
+            ),
+            principal=governance_principal,
+        )
         if req.owner_id not in bundle.registry.user_ids():
+            if _operational_central_mode:
+                raise _operational_not_found_or_denied()
             raise HTTPException(status_code=404, detail=f"미존재 owner_id: {req.owner_id!r}")
         if _auth_enabled:
             _session_identity(request)  # 미로그인 401
+        # 발급 직전 대상 owner가 여전히 Registry에 있고 policy가 같은지를 확인한다.
+        if req.owner_id not in bundle.registry.user_ids():
+            raise _operational_not_found_or_denied()
+        if principal is not None:
+            _authorize_operational_resource(
+                request,
+                action="worker_credential.issue",
+                resource=ResourceRef(
+                    org_id=principal.org_id,
+                    kind="worker_credential",
+                    owner_subject_id=req.owner_id,
+                ),
+                principal=principal,
+            )
         raw, token = _token_store.issue(req.owner_id, req.role, now=_console_now())
         return {
             "token_id": token.token_id,
@@ -2360,8 +3847,11 @@ def create_app(
     @app.get("/console/tokens")
     def console_list_tokens(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
         """활성 토큰 목록 — token_hash·평문 미노출(운영 면이어도 비밀은 렌더 규율)."""
+        principal = _authorize_operational_org(request, action="worker_credential.read")
         if _auth_enabled:
             _session_identity(request)  # 미로그인 401
+        tokens = _token_store.list_active(now=_console_now())
+        _authorize_operational_org(request, action="worker_credential.read", principal=principal)
         return [
             {
                 "token_id": t.token_id,
@@ -2370,12 +3860,59 @@ def create_app(
                 "issued_at": t.issued_at.isoformat(),
                 "expires_at": t.expires_at.isoformat() if t.expires_at is not None else None,
             }
-            for t in _token_store.list_active(now=_console_now())
+            for t in tokens
         ]
 
     @app.post("/console/tokens/{token_id}/revoke")
     def console_revoke_token(token_id: str, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """토큰 취소(revoke) — append-only(삭제 X), 미존재는 404."""
+        if _operational_central_mode:
+            # partial composition은 token 존재·부재 및 store 접근보다 먼저 한 의미(503)로
+            # 닫는다. resolver-only와 authority-only 조립이 demo 경로로 되돌아가지 않는다.
+            _require_operational_composition()
+            principal = _governance_principal(request)
+            current = next(
+                (
+                    token
+                    for token in _token_store.list_active(now=_console_now())
+                    if token.token_id == token_id
+                ),
+                None,
+            )
+            if current is None:
+                raise _operational_not_found_or_denied()
+            _authorize_operational_resource(
+                request,
+                action="worker_credential.revoke",
+                resource=ResourceRef(
+                    org_id=principal.org_id,
+                    kind="worker_credential",
+                    resource_id=current.token_id,
+                    owner_subject_id=current.owner_id,
+                ),
+                principal=principal,
+            )
+            current = next(
+                (
+                    token
+                    for token in _token_store.list_active(now=_console_now())
+                    if token.token_id == token_id
+                ),
+                None,
+            )
+            if current is None:
+                raise _operational_not_found_or_denied()
+            _authorize_operational_resource(
+                request,
+                action="worker_credential.revoke",
+                resource=ResourceRef(
+                    org_id=principal.org_id,
+                    kind="worker_credential",
+                    resource_id=current.token_id,
+                    owner_subject_id=current.owner_id,
+                ),
+                principal=principal,
+            )
         if _auth_enabled:
             _session_identity(request)  # 미로그인 401
         revoked = _token_store.revoke(token_id, now=_console_now())
@@ -2399,6 +3936,7 @@ def create_app(
         막는다(15s류). 클라이언트가 끊기면 generator가 GeneratorExit로 종료되고 finally가
         반드시 unsubscribe한다(느린/떠난 구독자 큐 누수 방지). 운영 면 인증은 /monitor 결.
         """
+        principal = _authorize_operational_org(request, action="monitor.read")
         if _auth_enabled:
             _session_identity(request)  # 미로그인 401
 
@@ -2411,8 +3949,22 @@ def create_app(
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         }
+
+        def _authorize_next_console_event() -> bool:
+            try:
+                _authorize_operational_org(request, action="monitor.read", principal=principal)
+            except HTTPException:
+                # 응답 헤더가 이미 전송된 SSE에서는 오류 body를 새로 쓰지 않는다. 권한이
+                # 바뀐 뒤 큐에 있던 사건은 한 건도 내보내지 않고 연결만 닫는다.
+                return False
+            return True
+
         return StreamingResponse(
-            stream_console_frames(_console_feed, stop=lambda: False),
+            stream_console_frames(
+                _console_feed,
+                stop=lambda: False,
+                before_event=_authorize_next_console_event,
+            ),
             media_type="text/event-stream",
             headers=headers,
         )
@@ -2441,54 +3993,132 @@ def create_app(
                 )
         return validate_card_for_builder(req, bundle.registry)
 
+    async def _parse_author_body(request: Request, model: type[BaseModel]) -> BaseModel:
+        """중앙 모드에서도 신원 확인 뒤에만 저작 요청 본문을 해석한다.
+
+        저작 run/publish의 대상 카드가 body에만 있으므로, 중앙 모드에서는 먼저 exact
+        principal을 얻고 그 다음에만 body에서 agent_id를 꺼낸다. FastAPI의 자동 body
+        주입을 쓰면 malformed body가 권한 의존성보다 앞서 처리될 수 있어 이 작은 경계를
+        둔다. 데모도 같은 422 의미를 유지한다.
+        """
+        try:
+            raw = await request.json()
+        except Exception as error:
+            raise HTTPException(
+                status_code=422, detail="요청 본문 형식이 올바르지 않습니다."
+            ) from error
+        try:
+            return model.model_validate(raw)
+        except ValidationError as error:
+            raise HTTPException(status_code=422, detail=error.errors()) from error
+
+    def _author_principal_before_body(request: Request) -> AuthenticatedPrincipal | None:
+        """body에만 리소스 식별자가 있는 저작 write의 principal-first 가드."""
+        if not _operational_central_mode:
+            return None
+        _require_operational_composition()
+        return _governance_principal(request)
+
+    def _author_content_digest(value: str) -> str:
+        """승인 결박용 본문 지문. 원문은 승인·감사 포트로 넘기지 않는다."""
+        return sha256(value.encode("utf-8")).hexdigest()
+
     @app.post("/builder/okf/commit")
-    def builder_okf_commit(req: BuilderOkfCommitRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+    async def builder_okf_commit(request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """OKF 번들 파일을 owner author로 커밋한다(ADR 0018 결정 1·5).
 
         author는 세션 신원에서 채워진다(ADR 0016 위조 차단 — body 아님). Owner 스코프:
         세션 신원 ≠ 대상 카드 owner → 403, 미로그인 → 401, 카드 미존재 → 404,
         파일 없음/경로 탈출 → 400.
+
+        중앙 권한 모드에서는 이 legacy Builder 요청을 받지 않는다. ``OkfFile``은 임의의
+        본문이라 현재 카드의 domain으로 재admission·재렌더링할 구조화된 초안이 없고,
+        Git 직전의 안전 계약을 증명할 수 없다. 구조화된 BuilderDraft migration 전까지는
+        principal 확인 직후 503으로 닫는다. 데모 세션 경로는 기존 동작을 보존한다.
         """
-        session_owner = _session_identity(request)  # 미로그인 → 401
+        principal = _author_principal_before_body(request)
+        if principal is not None:
+            # 본문 파싱·카드 조회·Git 쓰기보다 먼저 fail closed한다. authoring의 구조화된
+            # publish/edit/delete 경로는 별도 AuthoringApplication 계약을 계속 사용한다.
+            raise _operational_unavailable()
+        req = cast(
+            BuilderOkfCommitRequest,
+            await _parse_author_body(request, BuilderOkfCommitRequest),
+        )
+        session_owner = (
+            principal.subject_id if principal is not None else _session_identity(request)
+        )  # 중앙 모드에서는 body/session 아닌 OIDC subject
 
         # agent_id 형식 검증(validate_card_for_builder와 대칭 — m3)
         if not req.agent_id or not req.agent_id.strip():
             raise HTTPException(status_code=400, detail="agent_id는 비어 있을 수 없습니다.")
 
-        # 대상 카드 존재 및 owner 스코프 확인
-        try:
-            card = bundle.registry.get(req.agent_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail=f"카드 미존재: {req.agent_id!r}")
-
-        if card.owner != session_owner:
-            raise HTTPException(
-                status_code=403,
-                detail=f"자기 번들만 커밋할 수 있습니다(세션 {session_owner!r} ≠ owner {card.owner!r}).",
-            )
+        # legacy Builder는 데모 session owner를 card와 대조한다. 중앙 mode는 위에서
+        # fail closed하므로 불투명 OkfFile이 AuthoringApplication.mutate까지 도달하지 않는다.
+        card: "AgentCard | None" = None
+        if principal is None:
+            try:
+                card = bundle.registry.get(req.agent_id)
+            except KeyError:
+                raise HTTPException(status_code=404, detail=f"카드 미존재: {req.agent_id!r}")
+            if card.owner != session_owner:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"자기 번들만 커밋할 수 있습니다(세션 {session_owner!r} ≠ owner {card.owner!r}).",
+                )
 
         # files 입력 검증 및 OkfFile 변환
         if not req.files:
             raise HTTPException(status_code=400, detail="커밋할 파일이 없습니다.")
         try:
-            okf_files = tuple(
-                OkfFile(path=f["path"], content=f["content"]) for f in req.files
-            )
+            okf_files = tuple(OkfFile(path=f["path"], content=f["content"]) for f in req.files)
         except (KeyError, TypeError) as exc:
             raise HTTPException(status_code=400, detail=f"파일 형식 오류: {exc}") from exc
 
-        commit_req = BuilderCommitRequest(
-            agent_id=req.agent_id,
-            owner=session_owner,
-            files=okf_files,
-            message=req.message,
-        )
-        try:
-            result = commit_okf_bundle(commit_req, _git_gateway)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        def _write_bundle(current_card: "AgentCard") -> tuple[dict[str, Any], "AuthoringMutation"]:
+            try:
+                result = commit_okf_bundle(
+                    BuilderCommitRequest(
+                        agent_id=req.agent_id,
+                        owner=session_owner,
+                        files=okf_files,
+                        message=req.message,
+                    ),
+                    _git_gateway,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return (
+                {"sha": result.sha, "agent_id": result.agent_id},
+                AuthoringMutation(req.agent_id, {"operation": "builder_commit"}),
+            )
 
-        return {"sha": result.sha, "agent_id": result.agent_id}
+        if principal is None:
+            assert card is not None
+            return _write_bundle(card)[0]
+        application = _authoring_application
+        if application is None:
+            raise _operational_unavailable()
+        try:
+            return application.mutate(
+                principal,
+                req.agent_id,
+                _write_bundle,
+                channel="http",
+                command={
+                    "operation": "builder_commit",
+                    "agent_id": req.agent_id,
+                    "files": [
+                        {"path": file.path, "content_sha256": _author_content_digest(file.content)}
+                        for file in okf_files
+                    ],
+                    "message_sha256": _author_content_digest(req.message),
+                },
+            )
+        except OperationalUnavailableError as error:
+            raise _operational_unavailable() from error
+        except (OperationalDeniedError, OperationalNotFoundError) as error:
+            raise _operational_not_found_or_denied() from error
 
     # ── OKF 저작면(owner측 — ADR 0030 결정 2·4) 라우트 2개 ─────────────────────
     # 저작은 **owner측**이다(ADR 0030 결정 2 — 중앙은 raw·초안·LLM 토큰 0·*목차만*).
@@ -2498,12 +4128,34 @@ def create_app(
     #   - 중앙 published_index_store에 publish되는 것은 *목차*(KnowledgeIndex)뿐이다 —
     #     concept_id·title·core_question·domain만·본문 0(§비소유 논거). 이게 이 작업의 핵심.
 
-    def _author_scoped_card(agent_id: str, request: Request) -> "AgentCard":
+    def _author_scoped_card(
+        agent_id: str,
+        request: Request,
+        *,
+        action: OperationalAction = "author.read",
+        principal: AuthenticatedPrincipal | None = None,
+    ) -> "AgentCard":
         """저작 라우트의 owner 스코프 가드(/builder/okf/commit과 같은 규칙).
 
         미로그인 → 401(인증 활성 시)·미존재 카드 → 404·세션 신원 ≠ card.owner → 403.
         인증 OFF면 owner 스코프를 강제하지 않는다(데모/기존 테스트 — 자기 카드만 가정).
         """
+        if _operational_central_mode:
+            _require_operational_composition()
+            resolved = principal if principal is not None else _governance_principal(request)
+            application = _authoring_application
+            if application is None:
+                raise _operational_unavailable()
+            try:
+                # 별도 AuthoringApplication이 현재 Registry card/owner로 ResourceRef를
+                # 새로 만들고 sealed grant를 검증한다. OperationalApplication에는 raw/staged
+                # OKF 자료가 전혀 들어가지 않는다.
+                return application.current_card(resolved, agent_id, action=action)
+            except OperationalUnavailableError as error:
+                raise _operational_unavailable() from error
+            except (OperationalDeniedError, OperationalNotFoundError) as error:
+                raise _operational_not_found_or_denied() from error
+
         session_owner: str | None = None
         if _auth_enabled:
             session_owner = _session_identity(request)  # 미로그인 → 401
@@ -2521,7 +4173,7 @@ def create_app(
         return card
 
     @app.post("/author/run")
-    def author_run(req: AuthorRunRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+    async def author_run(request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """raw 문서 → staged 개념 초안(owner측·transient·중앙 store 0·ADR 0030 결정 2·4).
 
         파이프라인: TextIngestor → run_authoring_pipeline(실 `LlmAuthor`) → admit_okf(over-claim
@@ -2537,24 +4189,44 @@ def create_app(
         `/ask` 스트림 ErrorEvent와 같은 정신으로 502 + 중립 메시지만 돌려준다(권한 가드의
         401/403/404 HTTPException은 try 밖이라 그대로 보존된다).
         """
-        card = _author_scoped_card(req.agent_id, request)
-
+        principal = _author_principal_before_body(request)
+        req = cast(AuthorRunRequest, await _parse_author_body(request, AuthorRunRequest))
         ingestor = TextIngestor()
         sources = ingestor.ingest([(f"{req.agent_id}-src", req.document)])
-        try:
-            author = _get_author()
-            # 카드 권한 domain을 split에 힌트로 주입 — LLM이 개념 domain을 owner 권한
-            # 라벨(예: 환불·보상)로 정렬하게 한다(매칭률↑). 강제 아님 — over-claim은
-            # admit_okf가 정상 drop한다(ADR 0030 비소유·권한 중앙 선언 보존).
-            authored = run_authoring_pipeline(
-                req.agent_id, sources, author, tuple(card.domains)
-            )
-        except Exception as exc:  # 실 LLM 호출·파싱·타임아웃 실패 — 내부 예외·스택 미노출
-            raise HTTPException(
-                status_code=502,
-                detail="저작 추출 중 문제가 발생했어요. 잠시 후 다시 시도해 주세요.",
-            ) from exc
-        result = admit_okf(authored.draft, card)
+
+        def _run_with_card(current_card: "AgentCard") -> tuple[Any, Any]:
+            try:
+                authored = run_authoring_pipeline(
+                    req.agent_id, sources, _get_author(), tuple(current_card.domains)
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail="저작 추출 중 문제가 발생했어요. 잠시 후 다시 시도해 주세요.",
+                ) from exc
+            return authored, admit_okf(authored.draft, current_card)
+
+        if principal is None:
+            card = _author_scoped_card(req.agent_id, request, action="author.write")
+            authored, result = _run_with_card(card)
+        else:
+            application = _authoring_application
+            if application is None:
+                raise _operational_unavailable()
+            try:
+                authored, result = application.run(
+                    principal,
+                    req.agent_id,
+                    _run_with_card,
+                    re_admit=lambda previous, current_card: (
+                        previous[0],
+                        admit_okf(previous[0].draft, current_card),
+                    ),
+                )
+            except OperationalUnavailableError as error:
+                raise _operational_unavailable() from error
+            except (OperationalDeniedError, OperationalNotFoundError) as error:
+                raise _operational_not_found_or_denied() from error
 
         kept_ids = {doc.concept_id for doc in result.admitted.documents}
         concepts = [
@@ -2585,7 +4257,7 @@ def create_app(
         return {"stages": stages, "concepts": concepts, "dropped": dropped}
 
     @app.post("/author/publish")
-    def author_publish(req: AuthorPublishRequest, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+    async def author_publish(request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """승인 개념 → owner git 커밋 + 목차만 중앙 publish(owner측·ADR 0030 결정 2·3).
 
         disposition 적용: rejected 제외·edited는 수정 필드 반영 → OkfDraft 구성 →
@@ -2599,8 +4271,23 @@ def create_app(
         안 간다(비소유). 목차 도출용 마크다운 직렬화는 *격리 임시 디렉터리*에 쓰고 버린다 —
         owner OKF 본체·중앙 어디에도 본문이 남지 않는다. rejected 개념은 커밋·publish 0.
         """
-        card = _author_scoped_card(req.agent_id, request)
-        session_owner = card.owner if not _auth_enabled else _session_identity(request)
+        principal = _author_principal_before_body(request)
+        req = cast(AuthorPublishRequest, await _parse_author_body(request, AuthorPublishRequest))
+        # 중앙 persistent mutation은 AuthoringApplication이 첫 authorize→approval→Git 직전
+        # 재authorize를 한 묶음으로 수행한다. 여기서 별도 card lookup을 하면 그 sequence가
+        # 한 번 더 늘어나 revoke 경쟁의 의미가 흐려진다.
+        card = (
+            _author_scoped_card(req.agent_id, request, action="author.publish")
+            if principal is None
+            else None
+        )
+        session_owner = (
+            principal.subject_id
+            if principal is not None
+            else (
+                card.owner if card is not None and not _auth_enabled else _session_identity(request)
+            )
+        )
 
         # disposition 적용: rejected 제외·edited 수정 필드 반영 → OkfDocumentDraft 구성
         docs: list[OkfDocumentDraft] = []
@@ -2629,66 +4316,87 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"초안 구성 오류: {exc}") from exc
 
-        # over-claim 재필터(저작측 admission — 권한 밖 domain 떨굼)
-        result = admit_okf(draft, card)
-        if not result.admitted.documents:
-            raise HTTPException(
-                status_code=400,
-                detail="권한 안(under-claim) 개념이 없습니다 — 전부 over-claim으로 떨궈졌습니다.",
+        def _write_publish(current_card: "AgentCard") -> tuple[dict[str, Any], "AuthoringMutation"]:
+            # Git 직전의 current card로 admission을 다시 한다. 따라서 첫 검사 후 domain이
+            # 줄어든 경우 그 문서는 write 0이며, 오래된 card를 재사용하지 않는다.
+            current_result = admit_okf(draft, current_card)
+            if not current_result.admitted.documents:
+                raise HTTPException(status_code=400, detail="권한 안 개념이 없습니다.")
+            current_files = tuple(
+                OkfFile(path=f"{doc.concept_id}.md", content=render_okf_markdown(doc))
+                for doc in current_result.admitted.documents
+            )
+            try:
+                committed = commit_okf_bundle(
+                    BuilderCommitRequest(
+                        agent_id=req.agent_id,
+                        owner=session_owner,
+                        files=current_files,
+                        message=f"OKF 저작 publish: {req.agent_id}",
+                    ),
+                    _git_gateway,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return (
+                {
+                    "commit": committed,
+                    "files": current_files,
+                    "dropped": current_result.dropped_concepts,
+                },
+                AuthoringMutation(req.agent_id, {"operation": "publish"}),
             )
 
-        # owner git 커밋(/builder/okf/commit과 같은 게이트웨이·author=세션 신원)
-        okf_files = tuple(
-            OkfFile(path=f"{doc.concept_id}.md", content=render_okf_markdown(doc))
-            for doc in result.admitted.documents
-        )
-        commit_req = BuilderCommitRequest(
-            agent_id=req.agent_id,
-            owner=session_owner,
-            files=okf_files,
-            message=f"OKF 저작 publish: {req.agent_id}",
-        )
-        try:
-            commit_result = commit_okf_bundle(commit_req, _git_gateway)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        # 커밋된 번들 전체에서 *목차*(KnowledgeIndex) 도출 → 중앙에 목차만 publish.
-        # ADR 0032 결정 B1: extract_snapshot으로 그 커밋 시점의 OKF 번들 *전체*(이전+이번 누적)를
-        # 임시 디렉터리에 추출 → build_knowledge_index_from_okf로 전체 glob 도출.
-        # 중앙 store에 들어가는 객체는 KnowledgeIndex(목차)뿐 — 비소유 보장.
-        import tempfile
-        from datetime import UTC, datetime
-
-        generated_at = datetime.now(UTC)
-        with tempfile.TemporaryDirectory() as tmp:
-            okf_root = Path(tmp)
-            agent_dest = okf_root / req.agent_id
-            _git_gateway.extract_snapshot(commit_result.sha, req.agent_id, agent_dest)
-            index = build_knowledge_index_from_okf(card, okf_root, generated_at=generated_at)
-        # (임시 디렉터리는 with 블록 종료 시 삭제 — 본문 마크다운은 디스크에 안 남는다)
-
-        published: dict[str, Any] | None = None
-        if bundle.published_index_store is not None:
-            # 중앙 수용 경로 재사용 — accept_published_index가 스코핑→필터→put(staleness).
-            # propagator 옵션은 이번 범위 밖(주입 시 reeval 인덱스-수용 훅·ADR 0030 S4).
-            accept_published_index(
-                session_owner, index, bundle.registry, bundle.published_index_store
+        def _publish_index(after_git: dict[str, Any], current_card: "AgentCard") -> dict[str, Any]:
+            # AuthoringApplication이 Git 뒤 reauthorize한 현재 card를 전달한 뒤에만 index를
+            # 도출/수용한다. 권한 revoke나 domain shrink면 이 callback은 호출되지 않는다.
+            published = _rederive_and_accept_index(
+                current_card, after_git["commit"].sha, session_owner
             )
-            published = {
-                "agent_id": index.agent_id,
-                "concept_count": len(index.concepts),
-                "generated_at": generated_at.isoformat(),
+            return {
+                "committed": {
+                    "sha": after_git["commit"].sha,
+                    "files": [f.path for f in after_git["files"]],
+                },
+                "published": published,
+                "dropped": list(after_git["dropped"]),
             }
 
-        return {
-            "committed": {
-                "sha": commit_result.sha,
-                "files": [f.path for f in okf_files],
-            },
-            "published": published,
-            "dropped": list(result.dropped_concepts),
-        }
+        if principal is None:
+            # 기존 demo owner flow는 approval/audit 계약을 강제하지 않는다.
+            assert card is not None
+            written, _ = _write_publish(card)
+            return _publish_index(written, card)
+        application = _authoring_application
+        if application is None:
+            raise _operational_unavailable()
+        try:
+            return application.mutate(
+                principal,
+                req.agent_id,
+                _write_publish,
+                channel="http",
+                command={
+                    "operation": "publish",
+                    "agent_id": req.agent_id,
+                    "documents": [
+                        {
+                            "concept_id": doc.concept_id,
+                            "title_sha256": _author_content_digest(doc.title),
+                            "core_question_sha256": _author_content_digest(doc.core_question),
+                            "body_sha256": _author_content_digest(doc.body),
+                            "domain": doc.domain,
+                            "type": doc.type,
+                        }
+                        for doc in docs
+                    ],
+                },
+                after_write=_publish_index,
+            )
+        except OperationalUnavailableError as error:
+            raise _operational_unavailable() from error
+        except (OperationalDeniedError, OperationalNotFoundError) as error:
+            raise _operational_not_found_or_denied() from error
 
     @app.get("/author/index/{agent_id}")
     def author_index(agent_id: str, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
@@ -2701,12 +4409,16 @@ def create_app(
         type만). raw 문서·staged 초안·LLM 토큰은 store에 안 들어가므로 여기서 노출할 길이 없다.
         미게시 카드(store None·get None)는 빈 목차(미아 아님)로 응답한다.
         """
-        _author_scoped_card(agent_id, request)
+        _author_scoped_card(agent_id, request, action="author.read")
 
         empty: dict[str, Any] = {"agent_id": agent_id, "generated_at": None, "concepts": []}
         if bundle.published_index_store is None:
+            if _operational_central_mode:
+                _author_scoped_card(agent_id, request, action="author.read")
             return empty
         index = bundle.published_index_store.get(agent_id)
+        if _operational_central_mode:
+            _author_scoped_card(agent_id, request, action="author.read")
         if index is None:
             return empty
         return {
@@ -2738,9 +4450,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"concept_id 형식 오류: {exc}") from exc
 
-    def _read_concept_doc(
-        card: "AgentCard", concept_id: str
-    ) -> "OkfDocumentDraft | None":
+    def _read_concept_doc(card: "AgentCard", concept_id: str) -> "OkfDocumentDraft | None":
         """owner 게이트웨이 번들에서 한 개념의 OKF 본문을 읽어 OkfDocumentDraft로 역파싱한다.
 
         head_sha → extract_snapshot → {concept_id}.md 읽기 → _parse_frontmatter로 프론트매터
@@ -2835,7 +4545,12 @@ def create_app(
         return docs
 
     def _rederive_and_accept_index(
-        card: "AgentCard", sha: str, session_owner: str
+        card: "AgentCard",
+        sha: str,
+        session_owner: str,
+        *,
+        request: Request | None = None,
+        principal: AuthenticatedPrincipal | None = None,
     ) -> "dict[str, Any] | None":
         """커밋 직후 번들 전체에서 목차 재도출 → 중앙 publish(ADR 0032 B1 재사용).
 
@@ -2854,9 +4569,15 @@ def create_app(
             index = build_knowledge_index_from_okf(card, okf_root, generated_at=generated_at)
         if bundle.published_index_store is None:
             return None
-        accept_published_index(
-            session_owner, index, bundle.registry, bundle.published_index_store
-        )
+        if principal is not None:
+            if request is None:  # pragma: no cover - caller contract guard
+                raise RuntimeError("중앙 저작 publish에는 request가 필요합니다.")
+            # 커밋 이후 중앙 index put의 마지막 경계. commit은 이미 되돌릴 수 없지만, 현재
+            # owner/card와 sealed grant가 달라졌다면 중앙 record는 한 건도 쓰지 않는다.
+            _author_scoped_card(
+                card.agent_id, request, action="author.publish", principal=principal
+            )
+        accept_published_index(session_owner, index, bundle.registry, bundle.published_index_store)
         return {
             "agent_id": index.agent_id,
             "concept_count": len(index.concepts),
@@ -2876,11 +4597,13 @@ def create_app(
         **owner 자기 조회**: 본문 노출은 비소유 위반이 아니다 — owner는 자기 OKF 소유자이고,
         이 라우트는 _author_scoped_card로 *자기 카드*만 통과시킨다(타 owner 403).
         """
-        card = _author_scoped_card(agent_id, request)
+        card = _author_scoped_card(agent_id, request, action="author.read")
         cid = _validate_concept_id(concept_id)
         doc = _read_concept_doc(card, cid)
         if doc is None:
             raise HTTPException(status_code=404, detail=f"개념 미존재: {cid!r}")
+        if _operational_central_mode:
+            _author_scoped_card(agent_id, request, action="author.read")
         return {
             "concept_id": doc.concept_id,
             "title": doc.title,
@@ -2891,10 +4614,9 @@ def create_app(
         }
 
     @app.put("/author/concept/{agent_id}/{concept_id}")
-    def author_concept_edit(  # pyright: ignore[reportUnusedFunction]
+    async def author_concept_edit(  # pyright: ignore[reportUnusedFunction]
         agent_id: str,
         concept_id: str,
-        req: AuthorConceptEditRequest,
         request: Request,
     ) -> dict[str, Any]:
         """owner의 게시 개념 1건을 편집(부분 덮어쓰기·ADR 0032 OQ-3).
@@ -2906,8 +4628,17 @@ def create_app(
 
         **Authority 중앙**: admit_okf로 domain∈card.domains 재검증 — 편집이 권한을 못 넓힌다.
         """
-        card = _author_scoped_card(agent_id, request)
-        session_owner = card.owner if not _auth_enabled else _session_identity(request)
+        principal = _author_principal_before_body(request)
+        card = _author_scoped_card(agent_id, request, action="author.publish", principal=principal)
+        req = cast(
+            AuthorConceptEditRequest,
+            await _parse_author_body(request, AuthorConceptEditRequest),
+        )
+        session_owner = (
+            principal.subject_id
+            if principal is not None
+            else (card.owner if not _auth_enabled else _session_identity(request))
+        )
         cid = _validate_concept_id(concept_id)
 
         current = _read_concept_doc(card, cid)
@@ -2922,9 +4653,7 @@ def create_app(
                 title=req.title if req.title is not None else current.title,
                 body=req.body if req.body is not None else current.body,
                 core_question=(
-                    req.core_question
-                    if req.core_question is not None
-                    else current.core_question
+                    req.core_question if req.core_question is not None else current.core_question
                 ),
                 domain=req.domain if req.domain is not None else current.domain,
                 type=merged_type,
@@ -2932,39 +4661,75 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"개념 형식 오류: {exc}") from exc
 
-        # over-claim 재필터(Authority 중앙 — 편집 domain이 권한 밖이면 떨궈 400)
-        result = admit_okf(OkfDraft(agent_id=agent_id, documents=(edited,)), card)
-        if not result.admitted.documents:
-            raise HTTPException(
-                status_code=400,
-                detail="권한 밖 domain입니다 — 편집이 over-claim으로 거부되었습니다.",
+        def _write_edit(current_card: "AgentCard") -> tuple[dict[str, Any], "AuthoringMutation"]:
+            current_result = admit_okf(
+                OkfDraft(agent_id=agent_id, documents=(edited,)), current_card
             )
-        admitted_doc = result.admitted.documents[0]
+            if not current_result.admitted.documents:
+                raise HTTPException(status_code=400, detail="권한 밖 domain입니다.")
+            admitted = current_result.admitted.documents[0]
+            try:
+                committed = commit_okf_bundle(
+                    BuilderCommitRequest(
+                        agent_id=agent_id,
+                        owner=session_owner,
+                        files=(OkfFile(path=f"{cid}.md", content=render_okf_markdown(admitted)),),
+                        message=f"OKF 개념 편집: {agent_id}/{cid}",
+                    ),
+                    _git_gateway,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return (
+                {"doc": admitted, "commit": committed},
+                AuthoringMutation(agent_id, {"operation": "edit"}),
+            )
 
-        commit_req = BuilderCommitRequest(
-            agent_id=agent_id,
-            owner=session_owner,
-            files=(OkfFile(path=f"{cid}.md", content=render_okf_markdown(admitted_doc)),),
-            message=f"OKF 개념 편집: {agent_id}/{cid}",
-        )
+        def _accept_edit(after_git: dict[str, Any], current_card: "AgentCard") -> dict[str, Any]:
+            admitted = after_git["doc"]
+            return {
+                "concept": {
+                    "concept_id": admitted.concept_id,
+                    "title": admitted.title,
+                    "core_question": admitted.core_question,
+                    "domain": admitted.domain,
+                    "body": admitted.body,
+                    "type": admitted.type,
+                },
+                "committed": {"sha": after_git["commit"].sha},
+                "published": _rederive_and_accept_index(
+                    current_card, after_git["commit"].sha, session_owner
+                ),
+            }
+
+        if principal is None:
+            written, _ = _write_edit(card)
+            return _accept_edit(written, card)
+        application = _authoring_application
+        if application is None:
+            raise _operational_unavailable()
         try:
-            commit_result = commit_okf_bundle(commit_req, _git_gateway)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        published = _rederive_and_accept_index(card, commit_result.sha, session_owner)
-        return {
-            "concept": {
-                "concept_id": admitted_doc.concept_id,
-                "title": admitted_doc.title,
-                "core_question": admitted_doc.core_question,
-                "domain": admitted_doc.domain,
-                "body": admitted_doc.body,
-                "type": admitted_doc.type,
-            },
-            "committed": {"sha": commit_result.sha},
-            "published": published,
-        }
+            return application.mutate(
+                principal,
+                agent_id,
+                _write_edit,
+                channel="http",
+                command={
+                    "operation": "edit",
+                    "agent_id": agent_id,
+                    "concept_id": cid,
+                    "title_sha256": _author_content_digest(edited.title),
+                    "core_question_sha256": _author_content_digest(edited.core_question),
+                    "body_sha256": _author_content_digest(edited.body),
+                    "domain": edited.domain,
+                    "type": edited.type,
+                },
+                after_write=_accept_edit,
+            )
+        except OperationalUnavailableError as error:
+            raise _operational_unavailable() from error
+        except (OperationalDeniedError, OperationalNotFoundError) as error:
+            raise _operational_not_found_or_denied() from error
 
     @app.delete("/author/concept/{agent_id}/{concept_id}")
     def author_concept_delete(  # pyright: ignore[reportUnusedFunction]
@@ -2979,32 +4744,70 @@ def create_app(
 
         **중앙 비소유**: 중앙은 삭제를 따로 모른다 — 완전 인덱스 교체가 곧 삭제 반영(결정 B3).
         """
-        card = _author_scoped_card(agent_id, request)
-        session_owner = card.owner if not _auth_enabled else _session_identity(request)
+        principal = _author_principal_before_body(request)
+        card = (
+            _author_scoped_card(agent_id, request, action="author.publish")
+            if principal is None
+            else None
+        )
+        session_owner = (
+            principal.subject_id
+            if principal is not None
+            else (
+                card.owner if card is not None and not _auth_enabled else _session_identity(request)
+            )
+        )
         cid = _validate_concept_id(concept_id)
 
-        commit_req = BuilderCommitRequest(
-            agent_id=agent_id,
-            owner=session_owner,
-            files=(),
-            removed_paths=(f"{cid}.md",),
-            message=f"OKF 개념 삭제: {agent_id}/{cid}",
-        )
-        try:
-            commit_result = commit_okf_bundle(commit_req, _git_gateway)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        def _write_delete(current_card: "AgentCard") -> tuple[dict[str, Any], "AuthoringMutation"]:
+            try:
+                committed = commit_okf_bundle(
+                    BuilderCommitRequest(
+                        agent_id=agent_id,
+                        owner=session_owner,
+                        files=(),
+                        removed_paths=(f"{cid}.md",),
+                        message=f"OKF 개념 삭제: {agent_id}/{cid}",
+                    ),
+                    _git_gateway,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return ({"commit": committed}, AuthoringMutation(agent_id, {"operation": "delete"}))
 
-        published = _rederive_and_accept_index(card, commit_result.sha, session_owner)
-        return {
-            "deleted": {"concept_id": cid},
-            "committed": {"sha": commit_result.sha},
-            "published": published,
-        }
+        def _accept_delete(after_git: dict[str, Any], current_card: "AgentCard") -> dict[str, Any]:
+            return {
+                "deleted": {"concept_id": cid},
+                "committed": {"sha": after_git["commit"].sha},
+                "published": _rederive_and_accept_index(
+                    current_card, after_git["commit"].sha, session_owner
+                ),
+            }
+
+        if principal is None:
+            assert card is not None
+            written, _ = _write_delete(card)
+            return _accept_delete(written, card)
+        application = _authoring_application
+        if application is None:
+            raise _operational_unavailable()
+        try:
+            return application.mutate(
+                principal,
+                agent_id,
+                _write_delete,
+                channel="http",
+                command={"operation": "delete", "agent_id": agent_id, "concept_id": cid},
+                after_write=_accept_delete,
+            )
+        except OperationalUnavailableError as error:
+            raise _operational_unavailable() from error
+        except (OperationalDeniedError, OperationalNotFoundError) as error:
+            raise _operational_not_found_or_denied() from error
 
     @app.post("/author/dedup/{agent_id}")
-    def author_dedup(  # pyright: ignore[reportUnusedFunction]
-        agent_id: str, req: AuthorDedupRequest, request: Request
+    async def author_dedup(  # pyright: ignore[reportUnusedFunction]
+        agent_id: str, request: Request
     ) -> dict[str, Any]:
         """신규 staged 개념 vs 게시 라이브러리 near-dup 후보 탐지(ADR 0032 결정 C·탐지 전용).
 
@@ -3021,7 +4824,9 @@ def create_app(
         owner 무영향). 병합 *실행*은 이 라우트가 안 한다 — owner가 후보를 보고 확정하면
         프론트가 기존 PUT(병합 본문)/DELETE(버릴 개념)로 처분한다(ADR 0032 결정 C4·301행).
         """
-        card = _author_scoped_card(agent_id, request)
+        principal = _author_principal_before_body(request)
+        card = _author_scoped_card(agent_id, request, action="author.read", principal=principal)
+        req = cast(AuthorDedupRequest, await _parse_author_body(request, AuthorDedupRequest))
 
         def _embed_text(title: str, core_question: str, body: str) -> str:
             return f"{title}\n{core_question}\n{body}"
@@ -3029,25 +4834,23 @@ def create_app(
         embedder = select_embedder()
         if embedder is None:
             # 운영 기본(비활성) — 임베딩 의존성 없이 빈 후보로 통과(미아 아님).
+            if principal is not None:
+                _author_scoped_card(agent_id, request, action="author.read", principal=principal)
             return {"candidates": []}
 
         existing_docs = _read_all_concept_docs(card)
-        new_texts = [
-            _embed_text(c.title, c.core_question, c.body) for c in req.concepts
-        ]
-        existing_texts = [
-            _embed_text(d.title, d.core_question, d.body) for d in existing_docs
-        ]
+        new_texts = [_embed_text(c.title, c.core_question, c.body) for c in req.concepts]
+        existing_texts = [_embed_text(d.title, d.core_question, d.body) for d in existing_docs]
         new_vecs = embedder.embed(new_texts)
         existing_vecs = embedder.embed(existing_texts)
         candidates = classify_dedup_candidates(
             new_concepts=list(zip([c.concept_id for c in req.concepts], new_vecs)),
-            existing_concepts=list(
-                zip([d.concept_id for d in existing_docs], existing_vecs)
-            ),
+            existing_concepts=list(zip([d.concept_id for d in existing_docs], existing_vecs)),
             tau_high=DEDUP_TAU_HIGH,
             tau_low=DEDUP_TAU_LOW,
         )
+        if principal is not None:
+            _author_scoped_card(agent_id, request, action="author.read", principal=principal)
         return {
             "candidates": [
                 {
@@ -3064,56 +4867,114 @@ def create_app(
     def builder_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
         return FileResponse(_BUILDER_HTML)
 
-    # ── 하위호환 path 라우트 (인증 OFF 환경 전용 — 데모/기존 테스트) ───────────────
-    # **인증 ON(session_secret 주입)이면 이 path 가장 경로를 *등록하지 않는다*** — 그래야
-    # `/inbox/{owner_id}` 같은 신원-지목 경로 자체가 존재하지 않아 세션 스코프 우회가
-    # 구조적으로 불가능하다(ADR 0016 보안: 신원 출처를 세션으로 *옮긴다* — path/body에
-    # 남겨두면 우회 표면이 된다). 인증 OFF(secret 미주입)는 데모/기존 테스트 전용 모드라
-    # path param 가장을 허용한다(이 모드는 "데모용 로그인 가장"임을 명시 — ADR 0009).
-    if not _auth_enabled:
+    # P17 surface는 다른 라우터·서비스 조립이 모두 성공한 뒤에만 소유한다.
+    # 생성 후 라우터 등록이 실패해 app이 반환되지 않아도 producer·storage를
+    # 즉시 회수해 shutdown callback에 닿지 못하는 수명 누수를 막는다.
+    _question_surface = (
+        question_surface_composition
+        if question_surface_composition is not None
+        else build_demo_question_surface_composition(bundle, presence_of=presence_of)
+    )
+    try:
+        if (
+            _question_surface.manager_disposition is not None
+            and _question_surface.manager_store is not _manager_queue_store
+        ):
+            raise QuestionSurfaceCompositionError(
+                "Request-aware Manager 처분과 웹 운영 라우트가 같은 Manager Store를 봐야 합니다."
+            )
+        _answer_record_reader = CompositeAnswerRecordReader(
+            _answer_record_store,
+            _question_surface.answer_records,
+        )
+        _correction_service = (
+            _CorrectionService(
+                _answer_record_reader,
+                _correction_store,
+                _correction_reeval_store,
+                owner_of=_card_owner_of,
+            )
+            if _correction_reeval_store is not None
+            else None
+        )
+        app.state.answer_record_view = _answer_record_reader
+        app.state.question_surface_composition = _question_surface
+        app.state.question_org_id = question_org_id
 
-        @app.get("/inbox/{owner_id}/backup-reviews")
-        def inbox_backup_reviews_legacy(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
-            """하위호환(인증 OFF 전용): path param으로 owner 지정."""
-            if _review_store is None:
-                return []
-            items = _review_store.pending_for_owner(owner_id)
-            return [serialize_review_item(it) for it in items]
+        def _approval_principal_from_session(
+            request: Request,
+        ) -> ApproverPrincipal | AuthenticatedPrincipal:
+            if governance_principal_resolver is not None:
+                return _governance_principal(request)
+            try:
+                subject_id = _session_identity(request)
+            except NotAuthenticatedError as error:
+                raise ApproverNotAuthenticatedError from error
+            return ApproverPrincipal(
+                org_id=question_org_id,
+                subject_id=subject_id,
+            )
 
-        @app.get("/inbox/{owner_id}/reeval")
-        def inbox_reeval_legacy(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
-            """하위호환(인증 OFF 전용): path param으로 owner 지정(둘째 탭 레거시 미러)."""
-            if _reeval_store is None:
-                return []
-            items = _reeval_store.pending_for_owner(owner_id)
-            return [
-                serialize_reeval_item(it, bundle.registry, bundle.audit_reader)
-                for it in items
-            ]
+        # 정확한 Approval 경로를 legacy `/inbox/{owner_id}`보다 먼저 등록해야
+        # `approvals`가 owner_id로 해석되지 않는다. 신원은 세션에서만 만든다.
+        app.include_router(
+            create_approval_router(
+                application=_question_surface.approval_operations,
+                principal_resolver=_approval_principal_from_session,
+            )
+        )
+        app.include_router(
+            create_question_stream_router(
+                application=_question_surface.application,
+                principal_resolver=_question_principal_from_state,
+            )
+        )
 
-        @app.get("/inbox/{owner_id}")
-        def inbox_cases_legacy(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
-            """하위호환(인증 OFF 전용): path param으로 owner 지정."""
-            cases = bundle.case_store.open_for_owner(owner_id)
-            return [
-                serialize_case(c, bundle.registry, bundle.published_index_store)
-                for c in cases
-            ]
+        # ── 하위호환 path 라우트 (인증 OFF 환경 전용 — 데모/기존 테스트) ───────
+        # Approval의 정확 경로를 먼저 등록한 뒤에만 동적 owner 경로를 둔다.
+        if not _auth_enabled:
 
-        @app.get("/manager/{manager_id}")
-        def manager_queue_legacy(manager_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
-            """하위호환(인증 OFF 전용): path param으로 manager 지정."""
-            if _manager_queue_store is None:
-                return []
-            items = _manager_queue_store.pending_for_manager(manager_id)
-            return [serialize_manager_item(it) for it in items]
+            @app.get("/inbox/{owner_id}/backup-reviews")
+            def inbox_backup_reviews_legacy(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+                """하위호환(인증 OFF 전용): path param으로 owner 지정."""
+                if _review_store is None:
+                    return []
+                items = _review_store.pending_for_owner(owner_id)
+                return [serialize_review_item(it) for it in items]
+
+            @app.get("/inbox/{owner_id}/reeval")
+            def inbox_reeval_legacy(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+                """하위호환(인증 OFF 전용): path param으로 owner 지정(둘째 탭 레거시 미러)."""
+                if _reeval_store is None:
+                    return []
+                items = _reeval_store.pending_for_owner(owner_id)
+                return [
+                    serialize_reeval_item(it, bundle.registry, bundle.audit_reader) for it in items
+                ]
+
+            @app.get("/inbox/{owner_id}")
+            def inbox_cases_legacy(owner_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+                """하위호환(인증 OFF 전용): path param으로 owner 지정."""
+                return [_serialize_surface_case(case) for case in _cases_for_owner(owner_id)]
+
+            @app.get("/manager/{manager_id}")
+            def manager_queue_legacy(manager_id: str) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+                """하위호환(인증 OFF 전용): path param으로 manager 지정."""
+                items = _manager_queue_store.pending_for_manager(manager_id)
+                return [serialize_manager_item(it) for it in items]
+
+        app.router.add_event_handler("shutdown", _question_surface.close)
+    except BaseException as assembly_error:
+        # 기본 composition은 이 함수 안에서 생성됐으므로 여기서 회수한다.
+        # 주입 composition은 진입 시 소유권을 인수한 외부 guard가 닫는다.
+        if question_surface_composition is None:
+            _close_question_surface_after_assembly_error(_question_surface, assembly_error)
+        raise
 
     return app
 
 
-def seed_gateway_from_disk(
-    gateway: GitGateway, registry: Registry, okf_root: str | Path
-) -> None:
+def seed_gateway_from_disk(gateway: GitGateway, registry: Registry, okf_root: str | Path) -> None:
     """디스크 `okf/{agent_id}/*.md` 베이스라인을 게이트웨이에 카드별 1커밋으로 시드한다.
 
     저작→답변 루프(ADR 0018 결정 4)의 단일 진실원천을 게이트웨이로 모은다 — 답변 런타임이

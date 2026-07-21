@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>처리함 — 담당 합의 · 백업 검토</title>
+  <title>처리함 — 담당 합의 · 백업 검토 · 재평가 · Approval</title>
   <style>
     :root {
       --bg: #f4f5f7;
@@ -93,7 +93,7 @@
       outline: none;
     }
     select:focus { border-color: var(--me); }
-    #cases, #reviews {
+    #cases, #reviews, #reevals, #approvals {
       flex: 1;
       overflow-y: auto;
       padding: 16px;
@@ -264,7 +264,9 @@
     .result.still_open { color: #92400e; }
     .result.agreed { color: #166534; }
     .result.deadlocked { color: #b91c1c; }
+    .result.route_rejected { color: #92400e; }
     .result.error { color: #b91c1c; }
+    .stance-option { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--muted); }
     .nav { padding: 12px 16px; font-size: 13px; }
     .nav a { color: var(--me); text-decoration: none; }
   </style>
@@ -273,7 +275,7 @@
   <div class="inbox">
     <header>
       처리함
-      <small>내 카드가 걸린 다툼 합의와, 내가 자리를 비운 동안 백업이 내 이름으로 낸 답 검토.</small>
+      <small>담당 합의, 백업 검토, 재평가와 발송 전 Approval을 한곳에서 처리합니다.</small>
     </header>
     <!-- 가장 드롭다운 제거(ADR 0009 기준 3·ADR 0016) — 인증된 본인 신원으로 세션 고정.
          로그인 전: 로그인 폼 / 로그인 후: 신원 표시 + 로그아웃. per-request 가장 불가. -->
@@ -289,17 +291,27 @@
         <button id="logout-btn" class="ghost">로그아웃</button>
       </div>
     </div>
-    <div class="tabs">
-      <button class="tab active" data-tab="cases" id="tab-cases">담당 합의</button>
-      <button class="tab" data-tab="reviews" id="tab-reviews">
+    <div class="tabs" role="tablist" aria-label="처리함 탭">
+      <button class="tab active" data-tab="cases" id="tab-cases" role="tab" aria-selected="true" aria-controls="panel-cases">담당 합의</button>
+      <button class="tab" data-tab="reviews" id="tab-reviews" role="tab" aria-selected="false" aria-controls="panel-reviews" tabindex="-1">
         백업 검토<span class="count zero" id="review-count">0</span>
       </button>
+      <button class="tab" data-tab="reevals" id="tab-reevals" role="tab" aria-selected="false" aria-controls="panel-reevals" tabindex="-1">재평가</button>
+      <button class="tab" data-tab="approvals" id="tab-approvals" role="tab" aria-selected="false" aria-controls="panel-approvals" tabindex="-1">
+        Approval<span class="count zero" id="approval-count">0</span>
+      </button>
     </div>
-    <div class="panel active" id="panel-cases">
+    <div class="panel active" id="panel-cases" role="tabpanel" aria-labelledby="tab-cases" aria-hidden="false">
       <div id="cases"></div>
     </div>
-    <div class="panel" id="panel-reviews">
+    <div class="panel" id="panel-reviews" role="tabpanel" aria-labelledby="tab-reviews" aria-hidden="true">
       <div id="reviews"></div>
+    </div>
+    <div class="panel" id="panel-reevals" role="tabpanel" aria-labelledby="tab-reevals" aria-hidden="true">
+      <div id="reevals"></div>
+    </div>
+    <div class="panel" id="panel-approvals" role="tabpanel" aria-labelledby="tab-approvals" aria-hidden="true">
+      <div id="approvals"></div>
     </div>
     <div class="nav"><a href="/">← 채팅으로</a></div>
   </div>
@@ -307,7 +319,10 @@
   <script>
     const casesEl = document.getElementById("cases");
     const reviewsEl = document.getElementById("reviews");
+    const reevalsEl = document.getElementById("reevals");
+    const approvalsEl = document.getElementById("approvals");
     const reviewCountEl = document.getElementById("review-count");
+    const approvalCountEl = document.getElementById("approval-count");
     const loginForm = document.getElementById("login-form");
     const identityBox = document.getElementById("identity");
     const meNameEl = document.getElementById("me-name");
@@ -322,20 +337,50 @@
     // 세션 신원 — 로그인 성공 시 채워진다. 운영 면 조회/처분은 *세션*이 신원을
     // 결정하므로(서버 강제) 클라이언트는 표시용으로만 들고, 요청 바디엔 안 싣는다.
     let sessionUser = null;
+    let approvalLoadEpoch = 0;
+    let approvalDetailRequest = 0;
+    let activeApprovalDetailClose = null;
+
+    function beginApprovalLoadGeneration() {
+      approvalLoadEpoch += 1;
+      approvalDetailRequest += 1;
+      const closeActive = activeApprovalDetailClose;
+      activeApprovalDetailClose = null;
+      if (closeActive) closeActive();
+      approvalsEl.textContent = "";
+      approvalCountEl.textContent = "0";
+      approvalCountEl.classList.add("zero");
+      return approvalLoadEpoch;
+    }
 
     // ── 탭 전환 ──────────────────────────────────────────────────────────
     let activeTab = "cases";
     function selectTab(name) {
       activeTab = name;
       for (const t of document.querySelectorAll(".tab")) {
-        t.classList.toggle("active", t.dataset.tab === name);
+        const selected = t.dataset.tab === name;
+        t.classList.toggle("active", selected);
+        t.setAttribute("aria-selected", String(selected));
+        t.tabIndex = selected ? 0 : -1;
       }
       for (const p of document.querySelectorAll(".panel")) {
-        p.classList.toggle("active", p.id === "panel-" + name);
+        const selected = p.id === "panel-" + name;
+        p.classList.toggle("active", selected);
+        p.setAttribute("aria-hidden", String(!selected));
       }
     }
     for (const t of document.querySelectorAll(".tab")) {
       t.addEventListener("click", () => selectTab(t.dataset.tab));
+      t.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        const tabs = Array.from(document.querySelectorAll(".tab"));
+        const current = tabs.indexOf(t);
+        const step = event.key === "ArrowRight" ? 1 : -1;
+        const next = tabs[(current + step + tabs.length) % tabs.length];
+        selectTab(next.dataset.tab);
+        next.focus();
+      });
     }
 
     async function fetchCases() {
@@ -382,9 +427,11 @@
         const n = (outcome.pending_owners || []).length;
         node.textContent = "표 접수됨 — 아직 " + n + "명 대기 중";
       } else if (outcome.type === "agreed") {
-        node.textContent = "합의됨 → " + outcome.primary + " 담당, 판례 기록됨";
+        node.textContent = "합의됨 → " + outcome.primary + " 담당";
       } else if (outcome.type === "deadlocked") {
-        node.textContent = "교착 — 표가 갈렸습니다(매니저 에스컬레이션은 추후)";
+        node.textContent = "교착 — 매니저 처리함으로 이동했습니다";
+      } else if (outcome.type === "route_rejected") {
+        node.textContent = "담당 경로 재검토 필요 — 현재 라운드를 유지합니다";
       } else {
         node.textContent = "";
       }
@@ -395,6 +442,9 @@
       wrap.appendChild(el("span", "intent", c.intent));
       wrap.appendChild(el("div", "ask-label", "원문 질문"));
       wrap.appendChild(el("div", "question", c.question));
+      if (c.current_round != null) {
+        wrap.appendChild(el("div", "meta", "현재 라운드 " + c.current_round));
+      }
 
       const cands = el("div", "candidates");
       const radioName = "primary_" + c.case_id;
@@ -480,6 +530,15 @@
       rationale.placeholder = "지목 근거 (선택)";
       wrap.appendChild(rationale);
 
+      const stanceLabel = el("label", "stance-option");
+      const keepComplement = el("input");
+      keepComplement.type = "checkbox";
+      stanceLabel.appendChild(keepComplement);
+      stanceLabel.appendChild(
+        document.createTextNode("내 후보가 primary가 아니면 내 후보 지식을 보조 근거로 유지")
+      );
+      wrap.appendChild(stanceLabel);
+
       const result = el("div", "result");
       const actions = el("div", "actions");
       const btn = el("button", null, "primary로 지목");
@@ -499,14 +558,12 @@
           const outcome = await postConcur(c.case_id, {
             on_agent: picked.value,
             rationale: rationale.value.trim(),
+            expected_round: c.current_round ?? null,
+            stance: keepComplement.checked ? "keep_as_complement" : "withdraw",
           });
           renderOutcome(result, outcome);
-          if (outcome.type === "agreed") {
-            // 합의된 케이스는 목록에서 사라진다 — 잠깐 결과를 보여준 뒤 재조회.
-            setTimeout(load, 1200);
-          } else {
-            btn.disabled = false;
-          }
+          // 라운드와 종결 상태는 서버가 결정한다. 결과를 잠시 보여준 뒤 다시 읽는다.
+          setTimeout(load, 1200);
         } catch (err) {
           result.className = "result error";
           result.textContent = err.message || "제출 실패";
@@ -626,6 +683,286 @@
       return wrap;
     }
 
+    // ── 재평가 탭 ────────────────────────────────────────────────────────
+
+    async function fetchReevals() {
+      const res = await fetch("/inbox/reeval");
+      if (res.status === 401) throw new Error("401");
+      if (!res.ok) throw new Error("요청 실패: " + res.status);
+      return res.json();
+    }
+
+    async function loadReevals() {
+      reevalsEl.textContent = "";
+      let items;
+      try {
+        items = await fetchReevals();
+      } catch (err) {
+        if (err.message === "401") throw err;
+        reevalsEl.appendChild(el("div", "empty", "재평가 목록을 불러오지 못했습니다."));
+        return;
+      }
+      if (!items.length) {
+        reevalsEl.appendChild(el("div", "empty", "재평가할 판례·답이 없습니다."));
+        return;
+      }
+      for (const item of items) {
+        const wrap = el("div", "case");
+        wrap.appendChild(el("span", "intent", "재평가"));
+        wrap.appendChild(el("div", "meta", item.subject_kind + " · " + fmtTime(item.flagged_at)));
+        wrap.appendChild(el("div", "question", item.question));
+        wrap.appendChild(el("div", "answer", item.reason));
+        reevalsEl.appendChild(wrap);
+      }
+    }
+
+    // ── Approval 탭 ──────────────────────────────────────────────────────
+
+    async function fetchApprovals() {
+      const res = await fetch("/inbox/approvals");
+      if (res.status === 401) throw new Error("401");
+      if (!res.ok) throw new Error("요청 실패: " + res.status);
+      return res.json();
+    }
+
+    async function fetchApprovalDetail(itemId) {
+      const res = await fetch("/inbox/approvals/" + encodeURIComponent(itemId));
+      if (res.status === 401) throw new Error("401");
+      if (!res.ok) throw new Error("Approval 상세 요청 실패: " + res.status);
+      return res.json();
+    }
+
+    async function postApprovalDecision(itemId, intent) {
+      const res = await fetch(
+        "/inbox/approvals/" + encodeURIComponent(itemId) + "/decide",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(intent),
+        }
+      );
+      if (!res.ok) throw new Error("Approval 처분 실패: " + res.status);
+    }
+
+    async function postApprovalReassignment(itemId, approverId) {
+      const res = await fetch(
+        "/inbox/approvals/" + encodeURIComponent(itemId) + "/reassign",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approver_id: approverId }),
+        }
+      );
+      if (!res.ok) throw new Error("Approval 재지정 실패: " + res.status);
+    }
+
+    function labelledInput(labelText, id, multiline) {
+      const label = el("label", "ask-label", labelText);
+      label.htmlFor = id;
+      const input = el(multiline ? "textarea" : "input", "rationale");
+      input.id = id;
+      label.appendChild(input);
+      return { label, input };
+    }
+
+    function renderApproval(summary, index) {
+      // queue 카드에는 식별자·round·배정/기한만 둔다. 질문과 후보는 상세 클릭 뒤에만 받는다.
+      const wrap = el("div", "case approval");
+      wrap.appendChild(el("span", "intent", "Approval " + summary.approval_round + "라운드"));
+      wrap.appendChild(el("div", "meta", summary.item_id));
+      wrap.appendChild(
+        el("div", "meta", "배정 " + fmtTime(summary.assigned_at) + " · 기한 " + fmtTime(summary.due_at))
+      );
+      const detailBox = el("div", "correct-box");
+      detailBox.id = "approval-detail-" + index;
+      const result = el("div", "result");
+      const openBtn = el("button", "secondary", "상세 열기");
+      openBtn.setAttribute("aria-expanded", "false");
+      openBtn.setAttribute("aria-controls", detailBox.id);
+      wrap.appendChild(openBtn);
+      wrap.appendChild(detailBox);
+      wrap.appendChild(result);
+
+      function closeDetail() {
+        detailBox.classList.remove("open");
+        detailBox.textContent = "";
+        result.className = "result";
+        result.textContent = "";
+        openBtn.disabled = false;
+        openBtn.textContent = "상세 열기";
+        openBtn.setAttribute("aria-expanded", "false");
+        if (activeApprovalDetailClose === closeDetail) activeApprovalDetailClose = null;
+      }
+
+      openBtn.addEventListener("click", async () => {
+        if (activeApprovalDetailClose === closeDetail) {
+          approvalDetailRequest += 1;
+          closeDetail();
+          return;
+        }
+        const generation = approvalLoadEpoch;
+        const detailRequest = ++approvalDetailRequest;
+        if (activeApprovalDetailClose) activeApprovalDetailClose();
+        activeApprovalDetailClose = closeDetail;
+        openBtn.disabled = true;
+        result.className = "result";
+        result.textContent = "Approval 상세를 불러오는 중…";
+        try {
+          const detail = await fetchApprovalDetail(summary.item_id);
+          if (
+            generation !== approvalLoadEpoch ||
+            detailRequest !== approvalDetailRequest ||
+            activeApprovalDetailClose !== closeDetail
+          ) return;
+          detailBox.textContent = "";
+          detailBox.appendChild(el("div", "ask-label", "원문 질문"));
+          detailBox.appendChild(el("div", "question", detail.question));
+          detailBox.appendChild(el("div", "answer-label", "승인 후보"));
+          detailBox.appendChild(el("div", "answer", detail.candidate.text));
+
+          const edit = labelledInput(
+            "수정승인 답변",
+            "approval-edit-" + index,
+            true
+          );
+          edit.input.value = detail.candidate.text;
+          detailBox.appendChild(edit.label);
+          const reject = labelledInput(
+            "Reject 사유 코드",
+            "approval-reason-" + index,
+            false
+          );
+          detailBox.appendChild(reject.label);
+          const target = labelledInput(
+            "새 승인자 ID",
+            "approval-target-" + index,
+            false
+          );
+          detailBox.appendChild(target.label);
+
+          const actions = el("div", "actions");
+          const approveBtn = el("button", null, "승인");
+          const editBtn = el("button", "secondary", "수정승인");
+          const rejectBtn = el("button", "ghost", "Reject");
+          const reassignBtn = el("button", "secondary", "재지정");
+          const buttons = [approveBtn, editBtn, rejectBtn, reassignBtn];
+          for (const button of buttons) actions.appendChild(button);
+          detailBox.appendChild(actions);
+
+          async function submit(action) {
+            if (
+              generation !== approvalLoadEpoch ||
+              detailRequest !== approvalDetailRequest ||
+              activeApprovalDetailClose !== closeDetail
+            ) return;
+            const editedText = edit.input.value.trim();
+            const reasonCode = reject.input.value.trim();
+            const approverId = target.input.value.trim();
+            if (action === "approve_with_edit" && !editedText) {
+              result.className = "result error";
+              result.textContent = "수정승인할 답변을 입력하세요.";
+              return;
+            }
+            if (action === "reject" && !reasonCode) {
+              result.className = "result error";
+              result.textContent = "Reject 사유 코드를 입력하세요.";
+              return;
+            }
+            if (action === "reassign" && !approverId) {
+              result.className = "result error";
+              result.textContent = "새 승인자 ID를 입력하세요.";
+              return;
+            }
+            for (const button of buttons) button.disabled = true;
+            result.className = "result";
+            result.textContent = "처리 중…";
+            try {
+              if (action === "approve") {
+                await postApprovalDecision(summary.item_id, { kind: "approve" });
+              } else if (action === "approve_with_edit") {
+                await postApprovalDecision(summary.item_id, {
+                  kind: "approve_with_edit",
+                  edited_text: editedText,
+                });
+              } else if (action === "reject") {
+                await postApprovalDecision(summary.item_id, {
+                  kind: "reject",
+                  reason_code: reasonCode,
+                });
+              } else {
+                await postApprovalReassignment(summary.item_id, approverId);
+              }
+              if (
+                generation !== approvalLoadEpoch ||
+                detailRequest !== approvalDetailRequest ||
+                activeApprovalDetailClose !== closeDetail
+              ) return;
+              await loadApprovals();
+            } catch (err) {
+              if (
+                generation !== approvalLoadEpoch ||
+                detailRequest !== approvalDetailRequest ||
+                activeApprovalDetailClose !== closeDetail
+              ) return;
+              result.className = "result error";
+              result.textContent = err.message || "Approval 처리에 실패했습니다.";
+              for (const button of buttons) button.disabled = false;
+            }
+          }
+
+          approveBtn.addEventListener("click", () => submit("approve"));
+          editBtn.addEventListener("click", () => submit("approve_with_edit"));
+          rejectBtn.addEventListener("click", () => submit("reject"));
+          reassignBtn.addEventListener("click", () => submit("reassign"));
+          detailBox.classList.add("open");
+          openBtn.textContent = "상세 닫기";
+          openBtn.setAttribute("aria-expanded", "true");
+          result.textContent = "";
+        } catch (err) {
+          if (
+            generation !== approvalLoadEpoch ||
+            detailRequest !== approvalDetailRequest ||
+            activeApprovalDetailClose !== closeDetail
+          ) return;
+          result.className = "result error";
+          result.textContent = err.message || "Approval 상세를 불러오지 못했습니다.";
+        } finally {
+          if (
+            generation === approvalLoadEpoch &&
+            detailRequest === approvalDetailRequest &&
+            activeApprovalDetailClose === closeDetail
+          ) openBtn.disabled = false;
+        }
+      });
+      return wrap;
+    }
+
+    async function loadApprovals(generation = beginApprovalLoadGeneration()) {
+      if (generation !== approvalLoadEpoch) return;
+      approvalsEl.textContent = "";
+      approvalsEl.appendChild(el("div", "empty", "Approval 목록을 불러오는 중…"));
+      let items;
+      try {
+        items = await fetchApprovals();
+      } catch (err) {
+        if (generation !== approvalLoadEpoch) return;
+        if (err.message === "401") throw err;
+        approvalsEl.textContent = "";
+        approvalsEl.appendChild(el("div", "empty", "Approval 목록을 불러오지 못했습니다."));
+        approvalCountEl.classList.add("zero");
+        return;
+      }
+      if (generation !== approvalLoadEpoch) return;
+      approvalsEl.textContent = "";
+      approvalCountEl.textContent = String(items.length);
+      approvalCountEl.classList.toggle("zero", items.length === 0);
+      if (!items.length) {
+        approvalsEl.appendChild(el("div", "empty", "검토할 Approval 항목이 없습니다."));
+        return;
+      }
+      items.forEach((item, index) => approvalsEl.appendChild(renderApproval(item, index)));
+    }
+
     async function loadReviews() {
       reviewsEl.innerHTML = "";
       let items;
@@ -668,24 +1005,34 @@
     }
 
     async function load() {
-      // 두 탭을 모두 갱신한다 — 합의/검토가 같은 *세션 신원*을 본다. 세션 만료(401)면
+      // 네 탭을 모두 갱신한다 — 모든 운영 처분이 같은 *세션 신원*을 본다. 세션 만료(401)면
       // 로그인 폼으로 돌아간다(서버가 신원을 강제하므로 클라이언트는 세션만 따른다).
+      const approvalGeneration = beginApprovalLoadGeneration();
       try {
-        await Promise.all([loadCases(), loadReviews()]);
+        await Promise.all([
+          loadCases(),
+          loadReviews(),
+          loadReevals(),
+          loadApprovals(approvalGeneration)
+        ]);
       } catch (err) {
         if (err.message === "401") showLogin();
       }
     }
 
     function showLogin() {
+      beginApprovalLoadGeneration();
       sessionUser = null;
       loginForm.style.display = "";
       identityBox.style.display = "none";
       casesEl.innerHTML = "";
       reviewsEl.innerHTML = "";
+      reevalsEl.innerHTML = "";
+      approvalsEl.innerHTML = "";
     }
 
     function showIdentity(userId) {
+      beginApprovalLoadGeneration();
       sessionUser = userId;
       meNameEl.textContent = userId;
       loginForm.style.display = "none";

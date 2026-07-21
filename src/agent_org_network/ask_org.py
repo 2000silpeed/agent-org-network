@@ -1,7 +1,7 @@
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, assert_never
+from typing import TYPE_CHECKING, Literal, Protocol, assert_never, runtime_checkable
 
 from agent_org_network.audit import AuditEntry, AuditLog, Clock, default_clock
 from agent_org_network.conflict import Candidate, ConflictCase, ConflictCaseStore
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from agent_org_network.console import ConsoleEvent, ConsoleFeed
     from agent_org_network.grounding import GroundingSelector, GroundingSet
     from agent_org_network.hitl import HitlToggleMap
-    from agent_org_network.manager_queue import ManagerQueueStore
+    from agent_org_network.manager_queue import ManagerItem, ManagerQueueStore
     from agent_org_network.notify import Notifier
     from agent_org_network.presence import PresenceStatus
     from agent_org_network.review import BackupReview, BackupReviewItem, BackupReviewStore
@@ -41,6 +41,20 @@ if TYPE_CHECKING:
 # 슬라이스 D 영역이라, 이번 슬라이스는 주입 함수 타입만 여기 선언한다
 # (`assemble_grounding_text`가 이 타입의 `lookup` 인자를 받는다).
 GroundingTextResolver = Callable[[str], str]
+
+
+@runtime_checkable
+class _AtomicDeadlockEnqueueStore(Protocol):
+    """같은 ConflictCase open 항목을 원자적으로 하나만 적재하는 선택적 store seam.
+
+    공개 `ManagerQueueStore` 5메서드 계약은 바꾸지 않는다. 이 메서드가 있는 구현만
+    AskOrg가 감지하며, 실제 open 항목과 이번 호출의 insert 여부를 함께 반환한다.
+    """
+
+    def enqueue_deadlock_if_absent(
+        self,
+        item: "ManagerItem",
+    ) -> tuple["ManagerItem", bool]: ...
 
 
 @dataclass(frozen=True)
@@ -373,9 +387,7 @@ class AskOrg:
             case _ as never:
                 assert_never(never)
 
-    def _record_answer(
-        self, reply: OrgReply, question: str, session_id: str | None
-    ) -> OrgReply:
+    def _record_answer(self, reply: OrgReply, question: str, session_id: str | None) -> OrgReply:
         """확정된 `Answered`를 `AnswerRecord`로 적재하고 record_id를 그 답에 실어 돌려준다.
 
         중앙 답변 발신 지점(전이 ≠ 기록의 "기록" 축·ADR 0033 결정 4): 이 함수가 답 확정
@@ -444,7 +456,10 @@ class AskOrg:
         "동시에 ConflictCase도 그대로 연다"). 이미 열려 있으면(`open_for_intent` 중복
         가드) None을 반환하고 아무것도 하지 않는다.
         """
-        if self._case_store is None or self._case_store.open_for_intent(decision.intent) is not None:
+        if (
+            self._case_store is None
+            or self._case_store.open_for_intent(decision.intent) is not None
+        ):
             return None
         case = ConflictCase(
             intent=decision.intent,
@@ -758,7 +773,9 @@ class AskOrg:
         svc = BackupReviewService(self._review_store)
         svc.review(item_id, review)
 
-    def _push_manager_notification(self, manager_id: str, subject_ref: str, now: "datetime") -> None:
+    def _push_manager_notification(
+        self, manager_id: str, subject_ref: str, now: "datetime"
+    ) -> None:
         """Manager 큐 적재 직후 manager에게 push 통지를 1회 쏜다(T7.4·ADR 0022 결정 4).
 
         `notifier` 미주입이면 *아무것도 안 한다*(하위호환·게이트 보존). 비None이면
@@ -834,11 +851,6 @@ class AskOrg:
             manager_id_for_deadlock,
         )
 
-        # [Major 1] 중복 방지: 같은 ConflictCase 가 이미 큐에 있으면 no-op.
-        # open_for_intent 로 Contested 중복을 막는 것과 대칭.
-        if self._manager_queue_store.get_by_case(case.case_id) is not None:
-            return
-
         def _no_manager(uid: str) -> str | None:
             return None
 
@@ -850,6 +862,20 @@ class AskOrg:
             source=source,
             created_at=self._clock(),
         )
+
+        # InMemory store의 선택적 원자 seam은 case 존재 판정과 적재를 한 임계구역에서
+        # 수행한다. 반환된 inserted가 True인 호출만 통지를 발화해 큐 1건·통지 1회를 함께
+        # 보장한다. 공개 5메서드만 구현한 외부 store는 기존 순차 호환 경로를 쓴다.
+        if isinstance(self._manager_queue_store, _AtomicDeadlockEnqueueStore):
+            stored, inserted = self._manager_queue_store.enqueue_deadlock_if_absent(item)
+            if not inserted:
+                return
+            self._push_manager_notification(mid, stored.item_id, stored.created_at)
+            return
+
+        # 하위호환 폴백: seam 없는 custom store의 기존 get_by_case→enqueue 계약.
+        if self._manager_queue_store.get_by_case(case.case_id) is not None:
+            return
         self._manager_queue_store.enqueue(item)
         self._push_manager_notification(mid, item.item_id, item.created_at)
 
@@ -928,9 +954,7 @@ class AskOrg:
                         if isinstance(outcome, EscalatedToManager):
                             self._enqueue_dispatch(outcome)
                 else:
-                    ticket = self._dispatcher.dispatch(
-                        question, decision.primary, context=context
-                    )
+                    ticket = self._dispatcher.dispatch(question, decision.primary, context=context)
                     outcome = self._dispatcher.poll(ticket)
                     # 미회신(AwaitingWorker/EscalatedToManager)이면 답 회수용 불투명 토큰을
                     # 발급해 ticket을 서버에 보관한다 — 사용자가 나중에 retrieve로 답을 가져올
@@ -1118,9 +1142,7 @@ class AskOrg:
                 # 로컬 스트리밍 경로는 항상 Delivered라 여긴 분산 폴백 자리(이번 범위 밖 보호).
                 # reply는 Answered가 아니므로 Pending으로 좁혀진다(_project_outcome 반환).
                 self._audit_routed(question, user, decision, outcome, None)
-                yield PendingEvent(
-                    kind=reply.kind, message=reply.message, tracking=reply.tracking
-                )
+                yield PendingEvent(kind=reply.kind, message=reply.message, tracking=reply.tracking)
                 return
 
         # Approval 게이트를 *완성 답*에 적용(델타마다 아님) — done의 mode가 최종 권위.

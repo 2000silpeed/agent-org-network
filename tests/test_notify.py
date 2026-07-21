@@ -35,7 +35,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
+from threading import Event, Lock
 from typing import Any
 
 import pytest
@@ -165,9 +167,7 @@ class TestSlice2Notifier:
                 raise RuntimeError("채널 다운")
 
         ch_good = FakeChannel()
-        notifier = Notifier(
-            subscriptions={"alice": BrokenChannel(), "bob": ch_good}
-        )
+        notifier = Notifier(subscriptions={"alice": BrokenChannel(), "bob": ch_good})
         notifier.notify(_notif("alice"))
         notifier.notify(_notif("bob"))
         assert len(ch_good.for_recipient("bob")) == 1
@@ -202,6 +202,100 @@ class TestSlice2Notifier:
         notifier.notify(n1)
         notifier.notify(n2)
         assert len(ch.for_recipient("alice")) == 2
+
+    def test_같은_키_32_way_동시_notify는_send_한_번이다(self) -> None:
+        send_started = Event()
+        release_send = Event()
+        calls_lock = Lock()
+        calls = 0
+
+        class BlockingChannel:
+            def send(self, notification: Notification) -> None:
+                del notification
+                nonlocal calls
+                with calls_lock:
+                    calls += 1
+                send_started.set()
+                assert release_send.wait(timeout=5)
+
+        notifier = Notifier(subscriptions={"alice": BlockingChannel()})
+        notification = _notif("alice", subject_ref="same-ref")
+
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            first = pool.submit(notifier.notify, notification)
+            assert send_started.wait(timeout=5)
+            others = [pool.submit(notifier.notify, notification) for _ in range(31)]
+            _, blocked = wait(others, timeout=1)
+            all_duplicates_skipped = not blocked
+            release_send.set()
+            first.result(timeout=5)
+            for future in others:
+                future.result(timeout=5)
+
+        assert all_duplicates_skipped
+        assert calls == 1
+
+    def test_같은_키_동기_재진입은_중복이나_deadlock이_없다(self) -> None:
+        calls = 0
+        notifier: Notifier
+
+        class ReentrantChannel:
+            def send(self, notification: Notification) -> None:
+                nonlocal calls
+                calls += 1
+                notifier.notify(notification)
+
+        notifier = Notifier(subscriptions={"alice": ReentrantChannel()})
+
+        notifier.notify(_notif("alice", subject_ref="same-ref"))
+
+        assert calls == 1
+
+    def test_다른_키_동기_재진입은_각각_send된다(self) -> None:
+        delivered: list[Notification] = []
+        inner = _notif("alice", subject_ref="inner-ref")
+        notifier: Notifier
+
+        class ReentrantChannel:
+            def send(self, notification: Notification) -> None:
+                delivered.append(notification)
+                if notification.subject_ref == "outer-ref":
+                    notifier.notify(inner)
+
+        notifier = Notifier(subscriptions={"alice": ReentrantChannel()})
+        outer = _notif("alice", subject_ref="outer-ref")
+
+        notifier.notify(outer)
+
+        assert delivered == [outer, inner]
+
+    def test_한_키_send_대기_중에도_다른_키는_진행한다(self) -> None:
+        outer_started = Event()
+        release_outer = Event()
+        inner_delivered = Event()
+
+        class BlockingOneKeyChannel:
+            def send(self, notification: Notification) -> None:
+                if notification.subject_ref == "outer-ref":
+                    outer_started.set()
+                    assert release_outer.wait(timeout=5)
+                    return
+                inner_delivered.set()
+
+        notifier = Notifier(subscriptions={"alice": BlockingOneKeyChannel()})
+        outer = _notif("alice", subject_ref="outer-ref")
+        inner = _notif("alice", subject_ref="inner-ref")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outer_future = pool.submit(notifier.notify, outer)
+            assert outer_started.wait(timeout=5)
+            inner_future = pool.submit(notifier.notify, inner)
+            progressed_independently = inner_delivered.wait(timeout=1)
+            release_outer.set()
+            outer_future.result(timeout=5)
+            inner_future.result(timeout=5)
+
+        assert progressed_independently
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -493,9 +587,7 @@ class TestSlice3ConflictNotification:
 
 
 class TestSliceAManagerNotification:
-    def _make_ask_org_with_manager(
-        self, notifier: "Notifier | None" = None
-    ) -> "tuple[Any, Any]":
+    def _make_ask_org_with_manager(self, notifier: "Notifier | None" = None) -> "tuple[Any, Any]":
         from datetime import date
 
         from agent_org_network.agent_card import AgentCard
@@ -945,15 +1037,15 @@ _NOTIF_LEAKY_TOKENS = (
     "reason",
     "manager_id",
     "ticket_id",
-    "intent",      # subject_ref 손잡이는 OK이되 "intent" 리터럴 키 노출 금지
+    "intent",  # subject_ref 손잡이는 OK이되 "intent" 리터럴 키 노출 금지
     "primary",
-    "question",    # 사용자 질문 원문
+    "question",  # 사용자 질문 원문
     "escalated_to",
 )
 
 
 class TestSliceDRenderMcpNotification:
-    """render_mcp_notification 순수 함수 — kind별 4종 렌더 + 노출 불변식."""
+    """render_mcp_notification 순수 함수 — kind별 렌더 + 노출 불변식."""
 
     def _make_notif(self, kind: str, subject_ref: str = "ref_abc") -> Notification:
         return Notification(
@@ -1009,6 +1101,18 @@ class TestSliceDRenderMcpNotification:
         result = render_mcp_notification(n)
         assert "(대상: item_mgr_03)" in result
 
+    def test_approval_assignment_ready_렌더_사람이_읽는_문자열을_낸다(self) -> None:
+        n = self._make_notif("approval_assignment_ready", "approval-2")
+        result = render_mcp_notification(n)
+        assert "승인 처리함" in result
+        assert "(대상: approval-2)" in result
+
+    def test_approval_assignment_ready_렌더에_본문_토큰이_없다(self) -> None:
+        n = self._make_notif("approval_assignment_ready", "approval-2")
+        result = render_mcp_notification(n)
+        for token in _NOTIF_LEAKY_TOKENS:
+            assert token not in result, f"토큰 '{token}'이 렌더 출력에 노출됨: {result!r}"
+
     # ── 체크리스트 #2(a): subject_ref 보존 손잡이 ──────────────────────────
 
     def test_subject_ref_가_렌더_출력에_보존된다(self) -> None:
@@ -1054,7 +1158,9 @@ class TestSliceDRenderMcpNotification:
 class TestSliceEMcpChannel:
     """McpChannel — Fake send_fn 주입 호출 인자 검증 + send_fn 미주입 에러."""
 
-    def _make_notif(self, kind: str = "conflict_opened", subject_ref: str = "case_001") -> Notification:
+    def _make_notif(
+        self, kind: str = "conflict_opened", subject_ref: str = "case_001"
+    ) -> Notification:
         return Notification(
             recipient_id="owner_x",
             kind=kind,  # type: ignore[arg-type]
@@ -1149,7 +1255,9 @@ class TestSliceFFireAndForget:
         notifier.notify(n)  # 예외가 새지 않아야 한다
         assert call_count == 1
 
-    def test_McpChannel_boom_fn_실패_후_멱등_키_미기록으로_재시도_시_다시_send_시도된다(self) -> None:
+    def test_McpChannel_boom_fn_실패_후_멱등_키_미기록으로_재시도_시_다시_send_시도된다(
+        self,
+    ) -> None:
         """체크리스트 #5(b): 전송 실패(예외) → 멱등 키 미기록 → 재시도 시 다시 send_fn 호출."""
         call_count = 0
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, cast
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -36,6 +37,7 @@ from agent_org_network.conflict import (
     Candidate,
     ConflictCase,
 )
+from agent_org_network.demo import build_demo
 from agent_org_network.manager_queue import (
     FromDeadlock,
     InMemoryManagerQueueStore,
@@ -77,6 +79,30 @@ def _post(client: TestClient, url: str, payload: dict[str, Any]) -> HttpResult:
 def _auth_app() -> FastAPI:
     """세션 미들웨어가 붙은 인증 앱 (데모 레지스트리 그대로)."""
     return create_app(runtime=StubRuntime(), session_secret=_SECRET)
+
+
+def _legacy_contested_auth_client() -> tuple[TestClient, str]:
+    """Request 경계 이전의 session-scoped legacy concurrence fixture."""
+    queue_store = InMemoryManagerQueueStore()
+    bundle = build_demo(runtime=StubRuntime(), manager_queue_store=queue_store)
+    case = ConflictCase(
+        intent="보상",
+        question="보상 기준이 어떻게 되나요?",
+        candidates=(
+            Candidate(agent_id="cs_ops", owner="cs_lead"),
+            Candidate(agent_id="finance_ops", owner="finance_lead"),
+        ),
+        opened_at=_NOW,
+        case_id="legacy-auth-case",
+    )
+    bundle.case_store.open_case(case)
+    with patch("agent_org_network.web.build_demo", return_value=bundle):
+        app = create_app(
+            runtime=StubRuntime(),
+            session_secret=_SECRET,
+            manager_queue_store=queue_store,
+        )
+    return TestClient(app), case.case_id
 
 
 def _auth_app_with_queue() -> FastAPI:
@@ -150,8 +176,12 @@ class TestSlice1_Login:
     def test_데모_6명_모두_로그인_가능(self) -> None:
         """데모 Registry에 등록된 6명은 모두 /login이 200."""
         valid_users = [
-            "root_manager", "legal_lead", "cs_lead",
-            "finance_lead", "hr_lead", "it_lead",
+            "root_manager",
+            "legal_lead",
+            "cs_lead",
+            "finance_lead",
+            "hr_lead",
+            "it_lead",
         ]
         app = _auth_app()
         for user_id in valid_users:
@@ -367,15 +397,8 @@ class TestSlice2_InboxCases_스코프:
 
 class TestSlice2_Concur_스코프:
     def _setup_contested(self) -> tuple[TestClient, str]:
-        """다툼 케이스 생성 후 (client, case_id) 반환."""
-        client = TestClient(_auth_app())
-        _post(client, "/ask", {"question": "보상 기준이 어떻게 되나요?"})
-        # 케이스를 꺼내기 위해 cs_lead로 임시 로그인
-        _login(client, "cs_lead")
-        inbox = _get(client, "/inbox/cases")
-        case_id: str = inbox.body[0]["case_id"]
-        _logout(client)
-        return client, case_id
+        """request_id=None인 legacy 다툼 Case를 명시해 인증 스코프만 검증한다."""
+        return _legacy_contested_auth_client()
 
     def test_cs_lead_자기_케이스_concur_200(self) -> None:
         client, case_id = self._setup_contested()
@@ -389,13 +412,7 @@ class TestSlice2_Concur_스코프:
 
     def test_세션이_아닌_owner_concur_403(self) -> None:
         """세션이 cs_lead인데 cs_lead가 후보가 아닌 케이스(legal_lead 세션으로 시도)."""
-        client = TestClient(_auth_app())
-        _post(client, "/ask", {"question": "보상 기준이 어떻게 되나요?"})
-        # cs_lead로 case_id 획득
-        _login(client, "cs_lead")
-        inbox = _get(client, "/inbox/cases")
-        case_id: str = inbox.body[0]["case_id"]
-        _logout(client)
+        client, case_id = self._setup_contested()
         # legal_lead로 로그인 후 보상 케이스 concur 시도 → 403 (후보 아님)
         _login(client, "legal_lead")
         r = _post(

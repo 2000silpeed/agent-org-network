@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   GitMerge,
   UserCheck,
@@ -19,15 +19,22 @@ import {
   getInboxCases,
   getBackupReviews,
   getReeval,
+  getInboxApprovals,
+  getApprovalDetail,
   postConcur,
+  postApprovalDecision,
+  postApprovalReassignment,
   postReevalReview,
   fetchCaseDocument,
   InboxError,
   type ConflictCase,
   type BackupReviewItem,
   type ReevalItem,
+  type ApprovalPendingDetail,
+  type ApprovalPendingSummary,
   type ReevalOutcomeKind,
   type ConsensusOutcome,
+  type ConcurrenceStance,
   type FetchDocumentResult,
 } from "@/lib/inbox-api";
 import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/card";
@@ -37,7 +44,7 @@ import { Button } from "@/components/ui/button";
 import { useSession } from "@/components/session/session-context";
 import { cn } from "@/lib/utils";
 
-type TabId = "contested" | "backup" | "reeval";
+type TabId = "contested" | "backup" | "reeval" | "approval";
 
 export function InboxTabs() {
   const { userId } = useSession();
@@ -47,39 +54,67 @@ export function InboxTabs() {
   const [cases, setCases] = useState<ConflictCase[]>([]);
   const [reviews, setReviews] = useState<BackupReviewItem[]>([]);
   const [reevals, setReevals] = useState<ReevalItem[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalPendingSummary[]>([]);
+  const [approvalSession, setApprovalSession] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const refreshEpoch = useRef(0);
+  const invalidateRefresh = useCallback(() => {
+    refreshEpoch.current += 1;
+  }, []);
 
   const refresh = useCallback(async () => {
+    const refreshRequest = ++refreshEpoch.current;
+    const refreshUserId = userId;
     setLoading(true);
     setError(null);
     try {
-      const [c, r, rv] = await Promise.all([
+      const [c, r, rv, ap] = await Promise.all([
         getInboxCases(),
         getBackupReviews().catch(() => [] as BackupReviewItem[]),
         getReeval().catch(() => [] as ReevalItem[]),
+        getInboxApprovals(),
       ]);
+      if (refreshRequest !== refreshEpoch.current) return;
       setCases(c);
       setReviews(r);
       setReevals(rv);
+      setApprovals(ap);
+      setApprovalSession(refreshUserId);
     } catch (e) {
+      if (refreshRequest !== refreshEpoch.current) return;
       setError(e instanceof Error ? e.message : "처리함을 불러오지 못했습니다.");
       setCases([]);
       setReviews([]);
       setReevals([]);
+      setApprovals([]);
+      setApprovalSession(refreshUserId);
     } finally {
-      setLoading(false);
+      if (refreshRequest === refreshEpoch.current) setLoading(false);
     }
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
+    // 신원이 바뀌는 순간 이전 처리함과 진행 중 응답을 함께 폐기한다.
+    invalidateRefresh();
+    setCases([]);
+    setReviews([]);
+    setReevals([]);
+    setApprovals([]);
+    setError(null);
+    setLoading(true);
     void refresh();
-  }, [refresh, userId]);
+    return invalidateRefresh;
+  }, [invalidateRefresh, refresh, userId]);
+
+  // effect가 실행되기 전 렌더에서도 이전 신원의 Approval queue를 숨긴다.
+  const visibleApprovals = approvalSession === userId ? approvals : [];
 
   const tabs: { id: TabId; label: string; icon: typeof GitMerge; count: number }[] = [
     { id: "contested", label: "다툼", icon: GitMerge, count: cases.length },
     { id: "backup", label: "백업 답", icon: UserCheck, count: reviews.length },
     { id: "reeval", label: "재평가", icon: RefreshCw, count: reevals.length },
+    { id: "approval", label: "Approval", icon: Check, count: visibleApprovals.length },
   ];
 
   return (
@@ -96,8 +131,28 @@ export function InboxTabs() {
             <button
               key={t.id}
               role="tab"
+              id={`inbox-tab-${t.id}`}
+              aria-controls={`inbox-panel-${t.id}`}
               aria-selected={selected}
+              data-tab={t.id}
+              tabIndex={selected ? 0 : -1}
               onClick={() => setActive(t.id)}
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                const available = Array.from(
+                  event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+                    '[role="tab"]',
+                  ) ?? [],
+                );
+                const current = available.indexOf(event.currentTarget);
+                if (current < 0 || available.length === 0) return;
+                event.preventDefault();
+                const step = event.key === "ArrowRight" ? 1 : -1;
+                const next = available[(current + step + available.length) % available.length];
+                const nextId = next.dataset.tab as TabId | undefined;
+                if (nextId) setActive(nextId);
+                next.focus();
+              }}
               className={cn(
                 "-mb-px inline-flex shrink-0 items-center gap-ds-8 border-b-2 px-ds-12 py-ds-8 text-sm font-medium transition-colors duration-ds-fast",
                 selected
@@ -142,6 +197,14 @@ export function InboxTabs() {
       {active === "reeval" && (
         <ReevalPanel reevals={reevals} loading={loading} onReviewDone={() => void refresh()} />
       )}
+      {active === "approval" && (
+        <ApprovalPanel
+          key={userId ?? "no-session"}
+          approvals={visibleApprovals}
+          loading={loading}
+          onActionDone={() => void refresh()}
+        />
+      )}
     </div>
   );
 }
@@ -157,12 +220,26 @@ function ContestedPanel({
   loading: boolean;
   onConcurDone: () => void;
 }) {
-  if (loading && cases.length === 0) return <PanelSkeleton label="다툼 케이스" />;
+  if (loading && cases.length === 0)
+    return (
+      <div id="inbox-panel-contested" role="tabpanel" aria-labelledby="inbox-tab-contested">
+        <PanelSkeleton label="다툼 케이스" />
+      </div>
+    );
   if (cases.length === 0) {
-    return <EmptyState label="담당이 갈리는 다툼 케이스가 없습니다." />;
+    return (
+      <div id="inbox-panel-contested" role="tabpanel" aria-labelledby="inbox-tab-contested">
+        <EmptyState label="담당이 갈리는 다툼 케이스가 없습니다." />
+      </div>
+    );
   }
   return (
-    <div role="tabpanel" className="flex flex-col gap-ds-16" aria-label="다툼 케이스">
+    <div
+      id="inbox-panel-contested"
+      role="tabpanel"
+      aria-labelledby="inbox-tab-contested"
+      className="flex flex-col gap-ds-16"
+    >
       {cases.map((c) => (
         <ContestedCard key={c.case_id} c={c} onConcurDone={onConcurDone} />
       ))}
@@ -174,17 +251,19 @@ function ContestedCard({ c, onConcurDone }: { c: ConflictCase; onConcurDone: () 
   const [busy, setBusy] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<ConsensusOutcome | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [keepAsComplement, setKeepAsComplement] = useState(false);
 
   async function concur(agentId: string) {
     setBusy(agentId);
     setActionError(null);
     try {
-      const result = await postConcur(c.case_id, agentId);
+      const stance: ConcurrenceStance = keepAsComplement
+        ? "keep_as_complement"
+        : "withdraw";
+      const result = await postConcur(c.case_id, agentId, c.current_round ?? null, stance, "");
       setOutcome(result);
-      if (result.type === "agreed") {
-        // Case resolved — let the parent refetch so it drops from the list.
-        setTimeout(onConcurDone, 900);
-      }
+      // 라운드와 종결 상태는 서버가 결정한다. 결과를 잠시 보여준 뒤 다시 읽는다.
+      setTimeout(onConcurDone, 900);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "담당 지정에 실패했습니다.");
     } finally {
@@ -216,6 +295,15 @@ function ContestedCard({ c, onConcurDone }: { c: ConflictCase; onConcurDone: () 
             <span className="mr-auto text-xs text-[var(--ds-color-ink-subtle)]">
               커버리지를 보고 담당을 지정하세요.
             </span>
+            <label className="inline-flex cursor-pointer items-center gap-ds-4 text-xs text-[var(--ds-color-ink-muted)]">
+              <input
+                type="checkbox"
+                checked={keepAsComplement}
+                onChange={(event) => setKeepAsComplement(event.target.checked)}
+                disabled={busy !== null}
+              />
+              내 후보가 primary가 아니면 내 후보 지식을 보조 근거로 유지
+            </label>
             {c.candidates.map((cand) => (
               <Button
                 key={cand.agent_id}
@@ -255,6 +343,14 @@ function OutcomeBanner({ outcome }: { outcome: ConsensusOutcome }) {
       <StatusBadge
         tone="info"
         label={`내 표 기록됨 — 나머지 대기: ${outcome.pending_owners.join(", ") || "없음"}`}
+      />
+    );
+  }
+  if (outcome.type === "route_rejected") {
+    return (
+      <StatusBadge
+        tone="warning"
+        label={`담당 경로 재검토 필요 — ${outcome.current_round}라운드 유지`}
       />
     );
   }
@@ -386,14 +482,26 @@ function BackupPanel({
   reviews: BackupReviewItem[];
   loading: boolean;
 }) {
-  if (loading && reviews.length === 0) return <PanelSkeleton label="백업 답변" />;
+  if (loading && reviews.length === 0)
+    return (
+      <div id="inbox-panel-backup" role="tabpanel" aria-labelledby="inbox-tab-backup">
+        <PanelSkeleton label="백업 답변" />
+      </div>
+    );
   if (reviews.length === 0) {
     return (
-      <EmptyState label="검토 대기 중인 백업 답변이 없습니다. (이 데모 구성에서는 백업 검토 store가 연결되어 있지 않습니다.)" />
+      <div id="inbox-panel-backup" role="tabpanel" aria-labelledby="inbox-tab-backup">
+        <EmptyState label="검토 대기 중인 백업 답변이 없습니다. (이 데모 구성에서는 백업 검토 store가 연결되어 있지 않습니다.)" />
+      </div>
     );
   }
   return (
-    <div role="tabpanel" className="flex flex-col gap-ds-12" aria-label="백업 답변">
+    <div
+      id="inbox-panel-backup"
+      role="tabpanel"
+      aria-labelledby="inbox-tab-backup"
+      className="flex flex-col gap-ds-12"
+    >
       {reviews.map((b) => (
         <Card key={b.item_id} elevated>
           <CardHeader>
@@ -470,12 +578,26 @@ function ReevalPanel({
     }
   }
 
-  if (loading && reevals.length === 0) return <PanelSkeleton label="재평가 항목" />;
+  if (loading && reevals.length === 0)
+    return (
+      <div id="inbox-panel-reeval" role="tabpanel" aria-labelledby="inbox-tab-reeval">
+        <PanelSkeleton label="재평가 항목" />
+      </div>
+    );
   if (reevals.length === 0)
-    return <EmptyState label="지식 변경으로 stale된 과거 판례·답이 없습니다." />;
+    return (
+      <div id="inbox-panel-reeval" role="tabpanel" aria-labelledby="inbox-tab-reeval">
+        <EmptyState label="지식 변경으로 stale된 과거 판례·답이 없습니다." />
+      </div>
+    );
 
   return (
-    <div role="tabpanel" className="flex flex-col gap-ds-12" aria-label="재평가 케이스">
+    <div
+      id="inbox-panel-reeval"
+      role="tabpanel"
+      aria-labelledby="inbox-tab-reeval"
+      className="flex flex-col gap-ds-12"
+    >
       {actError && (
         <div
           role="alert"
@@ -536,6 +658,234 @@ function ReevalPanel({
                 무효화
               </Button>
             </CardFooter>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+/* --------------------------- Approval (real) -------------------------- */
+
+function fmtApprovalTime(iso: string): string {
+  const value = new Date(iso);
+  return Number.isNaN(value.getTime()) ? iso : value.toLocaleString("ko-KR");
+}
+
+function ApprovalPanel({
+  approvals,
+  loading,
+  onActionDone,
+}: {
+  approvals: ApprovalPendingSummary[];
+  loading: boolean;
+  onActionDone: () => void;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<ApprovalPendingDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [editedText, setEditedText] = useState("");
+  const [reasonCode, setReasonCode] = useState("");
+  const [approverId, setApproverId] = useState("");
+  const detailRequestEpoch = useRef(0);
+
+  useEffect(
+    () => () => {
+      ++detailRequestEpoch.current;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (selectedId !== null && !approvals.some((item) => item.item_id === selectedId)) {
+      ++detailRequestEpoch.current;
+      setSelectedId(null);
+      setDetail(null);
+      setDetailLoading(false);
+      setActionError(null);
+    }
+  }, [approvals, selectedId]);
+
+  async function openDetail(itemId: string) {
+    const detailRequest = ++detailRequestEpoch.current;
+    if (selectedId === itemId) {
+      setSelectedId(null);
+      setDetail(null);
+      setActionError(null);
+      return;
+    }
+    setSelectedId(itemId);
+    setDetail(null);
+    setDetailLoading(true);
+    setActionError(null);
+    try {
+      const loaded = await getApprovalDetail(itemId);
+      if (detailRequest !== detailRequestEpoch.current) return;
+      setDetail(loaded);
+      setEditedText(loaded.candidate.text);
+      setReasonCode("");
+      setApproverId("");
+    } catch (error) {
+      if (detailRequest !== detailRequestEpoch.current) return;
+      setActionError(error instanceof Error ? error.message : "Approval 상세를 불러오지 못했습니다.");
+    } finally {
+      if (detailRequest === detailRequestEpoch.current) setDetailLoading(false);
+    }
+  }
+
+  async function act(action: "approve" | "approve_with_edit" | "reject" | "reassign") {
+    if (!detail || detail.item_id !== selectedId) return;
+    const edited = editedText.trim();
+    const reason = reasonCode.trim();
+    const target = approverId.trim();
+    if (action === "approve_with_edit" && !edited) {
+      setActionError("수정승인할 답변을 입력하세요.");
+      return;
+    }
+    if (action === "reject" && !reason) {
+      setActionError("Reject 사유 코드를 입력하세요.");
+      return;
+    }
+    if (action === "reassign" && !target) {
+      setActionError("새 승인자 ID를 입력하세요.");
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      if (action === "approve") {
+        await postApprovalDecision(detail.item_id, { kind: "approve" });
+      } else if (action === "approve_with_edit") {
+        await postApprovalDecision(detail.item_id, {
+          kind: "approve_with_edit",
+          edited_text: edited,
+        });
+      } else if (action === "reject") {
+        await postApprovalDecision(detail.item_id, {
+          kind: "reject",
+          reason_code: reason,
+        });
+      } else {
+        await postApprovalReassignment(detail.item_id, target);
+      }
+      ++detailRequestEpoch.current;
+      setSelectedId(null);
+      setDetail(null);
+      onActionDone();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Approval 처리에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading && approvals.length === 0)
+    return (
+      <div id="inbox-panel-approval" role="tabpanel" aria-labelledby="inbox-tab-approval">
+        <PanelSkeleton label="Approval 항목" />
+      </div>
+    );
+  if (approvals.length === 0)
+    return (
+      <div id="inbox-panel-approval" role="tabpanel" aria-labelledby="inbox-tab-approval">
+        <EmptyState label="검토 대기 중인 Approval 항목이 없습니다." />
+      </div>
+    );
+
+  return (
+    <div
+      id="inbox-panel-approval"
+      role="tabpanel"
+      aria-labelledby="inbox-tab-approval"
+      className="flex flex-col gap-ds-12"
+    >
+      {actionError && (
+        <div role="alert" className="text-sm text-[var(--ds-color-danger)]">
+          {actionError}
+        </div>
+      )}
+      {approvals.map((approval, index) => {
+        const open = selectedId === approval.item_id;
+        const detailId = `approval-detail-${index}`;
+        return (
+          <Card key={approval.item_id} elevated>
+            <CardHeader>
+              <div className="flex flex-wrap items-center gap-ds-8">
+                <StatusBadge tone="warning" label={`Approval ${approval.approval_round}라운드`} />
+                <span className="font-mono text-xs text-[var(--ds-color-ink-subtle)]">
+                  {approval.item_id}
+                </span>
+              </div>
+              <p className="text-xs text-[var(--ds-color-ink-muted)]">
+                배정 {fmtApprovalTime(approval.assigned_at)} · 기한 {fmtApprovalTime(approval.due_at)}
+              </p>
+            </CardHeader>
+            <CardFooter>
+              <Button
+                size="sm"
+                variant="secondary"
+                aria-expanded={open}
+                aria-controls={detailId}
+                disabled={busy}
+                onClick={() => void openDetail(approval.item_id)}
+              >
+                {open ? "상세 닫기" : "상세 열기"}
+              </Button>
+            </CardFooter>
+            {open && (
+              <div id={detailId} className="border-t border-[var(--ds-color-border)]">
+                {detailLoading && <PanelSkeleton label="Approval 상세" />}
+                {detail && (
+                  <div className="flex flex-col gap-ds-12 px-ds-16 py-ds-16">
+                    <div>
+                      <p className="mb-ds-4 text-xs text-[var(--ds-color-ink-subtle)]">원문 질문</p>
+                      <p className="text-sm text-[var(--ds-color-ink)]">{detail.question}</p>
+                    </div>
+                    <div>
+                      <p className="mb-ds-4 text-xs text-[var(--ds-color-ink-subtle)]">승인 후보</p>
+                      <p className="whitespace-pre-wrap text-sm text-[var(--ds-color-ink-muted)]">
+                        {detail.candidate.text}
+                      </p>
+                    </div>
+                    <label className="flex flex-col gap-ds-4 text-xs text-[var(--ds-color-ink-muted)]">
+                      수정승인 답변
+                      <textarea
+                        value={editedText}
+                        disabled={busy}
+                        onChange={(event) => setEditedText(event.target.value)}
+                        className="min-h-24 rounded-md border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] p-ds-8 text-sm text-[var(--ds-color-ink)]"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-ds-4 text-xs text-[var(--ds-color-ink-muted)]">
+                      Reject 사유 코드
+                      <input
+                        value={reasonCode}
+                        disabled={busy}
+                        onChange={(event) => setReasonCode(event.target.value)}
+                        className="rounded-md border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] p-ds-8 text-sm text-[var(--ds-color-ink)]"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-ds-4 text-xs text-[var(--ds-color-ink-muted)]">
+                      새 승인자 ID
+                      <input
+                        value={approverId}
+                        disabled={busy}
+                        onChange={(event) => setApproverId(event.target.value)}
+                        className="rounded-md border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] p-ds-8 text-sm text-[var(--ds-color-ink)]"
+                      />
+                    </label>
+                    <div className="flex flex-wrap gap-ds-8">
+                      <Button size="sm" variant="success" loading={busy} onClick={() => void act("approve")}>승인</Button>
+                      <Button size="sm" variant="secondary" disabled={busy} onClick={() => void act("approve_with_edit")}>수정승인</Button>
+                      <Button size="sm" variant="danger" disabled={busy} onClick={() => void act("reject")}>Reject</Button>
+                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act("reassign")}>재지정</Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </Card>
         );
       })}

@@ -95,9 +95,7 @@ def test_생성자_주입과_bind가_동등하다() -> None:
     cs_card = bundle.registry.get("cs_ops")
     frame = _publish_frame_for(cs_card)
 
-    via_ctor = WebSocketDispatcher(
-        registry=bundle.registry, published_index_store=store_a
-    )
+    via_ctor = WebSocketDispatcher(registry=bundle.registry, published_index_store=store_a)
     assert via_ctor.accept_index("cs_lead", frame) is True
 
     store_b = seed_published_index_store(bundle.registry)
@@ -126,14 +124,14 @@ def test_워커_publish가_시드를_교체한다_put_staleness() -> None:
     assert seed_at < _PUBLISH_AT  # 시드는 publish보다 옛 것
 
     # 워커가 더 새 인덱스를 publish — 단일 distinguishable concept을 실어 교체를 식별.
-    dispatcher = WebSocketDispatcher(
-        registry=bundle.registry, published_index_store=store
-    )
+    dispatcher = WebSocketDispatcher(registry=bundle.registry, published_index_store=store)
     marker = KnowledgeIndex(
         agent_id="cs_ops",
         version="okf-published",
         generated_at=_PUBLISH_AT,
-        concepts=(Concept(id="환불-published", label="환불", core_question="환불 규정", domain="환불"),),
+        concepts=(
+            Concept(id="환불-published", label="환불", core_question="환불 규정", domain="환불"),
+        ),
     )
     assert dispatcher.accept_index("cs_lead", PublishIndex(index=marker)) is True
 
@@ -151,9 +149,7 @@ def test_역행_publish는_시드를_안_덮는다() -> None:
     seeded = store.get("cs_ops")
     assert seeded is not None
 
-    dispatcher = WebSocketDispatcher(
-        registry=bundle.registry, published_index_store=store
-    )
+    dispatcher = WebSocketDispatcher(registry=bundle.registry, published_index_store=store)
     stale = KnowledgeIndex(
         agent_id="cs_ops",
         version="okf-stale",
@@ -182,9 +178,7 @@ def test_publish_수용_후_그_store로_라우팅한다() -> None:
     router = bundle.ask._router  # pyright: ignore[reportPrivateUsage]
     assert isinstance(router, TwoStageRouter)
 
-    dispatcher = WebSocketDispatcher(
-        registry=bundle.registry, published_index_store=store
-    )
+    dispatcher = WebSocketDispatcher(registry=bundle.registry, published_index_store=store)
     # 워커가 "환불" concept을 더 새 generated_at으로 publish(시드 교체).
     published = KnowledgeIndex(
         agent_id="cs_ops",
@@ -215,9 +209,7 @@ def test_타_owner_사칭_publish는_라우팅에_안_샌다() -> None:
     seeded = store.get("cs_ops")
     assert seeded is not None
 
-    dispatcher = WebSocketDispatcher(
-        registry=bundle.registry, published_index_store=store
-    )
+    dispatcher = WebSocketDispatcher(registry=bundle.registry, published_index_store=store)
     forged = KnowledgeIndex(
         agent_id="cs_ops",
         version="forged",
@@ -243,7 +235,7 @@ def _recv(conn: WebSocketTestSession) -> dict[str, Any]:
 def test_create_central_app_index모드_워커_publish가_라우팅에_도달한다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """라이브 WS 한 바퀴: index 모드에서 워커 register→publish_index→/ask가 답해진다.
+    """라이브 WS 한 바퀴: index 모드에서 워커 publish_index가 P17 Router에 반영된다.
 
     배선이 실제로 돈다는 증거 — 워커가 보낸 PublishIndex가 recv_loop→accept_index→put으로
     라우터 store에 도달하고, /ask 질문이 그 인덱스 경로로 라우팅돼 답이 나온다(B1 회귀
@@ -252,7 +244,15 @@ def test_create_central_app_index모드_워커_publish가_라우팅에_도달한
     from agent_org_network.server import create_central_app
 
     monkeypatch.setenv("AON_ROUTER", "index")
-    # StubRuntime이 아니라 워커가 답을 회신하는 분산 경로 — 워커가 primary로 붙어 답한다.
+
+    def select_stub_runtime(*args: object, **kwargs: object) -> StubRuntime:
+        del args, kwargs
+        return StubRuntime()
+
+    monkeypatch.setattr(
+        "agent_org_network.runtime_select.select_runtime",
+        select_stub_runtime,
+    )
     client = TestClient(create_central_app())
     http: Any = client
 
@@ -268,40 +268,32 @@ def test_create_central_app_index모드_워커_publish가_라우팅에_도달한
             version="okf-published",
             generated_at=_PUBLISH_AT,
             concepts=(
-                Concept(id="refund", label="환불 규정", core_question="환불 규정 안내", domain="환불"),
+                Concept(
+                    id="refund", label="환불 규정", core_question="환불 규정 안내", domain="환불"
+                ),
             ),
         )
         ws.send_json(PublishIndex(index=published).model_dump(mode="json"))
         # heartbeat로 송신/수신 루프 왕복 보장(publish 처리 완료 펜스).
         ws.send_json({"type": "heartbeat"})
 
-        # 사용자 질문 — index 라우팅이 cs_ops로 보내 워커에게 push.
-        r = http.post("/ask", json={"question": "환불 규정 알려줘"})
-        assert r.status_code == 200
-        body = r.json()
-        # 분산 경로라 dispatched(Pending) — tracking으로 회수.
-        assert body["type"] == "pending"
-        tracking = body["tracking"]
+    # publish를 마친 워커가 연결된 동안에는 Owner 사전 승인이 필요하다. 연결을 닫아
+    # offline 자동발신 조건으로 바꾼 뒤 질문해, 이 테스트의 본래 목적인 published index
+    # → P17 Router → cs_ops 책임 경로를 검증한다.
+    r = http.post("/ask", json={"question": "환불 규정 알려줘"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["type"] == "answered"
+    assert body["answered_by"] == {"owner": "cs_lead", "agent_id": "cs_ops"}
+    request_id = body["request_id"]
+    record_id = body["record_id"]
 
-        push = _recv(ws)
-        assert push["type"] == "push_work"
-        ticket_id = push["ticket"]["ticket_id"]
-        # cs_ops로 라우팅됐다는 증거 — push된 작업의 agent_id.
-        assert push["ticket"]["agent_id"] == "cs_ops"
-
-        ws.send_json(
-            {
-                "type": "submit_answer",
-                "ticket_id": ticket_id,
-                "answer": {"text": "환불은 7일 이내", "sources": [], "mode": "full"},
-            }
-        )
-        ws.send_json({"type": "heartbeat"})
-
-    ans = http.get(f"/ask/{tracking}").json()
-    assert ans["type"] == "answered"
-    assert ans["text"] == "환불은 7일 이내"
-    assert ans["answered_by"] == {"owner": "cs_lead", "agent_id": "cs_ops"}
+    # 새 canonical 조회도 같은 Request와 Finalization 결과를 돌려준다.
+    ans = http.get(f"/requests/{request_id}").json()
+    assert ans["request_id"] == request_id
+    assert ans["record_id"] == record_id
+    assert ans["answered_by"] == "cs_lead"
+    assert ans["agent_id"] == "cs_ops"
 
 
 # ── 헬퍼 ──────────────────────────────────────────────────────────────────────

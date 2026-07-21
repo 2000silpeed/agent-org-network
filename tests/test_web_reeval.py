@@ -20,7 +20,10 @@ from httpx import Response
 from starlette.testclient import WebSocketTestSession
 
 from agent_org_network.audit import InMemoryAuditLog
+from agent_org_network.conflict import Candidate, ConflictCase
+from agent_org_network.demo import DemoBundle, build_demo
 from agent_org_network.knowledge_index import Concept, KnowledgeIndex
+from agent_org_network.manager_queue import InMemoryManagerQueueStore
 from agent_org_network.reeval import (
     AnswerSubject,
     InMemoryReevalStore,
@@ -282,9 +285,7 @@ def test_스코프_위반_403() -> None:
     client = TestClient(app)
     _login(client, "legal_lead")  # 남의 항목
 
-    status, _ = _post(
-        client, "/reeval/reeval-precedent-001/review", {"kind": "keep"}
-    )
+    status, _ = _post(client, "/reeval/reeval-precedent-001/review", {"kind": "keep"})
     assert status == 403
 
 
@@ -309,9 +310,7 @@ def test_미로그인_review는_401() -> None:
     app, store = _auth_app_with_reeval()
     store.add(_precedent_item(owner_id="cs_lead"))
     client = TestClient(app)
-    status, _ = _post(
-        client, "/reeval/reeval-precedent-001/review", {"kind": "keep"}
-    )
+    status, _ = _post(client, "/reeval/reeval-precedent-001/review", {"kind": "keep"})
     assert status == 401
 
 
@@ -387,23 +386,27 @@ def _recv(conn: WebSocketTestSession) -> dict[str, Any]:
     return cast(dict[str, Any], conn.receive_json())
 
 
-def test_create_central_app_실_WS_publish가_reeval에_실제로_적재된다(
+def test_P17_답은_legacy_audit에_이중기록되지_않아_자동_reeval은_0이다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """실 `/worker` WS 경로로 두 차례 publish → 두 번째가 첫 답을 stale로 걸어 reeval 적재.
+    """실 `/worker` WS 재publish 뒤에도 P17 답을 legacy audit에서 추정하지 않는다.
 
-    T11.7e E1 배선(WebSocketDispatcher.accept_index → propagator 전달, create_central_app이
-    만든 실 StalenessPropagator 주입)이 없으면 dispatcher._propagator가 None이라 발화 자체가
-    0회 — 이 테스트는 red(reeval 항목 0개)로 그 결함을 드러낸다.
-
-    시나리오: register → 1차 publish(라우팅 시드) → /ask로 답 확보(audit에 routed 기록 생성,
-    snapshot_sha=None) → 2차 publish(더 새 generated_at, 같은 agent_id) → Answer 축 과검출로
-    그 답이 stale 판정 → reeval_store에 AnswerSubject 적재 → cs_lead 세션의 /inbox/reeval에서
-    실제로 조회된다.
+    P17 AnswerRecord는 감독 read view에서 조회되지만 terminal audit→StalenessPropagator 연결은
+    P17.10/P17.13 범위다. 그러므로 legacy audit에 복제하지 않고 AnswerSubject도 자동 생성하지
+    않는다. 같은 파일의 Precedent 축 테스트는 실제 propagator 운영 기능을 계속 검증한다.
     """
     from agent_org_network.server import create_central_app
 
     monkeypatch.setenv("AON_ROUTER", "index")
+
+    def select_stub_runtime(*args: object, **kwargs: object) -> StubRuntime:
+        del args, kwargs
+        return StubRuntime()
+
+    monkeypatch.setattr(
+        "agent_org_network.runtime_select.select_runtime",
+        select_stub_runtime,
+    )
     app = create_central_app(session_secret=_SECRET)
     client = TestClient(app)
     http: Any = client
@@ -422,7 +425,9 @@ def test_create_central_app_실_WS_publish가_reeval에_실제로_적재된다(
             version="okf-1",
             generated_at=t1,
             concepts=(
-                Concept(id="refund", label="환불 규정", core_question="환불 규정 안내", domain="환불"),
+                Concept(
+                    id="refund", label="환불 규정", core_question="환불 규정 안내", domain="환불"
+                ),
             ),
         )
         ws.send_json(PublishIndex(index=first).model_dump(mode="json"))
@@ -431,35 +436,36 @@ def test_create_central_app_실_WS_publish가_reeval에_실제로_적재된다(
         # 이미 끝나 있다(순서 보장). heartbeat는 생존 신호라 응답/echo가 없다(ADR 0011 6-4).
         ws.send_json({"type": "heartbeat"})
 
-        # 질문 → cs_ops로 라우팅 → 워커가 답 회신(snapshot_sha 미실음 → None).
-        r = http.post("/ask", json={"question": "환불 규정 알려줘"})
-        assert r.status_code == 200
-        tracking = r.json()["tracking"]
+    # 연결된 Owner는 사전 승인 대상이므로, 첫 publish를 마친 워커가 offline이 된 뒤
+    # 질문한다. published index가 P17 Router에서 cs_ops 책임으로 확정되고, offline
+    # 자동발신은 사후교정 증거를 가진 AnswerRecord를 만든다.
+    r = http.post("/ask", json={"question": "환불 규정 알려줘"})
+    assert r.status_code == 200
+    answered = r.json()
+    assert answered["type"] == "answered"
+    assert answered["answered_by"]["agent_id"] == "cs_ops"
+    request_id = answered["request_id"]
+    record_id = answered["record_id"]
+    canonical = http.get(f"/requests/{request_id}").json()
+    assert canonical["request_id"] == request_id
+    assert canonical["record_id"] == record_id
 
-        push = _recv(ws)
-        assert push["type"] == "push_work"
-        ticket_id = push["ticket"]["ticket_id"]
-        assert push["ticket"]["agent_id"] == "cs_ops"
-
-        ws.send_json(
-            {
-                "type": "submit_answer",
-                "ticket_id": ticket_id,
-                "answer": {"text": "환불은 7일 이내", "sources": [], "mode": "full"},
-            }
-        )
-        ws.send_json({"type": "heartbeat"})  # 펜스(응답 없음)
-
-        answered = http.get(f"/ask/{tracking}").json()
-        assert answered["type"] == "answered"
-
-        # 2차 publish(더 새 generated_at) — 이 수용이 방금 확정된 답을 stale로 건다.
+    # 2차 publish는 수용되지만 P17 terminal audit 연결 전에는 답 stale을 추정하지 않는다.
+    with http.websocket_connect("/worker") as conn:
+        ws = cast(WebSocketTestSession, conn)
+        ws.send_json({"type": "register_worker", "owner_id": "cs_lead", "role": "primary"})
+        assert _recv(ws)["type"] == "welcome"
         second = KnowledgeIndex(
             agent_id="cs_ops",
             version="okf-2",
             generated_at=t2,
             concepts=(
-                Concept(id="refund-v2", label="환불 규정 v2", core_question="환불 규정 v2", domain="환불"),
+                Concept(
+                    id="refund-v2",
+                    label="환불 규정 v2",
+                    core_question="환불 규정 v2",
+                    domain="환불",
+                ),
             ),
         )
         ws.send_json(PublishIndex(index=second).model_dump(mode="json"))
@@ -469,8 +475,7 @@ def test_create_central_app_실_WS_publish가_reeval에_실제로_적재된다(
     status, body = _get(client, "/inbox/reeval")
     assert status == 200
     answer_items = [it for it in body if it["subject_kind"] == "answer"]
-    assert len(answer_items) >= 1
-    assert all(it["owner_id"] == "cs_lead" for it in answer_items)
+    assert answer_items == []
 
 
 # ── T11.7e minor-1 — Precedent 축 라이브 배선(precedents 공유·owner_of) ─────────
@@ -489,33 +494,52 @@ def test_create_central_app_실_판례_합의_후_재publish가_precedent_reeval
          `/inbox/reeval`에 안 뜬다. 이 테스트는 owner_id가 실제 owner("cs_lead")로
          채워지는지(빈 문자열 아님) 직접 단언한다.
 
-    시나리오: cs_lead·finance_lead WS 연결 각각 register → 같은 domain("보상") concept을
-    가진 인덱스를 cs_ops·finance_ops로 publish(1차, 다툼 유도) → "보상" 질문 → Router가
-    둘 다 매칭 → Contested(케이스 열림) → 두 owner 모두 concur(cs_ops 지목) → 전원 합의 →
+    시나리오: request_id=None legacy Case를 명시하고 cs_lead·finance_lead WS 연결 각각
+    register → 같은 domain("보상") concept을 cs_ops·finance_ops로 publish(1차) →
+    두 owner 모두 concur(cs_ops 지목) → 전원 합의 →
     Agreed → 실 `precedents.record(Resolution(intent="보상", primary="cs_ops"))` →
     cs_ops 재publish(2차, 더 새 generated_at) → 그 판례가 stale 표식 + ReevalItem
     (subject=PrecedentSubject·owner_id="cs_lead") 적재 → cs_lead 세션의 `/inbox/reeval`에서
     실제로 조회된다.
     """
     from agent_org_network.server import create_central_app
+    import agent_org_network.web as web_module
 
     monkeypatch.setenv("AON_ROUTER", "index")
-    app = create_central_app(session_secret=_SECRET)
+    queue_store = InMemoryManagerQueueStore()
+    bundle = build_demo(runtime=StubRuntime(), manager_queue_store=queue_store)
+    bundle.case_store.open_case(
+        ConflictCase(
+            intent="보상",
+            question="보상 기준이 어떻게 되나요?",
+            candidates=(
+                Candidate(agent_id="cs_ops", owner="cs_lead"),
+                Candidate(agent_id="finance_ops", owner="finance_lead"),
+            ),
+            opened_at=_NOW,
+            case_id="legacy-web-reeval-case",
+        )
+    )
+
+    def return_bundle(**_kwargs: object) -> DemoBundle:
+        return bundle
+
+    monkeypatch.setattr(web_module, "build_demo", return_bundle)
+    app = create_central_app(session_secret=_SECRET, manager_queue_store=queue_store)
     client = TestClient(app)
     http: Any = client
 
     t1 = datetime(2026, 6, 30, 0, 0, 0, tzinfo=timezone.utc)
     t2 = datetime(2026, 6, 30, 1, 0, 0, tzinfo=timezone.utc)  # t1보다 더 새 것
 
-    with http.websocket_connect("/worker") as cs_conn, http.websocket_connect(
-        "/worker"
-    ) as finance_conn:
+    with (
+        http.websocket_connect("/worker") as cs_conn,
+        http.websocket_connect("/worker") as finance_conn,
+    ):
         cs_ws = cast(WebSocketTestSession, cs_conn)
         finance_ws = cast(WebSocketTestSession, finance_conn)
 
-        cs_ws.send_json(
-            {"type": "register_worker", "owner_id": "cs_lead", "role": "primary"}
-        )
+        cs_ws.send_json({"type": "register_worker", "owner_id": "cs_lead", "role": "primary"})
         assert _recv(cs_ws)["type"] == "welcome"
         finance_ws.send_json(
             {"type": "register_worker", "owner_id": "finance_lead", "role": "primary"}
@@ -554,17 +578,8 @@ def test_create_central_app_실_판례_합의_후_재publish가_precedent_reeval
                 ),
             ),
         )
-        finance_ws.send_json(
-            PublishIndex(index=finance_index).model_dump(mode="json")
-        )
+        finance_ws.send_json(PublishIndex(index=finance_index).model_dump(mode="json"))
         finance_ws.send_json({"type": "heartbeat"})  # 펜스(응답 없음)
-
-        # "보상" 질문 → cs_ops·finance_ops 둘 다 매칭 → Contested(케이스 열림, 판례 아직 없음).
-        # co-grounding 활성(ADR 0037 슬라이스 D) 이후 다툼 응답은 `answered`(답+합의 병행)지만
-        # ConflictCase는 여전히 열려 아래 concur→Agreed→판례 record 흐름을 그대로 탄다(결정 5).
-        r = http.post("/ask", json={"question": "보상 기준이 어떻게 되나요?"})
-        assert r.status_code == 200
-        assert r.json()["type"] == "answered"
 
         # cs_lead·finance_lead 둘 다 cs_ops를 primary로 지목 → 전원 합의 → Agreed →
         # 실 precedents.record(Resolution(intent="보상", primary="cs_ops")).
@@ -616,6 +631,7 @@ def test_create_central_app_실_판례_합의_후_재publish가_precedent_reeval
     # assert 이전에 이미 실패한다(빈 owner_id는 어느 owner 처리함에도 안 뜨므로).
     assert matching[0]["owner_id"] == "cs_lead"
     assert matching[0]["owner_id"] != ""
+
 
 # ── 처분 *행위*의 audit 기록(전이 ≠ 기록 — 기록 주체는 호출자[web 라우트]) ────────
 

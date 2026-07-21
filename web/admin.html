@@ -146,8 +146,8 @@
 <body>
   <div class="admin">
     <header>
-      관리 — 카드 등록·오너 변경
-      <small>운영자 면. 신규 Agent Card를 라이브 등록하거나 카드 owner를 변경합니다(즉시 반영).</small>
+      관리 — 카드·사용자 등록·오너 변경
+      <small>운영자 면. 신규 Agent Card·사용자를 라이브 등록하거나 카드 owner를 변경합니다(즉시 반영).</small>
     </header>
 
     <div id="login-banner" class="login-banner" style="display:none;">
@@ -169,6 +169,7 @@
       <div class="tabs">
         <button class="tab active" id="tab-register" data-panel="panel-register">신규 카드 등록</button>
         <button class="tab" id="tab-owner" data-panel="panel-owner">오너 변경</button>
+        <button class="tab" id="tab-users" data-panel="panel-users">사용자 등록</button>
         <button class="tab" id="tab-scorecards" data-panel="panel-scorecards">스코어카드</button>
       </div>
 
@@ -246,6 +247,41 @@
           <button class="submit-btn" id="owner-btn">오너 변경</button>
         </div>
         <div class="result-area" id="owner-result"></div>
+      </div>
+
+      <!-- 사용자 등록 (ADR 0064 — register-only) -->
+      <div class="panel" id="panel-users">
+        <div class="notice">
+          입력한 사용자는 <strong>admission 검증(id 비어있지 않음·email 형식/전역 유일·manager 실재)</strong>을
+          통과하면 <strong>라이브 Registry에 즉시 반영</strong>됩니다(우회 API 없음·감사 로그 기록).
+          <strong>등록만</strong> 지원합니다 — 수정·삭제·매니저 재지정은 이 화면에서 하지 않습니다.
+        </div>
+        <div class="form-card">
+          <h2>신규 사용자 등록</h2>
+          <div class="field-row">
+            <div class="field">
+              <label>user_id <span class="req">*</span></label>
+              <input id="u-user-id" type="text" placeholder="예: alice" />
+              <div class="hint">사람이 읽는 안정 식별자(중복 불가).</div>
+            </div>
+            <div class="field">
+              <label>email <span class="req">*</span></label>
+              <input id="u-email" type="email" placeholder="예: alice@company.com" />
+              <div class="hint">SSO 신원 매핑 키 — 전역 유일해야 합니다.</div>
+            </div>
+          </div>
+          <div class="field">
+            <label>manager <small style="font-weight:400;">(선택 — 비우면 루트)</small></label>
+            <select id="u-manager"></select>
+            <div class="hint">기존 사용자만 매니저로 지정할 수 있습니다. 비우면 최상위(루트).</div>
+          </div>
+          <button class="submit-btn" id="user-btn">등록</button>
+        </div>
+        <div class="result-area" id="user-result"></div>
+        <div class="form-card" style="margin-top:18px;">
+          <h2>등록된 사용자</h2>
+          <div id="user-list" style="font-size:13px;"></div>
+        </div>
       </div>
 
       <!-- 스코어카드 (Phase 13 SC3·ADR 0035) -->
@@ -436,6 +472,94 @@
       }
     }
 
+    let users = [];
+
+    async function loadUsers() {
+      try {
+        const res = await fetch("/admin/users");
+        if (res.status === 401) {
+          document.getElementById("login-banner").style.display = "block";
+          return;
+        }
+        if (!res.ok) return;
+        users = await res.json();
+        // manager 드롭다운: 빈값(루트) + 기존 사용자.
+        const sel = document.getElementById("u-manager");
+        const prev = sel.value;
+        sel.innerHTML = "";
+        const rootOpt = document.createElement("option");
+        rootOpt.value = "";
+        rootOpt.textContent = "(루트 — 매니저 없음)";
+        sel.appendChild(rootOpt);
+        for (const u of users) {
+          const opt = document.createElement("option");
+          opt.value = u.user_id;
+          opt.textContent = u.user_id;
+          sel.appendChild(opt);
+        }
+        sel.value = prev;
+        // 목록.
+        const listEl = document.getElementById("user-list");
+        listEl.innerHTML = "";
+        if (!users.length) {
+          listEl.textContent = "등록된 사용자가 없습니다.";
+          return;
+        }
+        for (const u of users) {
+          const row = document.createElement("div");
+          row.className = "kv";
+          const b = document.createElement("b");
+          b.textContent = u.user_id;
+          row.appendChild(b);
+          const meta = " — " + (u.email || "(email 없음)")
+            + " · 매니저: " + (u.manager || "루트");
+          row.appendChild(document.createTextNode(meta));
+          listEl.appendChild(row);
+        }
+      } catch (_) { /* 무시 */ }
+    }
+
+    async function doRegisterUser() {
+      const btn = document.getElementById("user-btn");
+      btn.disabled = true;
+      btn.textContent = "등록 중…";
+      const payload = {
+        user_id: document.getElementById("u-user-id").value.trim(),
+        email: document.getElementById("u-email").value.trim() || null,
+        manager: document.getElementById("u-manager").value || null,
+      };
+      try {
+        const res = await fetch("/admin/users", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 200) {
+          renderOk("user-result", "등록 완료", [
+            ["user_id", data.user_id],
+            ["email", data.email || "—"],
+            ["매니저", data.manager || "루트"],
+          ]);
+          document.getElementById("u-user-id").value = "";
+          document.getElementById("u-email").value = "";
+          await loadUsers();
+        } else if (res.status === 401) {
+          document.getElementById("login-banner").style.display = "block";
+          renderError("user-result", ["로그인이 필요합니다."]);
+        } else if (res.status === 409) {
+          renderError("user-result", ["이미 존재하는 user_id입니다."]);
+        } else {
+          renderError("user-result", extractErrors(data.detail));
+        }
+      } catch (err) {
+        renderError("user-result", ["요청 실패: " + err.message]);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "등록";
+      }
+    }
+
     async function tryLogin() {
       const userId = document.getElementById("login-input").value.trim();
       if (!userId) return;
@@ -475,6 +599,7 @@
 
     document.getElementById("register-btn").addEventListener("click", doRegister);
     document.getElementById("owner-btn").addEventListener("click", doOwnerChange);
+    document.getElementById("user-btn").addEventListener("click", doRegisterUser);
     document.getElementById("o-agent-id").addEventListener("change", updateCurrentOwner);
     document.getElementById("login-btn").addEventListener("click", tryLogin);
     document.getElementById("login-input").addEventListener("keydown", e => {
@@ -483,6 +608,10 @@
     document.getElementById("logout-btn").addEventListener("click", doLogout);
     document.getElementById("tab-register").addEventListener("click", () => switchTab("panel-register"));
     document.getElementById("tab-owner").addEventListener("click", () => switchTab("panel-owner"));
+    document.getElementById("tab-users").addEventListener("click", () => {
+      switchTab("panel-users");
+      loadUsers();
+    });
     document.getElementById("tab-scorecards").addEventListener("click", () => {
       switchTab("panel-scorecards");
       loadScorecards();

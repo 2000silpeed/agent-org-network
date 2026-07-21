@@ -1,8 +1,8 @@
 # ADR 0038 — 합의-소싱 COMPLEMENTS 엣지 · `EdgeGroundingSelector`(Routed co-grounding) · concede stance로 상보/오등록 구별
 
-- 상태: 채택(Accepted)
+- 상태: 채택(Accepted) · **적용 범위 메모:** 합의 직후 전역 `ComplementEdge`를 기록하는 계약은 legacy `ConsensusService`에 한정한다. ADR 0046은 request-aware Contested의 supporting을 positive `SupportingKnowledgeEvidence(authority=0)`로만 보존하고, typed Knowledge reader가 해당 카드만 읽게 한다. 전역 학습은 P17.10까지 미룬다.
 - 날짜: 2026-07-07 (사용자 승인 — 긴장 3 기본값 = 패자 명시 선언·기본 withdraw)
-- 계보: ADR 0037(co-grounding·`EdgeGroundingSelector` 후속 자리·Authority=primary 단일)의 **후속 실체화**. ADR 0036 §9(북극성·에스컬레이션 사다리 ①·"COMPLEMENTS가 다중 접지를 구동하는 다리")의 **경량 룽 구체화**(무거운 북극성 연기 범위와 무충돌). ADR 0008/0014(1인칭 합의·`Precedent`)·ADR 0004(under-claim 자기보고)·ADR 0028(`ConceptEdge`·혼동 방지 대상). supersede 없음.
+- 계보: ADR 0037(co-grounding·`EdgeGroundingSelector` 후속 자리·Authority=primary 단일)의 **후속 실체화**. ADR 0036 §9(북극성·에스컬레이션 사다리 ①·"COMPLEMENTS가 다중 접지를 구동하는 다리")의 **경량 룽 구체화**(무거운 북극성 연기 범위와 무충돌). ADR 0008/0014(1인칭 합의·`Precedent`)·ADR 0004(under-claim 자기보고)·ADR 0028(`ConceptEdge`·혼동 방지 대상)을 잇는다. ADR 0042·0046은 request-aware Contested에서 전역 Edge 방출을 제한하지만, legacy 합의와 기존 Routed `EdgeGroundingSelector` 자산은 유지한다.
 - 근거 본체: [`docs/trustgraph-eval-2026-07-06.md`](../trustgraph-eval-2026-07-06.md) §9-3(D1 단일 접지=절반 답 vs D2 다중 접지=완전한 답).
 
 ---

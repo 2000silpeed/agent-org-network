@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from agent_org_network.agent_card import AgentCard
-    from agent_org_network.answer_record import AnswerRecordStore, CorrectionStore, FeedbackStore
+    from agent_org_network.answer_record import AnswerRecordReader, CorrectionStore, FeedbackStore
     from agent_org_network.knowledge_store import KnowledgeStore
     from agent_org_network.presence import PresenceLogStore
 
@@ -86,7 +86,7 @@ def compute_owner_scorecard(
     *,
     owner_id: str,
     cards: list["AgentCard"],
-    answer_store: "AnswerRecordStore",
+    answer_store: "AnswerRecordReader",
     feedback_store: "FeedbackStore",
     correction_store: "CorrectionStore",
     knowledge_store: "KnowledgeStore",
@@ -131,9 +131,7 @@ def compute_owner_scorecard(
     handle_seconds: list[float] = []
     for rec in needs_review_records:
         events = [
-            e
-            for e in correction_store.for_record(rec.record_id)
-            if since <= e.corrected_at < until
+            e for e in correction_store.for_record(rec.record_id) if since <= e.corrected_at < until
         ]
         if not events:
             continue

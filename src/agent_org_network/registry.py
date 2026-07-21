@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 import threading
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,6 +13,20 @@ from agent_org_network.user import User
 
 class RegistryError(Exception):
     pass
+
+
+def _copy_card(card: AgentCard) -> AgentCard:
+    return AgentCard.model_validate(
+        card.model_dump(mode="python", round_trip=True),
+        strict=True,
+    )
+
+
+def _copy_user(user: User) -> User:
+    return User.model_validate(
+        user.model_dump(mode="python", round_trip=True),
+        strict=True,
+    )
 
 
 class Registry:
@@ -27,30 +43,52 @@ class Registry:
         self._cards: dict[str, AgentCard] = {}
         self._users: dict[str, User] = {}
         self._lock = threading.RLock()
+        self._snapshot_state = threading.local()
 
     def user_ids(self) -> frozenset[str]:
         """등록된 User id 집합(읽기 전용)."""
         return frozenset(self._users.keys())
 
+    @contextmanager
+    def consistency_guard(self) -> Generator[None]:
+        """여러 Registry read와 외부 CAS 사이 snapshot을 한 RLock 아래 고정한다."""
+        with self._lock:
+            depth = int(getattr(self._snapshot_state, "depth", 0))
+            self._snapshot_state.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._snapshot_state.depth = depth
+
+    def _reject_snapshot_mutation(self) -> None:
+        if int(getattr(self._snapshot_state, "depth", 0)) > 0:
+            raise RegistryError("Registry consistency snapshot 안에서는 mutation할 수 없습니다.")
+
     def all_users(self) -> list[User]:
         """등록된 User 목록(읽기 전용)."""
-        return list(self._users.values())
+        with self._lock:
+            return [_copy_user(user) for user in self._users.values()]
 
     def get_user(self, user_id: str) -> User:
         """user_id로 User를 조회한다."""
-        return self._users[user_id]
+        with self._lock:
+            return _copy_user(self._users[user_id])
 
     def register(self, card: AgentCard) -> None:
+        canonical = _copy_card(card)
         with self._lock:
-            if card.agent_id in self._cards:
-                raise RegistryError(f"중복 agent_id: {card.agent_id}")
-            self._cards[card.agent_id] = card
+            self._reject_snapshot_mutation()
+            if canonical.agent_id in self._cards:
+                raise RegistryError(f"중복 agent_id: {canonical.agent_id}")
+            self._cards[canonical.agent_id] = canonical
 
     def register_user(self, user: User) -> None:
+        canonical = _copy_user(user)
         with self._lock:
-            if user.id in self._users:
-                raise RegistryError(f"중복 user id: {user.id}")
-            self._users[user.id] = user
+            self._reject_snapshot_mutation()
+            if canonical.id in self._users:
+                raise RegistryError(f"중복 user id: {canonical.id}")
+            self._users[canonical.id] = canonical
 
     def replace_card(self, card: AgentCard) -> None:
         """기존 agent_id의 카드 값을 교체한다(오너 변경 전이의 스위치·ADR 0034 결정 2).
@@ -61,20 +99,24 @@ class Registry:
         RegistryError(전이 대상 부재). 참조 무결성(새 owner 실재)은 호출측
         admission이 진다(우회 API 금지 — `register`와 같은 관문 재사용).
         """
+        canonical = _copy_card(card)
         with self._lock:
-            if card.agent_id not in self._cards:
-                raise RegistryError(f"미존재 agent_id: {card.agent_id}")
-            self._cards[card.agent_id] = card
+            self._reject_snapshot_mutation()
+            if canonical.agent_id not in self._cards:
+                raise RegistryError(f"미존재 agent_id: {canonical.agent_id}")
+            self._cards[canonical.agent_id] = canonical
 
     def get(self, agent_id: str) -> AgentCard:
-        return self._cards[agent_id]
+        with self._lock:
+            return _copy_card(self._cards[agent_id])
 
     def has_card(self, agent_id: str) -> bool:
         with self._lock:
             return agent_id in self._cards
 
     def all_cards(self) -> list[AgentCard]:
-        return list(self._cards.values())
+        with self._lock:
+            return [_copy_card(card) for card in self._cards.values()]
 
     def validate(self) -> None:
         for card in self._cards.values():

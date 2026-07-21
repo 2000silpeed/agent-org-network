@@ -50,6 +50,7 @@ def _post(client: TestClient, url: str, payload: dict[str, Any]) -> HttpResult:
 def _dummy_ticket(owner_id: str) -> Any:
     """Delivered 생성에 필요한 최소 WorkTicket 스텁."""
     from agent_org_network.dispatch import WorkTicket
+
     return WorkTicket(
         ticket_id="t-dummy",
         owner_id=owner_id,
@@ -75,6 +76,7 @@ def _routed_entry() -> AuditEntry:
     )
     from agent_org_network.dispatch import Delivered
     from agent_org_network.runtime import Answer
+
     answer = Answer(text="계약 검토 안내입니다", sources=("위키/계약가이드",), mode="full")
     dispatch_outcome = Delivered(answer=answer, ticket=_dummy_ticket("legal_lead"))
     return AuditEntry(
@@ -246,44 +248,31 @@ def test_monitor_초기_빈_목록(  # pyright: ignore[reportUnknownParameterTyp
     assert res.body == []
 
 
-def test_monitor_POST_ask_후_목록_1건(  # pyright: ignore[reportUnknownParameterType]
+def test_monitor_POST_ask는_legacy_audit_목록을_쓰지_않는다(  # pyright: ignore[reportUnknownParameterType]
     client_and_audit: tuple[TestClient, InMemoryAuditLog],
 ) -> None:
-    """POST /ask → answered → GET /monitor 길이 1·요약 키 검증."""
+    """P17 질문은 canonical 저장소를 쓰며 legacy Audit Monitor에 이중 기록하지 않는다."""
     client, _ = client_and_audit
     asked = _post(client, "/ask", {"question": "이 계약 조건 바꿔도 돼?"})
     assert asked.status == 200
     assert asked.body["type"] == "answered"
 
     res = _get(client, "/monitor")
-    items: list[dict[str, Any]] = res.body
-    assert len(items) == 1
-
-    item = items[0]
-    assert item["index"] == 0
-    assert item["question"] == "이 계약 조건 바꿔도 돼?"
-    assert item["intent"] == "계약 검토"
-    assert item["disposition"] == "routed"
-    assert item["answered"] is True
+    assert asked.body["request_id"]
+    assert asked.body["record_id"]
+    assert res.body == []
 
 
-def test_monitor_detail_0은_200_레코드_전체(  # pyright: ignore[reportUnknownParameterType]
+def test_monitor_P17_ask뒤에도_legacy_detail은_404(  # pyright: ignore[reportUnknownParameterType]
     client_and_audit: tuple[TestClient, InMemoryAuditLog],
 ) -> None:
-    """GET /monitor/0 → 200·레코드 dict 전체·운영 면 내부값 노출 확인."""
+    """P17 질문은 legacy Audit index를 만들지 않으므로 임의 index 조회는 404다."""
     client, _ = client_and_audit
     _post(client, "/ask", {"question": "이 계약 조건 바꿔도 돼?"})
 
     res = _get(client, "/monitor/0")
-    assert res.status == 200
-
-    record: dict[str, Any] = res.body
-    # 운영 면 내부값이 *있어야* 한다(채팅 _LEAKY_KEYS 테스트의 역).
-    decision: dict[str, Any] = record.get("decision") or {}
-    assert decision.get("disposition") == "routed"
-    assert "primary" in decision
-    assert "owner" in decision
-    assert "confidence" in decision
+    assert res.status == 404
+    assert res.body == {"detail": "알 수 없는 로그 인덱스"}
 
 
 def test_monitor_detail_범위_밖은_404(  # pyright: ignore[reportUnknownParameterType]
@@ -302,10 +291,10 @@ def test_monitor_detail_음수는_404(  # pyright: ignore[reportUnknownParameter
     assert res.status == 404
 
 
-def test_monitor_2건_인덱스_안정(  # pyright: ignore[reportUnknownParameterType]
+def test_monitor_P17_질문_2건도_legacy_인덱스를_만들지_않는다(  # pyright: ignore[reportUnknownParameterType]
     client_and_audit: tuple[TestClient, InMemoryAuditLog],
 ) -> None:
-    """질문 2건 → GET /monitor 길이 2·인덱스 안정·각 disposition 확인."""
+    """Routed·Unowned 모두 Request-first 경로라 legacy Monitor에는 기록하지 않는다."""
     client, _ = client_and_audit
 
     # 1번: 라우팅 성공(계약)
@@ -314,16 +303,4 @@ def test_monitor_2건_인덱스_안정(  # pyright: ignore[reportUnknownParamete
     _post(client, "/ask", {"question": "주차장 정기권 어떻게 갱신해요?"})
 
     res = _get(client, "/monitor")
-    items: list[dict[str, Any]] = res.body
-    assert len(items) == 2
-
-    assert items[0]["index"] == 0
-    assert items[0]["disposition"] == "routed"
-    assert items[0]["answered"] is True
-
-    assert items[1]["index"] == 1
-    assert items[1]["disposition"] == "unowned"
-    assert items[1]["answered"] is False
-    # 답이 없는 처분(unowned)은 요약 mode가 None — summarize_audit_record의
-    # `answer is None → mode None` 분기를 직접 고정(answered=False와 별개로 박음).
-    assert items[1]["mode"] is None
+    assert res.body == []

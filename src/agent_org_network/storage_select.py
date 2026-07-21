@@ -4,6 +4,7 @@
 InMemory 기본과 SQLite durable 어댑터(`sqlite_stores.py`, T9.8) 사이를 고른다.
 Phase 12 확장(`AnswerRecordStore`·`CorrectionStore`·`KnowledgeStore`·카드 등록
 저널)도 같은 `AON_DB` 파일을 공유한다(테이블 분리 — `sqlite_stores.py` 스키마 참조).
+P17.2b `QuestionRequestStore`도 같은 선택 규약과 DB 파일을 쓴다.
 
 `AON_DB`(SQLite 파일 경로) 미설정 → `InMemorySessionStore()`/`InMemoryTokenStore()`
 (기존 기본·하위호환 — 기존 테스트 전부 무변경). 설정 → `SqliteSessionStore(path)`/
@@ -24,15 +25,21 @@ from pathlib import Path
 
 from agent_org_network.answer_record import AnswerRecordStore, CorrectionStore, FeedbackStore
 from agent_org_network.knowledge_store import KnowledgeStore
+from agent_org_network.question_request import (
+    InMemoryQuestionRequestStore,
+    QuestionRequestStore,
+)
 from agent_org_network.session import InMemorySessionStore, SessionStore
 from agent_org_network.sqlite_stores import (
     SqliteAnswerRecordStore,
     SqliteCorrectionStore,
     SqliteFeedbackStore,
     SqliteKnowledgeStore,
+    SqliteQuestionRequestStore,
     SqliteRegistryJournal,
     SqliteSessionStore,
     SqliteTokenStore,
+    SqliteUserJournal,
 )
 from agent_org_network.token import InMemoryTokenStore, TokenStore
 
@@ -52,6 +59,21 @@ def select_session_store() -> SessionStore:
     if db_path is None:
         return InMemorySessionStore()
     return SqliteSessionStore(db_path)
+
+
+def select_question_request_store() -> QuestionRequestStore:
+    """QuestionRequest 수명 저장소를 ``AON_DB``로 선택한다.
+
+    미설정이면 프로세스 한정 `InMemoryQuestionRequestStore`, 설정하면
+    `SqliteQuestionRequestStore`다. 파일 경로의 상위 디렉터리는 `_resolve_db_path`가
+    만든다. SQLite 특수 경로 ``:memory:``는 호출마다 독립 연결/독립 DB가 생기므로
+    여러 selector 결과 간 공유나 재시작 영속성을 보장하지 않는다. 그런 용도에는
+    실제 파일 경로를 설정해야 한다.
+    """
+    db_path = _resolve_db_path()
+    if db_path is None:
+        return InMemoryQuestionRequestStore()
+    return SqliteQuestionRequestStore(db_path)
 
 
 def select_token_store() -> TokenStore:
@@ -136,3 +158,18 @@ def select_registry_journal() -> SqliteRegistryJournal | None:
     if db_path is None:
         return None
     return SqliteRegistryJournal(db_path)
+
+
+def select_user_journal() -> SqliteUserJournal | None:
+    """`AON_DB` 미설정 → `None`(User durable 저널 없음 — 기존 InMemory Registry 그대로).
+
+    설정 → `SqliteUserJournal(path)` — 라이브 User 등록을 durable 저널에 남긴다(ADR 0064
+    결정 ⑦). `select_registry_journal`의 User 축 형제 seam — `AON_DB` 미설정이면 저널
+    자체를 만들지 않아 `AdminUserService(journal_sink=None)`가 기존 동작(하위호환) 그대로
+    유지된다. 같은 `AON_DB` 파일을 카드 저널(`registry_journal`)과 공유하되 별도 테이블
+    (`user_journal`)이라 이름 충돌 없음.
+    """
+    db_path = _resolve_db_path()
+    if db_path is None:
+        return None
+    return SqliteUserJournal(db_path)

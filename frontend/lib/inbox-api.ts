@@ -26,15 +26,46 @@ export interface CaseCandidate {
 
 export interface ConflictCase {
   case_id: string;
+  request_id?: string;
+  status?: "open" | "escalated" | "resolved" | "declined";
+  current_round?: number;
   intent: string;
   question: string;
   candidates: CaseCandidate[];
 }
 
+export type ConcurrenceStance = "withdraw" | "keep_as_complement";
+
 export type ConsensusOutcome =
-  | { type: "agreed"; primary: string; intent: string }
-  | { type: "still_open"; pending_owners: string[] }
-  | { type: "deadlocked" };
+  | {
+      type: "agreed";
+      request_id?: string;
+      case_id?: string;
+      primary: string;
+      intent: string;
+    }
+  | {
+      type: "still_open";
+      request_id?: string;
+      case_id?: string;
+      current_round?: number;
+      pending_owners: string[];
+    }
+  | {
+      type: "deadlocked";
+      request_id?: string;
+      case_id?: string;
+      current_round?: number;
+      manager_item_id?: string;
+    }
+  | {
+      type: "route_rejected";
+      request_id: string;
+      case_id: string;
+      current_round: number;
+      next_round: number;
+      reason_code: string;
+    };
 
 export type BackupReviewStatus = "pending" | "approved" | "corrected" | "dismissed";
 
@@ -102,6 +133,8 @@ export function getBackupReviews(): Promise<BackupReviewItem[]> {
 export async function postConcur(
   caseId: string,
   onAgent: string,
+  expectedRound: number | null = null,
+  stance: ConcurrenceStance = "withdraw",
   rationale = "",
 ): Promise<ConsensusOutcome> {
   let res: Response;
@@ -109,7 +142,12 @@ export async function postConcur(
     res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/concur`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ on_agent: onAgent, rationale }),
+      body: JSON.stringify({
+        on_agent: onAgent,
+        rationale,
+        expected_round: expectedRound,
+        stance,
+      }),
     });
   } catch {
     throw new InboxError("네트워크 오류 — 합의 전송에 실패했습니다.");
@@ -211,4 +249,92 @@ export async function postReevalReview(
   }
   if (res.status === 404) throw new InboxError("재평가 항목을 찾을 수 없습니다.", 404);
   if (!res.ok) throw new InboxError(`재평가 처분 실패 (HTTP ${res.status}).`, res.status);
+}
+
+/* ---- Approval — 본문 없는 queue, 선택한 항목만 lazy detail ---- */
+
+export interface ApprovalPendingSummary {
+  item_id: string;
+  request_id: string;
+  approval_round: number;
+  assigned_at: string;
+  due_at: string;
+}
+
+export interface ApprovalCandidate {
+  text: string;
+  sources: string[];
+  mode: "full" | "draft_only" | "backup";
+  snapshot_sha: string | null;
+}
+
+export interface ApprovalPendingDetail extends ApprovalPendingSummary {
+  question: string;
+  draft_id: string;
+  candidate: ApprovalCandidate;
+}
+
+export type ApprovalDecisionIntent =
+  | { kind: "approve" }
+  | { kind: "approve_with_edit"; edited_text: string }
+  | { kind: "reject"; reason_code: string };
+
+async function postApproval(path: string, body: object, action: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new InboxError(`네트워크 오류 — ${action} 전송에 실패했습니다.`);
+  }
+  if (res.status === 401) throw new InboxError("로그인이 필요합니다.", 401);
+  if (res.status === 403) {
+    throw new InboxError("이 Approval 항목을 처리할 권한이 없습니다.", 403);
+  }
+  if (res.status === 404) {
+    throw new InboxError("Approval 항목을 찾을 수 없습니다.", 404);
+  }
+  if (!res.ok) throw new InboxError(`${action} 실패 (HTTP ${res.status}).`, res.status);
+}
+
+/** GET /api/inbox/approvals — 본문 없는 현재 Approval 배정 목록. */
+export function getInboxApprovals(): Promise<ApprovalPendingSummary[]> {
+  return getJson<ApprovalPendingSummary[]>("/api/inbox/approvals");
+}
+
+/** GET /api/inbox/approvals/{item_id} — 선택한 현재 배정의 질문·후보 상세. */
+export function getApprovalDetail(itemId: string): Promise<ApprovalPendingDetail> {
+  return getJson<ApprovalPendingDetail>(
+    `/api/inbox/approvals/${encodeURIComponent(itemId)}`,
+  );
+}
+
+/** POST /api/inbox/approvals/{item_id}/decide — 인증 principal 기반 처분. */
+export function postApprovalDecision(
+  itemId: string,
+  intent: ApprovalDecisionIntent,
+): Promise<void> {
+  const exactIntent: ApprovalDecisionIntent =
+    intent.kind === "approve"
+      ? { kind: "approve" }
+      : intent.kind === "approve_with_edit"
+        ? { kind: "approve_with_edit", edited_text: intent.edited_text }
+        : { kind: "reject", reason_code: intent.reason_code };
+  return postApproval(
+    `/api/inbox/approvals/${encodeURIComponent(itemId)}/decide`,
+    exactIntent,
+    "Approval 처분",
+  );
+}
+
+/** POST /api/inbox/approvals/{item_id}/reassign — actor 없는 새 승인자 target. */
+export function postApprovalReassignment(itemId: string, approverId: string): Promise<void> {
+  return postApproval(
+    `/api/inbox/approvals/${encodeURIComponent(itemId)}/reassign`,
+    { approver_id: approverId },
+    "Approval 재지정",
+  );
 }

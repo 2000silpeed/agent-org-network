@@ -45,6 +45,7 @@ from agent_org_network.knowledge_sync import SyncKnowledge
 if TYPE_CHECKING:
     # 어댑터 시그니처 예고용 — 런타임 import 순환을 피해 타입 체크 시에만 끌어온다.
     from agent_org_network.agent_card import AgentCard
+    from agent_org_network.audit import AuditLog
     from agent_org_network.console import ConsoleEvent, ConsoleFeed
     from agent_org_network.git_gateway import ChangeEventListener
     from agent_org_network.hitl import HitlToggleMap
@@ -57,6 +58,11 @@ if TYPE_CHECKING:
     from agent_org_network.runtime import AgentRuntime, Answer
     from agent_org_network.token import TokenStore
     from agent_org_network.two_stage_router import PublishedIndexStore
+    from agent_org_network.worker_authorization import (
+        DeliveryBinding,
+        WorkerAuthorization,
+        WorkerConnectionPrincipal,
+    )
 
 
 # ── 전송 프레임(Transport Frame): 와이어 DTO ─────────────────────────────────
@@ -205,13 +211,7 @@ class Ack(_Frame):
 
 
 WorkerFrame = (
-    RegisterWorker
-    | SubmitAnswer
-    | PublishIndex
-    | Heartbeat
-    | Ack
-    | DocumentContent
-    | SyncKnowledge
+    RegisterWorker | SubmitAnswer | PublishIndex | Heartbeat | Ack | DocumentContent | SyncKnowledge
 )
 #   워커→중앙 업스트림 프레임의 sealed 판별 유니온(type 필드로 갈림).
 #   PublishIndex(§14)·DocumentContent(§15)는 추가 변이(새 type 키) — 기존 분기 무변경
@@ -356,8 +356,13 @@ class FetchResult:
       - `timeout`: 워커가 타임아웃 안에 응답하지 않았다(에러 아님·degradation, 결정 B).
     """
 
-    def __init__(self, status: Literal["delivered", "offline", "timeout"],
-                 *, found: bool = False, content: str = "") -> None:
+    def __init__(
+        self,
+        status: Literal["delivered", "offline", "timeout"],
+        *,
+        found: bool = False,
+        content: str = "",
+    ) -> None:
         self.status = status
         self.found = found
         self.content = content
@@ -418,6 +423,9 @@ class WebSocketDispatcher:
         presence_log: "PresenceLogStore | None" = None,
         knowledge_store: "KnowledgeStore | None" = None,
         fallback_runtime: "AgentRuntime | None" = None,
+        worker_authorization: "WorkerAuthorization | None" = None,
+        worker_principal_resolver: "Callable[[RegisterWorker], WorkerConnectionPrincipal | None] | None" = None,
+        worker_audit_log: "AuditLog | None" = None,
     ) -> None:
         # 작업 큐 도메인은 합성으로 재사용 — 큐 상태기계·단조 종착·timeout escalation은
         # 이 객체가 소유한다(WS는 그 위 전송층). 주입 가능하게 둬 결정론 테스트가 고정
@@ -514,6 +522,17 @@ class WebSocketDispatcher:
         # 대기→timeout escalation, 노출은 dispatched). 워커가 연결돼 있으면 push가 성공해
         # 폴백이 발동하지 않는다(회귀 0 — 기존 워커 회신 경로 그대로).
         self._fallback_runtime = fallback_runtime
+        # P17.8 S5 중앙 워커 모드는 세 dependency가 모두 있을 때만 의미가 있다.
+        # 하나라도 빠진 조립은 legacy 토큰 검증으로 fallback하지 않고 register를 거부한다.
+        self._worker_authorization = worker_authorization
+        self._worker_principal_resolver = worker_principal_resolver
+        self._worker_audit_log = worker_audit_log
+        self._worker_central_mode = (
+            worker_authorization is not None or worker_principal_resolver is not None
+        )
+        self._connection_principals: dict[str, dict[WorkerRole, WorkerConnectionPrincipal]] = {}
+        self._delivery_bindings: dict[str, DeliveryBinding] = {}
+        self._delivery_attempts: dict[str, int] = {}
 
     def _emit_console(self, event: "ConsoleEvent") -> None:
         """관전 피드에 사건을 1건 emit한다 — 실패는 흡수(관전이 전송을 못 깬다·T9.2(c))."""
@@ -663,7 +682,12 @@ class WebSocketDispatcher:
         """
         self._propagator = propagator
 
-    def accept_index(self, session_owner_id: str, frame: "PublishIndex") -> bool:
+    def accept_index(
+        self,
+        session_owner_id: str,
+        frame: "PublishIndex",
+        connection_principal: "WorkerConnectionPrincipal | None" = None,
+    ) -> bool:
         """워커가 보낸 PublishIndex를 수용 처리한다 — 스코핑→필터→put(ADR 0028 §14 결정 F).
 
         WS 핸들러가 *연결 세션의 인증 owner*(`RegisterWorker.owner_id`)와 함께 호출한다 —
@@ -678,20 +702,41 @@ class WebSocketDispatcher:
         """
         if self._registry is None or self._published_index_store is None:
             return False
+        if self._worker_central_mode:
+            if not self._authorize_worker_card_action(
+                connection_principal, "worker.publish_index", frame.index.agent_id
+            ):
+                self._record_worker_action(
+                    "worker.publish_index", frame.index.agent_id, connection_principal, "rejected"
+                )
+                return False
+            if self._worker_audit_log is None:
+                return False
         from agent_org_network.two_stage_router import accept_published_index
 
-        return accept_published_index(
+        accepted = accept_published_index(
             session_owner_id,
             frame.index,
             self._registry,
             self._published_index_store,
             propagator=self._propagator,
         )
+        if self._worker_central_mode:
+            self._record_worker_action(
+                "worker.publish_index",
+                frame.index.agent_id,
+                connection_principal,
+                "succeeded" if accepted else "rejected",
+            )
+        return accepted
 
     # ── 지식 동기화 수용 (Phase 12 (B)·ADR 0033 결정 3·M3 계약) ─────────────────
 
     def accept_knowledge_sync_frame(
-        self, session_owner_id: str, frame: "SyncKnowledge"
+        self,
+        session_owner_id: str,
+        frame: "SyncKnowledge",
+        connection_principal: "WorkerConnectionPrincipal | None" = None,
     ) -> "KnowledgeSyncAck | None":
         """워커가 보낸 SyncKnowledge를 수용 처리한다 — 스코핑→admission→store put(M3 계약).
 
@@ -719,6 +764,19 @@ class WebSocketDispatcher:
         """
         if self._registry is None or self._knowledge_store is None:
             return None
+        if self._worker_central_mode:
+            if not self._authorize_worker_card_action(
+                connection_principal, "worker.sync_knowledge", frame.content.agent_id
+            ):
+                self._record_worker_action(
+                    "worker.sync_knowledge",
+                    frame.content.agent_id,
+                    connection_principal,
+                    "rejected",
+                )
+                return self._rejected_sync_ack(frame)
+            if self._worker_audit_log is None:
+                return self._rejected_sync_ack(frame)
         try:
             card = self._registry.get(frame.content.agent_id)
         except KeyError:
@@ -733,9 +791,80 @@ class WebSocketDispatcher:
         from agent_org_network.knowledge_store import accept_and_store_knowledge_sync
 
         spec = self._spec_from_content(frame)
-        return accept_and_store_knowledge_sync(
+        ack = accept_and_store_knowledge_sync(
             session_owner_id, frame, card, spec, self._knowledge_store
         )
+        if self._worker_central_mode:
+            self._record_worker_action(
+                "worker.sync_knowledge",
+                frame.content.agent_id,
+                connection_principal,
+                "succeeded" if ack.accepted else "rejected",
+            )
+        return ack
+
+    @staticmethod
+    def _rejected_sync_ack(frame: "SyncKnowledge") -> "KnowledgeSyncAck":
+        from agent_org_network.knowledge_sync import KnowledgeSyncAck
+
+        return KnowledgeSyncAck(
+            agent_id=frame.content.agent_id, accepted=False, reason="동기화 권한 없음"
+        )
+
+    def _authorize_worker_card_action(
+        self,
+        principal: "WorkerConnectionPrincipal | None",
+        action: str,
+        agent_card_id: str,
+    ) -> bool:
+        authorization = self._worker_authorization
+        if authorization is None or self._registry is None or principal is None:
+            return False
+        current = self._connection_principals.get(principal.owner_id, {}).get(principal.role)
+        if current != principal:
+            return False
+        try:
+            card = self._registry.get(agent_card_id)
+        except KeyError:
+            return False
+        return (
+            authorization.authorize_delivery(
+                principal, action, agent_card_id=card.agent_id, current_owner_id=card.owner
+            )
+            == "allowed"
+        )
+
+    def _record_worker_action(
+        self,
+        action: str,
+        agent_card_id: str,
+        principal: "WorkerConnectionPrincipal | None",
+        outcome: str,
+    ) -> None:
+        """비밀·본문 없이 성공/거부 절차 사건을 sink가 있을 때만 남긴다."""
+        audit = self._worker_audit_log
+        if audit is None or principal is None:
+            return
+        try:
+            from agent_org_network.audit import action_record
+
+            audit.record_action(
+                action_record(
+                    timestamp=self._clock(),
+                    action=action,
+                    subject_id=agent_card_id,
+                    by=principal.owner_id,
+                    detail={
+                        "outcome": outcome,
+                        "credential_id": principal.credential_id,
+                        "credential_generation": principal.credential_generation,
+                        "connection_epoch": principal.connection_epoch,
+                    },
+                )
+            )
+        except Exception:
+            # append-only 기록 장애는 이미 끝난 전송/보관 mutation을 되돌리지 못한다.
+            pass
 
     @staticmethod
     def _spec_from_content(frame: "SyncKnowledge") -> "KnowledgeSyncSpec":
@@ -793,11 +922,7 @@ class WebSocketDispatcher:
         with self._fetch_lock:
             self._fetch_slots[request_id] = slot
         try:
-            send(
-                FetchDocument(
-                    agent_id=agent_id, concept_id=concept_id, request_id=request_id
-                )
-            )
+            send(FetchDocument(agent_id=agent_id, concept_id=concept_id, request_id=request_id))
             if not slot.event.wait(timeout):
                 # 무응답 — 타임아웃 degradation(결정 B). 슬롯은 finally에서 정리.
                 return FetchResult("timeout")
@@ -850,7 +975,12 @@ class WebSocketDispatcher:
         """
         return self._queue.claim(owner_id)
 
-    def submit(self, ticket_id: str, answer: "Answer") -> None:
+    def submit(
+        self,
+        ticket_id: str,
+        answer: "Answer",
+        connection_principal: "WorkerConnectionPrincipal | None" = None,
+    ) -> None:
         """워커가 WS로 보낸 답을 큐에 회신 — 합성한 `_queue.submit`에 위임.
 
         멱등(6-4): 큐가 ticket_id 기준으로 보장(answered/expired 재submit 무시). 핸들러가
@@ -861,6 +991,13 @@ class WebSocketDispatcher:
         진실이라(워커 자기보고 아님) 디스패처가 책임진다. primary push 답은 mode 보존.
         멱등은 그대로 큐가 보장하므로 이 강제는 *큐에 넣기 전 값 보정*일 뿐 큐 도메인 무변경.
         """
+        if self._worker_central_mode:
+            # 등록 시점의 불변 principal이 아직 현재 연결이어야 한다. 동일 owner/role의
+            # 재연결 뒤 옛 소켓이 새 세션 principal을 빌려 write하는 일을 막는다.
+            if not self._is_current_connection_principal(connection_principal):
+                return
+            if not self._authorize_submit(ticket_id, connection_principal):
+                return
         is_backup = ticket_id in self._backup_tickets
         if is_backup:
             answer = self._force_backup_mode(answer)
@@ -878,6 +1015,7 @@ class WebSocketDispatcher:
         # 재submit 무시)이라 이 discard도 멱등.
         self._backup_tickets.discard(ticket_id)
         self._primary_exhausted.discard(ticket_id)
+        self._delivery_bindings.pop(ticket_id, None)
 
     @staticmethod
     def _force_backup_mode(answer: "Answer") -> "Answer":
@@ -961,10 +1099,15 @@ class WebSocketDispatcher:
         따라 push한다(연결 복구 시 재동기 — backup만 떠 있으면 backup으로, primary가 오면
         그때부터 primary로).
         """
-        if not self._authenticate(frame):
+        principal = self._authenticate(frame)
+        if principal is None:
             # 인증 거부 — 레지스트리에 올리지 않으므로 이후 작업이 push되지 않는다(6-5).
             return AuthError(reason="미인증 워커 — owner 신원 검증 실패")
         self._connections.setdefault(frame.owner_id, {})[frame.role] = send
+        from agent_org_network.worker_authorization import WorkerConnectionPrincipal
+
+        if type(principal) is WorkerConnectionPrincipal:
+            self._connection_principals.setdefault(frame.owner_id, {})[frame.role] = principal
         # 관전 피드(T9.2(c)): 인증 통과·등록 성공 시에만 WorkerConnected emit(AuthError는
         # 위에서 이미 return되어 이 지점에 안 옴 — 관전엔 실제 연결 성립만 실린다).
         from agent_org_network.console import WorkerConnected
@@ -991,7 +1134,12 @@ class WebSocketDispatcher:
         self._push_pending(frame.owner_id)
         return Welcome()
 
-    def disconnect(self, owner_id: str, role: WorkerRole = "primary") -> list[WorkTicket]:
+    def disconnect(
+        self,
+        owner_id: str,
+        role: WorkerRole = "primary",
+        connection_principal: "WorkerConnectionPrincipal | None" = None,
+    ) -> list[WorkTicket]:
         """워커 끊김 처리 — 그 등급 연결을 제거하고 in-flight 작업을 re-queue한다.
 
         등급별 제거(ADR 0012 결정 2): `frame.role` 연결만 레지스트리에서 뺀다 — 같은 owner의
@@ -1005,11 +1153,25 @@ class WebSocketDispatcher:
         남은 연결이 없으면 큐 대기 → timeout이면 EscalatedToManager 종착(미아 없음). 반환:
         되돌린 ticket 목록.
         """
+        if self._worker_central_mode:
+            if (
+                connection_principal is None
+                or connection_principal.owner_id != owner_id
+                or connection_principal.role != role
+                or not self._is_current_connection_principal(connection_principal)
+            ):
+                # 이전 epoch의 finally는 새 세션을 지우거나 claimed 작업을 release하지 않는다.
+                return []
         conns = self._connections.get(owner_id)
         if conns is not None:
             conns.pop(role, None)
             if not conns:
                 self._connections.pop(owner_id, None)
+        principals = self._connection_principals.get(owner_id)
+        if principals is not None:
+            principals.pop(role, None)
+            if not principals:
+                self._connection_principals.pop(owner_id, None)
         # 프레즌스 오프라인 도출(Phase 12 (A)·ADR 0033 결정 5): 그 owner의 *모든* 등급
         # 연결이 사라졌을 때만 오프라인으로 도출한다 — primary가 끊겨도 backup이 남아 있으면
         # 그 담당자는 여전히 온라인(어느 워커든 붙어 있으면 온라인). grace period 없음(결정 6
@@ -1028,9 +1190,7 @@ class WebSocketDispatcher:
         # 관전엔 "그 등급 연결이 끊겼다"는 사건만 실린다.
         from agent_org_network.console import WorkerDisconnected
 
-        self._emit_console(
-            WorkerDisconnected(owner_id=owner_id, role=role, at=self._clock())
-        )
+        self._emit_console(WorkerDisconnected(owner_id=owner_id, role=role, at=self._clock()))
         if role == "primary":
             # primary 끊김 = t1 회수가 가리키던 "이 느린 primary"가 사라짐. "1회 한정 제외"
             # 표식은 *그 특정 primary*로 안 보낸다는 뜻이라 여기서 만료시킨다(결정 8-2 primary
@@ -1056,7 +1216,7 @@ class WebSocketDispatcher:
 
     # ── 내부 전송 헬퍼 ───────────────────────────────────────────────────────
 
-    def _authenticate(self, frame: RegisterWorker) -> bool:
+    def _authenticate(self, frame: RegisterWorker) -> "WorkerConnectionPrincipal | bool | None":
         """owner 신원 인증 — `TokenStore.verify` 실 검증(T9.5(b), ADR 0026 결정 2).
 
         빈 owner_id는 신원 미선언이라 항상 거부(기존 stub 동작 보존). `_token_store`가
@@ -1068,15 +1228,33 @@ class WebSocketDispatcher:
         role이 `RegisterWorker` 선언과 *일치*해야 admission(owner 가장·등급 위조 차단).
         """
         if not frame.owner_id:
-            return False
+            return None
+        if self._worker_central_mode:
+            resolver = self._worker_principal_resolver
+            authorization = self._worker_authorization
+            if resolver is None or authorization is None or self._registry is None:
+                return None
+            try:
+                principal = resolver(frame)
+            except Exception:
+                return None
+            from agent_org_network.worker_authorization import WorkerConnectionPrincipal
+
+            if type(principal) is not WorkerConnectionPrincipal:
+                return None
+            if principal.owner_id != frame.owner_id or principal.role != frame.role:
+                return None
+            if authorization.authorize_connection(principal) != "allowed":
+                return None
+            return principal
         if self._token_store is None:
             return True
         if frame.token is None:
-            return False
+            return None
         token = self._token_store.verify(frame.token, now=self._queue.now())
         if token is None:
-            return False
-        return token.owner_id == frame.owner_id and token.role == frame.role
+            return None
+        return True if token.owner_id == frame.owner_id and token.role == frame.role else None
 
     def _push_pending(self, owner_id: str) -> None:
         """그 owner의 큐 대기 작업을 *ticket별* 우선순위 연결로 claim해 PushWork로 내보낸다.
@@ -1131,7 +1309,76 @@ class WebSocketDispatcher:
             # 어느 등급으로든 push했으면 그 ticket의 primary 회수 표식은 소진(이번 push가
             # 최신 라우팅 — 다음 회수 전까지 이 등급이 진실, "1회 한정 제외"의 정상 소비).
             self._primary_exhausted.discard(tid)
+            if self._worker_central_mode:
+                from agent_org_network.worker_authorization import DeliveryBinding
+
+                principal = self._connection_principals.get(owner_id, {}).get(role)
+                if principal is None:
+                    self._queue.release_claims(owner_id)
+                    continue
+                attempt = self._delivery_attempts.get(tid, 0) + 1
+                self._delivery_attempts[tid] = attempt
+                self._delivery_bindings[tid] = DeliveryBinding(
+                    ticket_id=tid,
+                    agent_card_id=ticket.agent_id,
+                    owner_id=ticket.owner_id,
+                    connection=principal,
+                    attempt=attempt,
+                )
             send(PushWork(ticket=to_ticket_frame(ticket, hitl=self._resolve_hitl_hint(ticket))))
+
+    def connection_principal(
+        self, owner_id: str, role: WorkerRole
+    ) -> "WorkerConnectionPrincipal | None":
+        """현재 살아 있는 중앙 모드 세션 principal만 반환한다."""
+        return self._connection_principals.get(owner_id, {}).get(role)
+
+    def _is_current_connection_principal(
+        self, principal: "WorkerConnectionPrincipal | None"
+    ) -> bool:
+        """호출자가 보유한 중앙 모드 세션이 아직 현재 mapping인지 확인한다."""
+        if principal is None:
+            return False
+        from agent_org_network.worker_authorization import WorkerConnectionPrincipal
+
+        if type(principal) is not WorkerConnectionPrincipal:
+            return False
+        return (
+            self._connection_principals.get(principal.owner_id, {}).get(principal.role) == principal
+        )
+
+    def _authorize_submit(
+        self, ticket_id: str, principal: "WorkerConnectionPrincipal | None"
+    ) -> bool:
+        """submit 직전 현재 카드와 push binding을 재확인한다(답 write 전 fence)."""
+        authorization = self._worker_authorization
+        if authorization is None or self._registry is None or principal is None:
+            return False
+        ticket = self._queue.get_ticket(ticket_id)
+        binding = self._delivery_bindings.get(ticket_id)
+        if ticket is None or binding is None:
+            return False
+        try:
+            card = self._registry.get(ticket.agent_id)
+        except KeyError:
+            return False
+        if not authorization.verify_delivery_binding(
+            binding,
+            principal,
+            ticket_id=ticket_id,
+            agent_card_id=ticket.agent_id,
+            current_owner_id=card.owner,
+        ):
+            return False
+        return (
+            authorization.authorize_delivery(
+                principal,
+                "worker.submit",
+                agent_card_id=ticket.agent_id,
+                current_owner_id=card.owner,
+            )
+            == "allowed"
+        )
 
     def _resolve_hitl_hint(self, ticket: WorkTicket) -> bool:
         """이 ticket의 HITL 힌트(보류 여부)를 push 직전에 계산한다(ADR 0025 결정 5·T9.7 S2).
@@ -1160,7 +1407,9 @@ class WebSocketDispatcher:
                 from agent_org_network.hitl import seed_from_card
 
                 seeded = seed_from_card(card)
-        toggle_on = self._hitl_toggles.is_on(ticket.agent_id) if self._hitl_toggles is not None else False
+        toggle_on = (
+            self._hitl_toggles.is_on(ticket.agent_id) if self._hitl_toggles is not None else False
+        )
         base_hint = seeded or toggle_on
         if self._presence_tracker is None:
             return base_hint

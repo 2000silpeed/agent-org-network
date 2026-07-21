@@ -22,10 +22,10 @@ from agent_org_network.classifier import Classifier, LlmClassifier, RuleBasedCla
 from agent_org_network.conflict import (
     ConflictCaseStore,
     ConsensusService,
-    InMemoryConflictCaseStore,
     InMemoryPrecedentStore,
     PrecedentStore,
 )
+from agent_org_network.p17_conflict_disposition import InMemoryConflictDispositionStore
 from agent_org_network.dispatch import (
     DelegationSnapshot,
     LocalStreamingDispatcher,
@@ -208,6 +208,12 @@ class DemoBundle:
     precedents: PrecedentStore
     consensus: ConsensusService
     registry: Registry
+    # P17 사용자 표면 조립이 legacy AskOrg를 다시 감싸지 않고 같은 데모 Registry와
+    # Router, 중앙/로컬 완성 답 Runtime을 재사용하는 읽기 손잡이. dispatcher가 별도로
+    # 주입돼도 P17.2c-2 질문 실행은 이 동기 runtime만 사용하며 원격 대기는 P17.9 범위다.
+    router: RouterPort | None = None
+    runtime: AgentRuntime | None = None
+    manager_queue_store: "ManagerQueueStore | None" = None
     # 합의-소싱 상보 엣지 저장소(ADR 0038 슬라이스 D·결정 2) — `consensus`(쓰기)와
     # `ask`의 `EdgeGroundingSelector`(읽기)가 공유하는 *바로 그* 인스턴스를 노출하는
     # 관찰 손잡이. co-grounding 비활성(knowledge_store 미주입)이어도 consensus는 이
@@ -228,6 +234,10 @@ class DemoBundle:
     # 라우트(create_app)가 이 인스턴스를 꺼내 조회한다. 주입 시에만 채워지고 미주입이면 None
     # (하위호환 — 적재/모니터링 없이 동작).
     answer_record_store: "AnswerRecordStore | None" = None
+    # P17 completed-inline surface가 typed grounding reader를 만들 때 쓰는 본문 Store.
+    # None은 legacy AskOrg co-grounding 비활성 의미를 보존하며, P17 surface만 빈
+    # InMemory fallback을 별도로 만든다.
+    knowledge_store: "KnowledgeStore | None" = None
 
 
 # 데모 인덱스 라우팅 시드의 고정 generated_at — OKF→인덱스 도출이 결정론이 되도록
@@ -248,9 +258,7 @@ def seed_published_index_store(registry: Registry) -> InMemoryPublishedIndexStor
     """
     return InMemoryPublishedIndexStore(
         [
-            build_knowledge_index_from_okf(
-                card, DEMO_OKF_ROOT, generated_at=_INDEX_SEED_AT
-            )
+            build_knowledge_index_from_okf(card, DEMO_OKF_ROOT, generated_at=_INDEX_SEED_AT)
             for card in registry.all_cards()
         ]
     )
@@ -298,9 +306,7 @@ def select_router(
         stage2_margin = recommended_stage2_margin() if chain.primary is not None else None
         # 하이브리드 2차(§17-c): secondary가 있을 때만 2차 margin을 짝짓는다(조립부가
         # 정책값을 짝 — 결정 S). secondary=None이면 1차 단독(기존 동작 100% 보존).
-        secondary_margin = (
-            DEFAULT_HYBRID_SECONDARY_MARGIN if chain.secondary is not None else None
-        )
+        secondary_margin = DEFAULT_HYBRID_SECONDARY_MARGIN if chain.secondary is not None else None
         return TwoStageRouter(
             registry,
             matcher,
@@ -377,7 +383,7 @@ def build_demo(
         else:
             classifier = RuleBasedClassifier(_KEYWORD_INTENTS)
     precedents = InMemoryPrecedentStore()
-    case_store = InMemoryConflictCaseStore()
+    case_store = InMemoryConflictDispositionStore()
     # 공유 EdgeStore(ADR 0038 슬라이스 D·결정 2): 합의(ConsensusService)가
     # keep_as_complement 표에서 `ComplementEdge`를 *쓰고*, 라우팅(EdgeGroundingSelector)이
     # 그 엣지를 *읽는다*. 반드시 같은 인스턴스여야 "합의→엣지→다음 Routed 질문 co-ground"가
@@ -417,6 +423,7 @@ def build_demo(
     dispatcher_impl: RuntimeDispatcher = (
         dispatcher if dispatcher is not None else LocalStreamingDispatcher(runtime_impl)
     )
+
     def _manager_of(uid: str) -> str | None:
         return registry.get_user(uid).manager if uid in registry.user_ids() else None
 
@@ -444,6 +451,7 @@ def build_demo(
     grounding_selector: "GroundingSelector | None" = None
     grounding_resolver: "GroundingTextResolver | None" = None
     if knowledge_store is not None:
+
         def _card_lookup(agent_id: str) -> AgentCard | None:
             try:
                 return registry.get(agent_id)
@@ -493,6 +501,9 @@ def build_demo(
         precedents=precedents,
         consensus=consensus,
         registry=registry,
+        router=router,
+        runtime=runtime_impl,
+        manager_queue_store=manager_queue_store,
         review_store=review_store,
         audit_reader=audit_impl,
         audit=audit_impl,
@@ -500,6 +511,7 @@ def build_demo(
         reeval_store=reeval_store,
         reeval_service=reeval_service,
         answer_record_store=answer_record_store,
+        knowledge_store=knowledge_store,
         edge_store=edge_store,
     )
 

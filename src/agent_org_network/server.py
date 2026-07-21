@@ -6,6 +6,11 @@ owner 큐의 작업을 `PushWork`로 그 소켓에 내보내고(6-3), (3) 워커
 받아 내부 큐에 회신하며(`submit`), (4) 연결이 끊기면 `disconnect`로 in-flight 작업을
 re-queue한다(6-4, 미아 없음).
 
+P17.2c-2 이후 사용자 `/ask*`·`/requests*`는 이 legacy 원격 실행 큐를 만들지 않는다.
+질문 표면은 중앙/로컬 완성 답 Runtime과 Request-first Finalization을 사용하며, `/worker`는
+지식 동기화·인덱스·기존 운영 호환 경계로 남는다. durable WorkTicket·lease·복구를 갖춘
+원격 질문 실행은 P17.9에서 다시 연결한다.
+
 전송 ≠ 도메인: 이 핸들러는 *전송*만 한다 — 큐 상태기계(단조 종착·idempotency·timeout
 escalation)는 합성한 `WebSocketDispatcher`(→`InMemoryWorkQueueDispatcher`)가 소유한다.
 핸들러는 프레임을 도메인 호출로 중계할 뿐이다.
@@ -45,6 +50,7 @@ from agent_org_network.transport import (
 if TYPE_CHECKING:
     from agent_org_network.console import ConsoleFeed
     from agent_org_network.hitl import HitlToggleMap
+    from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.token import TokenStore
 
 _log = logging.getLogger("agent_org_network.server")
@@ -139,6 +145,9 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
     # 등급(ADR 0012 결정 2)을 잡아 끊김 시 *그 등급* 연결만 제거한다(같은 owner의 다른
     # 등급은 남김). register는 frame 전체를 넘겨 role이 이미 전달됐다.
     role = first.role
+    # 이 소켓이 admission을 통과한 시점의 principal을 고정한다. 동일 owner/role 재연결이
+    # 현재 mapping을 교체해도 옛 코루틴이 새 principal을 사용해 mutation하지 못하게 한다.
+    connection_principal = dispatcher.connection_principal(owner_id, role)
 
     # 2) push/submit 펌프 — 송신·수신 루프 동시 실행.
     async def send_loop() -> None:
@@ -154,7 +163,11 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
             frame = _parse_worker_frame(raw)
             if isinstance(frame, SubmitAnswer):
                 # 회신을 내부 큐로 중계 — 멱등(ticket_id)·단조 종착은 큐가 보장(6-4).
-                dispatcher.submit(frame.ticket_id, from_answer_frame(frame.answer))
+                dispatcher.submit(
+                    frame.ticket_id,
+                    from_answer_frame(frame.answer),
+                    connection_principal,
+                )
             elif isinstance(frame, PublishIndex):
                 # 인덱스 배포 수용(ADR 0028 §14 결정 F) — *연결 세션의 인증 owner*와 묶어
                 # 스코핑(B)·over-claim 필터(D)·staleness put(C). owner는 프레임에 없다(소켓이
@@ -162,7 +175,7 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
                 # (순수·결정론). 스코핑/staleness 거부는 질문 종착과 무관(미아 없음)이라 큐를
                 # 안 깨지만 *조용히 버리지 않는다* — 거부면 보안 이벤트(사칭/미등록 시도) 또는
                 # 미배선(B1 회귀)이므로 가시화한다(m1 보안 가시화·register AuthError와 대비).
-                accepted = dispatcher.accept_index(owner_id, frame)
+                accepted = dispatcher.accept_index(owner_id, frame, connection_principal)
                 if not accepted:
                     _log.warning(
                         "PublishIndex 거부 — owner=%s agent_id=%s "
@@ -189,7 +202,7 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
                 # 판단이 가능하게 한다(PublishIndex는 회신이 없지만 지식 동기화는 owner가
                 # "왜 거부됐는지"를 알아야 지정 경계·민감 필터를 고칠 수 있다). 미배선
                 # (store/registry 미주입)이면 ack=None이라 회신하지 않는다(하위호환·no-op).
-                ack = dispatcher.accept_knowledge_sync_frame(owner_id, frame)
+                ack = dispatcher.accept_knowledge_sync_frame(owner_id, frame, connection_principal)
                 if ack is not None:
                     send_frame(ack)
                     if not ack.accepted:
@@ -205,15 +218,13 @@ async def _handle_worker(websocket: WebSocket, dispatcher: WebSocketDispatcher) 
     recv_task = asyncio.ensure_future(recv_loop())
     try:
         # 어느 한쪽이 끝날 때까지(워커 끊김 → recv_loop가 WebSocketDisconnect로 종료).
-        await asyncio.wait(
-            {send_task, recv_task}, return_when=asyncio.FIRST_COMPLETED
-        )
+        await asyncio.wait({send_task, recv_task}, return_when=asyncio.FIRST_COMPLETED)
     finally:
         send_task.cancel()
         recv_task.cancel()
         # 3) 끊김 정리 — 그 등급 연결 제거 + in-flight claimed 작업 re-queue(미아 없음,
         # 6-4). 같은 owner의 다른 등급(예: backup)이 남아 있으면 disconnect 안에서 재push된다.
-        dispatcher.disconnect(owner_id, role)
+        dispatcher.disconnect(owner_id, role, connection_principal)
 
 
 def create_worker_app(dispatcher: WebSocketDispatcher) -> FastAPI:
@@ -246,26 +257,25 @@ def create_central_app(
     token_store: "TokenStore | None" = None,
     hitl_toggles: "HitlToggleMap | None" = None,
     console_feed: "ConsoleFeed | None" = None,
+    manager_queue_store: "ManagerQueueStore | None" = None,
 ) -> FastAPI:
-    """end-to-end 한 프로세스 중앙 앱 — 사용자 web 라우트 + owner 워커 WS를 *한 dispatcher*로.
+    """한 프로세스 중앙 앱 — P17 사용자 표면과 legacy owner 워커 WS를 함께 조립한다.
 
-    end-to-end(중앙↔워커↔실 claude↔답 회수)를 닫으려면 사용자 질문(`POST /ask`)이 만드는
-    작업과 워커 회신(`/worker` WS의 `SubmitAnswer`)이 *같은 `WebSocketDispatcher` 인스턴스*를
-    통과해야 한다 — dispatch로 큐에 든 작업이 연결된 워커에게 push되고, 워커의 submit이 그
-    사용자의 `GET /ask/{tracking}` 회수로 도달하게. 그래서 디스패처 하나를 만들어 (1)
-    `web.create_app(dispatcher=...)`로 채팅·처리함·회수 라우트를 얹고, (2) 그 위에
-    `/worker` WS 엔드포인트를 추가한다(같은 디스패처 공유).
+    P17.2c-2에서 사용자 질문은 `web.create_app`의 Request-first application으로만 들어간다.
+    `WebSocketDispatcher`가 연결돼 있어도 `/ask*`·`/requests*`는 WorkTicket을 만들거나 워커
+    답을 기다리지 않는다. 이 함수가 같은 앱에 `/worker`를 다는 이유는 지식 동기화·인덱스
+    publish·기존 운영 호환을 유지하기 위해서다. 사용자 질문과 원격 워커 회신을 다시 잇는
+    시점은 durable WorkTicket·lease·recovery를 구현하는 P17.9다.
 
-    백업 검토 end-to-end(ADR 0012 결정 4·7, T6.6 슬라이스 iv): backup 워커가 owner 이름으로
-    낸 답이 미검토 검토 항목으로 쌓이고 owner가 처리함에서 검토하려면, `BackupReviewStore`·
-    `BackupReviewService` *하나씩*을 만들어 세 곳에 **같은 인스턴스**로 주입해야 한다 —
+    legacy 백업 검토(ADR 0012 결정 4·7, T6.6 슬라이스 iv): `BackupReviewStore`·
+    `BackupReviewService` *하나씩*을 만들어 관련 운영 경계에 같은 인스턴스로 주입한다 —
       (1) `WebSocketDispatcher(review_store=...)`: backup 답 종착 시 검토 항목을 add(생성
           트리거, 결정 7-1),
       (2) `create_app(review_store=, review_service=)`: 처리함 검토 탭(GET/POST)과 retrieve
           덧씌움(검토 결과 재노출, 결정 7-3) — create_app이 그 store를 `build_demo`에도 넘겨
           `ask._review_store`가 같은 인스턴스를 가리키게 한다(retrieve가 검토를 반영).
-    셋이 같은 인스턴스를 봐야 "backup이 답함→처리함에 뜸→owner가 검토→재회수에 반영"이 한
-    바퀴 돈다.
+    이 경계는 P17 사용자 질문에서 호출되지 않는다. P17 승인·감독 운영은 P17.6b, durable
+    원격 실행·복구와의 결합은 P17.9가 맡는다.
 
     위임 스냅샷(`register_delegation`, 결정 3·9): backup이 그 owner의 영역을 답하려면 owner가
     *명시적으로 위임*했어야 한다(opt-in, Authority 중앙 — 카드 자기보고 아님). staleness 임계를
@@ -306,12 +316,13 @@ def create_central_app(
     시점엔 아직 `precedents`가 없다(`build_demo`가 그걸 만드는 게 `create_app` 안이라서,
     이 함수는 `create_app`보다 *먼저* `dispatcher`를 만들어야 하는 닭-달걀). 그래서 propagator
     자체는 여기서 만들지 않는다 — `create_app`이 `build_demo` 완료 후 `bundle.precedents`
-    (판례가 실제로 담기는 그 store)·`bundle.audit_reader`(이 함수가 넘긴 `audit_log`와 같은
-    인스턴스)·`bundle.registry` 기반 `owner_of`로 실 propagator를 구성해 `dispatcher.
+    (판례가 실제로 담기는 그 store)·`bundle.audit_reader`(legacy AuditLog read view)·
+    `bundle.registry` 기반 `owner_of`로 실 propagator를 구성해 `dispatcher.
     bind_propagator`로 사후 주입한다(`bind_published_index`와 대칭인 seam — T10.4 Blocker
     B1 해소와 동형). `audit_log`는 이 함수가 자체 소유(`InMemoryAuditLog`)해 `create_app
-    (audit_log=...)`에도 *같은* 인스턴스를 넘긴다 — `/ask`가 남기는 routed 기록과 propagator의
-    Answer 축 판정이 같은 로그를 본다. `reeval_store`를 `create_app`에 넘기는 것 자체가
+    (audit_log=...)`에도 *같은* 인스턴스를 넘긴다. 이 로그는 legacy 질문 실행의 routed
+    기록만 읽으며, P17 `/ask*`의 `TerminalAnswerAudit`는 아직 이 propagator의 Answer 축에
+    연결하지 않는다(P17.10/P17.13 잔여). `reeval_store`를 `create_app`에 넘기는 것 자체가
     propagator 구성의 신호다(reeval_store 없으면 `create_app`은 배선하지 않는다 — 기존
     `WebSocketDispatcher` 단위 테스트[`_ws_demo_app`류] 무회귀).
 
@@ -340,8 +351,8 @@ def create_central_app(
     from agent_org_network.storage_select import select_token_store_or_none
     from agent_org_network.web import create_app
 
-    # 검토 store·service 하나씩 — 디스패처(생성 트리거)와 web(검토 탭·retrieve 덧씌움)이
-    # 같은 인스턴스를 봐야 검토 루프가 end-to-end로 닫힌다(결정 7).
+    # 검토 store·service 하나씩 — 디스패처(생성 트리거)와 web의 legacy WorkTicket
+    # retrieve overlay가 같은 인스턴스를 봐야 기존 검토 루프가 닫힌다(결정 7).
     review_store = InMemoryBackupReviewStore()
     review_service = BackupReviewService(review_store)
 
@@ -355,7 +366,8 @@ def create_central_app(
     seed_demo_reeval_items(reeval_store)
 
     # T11.7e minor-1: 이 함수가 audit_log를 자체 소유(`InMemoryAuditLog`) — `create_app`에도
-    # 같은 인스턴스로 넘겨 `/ask` routed 기록과 Answer 축 판정이 같은 로그를 보게 한다(정합).
+    # 같은 인스턴스로 넘겨 legacy routed 기록과 Answer 축 판정이 같은 로그를 보게 한다.
+    # P17 `/ask*` terminal audit은 별도 completion 증거이며 여기로 복제하지 않는다.
     # precedents는 여기서 만들지 않는다 — `build_demo`가 만드는 실 precedents(판례가 실제로
     # 담기는 store)를 `create_app`이 `build_demo` 완료 후 propagator 구성에 쓴다(위 docstring
     # "닭-달걀" 참조). 이 함수는 dispatcher를 propagator 없이 만들고, `create_app`이 reeval_store
@@ -373,9 +385,7 @@ def create_central_app(
     # TokenStore를 만들어 *같은 인스턴스*를 양쪽에 물린다 — durable 토큰 스토리지가
     # 켜지는 순간은 실 토큰 검증도 자연히 켜진다(`_authenticate` stub 폴백은 여전히
     # token_store=None 조건 그대로라 `AON_DB` 미설정이면 기존 stub 동작 100% 보존).
-    _resolved_token_store = (
-        token_store if token_store is not None else select_token_store_or_none()
-    )
+    _resolved_token_store = token_store if token_store is not None else select_token_store_or_none()
     # 콘솔 set·디스패처 read가 *같은* HitlToggleMap 인스턴스를 봐야 콘솔 토글 변경이 다음
     # dispatch 힌트에 반영된다(e2e, ADR 0025 결정 5). token_store와 동일 패턴 — 이 함수가
     # 받은 그대로(또는 새로 만든 기본값)를 dispatcher·create_app 양쪽에 물린다.
@@ -434,13 +444,12 @@ def create_central_app(
     # 소비하고 부재 시 디스크로 폴백한다(스토어 우선·디스크 폴백). 미설정(레거시 claude-code)
     # 이면 ClaudeCodeRuntime cwd 접지(스토어 미소비·하위호환). okf_root는 데모 OKF 루트(폴백원).
     #
-    # 이 런타임을 디스패처의 **오프라인 폴백원**으로 꽂는다(Phase 12 마지막 조합 지점) —
+    # 이 런타임을 P17 사용자 질문의 중앙/로컬 완성 답 원천이자, legacy 디스패처의
+    # **오프라인 폴백원**으로 꽂는다(Phase 12 마지막 조합 지점) —
     # 담당 워커가 미연결이라 `dispatch`가 작업을 push하지 못하면 중앙이 이 런타임으로 답을
-    # 대신 생성해 큐에 submit하고, 이어지는 poll이 Delivered를 돌려준다. 그래야 "담당자 PC
-    # 꺼져도 답변"이 인프로세스 경로뿐 아니라 *분산 배선*에서도 성립한다. 워커가 연결돼 있으면
-    # push가 성공해 폴백은 발동하지 않는다(회귀 0 — 기존 워커 회신 경로 그대로). `create_app`은
-    # dispatcher 주입 시 runtime 인자를 무시(build_demo가 디스패처에 답 획득을 전담시킴)하므로
-    # 중앙 런타임은 이 폴백원 자리로만 실제 소비된다.
+    # 대신 생성해 큐에 submit하고, legacy poll이 Delivered를 돌려준다. P17 사용자 표면은
+    # dispatcher 연결 여부와 무관하게 `runtime`을 직접 재사용하며, 원격 대기 실행은 P17.9 전까지
+    # 비활성이다.
     from agent_org_network.demo import DEMO_OKF_ROOT
     from agent_org_network.runtime_select import select_runtime
 
@@ -458,9 +467,7 @@ def create_central_app(
 
         from agent_org_network.dispatch import InMemoryWorkQueueDispatcher
 
-        _queue = InMemoryWorkQueueDispatcher(
-            timeout=timedelta(seconds=int(_queue_timeout_env))
-        )
+        _queue = InMemoryWorkQueueDispatcher(timeout=timedelta(seconds=int(_queue_timeout_env)))
 
     dispatcher = WebSocketDispatcher(
         queue=_queue,
@@ -498,6 +505,9 @@ def create_central_app(
         presence_of=_presence_tracker.status,
         knowledge_store=_knowledge_store,
         presence_log=_presence_log,
+        # P17.1: 명시 주입은 보존하고, None이면 create_app이 한 InMemory store를 만들어
+        # AskOrg와 Manager 운영 라우트에 함께 물린다.
+        manager_queue_store=manager_queue_store,
     )
     _mount_worker_endpoint(app, dispatcher)
     return app

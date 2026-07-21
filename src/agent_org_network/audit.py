@@ -44,6 +44,39 @@ class AuditEntry:
     decision: RoutingDecision
     dispatch_outcome: DispatchOutcome | None = None
     tracking: str | None = None
+    request_id: str | None = None
+
+    def __post_init__(self) -> None:
+        from agent_org_network.request_correlation import validate_optional_request_id
+
+        validate_optional_request_id(self.request_id)
+
+    @classmethod
+    def for_request(
+        cls,
+        *,
+        request_id: str,
+        timestamp: datetime,
+        user_id: str,
+        question: str,
+        intent: str,
+        decision: RoutingDecision,
+        dispatch_outcome: DispatchOutcome | None = None,
+        tracking: str | None = None,
+    ) -> "AuditEntry":
+        """Request-aware 절차 기록 생성 관문."""
+        from agent_org_network.request_correlation import require_request_id
+
+        return cls(
+            timestamp=timestamp,
+            user_id=user_id,
+            question=question,
+            intent=intent,
+            decision=decision,
+            dispatch_outcome=dispatch_outcome,
+            tracking=tracking,
+            request_id=require_request_id(request_id),
+        )
 
     @property
     def answer(self) -> Answer | None:
@@ -59,7 +92,7 @@ class AuditEntry:
         return json.dumps(self.as_record(), ensure_ascii=False)
 
     def as_record(self) -> dict[str, Any]:
-        return {
+        record: dict[str, Any] = {
             "timestamp": self.timestamp.isoformat(),
             "user_id": self.user_id,
             "question": self.question,
@@ -69,6 +102,11 @@ class AuditEntry:
             "dispatch": _dispatch_record(self.dispatch_outcome),
             "tracking": self.tracking,
         }
+        # legacy JSONL 소비자의 byte/key shape를 보존한다. 신뢰할 상관키가 있는 새
+        # 기록에만 필드를 추가하며 question/time 유사도로 backfill하지 않는다.
+        if self.request_id is not None:
+            record["request_id"] = self.request_id
+        return record
 
 
 def _decision_record(d: RoutingDecision) -> dict[str, Any]:

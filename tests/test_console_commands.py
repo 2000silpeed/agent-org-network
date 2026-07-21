@@ -182,19 +182,22 @@ class Test콘솔_HITL토글:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# HITL 토글 → 다음 /ask 답 mode 반영 (T9.3(b) 결정론 e2e)
+# HITL 토글과 P17 사용자 경로 분리(P17.6b 전 legacy side effect 없음)
 # ════════════════════════════════════════════════════════════════════════════
 
 
-class Test토글_다음답_mode반영:
-    def test_토글_on_다음_ask_draft_only(self) -> None:
+class Test토글_P17질문경로_분리:
+    def test_토글_on이어도_다음_ask는_legacy_draft_only가_아니다(self) -> None:
         app, _, _, _ = _console_app()
         client = TestClient(app)
         _login(client, "root_manager")
         _post(client, "/console/hitl/contract_ops", {"on": True})
         r = _post(client, "/ask", {"question": "계약서 검토해줘"})
         assert r.status == 200
-        assert r.body["mode"] == "draft_only"
+        assert r.body["mode"] == "full"
+        assert r.body["review_status"] == "not_required"
+        assert r.body["request_id"]
+        assert r.body["record_id"]
 
     def test_토글_off_다음_ask_full(self) -> None:
         app, _, _, _ = _console_app()
@@ -205,18 +208,20 @@ class Test토글_다음답_mode반영:
         assert r.status == 200
         assert r.body["mode"] == "full"
 
-    def test_토글_변경_순차_반영_결정론(self) -> None:
+    def test_토글_변경은_P17_ask_mode를_바꾸지_않는다(self) -> None:
         app, _, _, _ = _console_app()
         client = TestClient(app)
         _login(client, "root_manager")
 
         _post(client, "/console/hitl/contract_ops", {"on": True})
         r1 = _post(client, "/ask", {"question": "계약서 검토해줘"})
-        assert r1.body["mode"] == "draft_only"
+        assert r1.body["mode"] == "full"
+        assert r1.body["review_status"] == "not_required"
 
         _post(client, "/console/hitl/contract_ops", {"on": False})
         r2 = _post(client, "/ask", {"question": "계약서 검토해줘"})
         assert r2.body["mode"] == "full"
+        assert r2.body["review_status"] == "not_required"
 
 
 # ════════════════════════════════════════════════════════════════════════════

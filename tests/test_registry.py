@@ -27,7 +27,42 @@ def test_유효한_카드를_등록하면_조회된다():
     registry = Registry()
     card = make_card()
     registry.register(card)
-    assert registry.get("contract_ops") is card
+    assert registry.get("contract_ops") == card
+    assert registry.get("contract_ops") is not card
+
+
+def test_Registry_card_입출력은_mutable_alias를_backing과_공유하지_않는다() -> None:
+    registry = Registry()
+    registry.register_user(User(id="owner-1"))
+    card = make_card(agent_id="safe-card", owner="owner-1", domains=["base"])
+    registry.register(card)
+
+    card.domains.append("forged-input")
+    returned = registry.get("safe-card")
+    returned.domains.append("forged-output")
+    object.__setattr__(returned, "owner", "mallory")
+    all_cards = registry.all_cards()
+    all_cards[0].domains.append("forged-list")
+    all_cards.clear()
+
+    stored = registry.get("safe-card")
+    assert stored.owner == "owner-1"
+    assert stored.domains == ["base"]
+
+
+def test_Registry_user_입출력은_object_setattr_alias를_backing과_공유하지_않는다() -> None:
+    registry = Registry()
+    user = User(id="owner-1")
+    registry.register_user(user)
+
+    object.__setattr__(user, "id", "forged-input")
+    returned = registry.get_user("owner-1")
+    object.__setattr__(returned, "id", "forged-output")
+    users = registry.all_users()
+    object.__setattr__(users[0], "id", "forged-list")
+    users.clear()
+
+    assert registry.get_user("owner-1") == User(id="owner-1")
 
 
 def test_중복_agent_id_등록은_거부된다():

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, cast
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from httpx import Response
@@ -121,7 +122,9 @@ class TestB2_모듈_기본_앱_env_secret:
         app = create_app(session_secret="env-injected-secret")
         client = TestClient(app)
         r = _get(client, "/monitor")
-        assert r.status_code == 401, f"인증 ON 시 /monitor 미로그인은 401이어야 함, 실제 {r.status_code}"
+        assert r.status_code == 401, (
+            f"인증 ON 시 /monitor 미로그인은 401이어야 함, 실제 {r.status_code}"
+        )
 
     def test_모듈_app이_OPERATOR_SESSION_SECRET_env를_읽는다(self) -> None:
         """web.py 모듈 기본 app이 env secret을 읽어 인증 ON이 됨을 팩토리로 등가 검증."""
@@ -194,18 +197,34 @@ class TestM1_Concur_미존재_case_404:
 
     def test_후보_아님_concur는_여전히_403(self) -> None:
         """M-1 수정 후에도 후보 아님 → 403 불변."""
+        from datetime import datetime, timezone
+
+        from agent_org_network.conflict import Candidate, ConflictCase
+        from agent_org_network.demo import build_demo
+        from agent_org_network.manager_queue import InMemoryManagerQueueStore
         from agent_org_network.runtime import StubRuntime
         from agent_org_network.web import create_app
 
-        app = create_app(runtime=StubRuntime(), session_secret=_SECRET)
+        queue_store = InMemoryManagerQueueStore()
+        bundle = build_demo(runtime=StubRuntime(), manager_queue_store=queue_store)
+        case = ConflictCase(
+            intent="보상",
+            question="보상 기준이 어떻게 되나요?",
+            candidates=(
+                Candidate(agent_id="cs_ops", owner="cs_lead"),
+                Candidate(agent_id="finance_ops", owner="finance_lead"),
+            ),
+            opened_at=datetime(2026, 6, 21, tzinfo=timezone.utc),
+            case_id="legacy-security-case",
+        )
+        bundle.case_store.open_case(case)
+        with patch("agent_org_network.web.build_demo", return_value=bundle):
+            app = create_app(
+                runtime=StubRuntime(),
+                session_secret=_SECRET,
+                manager_queue_store=queue_store,
+            )
         client = TestClient(app)
-        # 다툼 케이스 생성(cs_lead·finance_lead 후보)
-        _post(client, "/ask", {"question": "보상 기준이 어떻게 되나요?"})
-        # cs_lead로 case_id 조회
-        _login(client, "cs_lead")
-        inbox_resp = _get(client, "/inbox/cases")
-        cases: list[Any] = inbox_resp.json()
-        case_id: str = cases[0]["case_id"]
         _login(client, "legal_lead")  # 재로그인 (후보 아님)
-        r = _post(client, f"/cases/{case_id}/concur", {"on_agent": "cs_ops"})
+        r = _post(client, f"/cases/{case.case_id}/concur", {"on_agent": "cs_ops"})
         assert r.status_code == 403, f"후보 아님은 403이어야 함, 실제 {r.status_code}"

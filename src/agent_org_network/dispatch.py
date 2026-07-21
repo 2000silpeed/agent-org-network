@@ -67,6 +67,58 @@ class WorkTicket:
     # owner 워커의 런타임까지 나른다. 마지막 필드(하위호환·기본값 None — 기존 dispatch
     # 호출·테스트가 이 필드 없이도 그대로 동작).
     context: str | None = None
+    # Question Request 전체 수명과 한 실행 시도의 중앙 상관키. legacy 큐·wire는 둘 다
+    # None이며, Request-first 경로에서는 for_request()가 반드시 한 쌍으로 채운다.
+    # TicketFrame에는 아직 싣지 않는다(ADR 0043 — 워커 protocol 선행 진화 전까지 중앙 보존).
+    request_id: str | None = None
+    attempt: int | None = None
+
+    def __post_init__(self) -> None:
+        from agent_org_network.request_correlation import validate_ticket_correlation
+
+        validate_ticket_correlation(self.request_id, self.attempt)
+
+    @classmethod
+    def for_request(
+        cls,
+        *,
+        request_id: str,
+        attempt: int,
+        owner_id: str,
+        agent_id: str,
+        question: str,
+        enqueued_at: datetime,
+        ticket_id: str | None = None,
+        context: str | None = None,
+    ) -> "WorkTicket":
+        """Request-first 경로용 생성 관문. legacy raw 생성 의미는 바꾸지 않는다."""
+        from agent_org_network.request_correlation import (
+            require_positive_attempt,
+            require_request_id,
+        )
+
+        correlated_request_id = require_request_id(request_id)
+        correlated_attempt = require_positive_attempt(attempt)
+        if ticket_id is None:
+            return cls(
+                owner_id=owner_id,
+                agent_id=agent_id,
+                question=question,
+                enqueued_at=enqueued_at,
+                context=context,
+                request_id=correlated_request_id,
+                attempt=correlated_attempt,
+            )
+        return cls(
+            owner_id=owner_id,
+            agent_id=agent_id,
+            question=question,
+            enqueued_at=enqueued_at,
+            ticket_id=ticket_id,
+            context=context,
+            request_id=correlated_request_id,
+            attempt=correlated_attempt,
+        )
 
 
 # ── 위임 스냅샷: DelegationSnapshot ──────────────────────────────────────
@@ -515,9 +567,7 @@ class LocalRuntimeDispatcher:
         """
         from agent_org_network.runtime import Answer as _Answer  # 순환 import 회피
 
-        answer: _Answer = self._runtime.answer(
-            question, card, context=context, grounding=grounding
-        )
+        answer: _Answer = self._runtime.answer(question, card, context=context, grounding=grounding)
         ticket = WorkTicket(
             owner_id=card.owner,
             agent_id=card.agent_id,

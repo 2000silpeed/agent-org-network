@@ -136,9 +136,7 @@ class TestAdminOwnerChange:
         client = TestClient(app)
         _login(client, "root_manager")
         old_owner = _demo_owner("cs_ops")
-        status, body = _post(
-            client, "/admin/cards/cs_ops/owner", {"new_owner": "hr_lead"}
-        )
+        status, body = _post(client, "/admin/cards/cs_ops/owner", {"new_owner": "hr_lead"})
         assert status == 200, body
         assert body["transferred"] is True
         assert body["from_owner"] == old_owner
@@ -148,9 +146,7 @@ class TestAdminOwnerChange:
         app = create_app(runtime=StubRuntime(), session_secret=_SECRET)
         client = TestClient(app)
         _login(client, "root_manager")
-        status, _ = _post(
-            client, "/admin/cards/cs_ops/owner", {"new_owner": "ghost"}
-        )
+        status, _ = _post(client, "/admin/cards/cs_ops/owner", {"new_owner": "ghost"})
         assert status == 422
         # 스위치 없음 — 목록에서 owner 불변 확인.
         _, cards = _get(client, "/admin/cards")
@@ -161,16 +157,12 @@ class TestAdminOwnerChange:
         app = create_app(runtime=StubRuntime(), session_secret=_SECRET)
         client = TestClient(app)
         _login(client, "root_manager")
-        status, _ = _post(
-            client, "/admin/cards/ghost_ops/owner", {"new_owner": "hr_lead"}
-        )
+        status, _ = _post(client, "/admin/cards/ghost_ops/owner", {"new_owner": "hr_lead"})
         assert status == 404
 
     def test_구_owner_토큰_revoke(self) -> None:
         tokens = InMemoryTokenStore()
-        app = create_app(
-            runtime=StubRuntime(), session_secret=_SECRET, token_store=tokens
-        )
+        app = create_app(runtime=StubRuntime(), session_secret=_SECRET, token_store=tokens)
         client = TestClient(app)
         _login(client, "root_manager")
         old_owner = _demo_owner("cs_ops")
@@ -178,23 +170,20 @@ class TestAdminOwnerChange:
 
         now = datetime.now(UTC)
         raw_old, tok_old = tokens.issue(old_owner, "primary", now=now)
-        status, body = _post(
-            client, "/admin/cards/cs_ops/owner", {"new_owner": "hr_lead"}
-        )
+        status, body = _post(client, "/admin/cards/cs_ops/owner", {"new_owner": "hr_lead"})
         assert status == 200
         assert tok_old.token_id in body["revoked_token_ids"]
         assert tokens.verify(raw_old, now=now) is None
 
     def test_감사_ownership_transfer_기록(self) -> None:
         audit = InMemoryAuditLog()
-        app = create_app(
-            runtime=StubRuntime(), session_secret=_SECRET, audit_log=audit
-        )
+        app = create_app(runtime=StubRuntime(), session_secret=_SECRET, audit_log=audit)
         client = TestClient(app)
         _login(client, "root_manager")
         _post(client, "/admin/cards/cs_ops/owner", {"new_owner": "hr_lead"})
         transfers = [
-            r for r in audit.records()
+            r
+            for r in audit.records()
             if r.get("action") and r["action"]["kind"] == "OwnershipTransfer"
         ]
         assert len(transfers) == 1
@@ -219,12 +208,14 @@ class TestLiveRegistrationRouting:
             _register_payload(agent_id="refund_ops2", owner="hr_lead", domains=["환불"]),
         )
         assert status == 200
-        # 등록 직후 같은 질문이 이제 후보 2건 → Contested(라이브 카드가 라우팅에 즉시 잡힘).
-        # co-grounding 활성(ADR 0037 슬라이스 D) 이후 다툼 응답은 `answered`(답+합의 병행)지만
-        # ConflictCase는 여전히 열린다(결정 5) — 새 카드 owner(hr_lead) 처리함에 그 케이스가
-        # 뜨는 것으로 "라이브 카드가 라우팅에 즉시 잡혔다"를 단언한다.
+        # 등록 직후 같은 질문이 후보 2건이 되어 P17 Contested Pending으로 바뀐다.
+        # 책임 확정 전 본문을 내보내지 않되 ConflictCase는 두 후보를 보존해야 한다.
         _, after = _post(client, "/ask", {"question": "환불 문의"})
-        assert after.get("type") == "answered", after
+        assert after.get("type") == "pending", after
+        assert after.get("kind") == "contested", after
+        assert after.get("state") == "awaiting_conflict", after
+        assert after.get("tracking") == after.get("request_id"), after
+        assert "text" not in after
         _login(client, "hr_lead")  # refund_ops2 owner 세션으로 자기 처리함 조회.
         _, cases = _get(client, "/inbox/cases")
         assert len(cases) == 1, cases

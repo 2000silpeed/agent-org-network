@@ -91,11 +91,7 @@ class WorkerDisconnected:
 
 
 ConsoleEvent = (
-    QuestionReceived
-    | RoutingDecisionRecorded
-    | AnswerSent
-    | WorkerConnected
-    | WorkerDisconnected
+    QuestionReceived | RoutingDecisionRecorded | AnswerSent | WorkerConnected | WorkerDisconnected
 )
 
 
@@ -317,6 +313,7 @@ def stream_console_frames(
     feed: ConsoleFeed,
     *,
     stop: Callable[[], bool],
+    before_event: Callable[[], bool] | None = None,
     poll_timeout: float = 15.0,
 ) -> Iterator[str]:
     """관전 피드를 구독해 SSE 프레임 문자열을 흘리는 제너레이터(web 라우트·테스트 공유).
@@ -325,7 +322,10 @@ def stream_console_frames(
       1. 프라이밍 프레임(`: connected`)을 즉시 yield — 헤더·연결을 바로 확정(프록시 버퍼
          방지·클라이언트 연결 인지).
       2. 루프: 구독 큐에서 이벤트를 `poll_timeout`만큼 기다려 pop.
-         - 이벤트 있으면 `serialize_console_sse` 프레임 yield.
+        - 이벤트 있으면 `before_event`가 허용한 뒤 `serialize_console_sse` 프레임 yield.
+          권한처럼 이벤트마다 다시 확인해야 하는 adapter는 이 seam으로, 큐에서 꺼낸
+          사건이 권한 철회 뒤 외부로 나가지 않게 한다. False면 프레임을 내보내지 않고
+          스트림을 끝낸다.
          - 없으면(timeout) keep-alive 코멘트 프레임 yield(프록시 idle 타임아웃 방지).
       3. `stop()`이 True면 루프 종료. **연결 종료·해제는 호출자(web 라우트)의 finally가
          `feed.unsubscribe`로 처리**한다 — 이 제너레이터는 구독 핸들만 만들어 쓰고, 종료
@@ -344,6 +344,8 @@ def stream_console_frames(
             if event is None:
                 yield CONSOLE_SSE_KEEPALIVE
             else:
+                if before_event is not None and not before_event():
+                    return
                 yield serialize_console_sse(event)
     finally:
         feed.unsubscribe(sub)

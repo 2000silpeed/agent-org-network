@@ -1,6 +1,6 @@
-"""T6.6-iii code-reviewer 지적 수정 검증 — red→green.
+"""T6.6-iii legacy 검토 계약과 P17 질문 표면 분리를 검증한다.
 
-[Major 1] build_demo review_store 연결: web 경로에서 retrieve 덧씌움이 작동해야 한다.
+[Major 1] legacy AskOrg 검토 동작은 단위 경계에 남고 P17 사용자 경로와 섞이지 않는다.
 [Major 2] record_review 거짓 audit 제거: 검토 후 audit에 decision=Unowned 줄이 없어야 한다.
 [Minor 1] _project_review_outcome match+assert_never 대칭 — 컴파일 타임 검사(pyright strict).
 [Minor 2] mark_reviewed Protocol docstring 계약 명시 — 동작 변경 없음.
@@ -22,12 +22,7 @@ from agent_org_network.dispatch import (
     DelegationSnapshot,
     InMemoryWorkQueueDispatcher,
 )
-from agent_org_network.review import (
-    ApproveBackup,
-    BackupReviewService,
-    CorrectBackup,
-    InMemoryBackupReviewStore,
-)
+from agent_org_network.review import ApproveBackup, CorrectBackup, InMemoryBackupReviewStore
 from agent_org_network.runtime import Answer, StubRuntime
 from agent_org_network.transport import RegisterWorker, WebSocketDispatcher
 
@@ -64,12 +59,8 @@ def _result(res: Response) -> HttpResult:
     return HttpResult(status=res.status_code, body=body)
 
 
-
-
 # ═══════════════════════════════════════════════════════════════════════════
-# [Major 1] web 경로에서 retrieve 덧씌움이 작동해야 한다
-# build_demo 가 review_store 를 AskOrg 에 전달해야 bundle.ask._review_store 가
-# 실 store를 가리킨다. 미연결이면 retrieve 덧씌움이 None 처리라 mode 변경이 없다.
+# [Major 1] P17 사용자 경로는 legacy WS/review side effect와 분리돼야 한다
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -96,120 +87,32 @@ def _make_ws_dispatcher(
     return disp, review_store
 
 
-def test_Major1_web_경로에서_retrieve_덧씌움이_Correct_후_full을_돌려준다() -> None:
-    """[Major 1] create_app에 review_store 주입 → bundle.ask._review_store가 실 store.
-
-    흐름:
-      1. WebSocketDispatcher + review_store 같은 인스턴스로 create_app.
-      2. POST /ask → backup 워커가 회신 → dispatched(tracking).
-      3. POST /backup-reviews/{item_id} 로 Correct 처분.
-      4. GET /ask/{tracking} → 정정 text + mode=full 이어야 한다.
-
-    수정 전: bundle.ask._review_store=None이라 retrieve가 poll 그대로 반환(mode=backup).
-    수정 후: bundle.ask._review_store=review_store라 Correct 반영(mode=full).
-    """
+def test_Major1_P17_web_경로는_legacy_WS와_backup_review를_호출하지_않는다() -> None:
+    """P17.2c-2 이후 `/ask*`는 AskOrg의 WS/review 경계를 다시 타지 않는다."""
     from agent_org_network.web import create_app
 
     ws, review_store = _make_ws_dispatcher()
-    review_svc = BackupReviewService(review_store)
-
     app = create_app(
         runtime=StubRuntime(),
         dispatcher=ws,
         review_store=review_store,
-        review_service=review_svc,
     )
     client = TestClient(app, raise_server_exceptions=True)
     http: Any = client
 
-    # 1. 질문 → backup 워커가 연결돼 있으므로 dispatched(tracking).
     rec: list[Any] = []
     ws.register(RegisterWorker(owner_id="cs_lead", role="backup"), lambda f: rec.append(f))
 
     r = _result(cast(Response, http.post("/ask", json={"question": "환불 되나요?"})))
     assert r.status == 200
-    assert r.body["type"] == "pending"
-    assert r.body["kind"] == "dispatched"
-    tracking: str = r.body["tracking"]
+    assert r.body["type"] == "answered"
+    assert r.body["request_id"]
+    assert "tracking" not in r.body
+    assert rec == []
+    assert review_store.pending_for_owner("cs_lead") == []
 
-    # 2. backup 워커 회신 시뮬 — submit 으로 backup 답 종착.
-    assert len(rec) == 1
-    ticket_id: str = rec[0].ticket.ticket_id
-    ws.submit(ticket_id, Answer(text="백업 환불 안내", mode="backup"))
-
-    # 3. review_store 에 항목이 생겼어야 한다.
-    items = review_store.pending_for_owner("cs_lead")
-    assert len(items) == 1, "review_store에 검토 항목이 없다 — Major 1 미수정"
-    item = items[0]
-
-    # 4. Correct 처분 (web 라우트 경유).
-    r2 = _result(
-        cast(
-            Response,
-            http.post(
-                f"/backup-reviews/{item.item_id}",
-                json={
-                    "type": "correct",
-                    "by_owner": "cs_lead",
-                    "corrected_text": "정정된 환불 안내입니다.",
-                },
-            ),
-        )
-    )
-    assert r2.status == 200
-
-    # 5. retrieve → 정정 text + mode=full 이어야 한다.
-    r3 = _result(cast(Response, http.get(f"/ask/{tracking}")))
-    assert r3.status == 200
-    assert r3.body["type"] == "answered", (
-        f"retrieve가 answered 아님: {r3.body} — "
-        "build_demo에 review_store가 연결되지 않아 덧씌움 미작동(Major 1 미수정)"
-    )
-    assert r3.body["mode"] == "full", (
-        f"mode={r3.body.get('mode')} — Correct 후 full 이어야 하는데 backup 그대로(Major 1 미수정)"
-    )
-    assert r3.body["text"] == "정정된 환불 안내입니다."
-
-
-def test_Major1_web_경로에서_retrieve_덧씌움이_Approve_후_full을_돌려준다() -> None:
-    """[Major 1] Approve 처분 후 retrieve → mode=full."""
-    from agent_org_network.web import create_app
-
-    ws, review_store = _make_ws_dispatcher()
-    review_svc = BackupReviewService(review_store)
-
-    app = create_app(
-        runtime=StubRuntime(),
-        dispatcher=ws,
-        review_store=review_store,
-        review_service=review_svc,
-    )
-    client = TestClient(app, raise_server_exceptions=True)
-    http: Any = client
-
-    rec: list[Any] = []
-    ws.register(RegisterWorker(owner_id="cs_lead", role="backup"), lambda f: rec.append(f))
-
-    r = _result(cast(Response, http.post("/ask", json={"question": "환불 되나요?"})))
-    tracking: str = r.body["tracking"]
-    ticket_id: str = rec[0].ticket.ticket_id
-    ws.submit(ticket_id, Answer(text="백업 환불 안내", mode="backup"))
-
-    items = review_store.pending_for_owner("cs_lead")
-    assert len(items) == 1
-    item = items[0]
-
-    http.post(
-        f"/backup-reviews/{item.item_id}",
-        json={"type": "approve", "by_owner": "cs_lead"},
-    )
-
-    r3 = _result(cast(Response, http.get(f"/ask/{tracking}")))
-    assert r3.status == 200
-    assert r3.body["type"] == "answered"
-    assert r3.body["mode"] == "full", (
-        f"Approve 후 mode={r3.body.get('mode')} — full 이어야 한다(Major 1 미수정)"
-    )
+    restored = _result(cast(Response, http.get(f"/ask/{r.body['request_id']}")))
+    assert restored.body == r.body
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -221,7 +124,9 @@ def _make_ws_dispatcher_simple() -> tuple[WebSocketDispatcher, InMemoryBackupRev
     clock = _fixed_clock(BASE_TS)
     queue = InMemoryWorkQueueDispatcher(clock=clock)
     review_store = InMemoryBackupReviewStore()
-    disp = WebSocketDispatcher(clock=clock, queue=queue, staleness_threshold=timedelta(days=7), review_store=review_store)
+    disp = WebSocketDispatcher(
+        clock=clock, queue=queue, staleness_threshold=timedelta(days=7), review_store=review_store
+    )
     snapshot = DelegationSnapshot(owner_id="alice", agent_ids=("cs_ops",), snapshot_at=SNAPSHOT_TS)
     disp.register_delegation(snapshot)
     return disp, review_store

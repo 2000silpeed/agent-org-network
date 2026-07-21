@@ -15,8 +15,11 @@ from typing import Any, cast
 from fastapi.testclient import TestClient
 from httpx import Response
 
-from agent_org_network.answer_record import InMemoryAnswerRecordStore
-from agent_org_network.presence import InMemoryPresenceTracker
+from agent_org_network.answer_record import (
+    AnswerRecordReader,
+    InMemoryAnswerRecordStore,
+)
+from agent_org_network.presence import InMemoryPresenceTracker, PresenceStatus
 from agent_org_network.runtime import StubRuntime
 from agent_org_network.web import create_app
 
@@ -39,50 +42,80 @@ def _json(res: Response) -> dict[str, Any]:
     return cast(dict[str, Any], res.json())
 
 
-def _client(tracker: InMemoryPresenceTracker) -> tuple[TestClient, InMemoryAnswerRecordStore]:
+def _client(tracker: InMemoryPresenceTracker) -> tuple[TestClient, AnswerRecordReader]:
     ars = InMemoryAnswerRecordStore()
     app = create_app(
         runtime=StubRuntime(),
         answer_record_store=ars,
         presence_of=tracker.status,
     )
-    return TestClient(app), ars
+    return TestClient(app), cast(AnswerRecordReader, app.state.answer_record_view)
 
 
 def test_owner가_online이면_실배선_키체계에서_검토필요_아님() -> None:
-    """트래커엔 owner 키(cs_lead)만 online으로 관측 — agent_id(cs_ops) 키는 트래커에 없다.
-
-    조회가 owner 키를 쓰면 online을 정확히 봐 needs_correction_review=False.
-    (수정 전엔 agent_id로 조회해 트래커에 없는 키 → 항상 offline 오탐 → True였다.)
-    """
+    """online Owner는 사전 검토 정책으로 bodyless Approval Pending이 된다."""
     tracker = InMemoryPresenceTracker()
     tracker.observe_connect("cs_lead", at=_T0)  # owner 키만 online.
 
-    client, ars = _client(tracker)
+    client, records = _client(tracker)
     body = _json(_post(client, "/ask", {"question": _QUESTION}))
 
-    assert body["answered_by"]["owner"] == "cs_lead"
-    assert body["answered_by"]["agent_id"] == "cs_ops"
+    assert body["type"] == "pending"
+    assert body["kind"] == "dispatched"
+    assert body["state"] == "awaiting_approval"
+    assert body["tracking"] == body["request_id"]
+    assert "text" not in body
+    assert "record_id" not in body
+    assert records.for_agent("cs_ops") == []
 
-    rec = ars.get(cast(str, body["record_id"]))
-    assert rec is not None
-    assert rec.mode == "full"
-    assert rec.needs_correction_review is False
 
-
-def test_owner가_disconnect하면_검토필요로_적재된다() -> None:
-    """온라인이었다가 owner 키로 disconnect되면 offline 정확히 반영 → needs_correction_review=True."""
+def test_owner가_offline이면_즉시답과_사후교정_증거를_원자_보존한다() -> None:
+    """offline은 승인 불필요로 답하되 AnswerRecord에 명시 검토 증거를 남긴다."""
     tracker = InMemoryPresenceTracker()
     tracker.observe_connect("cs_lead", at=_T0)
     tracker.observe_disconnect("cs_lead", at=_T0)
 
-    client, ars = _client(tracker)
+    client, records = _client(tracker)
     body = _json(_post(client, "/ask", {"question": _QUESTION}))
 
-    rec = ars.get(cast(str, body["record_id"]))
+    assert body["type"] == "answered"
+    rec = records.get(cast(str, body["record_id"]))
     assert rec is not None
     assert rec.mode == "full"
     assert rec.needs_correction_review is True
+
+    items = _get(client, "/supervision/answers?agent_id=cs_ops&needs_review=true").json()
+    assert len(items) == 1
+    assert items[0]["record_id"] == body["record_id"]
+
+
+def test_presence_원천은_Agent_Card가_아닌_Owner_키로만_조회한다() -> None:
+    seen: list[str] = []
+
+    def presence_of(owner_id: str) -> PresenceStatus:
+        seen.append(owner_id)
+        return "offline"
+
+    app = create_app(runtime=StubRuntime(), presence_of=presence_of)
+    with TestClient(app) as client:
+        body = _json(_post(client, "/ask", {"question": _QUESTION}))
+
+    assert body["type"] == "answered"
+    assert seen
+    assert set(seen) == {"cs_lead"}
+
+
+def test_presence_미주입은_기존_즉시답과_false_기록을_보존한다() -> None:
+    app = create_app(runtime=StubRuntime())
+    records = cast(AnswerRecordReader, app.state.answer_record_view)
+
+    with TestClient(app) as client:
+        body = _json(_post(client, "/ask", {"question": _QUESTION}))
+
+    assert body["type"] == "answered"
+    rec = records.get(cast(str, body["record_id"]))
+    assert rec is not None
+    assert rec.needs_correction_review is False
 
 
 def test_supervision_presence_라우트는_agent_id를_owner로_해석해_조회한다() -> None:

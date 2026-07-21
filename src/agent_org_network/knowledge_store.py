@@ -19,11 +19,16 @@ from __future__ import annotations
 
 import os
 import threading
+from copy import deepcopy
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import Annotated, Literal, TYPE_CHECKING, Protocol, TypeAlias, final
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+from agent_org_network.agent_card import validate_agent_id_format
 from agent_org_network.knowledge_sync import (
     KnowledgeBundleContent,
+    KnowledgeDoc,
     KnowledgeSyncAck,
     KnowledgeSyncSpec,
     SyncKnowledge,
@@ -50,6 +55,155 @@ class KnowledgeStore(Protocol):
     def get(self, agent_id: str) -> KnowledgeBundleContent | None: ...
 
     def is_stale(self, agent_id: str, *, now: datetime, threshold_s: int) -> bool: ...
+
+
+GroundingKnowledgeInvalidReason: TypeAlias = Literal[
+    "type_mismatch",
+    "agent_id_mismatch",
+    "empty_documents",
+    "invalid_document",
+]
+
+
+class _GroundingKnowledgeDto(BaseModel):
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        strict=True,
+        revalidate_instances="always",
+    )
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _strings_must_be_nonblank(cls, value: object, info: ValidationInfo) -> object:
+        del info
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("문자열 값은 비어 있거나 공백일 수 없습니다.")
+        return value
+
+
+@final
+class GroundingKnowledgeFound(_GroundingKnowledgeDto):
+    kind: Literal["found"] = "found"
+    agent_id: str
+    content: KnowledgeBundleContent
+
+
+@final
+class GroundingKnowledgeMissing(_GroundingKnowledgeDto):
+    kind: Literal["missing"] = "missing"
+    agent_id: str
+
+
+@final
+class GroundingKnowledgeInvalid(_GroundingKnowledgeDto):
+    kind: Literal["invalid"] = "invalid"
+    agent_id: str
+    reason_code: GroundingKnowledgeInvalidReason
+
+
+GroundingKnowledgeResult: TypeAlias = Annotated[
+    GroundingKnowledgeFound | GroundingKnowledgeMissing | GroundingKnowledgeInvalid,
+    Field(discriminator="kind"),
+]
+
+
+class GroundingKnowledgeReader(Protocol):
+    """중앙 Knowledge Store를 S4의 닫힌 typed 결과로 읽는 포트."""
+
+    def read(self, agent_id: str) -> GroundingKnowledgeResult: ...
+
+
+@final
+class KnowledgeStoreGroundingKnowledgeReader:
+    """`KnowledgeStore` 반환을 엄격히 검증하고 canonical 결과로 복사하는 어댑터."""
+
+    def __init__(self, store: KnowledgeStore) -> None:
+        self._store = store
+
+    def matches_knowledge_store(self, store: KnowledgeStore) -> bool:
+        """composition identity gate를 위한 객체 동일성 seam."""
+        return self._store is store
+
+    def read(self, agent_id: str) -> GroundingKnowledgeResult:
+        validate_agent_id_format(agent_id)
+        # Store 호출 예외는 transient dependency failure로 상위 Answer Source가 다룬다.
+        # 여기서 Missing/Invalid로 바꾸면 retryable 경계가 사라진다.
+        raw = self._store.get(agent_id)
+        if raw is None:
+            return GroundingKnowledgeMissing(agent_id=agent_id)
+        if type(raw) is not KnowledgeBundleContent:
+            return self._invalid(agent_id, "type_mismatch")
+
+        try:
+            raw_agent_id = raw.agent_id
+            raw_documents = raw.documents
+            raw_version = raw.version
+            raw_synced_at = raw.synced_at
+        except Exception:
+            return self._invalid(agent_id, "type_mismatch")
+
+        if type(raw_agent_id) is not str or raw_agent_id != agent_id:
+            return self._invalid(agent_id, "agent_id_mismatch")
+        if type(raw_documents) is not tuple:
+            return self._invalid(agent_id, "type_mismatch")
+        if not raw_documents:
+            return self._invalid(agent_id, "empty_documents")
+
+        canonical_documents: list[KnowledgeDoc] = []
+        seen_paths: set[str] = set()
+        for raw_document in raw_documents:
+            if type(raw_document) is not KnowledgeDoc:
+                return self._invalid(agent_id, "invalid_document")
+            try:
+                path = raw_document.path
+                body = raw_document.body
+            except Exception:
+                return self._invalid(agent_id, "invalid_document")
+            if (
+                type(path) is not str
+                or not path.strip()
+                or type(body) is not str
+                or not body.strip()
+                or path in seen_paths
+            ):
+                return self._invalid(agent_id, "invalid_document")
+            try:
+                canonical_document = KnowledgeDoc.model_validate(
+                    {"path": path, "body": body},
+                    strict=True,
+                )
+            except Exception:
+                return self._invalid(agent_id, "invalid_document")
+            seen_paths.add(path)
+            canonical_documents.append(canonical_document)
+
+        try:
+            canonical_content = KnowledgeBundleContent.model_validate(
+                {
+                    "agent_id": raw_agent_id,
+                    "documents": tuple(canonical_documents),
+                    "version": deepcopy(raw_version),
+                    "synced_at": deepcopy(raw_synced_at),
+                },
+                strict=True,
+            )
+            return GroundingKnowledgeFound(
+                agent_id=agent_id,
+                content=canonical_content,
+            )
+        except Exception:
+            return self._invalid(agent_id, "type_mismatch")
+
+    @staticmethod
+    def _invalid(
+        agent_id: str,
+        reason_code: GroundingKnowledgeInvalidReason,
+    ) -> GroundingKnowledgeInvalid:
+        return GroundingKnowledgeInvalid(
+            agent_id=agent_id,
+            reason_code=reason_code,
+        )
 
 
 class InMemoryKnowledgeStore:
@@ -112,6 +266,13 @@ __all__ = [
     "DEFAULT_KNOWLEDGE_STALE_SECONDS",
     "knowledge_stale_seconds",
     "KnowledgeStore",
+    "GroundingKnowledgeInvalidReason",
+    "GroundingKnowledgeFound",
+    "GroundingKnowledgeMissing",
+    "GroundingKnowledgeInvalid",
+    "GroundingKnowledgeResult",
+    "GroundingKnowledgeReader",
+    "KnowledgeStoreGroundingKnowledgeReader",
     "InMemoryKnowledgeStore",
     "accept_and_store_knowledge_sync",
 ]

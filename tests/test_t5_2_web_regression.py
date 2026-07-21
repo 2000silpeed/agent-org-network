@@ -2,9 +2,8 @@
 
 헬퍼/서비스 직접 호출로는 가려지는 web 와이어링 버그를 TestClient 경로로 고정한다.
 
-[Blocker 1] concur→Deadlocked 시 Manager 큐 미적재:
-  web concur 엔드포인트가 Deadlocked 결과를 Manager 큐에 넣지 않는다.
-  → 같은 "보상" 질문 후 concur로 표 갈림 → GET /manager/{id} 에 항목이 0건.
+[P17 Request 경계] request-aware Contested는 P17 처분으로만 진행하며, deadlock이면
+  request_id를 보존한 ManagerItem 한 건을 적재한다. legacy ConsensusService에는 표를 쓰지 않는다.
 
 [Blocker 2] manager_act 가 precedents·case_store 없이 ManagerQueueService 생성:
   AssignOwner 처리 후 Precedent 미기록 → 같은 intent 재질문이 여전히 Pending(Contested).
@@ -22,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,14 +31,19 @@ from agent_org_network.agent_card import AgentCard
 from agent_org_network.ask_org import AskOrg
 from agent_org_network.audit import InMemoryAuditLog
 from agent_org_network.classifier import FakeClassifier
+from agent_org_network.central_authority import AuthenticatedPrincipal
 from agent_org_network.conflict import (
+    Candidate,
+    ConflictCase,
     InMemoryConflictCaseStore,
     InMemoryPrecedentStore,
 )
+from agent_org_network.demo import DemoBundle, build_demo
 from agent_org_network.dispatch import LocalRuntimeDispatcher
 from agent_org_network.manager_queue import (
     FromDeadlock,
     InMemoryManagerQueueStore,
+    ManagerItem,
 )
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router
@@ -70,43 +75,125 @@ def _result(res: Response) -> HttpResult:
 # ════════════════════════════════════════════════════════════════════════════
 
 
-def _make_full_app() -> Any:
-    """완전히 연결된 앱 — manager_queue_store 주입 후 web 경로만으로 검증한다.
-
-    web.create_app 가 build_demo(manager_queue_store=...) 를 호출하므로 같은 큐 인스턴스가
-    concur·manager_act·GET /manager/{id} 경로를 공유한다. 테스트는 HTTP 응답만으로 검증.
-    """
+def _make_full_app_bundle(
+    *,
+    legacy_case: bool = False,
+    governance_principal_resolver: object | None = None,
+) -> tuple[Any, DemoBundle]:
+    """테스트가 legacy/request-aware Case backing의 부수효과를 직접 관찰하는 seam."""
     from agent_org_network.web import create_app
 
     queue_store = InMemoryManagerQueueStore()
-    return create_app(runtime=StubRuntime(), manager_queue_store=queue_store)
+    bundle = build_demo(runtime=StubRuntime(), manager_queue_store=queue_store)
+    if legacy_case:
+        bundle.case_store.open_case(
+            ConflictCase(
+                intent="보상",
+                question="보상 기준이 어떻게 되나요?",
+                candidates=(
+                    Candidate(agent_id="cs_ops", owner="cs_lead"),
+                    Candidate(agent_id="finance_ops", owner="finance_lead"),
+                ),
+                opened_at=_NOW,
+                case_id="legacy-t5-case",
+            )
+        )
+    with patch("agent_org_network.web.build_demo", return_value=bundle):
+        app = create_app(
+            runtime=StubRuntime(),
+            manager_queue_store=queue_store,
+            governance_principal_resolver=governance_principal_resolver,  # type: ignore[arg-type]
+        )
+    return app, bundle
 
 
-class TestB1_Concur_Deadlocked_Manager_큐_적재:
-    """[Blocker 1] web concur → Deadlocked → Manager 큐에 항목이 생겨야 한다.
+def _governance_principal(_request: object) -> AuthenticatedPrincipal:
+    return AuthenticatedPrincipal(
+        org_id="demo-org",
+        subject_id="root_manager",
+        identity_provider="oidc",
+        identity_session_id="session-root",
+    )
+
+
+def test_governance_http_closes_legacy_conflict_and_manager_bypasses_with_zero_write() -> None:
+    app, bundle = _make_full_app_bundle(
+        legacy_case=True,
+        governance_principal_resolver=_governance_principal,
+    )
+    original_case = bundle.case_store.get("legacy-t5-case")
+    assert original_case is not None
+    assert bundle.manager_queue_store is not None
+    legacy_item = ManagerItem(
+        manager_id="root_manager",
+        source=FromDeadlock(case=original_case),
+        created_at=_NOW,
+        item_id="legacy-manager-item",
+    )
+    queue_store = cast(InMemoryManagerQueueStore, bundle.manager_queue_store)
+    queue_store.enqueue_deadlock_if_absent(legacy_item)
+
+    with TestClient(app) as client:
+        conflict_response = cast(
+            Response,
+            client.post(  # pyright: ignore[reportUnknownMemberType]
+                "/cases/legacy-t5-case/concur",
+                json={
+                    "by_owner": "forged-owner",
+                    "on_agent": "cs_ops",
+                    "expected_round": 1,
+                },
+            ),
+        )
+        manager_response = cast(
+            Response,
+            client.post(  # pyright: ignore[reportUnknownMemberType]
+                "/manager/items/legacy-manager-item/act",
+                json={
+                    "type": "dismiss",
+                    "by_manager": "forged-manager",
+                    "rationale": "우회 시도",
+                },
+            ),
+        )
+
+    assert conflict_response.status_code == 404
+    assert manager_response.status_code == 404
+    assert bundle.case_store.get("legacy-t5-case") == original_case
+    assert queue_store.get("legacy-manager-item") == legacy_item
+
+
+class TestP17_Concur_Deadlocked_Request경계:
+    """legacy ConflictCase 운영은 유지하되 P17 Request와 Manager 큐를 한 경로로 갱신한다.
 
     시나리오:
-      1. POST /ask "보상 기준이 어떻게 되나요?" → Answered(co-grounded) + ConflictCase 개방(결정 5)
+      1. POST /ask "보상 기준이 어떻게 되나요?" → bodyless Pending + ConflictCase 개방
       2. POST /cases/{case_id}/concur by cs_lead on cs_ops
       3. POST /cases/{case_id}/concur by finance_lead on finance_ops (표 갈림 → Deadlocked)
-      4. GET /manager/root_manager → 항목 1건 (Deadlocked from_deadlock 출처)
-
-    현재 (미수정): concur 결과가 Deadlocked 여도 enqueue_deadlock 미호출 → 항목 0건 = red.
+      4. canonical Request는 AwaitingManager, request-aware Manager 큐는 정확히 1건
     """
 
-    def test_concur_deadlocked_후_manager_큐에_항목이_생긴다(self) -> None:
-        """[Blocker 1] red — Deadlocked 후 GET /manager/root_manager 에 항목이 뜬다."""
-        app = _make_full_app()
+    def test_concur_deadlocked_후_Request는_stable하고_manager는_이중적재없다(self) -> None:
+        app, bundle = _make_full_app_bundle()
         client = TestClient(app)
 
         # 1. "보상" 질문 → Contested (데모: cs_ops·finance_ops 가 "보상" 공유)
-        r1 = _result(cast(Response, client.post(  # pyright: ignore[reportUnknownMemberType]
-            "/ask", json={"question": "보상 기준이 어떻게 되나요?"}
-        )))
+        r1 = _result(
+            cast(
+                Response,
+                client.post(  # pyright: ignore[reportUnknownMemberType]
+                    "/ask", json={"question": "보상 기준이 어떻게 되나요?"}
+                ),
+            )
+        )
         assert r1.status == 200
-        # co-grounding 활성(ADR 0037 슬라이스 D) 이후 다툼 응답은 `answered`(답+합의 병행)지만
-        # ConflictCase는 여전히 열려 아래 concur/Deadlocked/Manager 큐 흐름을 그대로 탄다(결정 5).
-        assert r1.body["type"] == "answered", f"answered 여야 하는데 {r1.body['type']}"
+        # 책임 확정 전에는 본문을 내보내지 않지만 ConflictCase 운영 흐름은 유지한다.
+        assert r1.body["type"] == "pending"
+        assert r1.body["kind"] == "contested"
+        assert r1.body["state"] == "awaiting_conflict"
+        request_id: str = r1.body["request_id"]
+        assert "text" not in r1.body
+        assert "record_id" not in r1.body
 
         # 2. case_id 조회 — inbox API 사용
         # cs_lead 또는 finance_lead 처리함에서 case 조회
@@ -116,38 +203,76 @@ class TestB1_Concur_Deadlocked_Manager_큐_적재:
         assert len(cases) >= 1, "처리함에 case 가 없다"
         case_id: str = cases[0]["case_id"]
 
-        # 3. cs_lead → cs_ops, finance_lead → finance_ops (표 갈림 → Deadlocked)
-        r2 = _result(cast(Response, client.post(  # pyright: ignore[reportUnknownMemberType]
-            f"/cases/{case_id}/concur",
-            json={"by_owner": "cs_lead", "on_agent": "cs_ops"},
-        )))
-        assert r2.status == 200
+        assert isinstance(bundle.case_store, InMemoryConflictCaseStore)
+        before_history = bundle.case_store.history
 
-        r3 = _result(cast(Response, client.post(  # pyright: ignore[reportUnknownMemberType]
-            f"/cases/{case_id}/concur",
-            json={"by_owner": "finance_lead", "on_agent": "finance_ops"},
-        )))
-        assert r3.status == 200
-        assert r3.body["type"] == "deadlocked", (
-            f"표 갈림이 deadlocked 여야 하는데 {r3.body['type']}"
+        # 3. request-aware Case는 P17 처분으로만 진행한다.
+        r2 = _result(
+            cast(
+                Response,
+                client.post(  # pyright: ignore[reportUnknownMemberType]
+                    f"/cases/{case_id}/concur",
+                    json={
+                        "by_owner": "cs_lead",
+                        "on_agent": "cs_ops",
+                        "expected_round": 1,
+                    },
+                ),
+            )
         )
+        assert r2.status == 200
+        assert r2.body["type"] == "still_open"
+        assert r2.body["request_id"] == request_id
+        assert r2.body["current_round"] == 1
 
-        # 4. [Blocker 1 핵심] Manager 큐에 항목이 생겨야 한다
+        r3 = _result(
+            cast(
+                Response,
+                client.post(  # pyright: ignore[reportUnknownMemberType]
+                    f"/cases/{case_id}/concur",
+                    json={
+                        "by_owner": "finance_lead",
+                        "on_agent": "finance_ops",
+                        "expected_round": 1,
+                    },
+                ),
+            )
+        )
+        assert r3.status == 200
+        assert r3.body["type"] == "deadlocked"
+        assert r3.body["request_id"] == request_id
+        assert r3.body["case_id"] == case_id
+
+        stored_case = bundle.case_store.get_request_case(case_id)
+        assert stored_case is not None and stored_case.status == "escalated"
+        assert len(bundle.case_store.history) > len(before_history)
+        votes = cast(dict[str, object], bundle.consensus.__dict__["_votes"])
+        assert votes == {}
+        assert bundle.precedents.lookup("보상") is None
+        assert bundle.edge_store is not None
+        assert bundle.edge_store.neighbors("보상", "cs_ops") == ()
+        assert bundle.edge_store.neighbors("보상", "finance_ops") == ()
+
+        # 4. 같은 Request는 request-aware ManagerItem 한 건으로만 이어진다.
         r4 = _result(cast(Response, client.get("/manager/root_manager")))  # pyright: ignore[reportUnknownMemberType]
         assert r4.status == 200
         items: list[Any] = r4.body
-        assert len(items) >= 1, (
-            "[Blocker 1 미수정] GET /manager/root_manager 가 [] — "
-            "web concur 가 Deadlocked 를 Manager 큐에 적재하지 않음"
+        assert len(items) == 1
+        assert items[0]["request_id"] == request_id
+        assert items[0]["item_id"] == r3.body["manager_item_id"]
+
+        request_result = _result(
+            cast(Response, client.get(f"/requests/{request_id}"))  # pyright: ignore[reportUnknownMemberType]
         )
-        # 출처가 from_deadlock 이어야 한다
-        assert items[0]["source"]["type"] == "from_deadlock", (
-            f"source type 이 from_deadlock 이어야 하는데 {items[0]['source']['type']}"
-        )
+        assert request_result.status == 200
+        assert request_result.body["request_id"] == request_id
+        assert request_result.body["kind"] == "contested"
+        assert request_result.body["state"] == "awaiting_manager"
+        assert request_result.body["retryable"] is False
 
     def test_concur_agreed_는_manager_큐에_적재하지_않는다(self) -> None:
-        """합의(Agreed)는 Manager 큐에 들어가지 않아야 한다 — 부작용 검증."""
-        app = _make_full_app()
+        """request-aware 합의는 같은 Request를 재개하고 legacy 학습·Manager 효과를 만들지 않는다."""
+        app, bundle = _make_full_app_bundle()
         client = TestClient(app)
 
         # "보상" 질문 → Contested
@@ -157,19 +282,42 @@ class TestB1_Concur_Deadlocked_Manager_큐_적재:
         cases: list[Any] = r_inbox.body
         case_id: str = cases[0]["case_id"]
 
-        # 둘 다 cs_ops 에 동의 → Agreed
-        client.post(f"/cases/{case_id}/concur", json={"by_owner": "cs_lead", "on_agent": "cs_ops"})  # pyright: ignore[reportUnknownMemberType]
-        r = _result(cast(Response, client.post(  # pyright: ignore[reportUnknownMemberType]
-            f"/cases/{case_id}/concur",
-            json={"by_owner": "finance_lead", "on_agent": "cs_ops"},
-        )))
-        assert r.body["type"] == "agreed"
+        first = _result(
+            cast(
+                Response,
+                client.post(  # pyright: ignore[reportUnknownMemberType]
+                    f"/cases/{case_id}/concur",
+                    json={
+                        "by_owner": "cs_lead",
+                        "on_agent": "cs_ops",
+                        "expected_round": 1,
+                    },
+                ),
+            )
+        )
+        agreed = _result(
+            cast(
+                Response,
+                client.post(  # pyright: ignore[reportUnknownMemberType]
+                    f"/cases/{case_id}/concur",
+                    json={
+                        "by_owner": "finance_lead",
+                        "on_agent": "cs_ops",
+                        "expected_round": 1,
+                    },
+                ),
+            )
+        )
+        assert first.body["type"] == "still_open"
+        assert agreed.status == 200
+        assert agreed.body["type"] == "agreed"
+        assert agreed.body["primary"] == "cs_ops"
+        assert bundle.precedents.lookup("보상") is None
+        assert cast(dict[str, object], bundle.consensus.__dict__["_votes"]) == {}
 
         # Manager 큐는 비어 있어야 한다
         r_mgr = _result(cast(Response, client.get("/manager/root_manager")))  # pyright: ignore[reportUnknownMemberType]
-        assert r_mgr.body == [], (
-            "Agreed 인데 Manager 큐에 항목이 생겼다 — 부작용"
-        )
+        assert r_mgr.body == [], "Agreed 인데 Manager 큐에 항목이 생겼다 — 부작용"
 
 
 class TestB2_ManagerAct_Precedent_연결:
@@ -186,12 +334,8 @@ class TestB2_ManagerAct_Precedent_연결:
 
     def test_AssignOwner_후_재질문이_Answered로_전환된다(self) -> None:
         """[Blocker 2] red — manager_act AssignOwner 후 같은 질문이 Answered 로 뜬다."""
-        app = _make_full_app()
+        app, _bundle = _make_full_app_bundle(legacy_case=True)
         client = TestClient(app)
-
-        # B1 이 수정된 뒤에야 이 테스트가 유의미하므로,
-        # B1 미수정이면 큐가 비어 item_id 를 못 가져와 건너뛴다.
-        client.post("/ask", json={"question": "보상 기준이 어떻게 되나요?"})  # pyright: ignore[reportUnknownMemberType]
 
         r_inbox = _result(cast(Response, client.get("/inbox/cs_lead")))  # pyright: ignore[reportUnknownMemberType]
         cases: list[Any] = r_inbox.body
@@ -200,10 +344,15 @@ class TestB2_ManagerAct_Precedent_연결:
 
         # 표 갈림 → Deadlocked
         client.post(f"/cases/{case_id}/concur", json={"by_owner": "cs_lead", "on_agent": "cs_ops"})  # pyright: ignore[reportUnknownMemberType]
-        r_dead = _result(cast(Response, client.post(  # pyright: ignore[reportUnknownMemberType]
-            f"/cases/{case_id}/concur",
-            json={"by_owner": "finance_lead", "on_agent": "finance_ops"},
-        )))
+        r_dead = _result(
+            cast(
+                Response,
+                client.post(  # pyright: ignore[reportUnknownMemberType]
+                    f"/cases/{case_id}/concur",
+                    json={"by_owner": "finance_lead", "on_agent": "finance_ops"},
+                ),
+            )
+        )
         assert r_dead.body["type"] == "deadlocked"
 
         # Manager 큐 조회 (B1 수정 전제)
@@ -214,22 +363,32 @@ class TestB2_ManagerAct_Precedent_연결:
         item_id: str = items[0]["item_id"]
 
         # AssignOwner — cs_ops 지정
-        r_act = _result(cast(Response, client.post(  # pyright: ignore[reportUnknownMemberType]
-            f"/manager/items/{item_id}/act",
-            json={
-                "type": "assign_owner",
-                "by_manager": "root_manager",
-                "primary": "cs_ops",
-                "rationale": "보상은 cs 팀",
-            },
-        )))
+        r_act = _result(
+            cast(
+                Response,
+                client.post(  # pyright: ignore[reportUnknownMemberType]
+                    f"/manager/items/{item_id}/act",
+                    json={
+                        "type": "assign_owner",
+                        "by_manager": "root_manager",
+                        "primary": "cs_ops",
+                        "rationale": "보상은 cs 팀",
+                    },
+                ),
+            )
+        )
         assert r_act.status == 200
         assert r_act.body["status"] == "resolved"
 
         # [Blocker 2 핵심] 재질문 → Answered (Precedent 학습으로 자동 라우팅)
-        r_re = _result(cast(Response, client.post(  # pyright: ignore[reportUnknownMemberType]
-            "/ask", json={"question": "보상 기준이 어떻게 되나요?"}
-        )))
+        r_re = _result(
+            cast(
+                Response,
+                client.post(  # pyright: ignore[reportUnknownMemberType]
+                    "/ask", json={"question": "보상 기준이 어떻게 되나요?"}
+                ),
+            )
+        )
         assert r_re.body["type"] == "answered", (
             f"[Blocker 2 미수정] 재질문 응답 type={r_re.body['type']} — "
             "AssignOwner 후 Precedent 가 기록되지 않아 재질문이 여전히 Pending. "
@@ -239,20 +398,23 @@ class TestB2_ManagerAct_Precedent_연결:
 
     def test_AssignOwner_후_ConflictCase_종결된다(self) -> None:
         """[Blocker 2] FromDeadlock AssignOwner → ConflictCase 종결 → 처리함서 사라짐."""
-        app = _make_full_app()
+        app, _bundle = _make_full_app_bundle(legacy_case=True)
         client = TestClient(app)
-
-        client.post("/ask", json={"question": "보상 기준이 어떻게 되나요?"})  # pyright: ignore[reportUnknownMemberType]
 
         r_inbox = _result(cast(Response, client.get("/inbox/cs_lead")))  # pyright: ignore[reportUnknownMemberType]
         cases: list[Any] = r_inbox.body
         case_id: str = cases[0]["case_id"]
 
         client.post(f"/cases/{case_id}/concur", json={"by_owner": "cs_lead", "on_agent": "cs_ops"})  # pyright: ignore[reportUnknownMemberType]
-        r_dead = _result(cast(Response, client.post(  # pyright: ignore[reportUnknownMemberType]
-            f"/cases/{case_id}/concur",
-            json={"by_owner": "finance_lead", "on_agent": "finance_ops"},
-        )))
+        r_dead = _result(
+            cast(
+                Response,
+                client.post(  # pyright: ignore[reportUnknownMemberType]
+                    f"/cases/{case_id}/concur",
+                    json={"by_owner": "finance_lead", "on_agent": "finance_ops"},
+                ),
+            )
+        )
         assert r_dead.body["type"] == "deadlocked"
 
         r_mgr = _result(cast(Response, client.get("/manager/root_manager")))  # pyright: ignore[reportUnknownMemberType]
@@ -292,12 +454,20 @@ class TestM1_EnqueueDeadlock_중복_방지:
         registry.register_user(alice)
         registry.register_user(bob)
         card_a = AgentCard(
-            agent_id="agent_a", owner="alice", team="t", summary="s",
-            domains=["보상"], last_reviewed_at=_DATE,
+            agent_id="agent_a",
+            owner="alice",
+            team="t",
+            summary="s",
+            domains=["보상"],
+            last_reviewed_at=_DATE,
         )
         card_b = AgentCard(
-            agent_id="agent_b", owner="bob", team="t", summary="s",
-            domains=["보상"], last_reviewed_at=_DATE,
+            agent_id="agent_b",
+            owner="bob",
+            team="t",
+            summary="s",
+            domains=["보상"],
+            last_reviewed_at=_DATE,
         )
         registry.register(card_a)
         registry.register(card_b)
@@ -382,6 +552,4 @@ class TestM1_EnqueueDeadlock_중복_방지:
         ask.enqueue_deadlock(case_b, reason="갈림2")
 
         pending = queue_store.pending_for_manager("root_manager")
-        assert len(pending) == 2, (
-            f"다른 case 인데 {len(pending)}건 — 중복 방지가 과도하게 막음"
-        )
+        assert len(pending) == 2, f"다른 case 인데 {len(pending)}건 — 중복 방지가 과도하게 막음"

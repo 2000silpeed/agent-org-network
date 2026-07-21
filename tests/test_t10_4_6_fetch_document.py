@@ -106,9 +106,7 @@ def test_parse_central_frame_기존_4종_무회귀():
     assert parse_central_frame(_dump(AuthError(reason="x"))) is not None
     assert parse_central_frame(_dump(Ping())) is not None
     push = PushWork(
-        ticket=TicketFrame(
-            ticket_id="t1", agent_id="cs_ops", question="q", enqueued_at=BASE_TS
-        )
+        ticket=TicketFrame(ticket_id="t1", agent_id="cs_ops", question="q", enqueued_at=BASE_TS)
     )
     assert parse_central_frame(_dump(push)) is not None
 
@@ -141,9 +139,7 @@ def test_parse_worker_frame_기존_5종_무회귀():
     submit = SubmitAnswer(ticket_id="t1", answer=AnswerFrame(text="a"))
     assert _parse_worker_frame(_dump(submit)) is not None
     idx = PublishIndex(
-        index=KnowledgeIndex(
-            agent_id="cs_ops", version="okf-1", generated_at=BASE_TS, concepts=()
-        )
+        index=KnowledgeIndex(agent_id="cs_ops", version="okf-1", generated_at=BASE_TS, concepts=())
     )
     assert _parse_worker_frame(_dump(idx)) is not None
     assert _parse_worker_frame(_dump(Heartbeat())) is not None
@@ -154,9 +150,7 @@ def test_parse_worker_frame_미지_type은_None():
     assert _parse_worker_frame({"type": "unknown_frame"}) is None
     # fetch_document는 *중앙→워커* 프레임이라 중앙측 파서는 모른다(업스트림 아님).
     assert (
-        _parse_worker_frame(
-            _dump(FetchDocument(agent_id="a", concept_id="c", request_id="r"))
-        )
+        _parse_worker_frame(_dump(FetchDocument(agent_id="a", concept_id="c", request_id="r")))
         is None
     )
 
@@ -443,12 +437,17 @@ def _ask(client: TestClient, question: str) -> Response:
 def _open_contested_case(client: TestClient) -> str:
     """다툼 질문으로 케이스를 열고 cs_lead 처리함에서 case_id를 읽는다.
 
-    co-grounding 활성(ADR 0037 슬라이스 D) 이후 `/ask` 다툼 응답은 `answered`(답+합의 병행)
-    지만 ConflictCase는 여전히 열린다(결정 5). 이 헬퍼는 케이스 개방만 쓴다.
+    P17.5 전에는 책임 확정 전 본문 없는 Pending을 반환하지만 ConflictCase 운영 기능은
+    그대로 열린다. 이 헬퍼는 케이스 개방만 쓴다.
     """
     res = _ask(client, _CONTESTED_Q)
     body: dict[str, Any] = res.json()
-    assert body["type"] == "answered"
+    assert body["type"] == "pending"
+    assert body["kind"] == "contested"
+    assert body["state"] == "awaiting_conflict"
+    assert body["request_id"]
+    assert "text" not in body
+    assert "record_id" not in body
     # cs_lead로 로그인해 자기 처리함에서 case_id를 본다.
     _login(client, "cs_lead")
     http: Any = client
@@ -457,9 +456,7 @@ def _open_contested_case(client: TestClient) -> str:
     return cast(str, cases[0]["case_id"])
 
 
-def _post_doc(
-    client: TestClient, case_id: str, agent_id: str, concept_id: str
-) -> Response:
+def _post_doc(client: TestClient, case_id: str, agent_id: str, concept_id: str) -> Response:
     http: Any = client
     return cast(
         Response,
@@ -693,6 +690,7 @@ def test_공격E_심볼릭링크_okf_바깥_차단(tmp_path: Path):
     except (OSError, NotImplementedError):
         # 심볼릭링크 생성 불가 환경(Windows 일부) → 건너뜀
         import pytest
+
         pytest.skip("심볼릭링크 생성 불가 환경")
 
     logic = WorkerLogic(

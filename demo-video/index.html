@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Agent Org Network — 실 화면 임원 시연</title>
+    <title>Agent Org Network — 전 기능 시연 v5</title>
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
     <style>
       :root {
@@ -16,6 +16,7 @@
         --green: #46d27a;
         --amber: #ffb020;
         --violet: #a98bff;
+        --red: #ff6b6b;
       }
       body,
       html {
@@ -49,7 +50,6 @@
           0 30px 90px rgba(0, 0, 0, 0.55),
           0 0 0 1px rgba(77, 159, 255, 0.07);
       }
-      /* 비디오 씬 캔버스 질감(카드 씬과 동일 결) */
       #master-root::before {
         content: "";
         position: absolute;
@@ -91,13 +91,17 @@
         color: var(--blue);
         text-transform: uppercase;
       }
+      /* ── 오프닝 카드 ── */
       #open-card h1 {
         margin: 0;
-        font-size: 96px;
+        font-size: 104px;
         font-weight: 900;
-        line-height: 1.16;
-        letter-spacing: -0.015em;
+        line-height: 1.12;
+        letter-spacing: -0.02em;
         max-width: 1500px;
+      }
+      #open-card h1 .accent {
+        color: var(--blue);
       }
       #open-card .sub {
         font-size: 38px;
@@ -123,54 +127,86 @@
         border-radius: 50%;
         background: var(--green);
       }
-      #stat-card h1 {
-        margin: 0;
-        font-size: 56px;
-        font-weight: 900;
+      /* ── C4 터미널 카드 ── */
+      #term-card .inner {
+        justify-content: center;
+        gap: 26px;
       }
-      #stat-card .stats {
-        display: flex;
-        gap: 28px;
-      }
-      #stat-card .stat {
-        flex: 1;
+      #term-card .term {
+        width: 1360px;
+        max-width: 1360px;
+        margin: 0 auto;
+        background: #05080d;
         border: 1px solid var(--line);
-        background: var(--surface);
-        padding: 40px 44px;
+        border-radius: 8px;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+        overflow: hidden;
       }
-      #stat-card .big {
-        font-size: 122px;
-        font-weight: 900;
-        letter-spacing: -0.02em;
-        font-variant-numeric: tabular-nums;
+      #term-card .term-bar {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 14px 20px;
+        background: #0c121c;
+        border-bottom: 1px solid var(--line);
       }
-      #stat-card .big.b {
-        color: var(--blue);
+      #term-card .term-bar .tb {
+        width: 13px;
+        height: 13px;
+        border-radius: 50%;
+        background: #2a3444;
       }
-      #stat-card .big.g {
+      #term-card .term-bar .title {
+        margin-left: 14px;
+        font-size: 19px;
+        color: var(--muted);
+        font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
+      }
+      #term-card .term-body {
+        padding: 34px 40px 40px;
+        font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
+        font-size: 30px;
+        line-height: 1.9;
+        color: #d6e2ee;
+      }
+      #term-card .line {
+        display: flex;
+        gap: 16px;
+        white-space: nowrap;
+      }
+      #term-card .prompt {
         color: var(--green);
-      }
-      #stat-card .lab {
-        font-size: 27px;
-        margin-top: 10px;
-      }
-      #stat-card .det {
-        font-size: 21px;
-        color: var(--muted);
-        margin-top: 8px;
-        font-variant-numeric: tabular-nums;
-      }
-      #stat-card .note {
-        font-size: 24px;
-        color: var(--muted);
-      }
-      #stat-card .note b {
-        color: var(--violet);
         font-weight: 700;
       }
+      #term-card .tag-worker {
+        color: var(--blue);
+      }
+      #term-card .line.accept {
+        color: var(--green);
+        font-weight: 700;
+      }
+      #term-card .cursor {
+        display: inline-block;
+        width: 14px;
+        height: 30px;
+        background: var(--green);
+        vertical-align: middle;
+        margin-left: 2px;
+      }
+      #term-card .cap-term {
+        font-size: 34px;
+        color: var(--muted);
+        text-align: center;
+        max-width: 1200px;
+        margin: 8px auto 0;
+        line-height: 1.5;
+        word-break: keep-all;
+      }
+      /* ── 클로징 카드 ── */
       #close-card .inner {
         align-items: center;
         text-align: center;
+        gap: 30px;
       }
       #close-card .wordmark {
         font-size: 104px;
@@ -183,12 +219,26 @@
       #close-card .tag {
         font-size: 44px;
         font-weight: 300;
-      }
-      #close-card .proof {
-        font-size: 23px;
         color: var(--muted);
-        letter-spacing: 0.05em;
       }
+      #close-card .pillars {
+        display: flex;
+        gap: 20px;
+        margin-top: 6px;
+      }
+      #close-card .pillar {
+        font-size: 26px;
+        font-weight: 600;
+        color: var(--text);
+        border: 1px solid var(--line);
+        background: var(--surface);
+        padding: 16px 26px;
+        border-radius: 6px;
+      }
+      #close-card .pillar b {
+        color: var(--blue);
+      }
+      /* ── 자막 ── */
       .cap {
         position: absolute;
         left: 196px;
@@ -196,7 +246,7 @@
         bottom: 34px;
         box-sizing: border-box;
         padding: 24px 34px;
-        font-size: 29px;
+        font-size: 30px;
         line-height: 1.55;
         text-align: left;
         color: #f2f6fa;
@@ -215,6 +265,7 @@
         color: #ffd77a;
         font-weight: 700;
       }
+      /* ── 배지 ── */
       .badge {
         position: absolute;
         top: 16px;
@@ -237,6 +288,12 @@
         letter-spacing: 0.18em;
         font-size: 17px;
       }
+      .badge.hot {
+        border-color: rgba(255, 176, 32, 0.55);
+      }
+      .badge.hot .k {
+        color: var(--amber);
+      }
       #dip {
         position: absolute;
         inset: 0;
@@ -248,90 +305,130 @@
     </style>
   </head>
   <body>
-    <div id="master-root" data-composition-id="master" data-width="1920" data-height="1080" data-start="0" data-duration="117.5" data-track-index="0">
-      <!-- 내레이션(ElevenLabs — Jaeil 1.1x·질문 대사 Sian) -->
-      <audio id="a-m1" class="clip" data-start="0.5" data-duration="7.66" data-track-index="2" src="assets/tts/m1.mp3"></audio>
-      <audio id="a-nq" class="clip" data-start="10.4" data-duration="7.29" data-track-index="3" src="assets/tts/nq.mp3" data-volume="0.95"></audio>
-      <audio id="a-m2" class="clip" data-start="18.0" data-duration="13.98" data-track-index="2" src="assets/tts/m2.mp3"></audio>
-      <audio id="a-md1" class="clip" data-start="33.1" data-duration="6.73" data-track-index="2" src="assets/tts/md1.mp3"></audio>
-      <audio id="a-md2" class="clip" data-start="45.0" data-duration="9.29" data-track-index="2" src="assets/tts/md2.mp3"></audio>
-      <audio id="a-me" class="clip" data-start="63.4" data-duration="9.2" data-track-index="2" src="assets/tts/me.mp3"></audio>
-      <audio id="a-m3" class="clip" data-start="75.5" data-duration="5.71" data-track-index="2" src="assets/tts/m3.mp3"></audio>
-      <audio id="a-m4" class="clip" data-start="86.4" data-duration="8.68" data-track-index="2" src="assets/tts/m4.mp3"></audio>
-      <audio id="a-m5" class="clip" data-start="99.4" data-duration="10.54" data-track-index="2" src="assets/tts/m5.mp3"></audio>
-      <audio id="a-m6" class="clip" data-start="111.2" data-duration="5.06" data-track-index="2" src="assets/tts/m6.mp3"></audio>
+    <div id="master-root" data-composition-id="master" data-width="1920" data-height="1080" data-start="0" data-duration="138.1" data-track-index="0">
+      <!-- ══ 나레이션 (Jaeil 1.1x) — 각 씬 시작 직후 ══ -->
+      <audio id="n0" class="clip" data-start="0.6" data-duration="10.82" data-track-index="2" src="assets/narration-v5/nar-00.mp3"></audio>
+      <audio id="n1" class="clip" data-start="12.5" data-duration="10.36" data-track-index="2" src="assets/narration-v5/nar-01.mp3"></audio>
+      <audio id="n2" class="clip" data-start="23.6" data-duration="6.78" data-track-index="2" src="assets/narration-v5/nar-02.mp3"></audio>
+      <audio id="n3" class="clip" data-start="35.2" data-duration="7.52" data-track-index="2" src="assets/narration-v5/nar-03.mp3"></audio>
+      <audio id="n4" class="clip" data-start="45.2" data-duration="6.55" data-track-index="2" src="assets/narration-v5/nar-04.mp3"></audio>
+      <audio id="n5" class="clip" data-start="53.2" data-duration="3.99" data-track-index="2" src="assets/narration-v5/nar-05.mp3"></audio>
+      <audio id="n6" class="clip" data-start="62.2" data-duration="8.82" data-track-index="2" src="assets/narration-v5/nar-06.mp3"></audio>
+      <audio id="n7" class="clip" data-start="74.1" data-duration="4.50" data-track-index="2" src="assets/narration-v5/nar-07.mp3"></audio>
+      <audio id="n8" class="clip" data-start="80.6" data-duration="7.34" data-track-index="2" src="assets/narration-v5/nar-08.mp3"></audio>
+      <audio id="n9" class="clip" data-start="89.6" data-duration="5.20" data-track-index="2" src="assets/narration-v5/nar-09.mp3"></audio>
+      <audio id="n10" class="clip" data-start="98.1" data-duration="5.53" data-track-index="2" src="assets/narration-v5/nar-10.mp3"></audio>
+      <audio id="n11" class="clip" data-start="109.1" data-duration="5.11" data-track-index="2" src="assets/narration-v5/nar-11.mp3"></audio>
+      <audio id="n12" class="clip" data-start="117.1" data-duration="10.96" data-track-index="2" src="assets/narration-v5/nar-12.mp3"></audio>
+      <audio id="n13" class="clip" data-start="128.6" data-duration="8.92" data-track-index="2" src="assets/narration-v5/nar-13.mp3"></audio>
 
-      <!-- S1 오프닝 카드: 0 ~ 12.4 -->
-      <div class="card-scene clip" id="open-card" data-start="0" data-duration="8.9" data-track-index="1">
+      <!-- ══ 00 오프닝 카드: 0 ~ 12.0 ══ -->
+      <div class="card-scene clip" id="open-card" data-start="0" data-duration="12.0" data-track-index="1">
         <div class="inner">
-          <div class="eyebrow anim">실 화면 시연 · 라이브 녹화</div>
-          <h1 class="anim">“이건 누구한테 물어봐야 하지?”</h1>
-          <div class="sub anim">조직의 지식은 문서가 아니라 사람에게 있습니다. 담당자를 찾아 헤매는 시간을 없애는 것 — 이 시스템의 출발점입니다.</div>
-          <div class="live anim"><span class="dot"></span>이후 모든 화면은 실제 동작 중인 제품을 그대로 녹화한 것입니다</div>
+          <div class="eyebrow anim">LIVE SCREEN DEMO · FULL FEATURE WALKTHROUGH</div>
+          <h1 class="anim">Agent <span class="accent">Org</span> Network</h1>
+          <div class="sub anim">Every question across your org, routed to the right owner — automatically. A full walkthrough on real screens.</div>
+          <div class="live anim"><span class="dot"></span>Everything you'll see is the real product, recorded live</div>
         </div>
       </div>
 
-      <!-- S2 클립 A: 채팅 12.4 ~ 25.84 + 정지컷 연장 ~ 40.4 -->
-      <video class="clip" id="v-a" data-start="8.9" data-duration="13.44" data-track-index="1" src="recordings-exec/clip-a-ask.webm" muted playsinline></video>
-      <img class="clip freeze" id="f-a" data-start="22.34" data-duration="10.26" data-track-index="1" src="assets/freeze-a.png" />
+      <!-- ══ 01 계산답 c1-calc: 12.0 ~ 23.0 (클립 10.12, 끝 freeze) ══ -->
+      <video class="clip" id="v1" data-start="12.0" data-duration="11.0" data-track-index="1" src="recordings-v5/c1-calc.webm" muted playsinline></video>
 
-      <!-- 클립 D: 다툼→합의→판례→즉답 32.6 ~ 62.96 -->
-      <video class="clip" id="v-d" data-start="32.6" data-duration="30.36" data-track-index="1" src="recordings-exec/clip-d-precedent.webm" muted playsinline></video>
+      <!-- ══ 02 안전/미아 c2-safety: 23.0 ~ 34.6 ══ -->
+      <video class="clip" id="v2" data-start="23.0" data-duration="11.6" data-track-index="1" src="recordings-v5/c2-safety.webm" muted playsinline></video>
 
-      <!-- 클립 E: 안전 케이스(거절·이관) 62.96 ~ 75.0 -->
-      <video class="clip" id="v-e" data-start="62.96" data-duration="12.04" data-track-index="1" src="recordings-exec/clip-e-safety.webm" muted playsinline></video>
+      <!-- ══ 03 판례 c3-precedent (트림 3조각): 34.6 ~ 44.6 ══ -->
+      <video class="clip" id="v3a" data-start="34.6" data-duration="3.0" data-track-index="1" data-media-start="3" src="recordings-v5/c3-precedent.webm" muted playsinline></video>
+      <video class="clip" id="v3b" data-start="37.6" data-duration="4.0" data-track-index="1" data-media-start="19" src="recordings-v5/c3-precedent.webm" muted playsinline></video>
+      <video class="clip" id="v3c" data-start="41.6" data-duration="3.0" data-track-index="1" data-media-start="28" src="recordings-v5/c3-precedent.webm" muted playsinline></video>
 
-      <!-- 클립 B: 콘솔 관전 40.4 ~ 51.32 -->
-      <video class="clip" id="v-b" data-start="75.0" data-duration="10.92" data-track-index="1" src="recordings-exec/clip-b-console.webm" muted playsinline></video>
-
-      <!-- S4 클립 C: HITL 검토 51.32 ~ 64.32 -->
-      <video class="clip" id="v-c" data-start="85.92" data-duration="13.0" data-track-index="1" src="recordings-exec/clip-c-hitl.webm" muted playsinline></video>
-
-      <!-- S5 수치 카드: 64.32 ~ 78.9 -->
-      <div class="card-scene clip" id="stat-card" data-start="98.92" data-duration="11.88" data-track-index="1">
+      <!-- ══ 04 지식동기화 터미널 카드: 44.6 ~ 52.6 ══ -->
+      <div class="card-scene clip" id="term-card" data-start="44.6" data-duration="8.0" data-track-index="1">
         <div class="inner">
-          <div class="eyebrow anim">실측으로 증명</div>
-          <h1 class="anim">실제 법령 데이터 72문항으로 측정했습니다</h1>
-          <div class="stats">
-            <div class="stat anim">
-              <div class="big b">2.6×</div>
-              <div class="lab">라우팅 정확도 개선</div>
-              <div class="det">20.8% → 54.2% · 동일 시험셋</div>
+          <div class="eyebrow anim" style="text-align: center">Phase 12 · 지식 동기화 · 우분투 워커 로그</div>
+          <div class="term anim">
+            <div class="term-bar">
+              <span class="tb"></span><span class="tb"></span><span class="tb"></span>
+              <span class="title">worker@cs_lead — 중앙 연결</span>
             </div>
-            <div class="stat anim">
-              <div class="big g">1.4%</div>
-              <div class="lab">오답이 그대로 나가는 비율</div>
-              <div class="det">15.3%에서 1/11로 — 가장 해로운 실패를 우선 차단</div>
+            <div class="term-body">
+              <div class="line" id="tl1"><span class="prompt">$</span><span><span class="tag-worker">[worker:cs_lead|primary]</span> 중앙에 등록됨. 작업 대기.</span></div>
+              <div class="line" id="tl2"><span class="prompt">$</span><span><span class="tag-worker">[worker:cs_lead|primary]</span> 지식 동기화 agent=cs_ops docs=3</span></div>
+              <div class="line accept" id="tl3"><span class="prompt">$</span><span><span class="tag-worker">[worker:cs_lead|primary]</span> 지식 동기화 수용 agent=cs_ops<span class="cursor" id="tcur"></span></span></div>
             </div>
           </div>
-          <div class="note anim"><b>학습 루프</b> — 모호한 질문은 사람의 합의로 넘기고, 합의는 판례로 쌓여 다음부터 자동 라우팅됩니다.</div>
+          <div class="cap-term anim">담당자의 지식은 중앙으로 자동 동기화됩니다. 민감정보는 걸러지고, 지정한 자료만 올라갑니다.</div>
         </div>
       </div>
 
-      <!-- S6 클로징: 78.9 ~ 87 -->
-      <div class="card-scene clip" id="close-card" data-start="110.8" data-duration="6.7" data-track-index="1">
+      <!-- ══ 05 사전검토 c5-hitl (트림 2조각): 52.6 ~ 61.6 ══ -->
+      <video class="clip" id="v5a" data-start="52.6" data-duration="3.5" data-track-index="1" data-media-start="0" src="recordings-v5/c5-hitl.webm" muted playsinline></video>
+      <video class="clip" id="v5b" data-start="56.1" data-duration="5.5" data-track-index="1" data-media-start="8.5" src="recordings-v5/c5-hitl.webm" muted playsinline></video>
+
+      <!-- ══ 06 폴백★★ c6-fallback: 61.6 ~ 73.6 ══ -->
+      <video class="clip" id="v6" data-start="61.6" data-duration="12.0" data-track-index="1" src="recordings-v5/c6-fallback.webm" muted playsinline></video>
+
+      <!-- ══ 07 감독 c7-supervision: 73.6 ~ 80.1 ══ -->
+      <video class="clip" id="v7" data-start="73.6" data-duration="6.5" data-track-index="1" src="recordings-v5/c7-supervision.webm" muted playsinline></video>
+
+      <!-- ══ 08 정정 c8-correction: 80.1 ~ 89.1 ══ -->
+      <video class="clip" id="v8" data-start="80.1" data-duration="9.0" data-track-index="1" src="recordings-v5/c8-correction.webm" muted playsinline></video>
+
+      <!-- ══ 09 피드백 c9-feedback: 89.1 ~ 97.6 ══ -->
+      <video class="clip" id="v9" data-start="89.1" data-duration="8.5" data-track-index="1" src="recordings-v5/c9-feedback.webm" muted playsinline></video>
+
+      <!-- ══ 10 카드등록 c10-register (트림 3조각): 97.6 ~ 108.6 ══ -->
+      <video class="clip" id="v10a" data-start="97.6" data-duration="5.0" data-track-index="1" data-media-start="0" src="recordings-v5/c10-register.webm" muted playsinline></video>
+      <video class="clip" id="v10b" data-start="102.6" data-duration="4.0" data-track-index="1" data-media-start="9" src="recordings-v5/c10-register.webm" muted playsinline></video>
+      <video class="clip" id="v10c" data-start="106.6" data-duration="2.0" data-track-index="1" data-media-start="16" src="recordings-v5/c10-register.webm" muted playsinline></video>
+
+      <!-- ══ 11 오너변경 c11-owner: 108.6 ~ 116.6 ══ -->
+      <video class="clip" id="v11" data-start="108.6" data-duration="8.0" data-track-index="1" src="recordings-v5/c11-owner.webm" muted playsinline></video>
+
+      <!-- ══ 12 스코어카드★★ c12-scorecard: 116.6 ~ 128.1 ══ -->
+      <video class="clip" id="v12" data-start="116.6" data-duration="11.5" data-track-index="1" src="recordings-v5/c12-scorecard.webm" muted playsinline></video>
+
+      <!-- ══ 13 클로징 카드: 128.1 ~ 138.1 ══ -->
+      <div class="card-scene clip" id="close-card" data-start="128.1" data-duration="10.0" data-track-index="1">
         <div class="inner">
           <div class="eyebrow anim">AGENT ORG NETWORK</div>
           <div class="wordmark anim">Agent Org Network<span class="dot">.</span></div>
           <div class="tag anim">조직의 지식이, 조직의 답이 되도록.</div>
-          <div class="proof anim">자동 검증 2,210건 통과 · 실기기 2대 실네트워크 관통 · 실측 리포트 공개</div>
+          <div class="pillars">
+            <div class="pillar anim"><b>미아 없음</b></div>
+            <div class="pillar anim"><b>권한 중앙</b></div>
+            <div class="pillar anim"><b>전이 ≠ 기록</b></div>
+            <div class="pillar anim"><b>담당자 PC 없이도 답변</b></div>
+          </div>
         </div>
       </div>
 
-      <!-- 오버레이(장면 배지·캡션·전환 딥) — master 타임라인 소유 -->
-      <div class="badge" id="bg-a" data-layout-allow-occlusion><span class="k">LIVE</span>사용자 채팅 — 질문이 담당을 찾아갑니다</div>
-      <div class="badge" id="bg-d" data-layout-allow-occlusion><span class="k">LIVE</span>다툼 → 합의 → 판례 학습</div>
-      <div class="badge" id="bg-e" data-layout-allow-occlusion><span class="k">LIVE</span>안전 장치 — 거절과 이관</div>
-      <div class="badge" id="bg-b" data-layout-allow-occlusion><span class="k">LIVE</span>운영자 콘솔 — 실시간 관전 피드</div>
-      <div class="badge" id="bg-c" data-layout-allow-occlusion><span class="k">LIVE</span>담당자 화면 — 초안 검토·수정·승인</div>
+      <!-- ══ 배지 오버레이 (master 소유) ══ -->
+      <div class="badge" id="b1" data-layout-allow-occlusion><span class="k">LIVE</span>사용자 질문 → 담당 라우팅 → 근거 계산 답</div>
+      <div class="badge" id="b2" data-layout-allow-occlusion><span class="k">LIVE</span>안전 장치 — 권한 밖 거절 · 미아 없음</div>
+      <div class="badge" id="b3" data-layout-allow-occlusion><span class="k">LIVE</span>다툼 → 합의 → 판례 → 자동 라우팅</div>
+      <div class="badge" id="b5" data-layout-allow-occlusion><span class="k">LIVE</span>온라인 담당자 사전 검토</div>
+      <div class="badge hot" id="b6" data-layout-allow-occlusion><span class="k">★ 핵심</span>담당자 PC 꺼짐 → 중앙 폴백</div>
+      <div class="badge hot" id="b7" data-layout-allow-occlusion><span class="k">감독</span>워커 오프라인 — 검토 필요 표식</div>
+      <div class="badge" id="b8" data-layout-allow-occlusion><span class="k">교정</span>정정됨 — 원본 보존 · 정정본 전달</div>
+      <div class="badge" id="b9" data-layout-allow-occlusion><span class="k">피드백</span>👎 신호 → 담당자에게 즉시 표출</div>
+      <div class="badge" id="b10" data-layout-allow-occlusion><span class="k">등록</span>등록 전 미아 → 등록 후 답</div>
+      <div class="badge" id="b11" data-layout-allow-occlusion><span class="k">감사</span>오너 변경 → 구 접속 차단 · 이력 기록</div>
+      <div class="badge hot" id="b12" data-layout-allow-occlusion><span class="k">★ 관찰 도구</span>순위표 아님 · 자기 점검</div>
 
-      <div class="cap" id="cap-q" data-layout-allow-occlusion>“단순 변심인데 결제한 지 20일 됐어요. 10만 원 결제했는데 환불 얼마나 받을 수 있나요?”</div>
-      <div class="cap" id="cap-m2" data-layout-allow-occlusion>질문을 던지면 조직 그래프에서 담당을 찾아 연결하고, 담당 에이전트가 <b>실제 규정 문서</b>를 읽고 계산까지 마친 답을 내놓습니다. 근거 없는 답은 하지 않습니다.</div>
-      <div class="cap" id="cap-md1" data-layout-allow-occlusion>담당이 겹치는 질문은 함부로 답하지 않습니다. 시스템이 <b>다툼</b>으로 표시하고, 사람의 판단을 기다립니다.</div>
-      <div class="cap" id="cap-md2" data-layout-allow-occlusion>담당자가 처리함에서 담당을 지정하면 그 합의는 <b>판례</b>로 저장됩니다. 같은 질문이 다시 오면, 이제 사람 없이 즉시 연결됩니다.</div>
-      <div class="cap" id="cap-me" data-layout-allow-occlusion>권한 밖 요청은 정중히 거절하고, 담당이 없는 질문은 책임자에게 이관합니다. <b>모르면서 아는 척하지 않습니다.</b></div>
-      <div class="cap" id="cap-m3" data-layout-allow-occlusion>운영자는 질문 인입부터 담당 결정까지, 모든 흐름을 실시간으로 지켜봅니다.</div>
-      <div class="cap" id="cap-m4" data-layout-allow-occlusion>민감한 답은 사람이 마지막을 지킵니다. 담당자가 초안을 검토하고 <b>직접 고쳐</b> 승인해야 나갑니다 — 실제 담당자 PC 화면입니다.</div>
+      <!-- ══ 자막 (나레이션 텍스트) ══ -->
+      <div class="cap" id="c1" data-layout-allow-occlusion>질문이 들어오면, 시스템이 담당을 찾아 근거까지 계산해 답합니다. 결제 후 스무날, 단순 변심 — 규정대로 <b>사만 오천원</b>.</div>
+      <div class="cap" id="c2" data-layout-allow-occlusion>권한 밖 요청은 정중히 거절하고, 담당이 없는 질문도 <b>미아로 두지 않고</b> 위로 올립니다.</div>
+      <div class="cap" id="c3" data-layout-allow-occlusion>두 팀이 겹치는 질문은 다툼으로 표시하고, 사람이 한 번 정하면 <b>판례</b>로 남아 다음부터는 자동으로 흐릅니다.</div>
+      <div class="cap" id="c5" data-layout-allow-occlusion>담당자가 접속 중이면, 답이 나가기 전에 <b>직접 검토</b>합니다.</div>
+      <div class="cap" id="c6" data-layout-allow-occlusion>담당자 컴퓨터가 꺼져 있어도 멈추지 않습니다. 중앙이 미리 동기화해 둔 지식으로 대신 답하고, <b>나중에 검토</b>할 수 있도록 표시해 둡니다.</div>
+      <div class="cap" id="c7" data-layout-allow-occlusion>담당자는 자기 에이전트에 오간 <b>모든 질문과 답</b>을 지켜봅니다.</div>
+      <div class="cap" id="c8" data-layout-allow-occlusion>잘못 나간 답은 담당자가 고칠 수 있습니다. 원래 답은 그대로 남기고, <b>정정본이 질문자에게</b> 전달됩니다.</div>
+      <div class="cap" id="c9" data-layout-allow-occlusion>질문한 사람이 답이 아쉬우면 표시할 수 있고, 그 신호는 <b>곧바로 담당자에게</b> 보입니다.</div>
+      <div class="cap" id="c10" data-layout-allow-occlusion>새 담당을 화면에서 바로 등록하면, 검증을 거쳐 <b>즉시 라우팅</b>에 반영됩니다.</div>
+      <div class="cap" id="c11" data-layout-allow-occlusion>담당자가 바뀌면, 이전 담당의 접속은 <b>즉시 끊기고</b> 이력이 남습니다.</div>
+      <div class="cap" id="c12" data-layout-allow-occlusion>담당자가 얼마나 잘 감독하는지 네 가지 축으로 봅니다. 정정하는 노력은 점수를 깎지 않습니다. <b>순위를 매기지 않고, 스스로 점검하는 지표</b>입니다.</div>
 
       <div id="dip"></div>
 
@@ -341,23 +438,41 @@
 
         // ── 카드 씬 엔트런스 ───────────────────────────────
         tl.from("#open-card .anim", { y: 44, opacity: 0, duration: 0.55, stagger: 0.12, ease: "power3.out" }, 0.2);
-        tl.from("#stat-card .anim", { y: 40, opacity: 0, duration: 0.5, stagger: 0.12, ease: "power4.out" }, 99.3);
-        tl.from("#close-card .anim", { scale: 0.92, opacity: 0, duration: 0.55, stagger: 0.12, ease: "back.out(1.4)" }, 111.15);
 
-        // ── 씬 경계 딥(비디오 컷 완충) ─────────────────────
-        const cuts = [8.9, 32.6, 62.96, 75.0, 85.92, 98.92, 110.8];
+        // C4 터미널 — 카드 등장 후 로그 3줄 순차 타이핑
+        tl.from("#term-card .anim", { y: 40, opacity: 0, duration: 0.5, stagger: 0.14, ease: "power3.out" }, 44.8);
+        tl.set("#tl1", { opacity: 0 }, 44.8);
+        tl.set("#tl2", { opacity: 0 }, 44.8);
+        tl.set("#tl3", { opacity: 0 }, 44.8);
+        tl.set("#tcur", { opacity: 0 }, 44.8);
+        tl.fromTo("#tl1", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 46.0);
+        tl.fromTo("#tl2", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 47.4);
+        tl.fromTo("#tl3", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 48.8);
+        tl.fromTo("#tcur", { opacity: 1 }, { opacity: 0, duration: 0.5, repeat: 6, yoyo: true, ease: "steps(1)" }, 49.3);
+
+        // 클로징 카드
+        tl.from("#close-card .anim", { scale: 0.92, opacity: 0, duration: 0.5, stagger: 0.1, ease: "back.out(1.4)" }, 128.35);
+
+        // ── 씬 경계 딥(컷 완충) ────────────────────────────
+        const cuts = [12.0, 23.0, 34.6, 44.6, 52.6, 61.6, 73.6, 80.1, 89.1, 97.6, 108.6, 116.6, 128.1];
         for (const t of cuts) {
           tl.fromTo("#dip", { opacity: 0 }, { opacity: 1, duration: 0.22, ease: "sine.in" }, t - 0.22);
           tl.to("#dip", { opacity: 0, duration: 0.28, ease: "sine.out", overwrite: "auto" }, t + 0.02);
         }
 
-        // ── 장면 배지 ──────────────────────────────────────
+        // ── 장면 배지 (비디오 씬만) ─────────────────────────
         const badges = [
-          ["#bg-a", 9.5, 32.2],
-          ["#bg-d", 33.2, 62.5],
-          ["#bg-e", 63.5, 74.6],
-          ["#bg-b", 75.6, 85.5],
-          ["#bg-c", 86.5, 98.5],
+          ["#b1", 12.7, 22.6],
+          ["#b2", 23.7, 34.2],
+          ["#b3", 35.3, 44.2],
+          ["#b5", 53.3, 61.2],
+          ["#b6", 62.3, 73.2],
+          ["#b7", 74.3, 79.7],
+          ["#b8", 80.8, 88.7],
+          ["#b9", 89.8, 97.2],
+          ["#b10", 98.3, 108.2],
+          ["#b11", 109.3, 116.2],
+          ["#b12", 117.3, 127.7],
         ];
         for (const [sel, tin, tout] of badges) {
           tl.fromTo(sel, { opacity: 0, x: -24 }, { opacity: 1, x: 0, duration: 0.5, ease: "expo.out" }, tin);
@@ -367,13 +482,17 @@
 
         // ── 내레이션 캡션(오디오 동기) ─────────────────────
         const caps = [
-          ["#cap-q", 10.4, 17.5],
-          ["#cap-m2", 18.0, 32.1],
-          ["#cap-md1", 33.1, 40.3],
-          ["#cap-md2", 45.0, 54.8],
-          ["#cap-me", 63.4, 73.1],
-          ["#cap-m3", 75.5, 81.6],
-          ["#cap-m4", 86.4, 95.5],
+          ["#c1", 12.9, 22.6],
+          ["#c2", 23.9, 34.2],
+          ["#c3", 35.5, 44.2],
+          ["#c5", 53.4, 61.2],
+          ["#c6", 62.5, 73.2],
+          ["#c7", 74.4, 79.7],
+          ["#c8", 80.9, 88.7],
+          ["#c9", 89.9, 97.2],
+          ["#c10", 98.4, 108.2],
+          ["#c11", 109.4, 116.2],
+          ["#c12", 117.4, 127.7],
         ];
         for (const [sel, tin, tout] of caps) {
           tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "sine.out" }, tin);
@@ -382,7 +501,7 @@
         }
 
         // ── 클로징 페이드(마지막 씬만 허용) ────────────────
-        tl.to("#close-card .inner", { opacity: 0, duration: 1.0, ease: "sine.inOut" }, 116.2);
+        tl.to("#close-card .inner", { opacity: 0, duration: 1.0, ease: "sine.inOut" }, 137.3);
 
         window.__timelines["master"] = tl;
       </script>

@@ -1,8 +1,12 @@
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Literal, Protocol
+from threading import RLock
+from typing import Annotated, Literal, Protocol, TypeAlias, final
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent_org_network.complement import ComplementEdge, EdgeStore
 
@@ -132,6 +136,7 @@ class InMemoryPrecedentStore:
         if existing.needs_review:
             return existing
         import dataclasses
+
         flagged = dataclasses.replace(existing, needs_review=True, last_flagged_at=at)
         self._swap(intent, existing, flagged)
         return flagged
@@ -143,6 +148,7 @@ class InMemoryPrecedentStore:
         if existing.invalidated:
             return existing
         import dataclasses
+
         invalid = dataclasses.replace(
             existing, invalidated=True, invalidated_at=at, invalidated_by=by_owner
         )
@@ -172,7 +178,35 @@ class InMemoryPrecedentStore:
 # (불변+새 인스턴스, RoutingDecision의 "타입이 곧 상태" 정신과 정합).
 
 
-CaseStatus = Literal["open", "resolved"]
+CaseStatus = Literal["open", "escalated", "resolved", "declined"]
+
+
+class _ConflictFrozenDto(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+
+@final
+class DivergentVotes(_ConflictFrozenDto):
+    kind: Literal["divergent_votes"] = "divergent_votes"
+    round: int = Field(ge=1)
+
+
+@final
+class CandidateRegistryChanged(_ConflictFrozenDto):
+    kind: Literal["candidate_registry_changed"] = "candidate_registry_changed"
+    round: int = Field(ge=1)
+    reason_code: Literal[
+        "candidate_missing",
+        "owner_missing",
+        "owner_changed",
+        "under_claim_changed",
+    ]
+
+
+ConflictEscalationCause: TypeAlias = Annotated[
+    DivergentVotes | CandidateRegistryChanged,
+    Field(discriminator="kind"),
+]
 
 
 @dataclass(frozen=True)
@@ -207,6 +241,79 @@ class ConflictCase:
     case_id: str = field(default_factory=_new_case_id)
     status: CaseStatus = "open"
     resolution: Resolution | None = None
+    request_id: str | None = None
+    concurrence_round: int = 1
+    manager_item_id: str | None = None
+    decline_reason: Literal["manager_declined"] | None = None
+
+    def __post_init__(self) -> None:
+        from agent_org_network.request_correlation import validate_optional_request_id
+
+        validate_optional_request_id(self.request_id)
+        if self.concurrence_round < 1:
+            raise ValueError("ConflictCase.concurrence_round는 1 이상이어야 합니다.")
+        if self.manager_item_id is not None and not self.manager_item_id.strip():
+            raise ValueError("ConflictCase.manager_item_id는 nonblank여야 합니다.")
+        if self.status == "open":
+            if (
+                self.resolution is not None
+                or self.manager_item_id is not None
+                or self.decline_reason is not None
+            ):
+                raise ValueError("open ConflictCase에는 종결 필드를 둘 수 없습니다.")
+        elif self.status == "escalated":
+            if (
+                self.resolution is not None
+                or self.manager_item_id is None
+                or self.decline_reason is not None
+            ):
+                raise ValueError("escalated ConflictCase에는 manager_item_id만 필요합니다.")
+        elif self.status == "resolved":
+            if self.resolution is None or self.decline_reason is not None:
+                raise ValueError("resolved ConflictCase에는 Resolution만 필요합니다.")
+        elif self.status == "declined":
+            if (
+                self.resolution is not None
+                or self.manager_item_id is None
+                or self.decline_reason != "manager_declined"
+            ):
+                raise ValueError(
+                    "declined ConflictCase에는 manager_item_id와 manager_declined가 필요합니다."
+                )
+        else:
+            raise ValueError(f"알 수 없는 ConflictCase.status입니다: {self.status!r}")
+
+    @classmethod
+    def for_request(
+        cls,
+        *,
+        request_id: str,
+        intent: str,
+        question: str,
+        candidates: tuple[Candidate, ...],
+        opened_at: datetime,
+        case_id: str | None = None,
+    ) -> "ConflictCase":
+        """Question Request 한 건에 귀속되는 open Case 생성 관문."""
+        from agent_org_network.request_correlation import require_request_id
+
+        correlated_request_id = require_request_id(request_id)
+        if case_id is None:
+            return cls(
+                intent=intent,
+                question=question,
+                candidates=candidates,
+                opened_at=opened_at,
+                request_id=correlated_request_id,
+            )
+        return cls(
+            intent=intent,
+            question=question,
+            candidates=candidates,
+            opened_at=opened_at,
+            case_id=case_id,
+            request_id=correlated_request_id,
+        )
 
     def candidate_ids(self) -> tuple[str, ...]:
         return tuple(c.agent_id for c in self.candidates)
@@ -216,15 +323,37 @@ class ConflictCase:
 
     def resolve(self, resolution: Resolution) -> "ConflictCase":
         """합의 결론을 안은 resolved 케이스를 새로 만든다(case_id·후보 보존)."""
-        return ConflictCase(
-            intent=self.intent,
-            question=self.question,
-            candidates=self.candidates,
-            opened_at=self.opened_at,
-            case_id=self.case_id,
+        return replace(
+            self,
             status="resolved",
             resolution=resolution,
+            manager_item_id=self.manager_item_id if self.status == "escalated" else None,
+            decline_reason=None,
         )
+
+    def resolve_for_request(self, primary: str, rationale: str = "") -> "ConflictCase":
+        if self.request_id is None:
+            raise ValueError("resolve_for_request는 request-aware ConflictCase 전용입니다.")
+        if self.status not in ("open", "escalated"):
+            raise ValueError("open 또는 escalated ConflictCase만 resolved로 전이할 수 있습니다.")
+        if primary not in self.candidate_ids():
+            raise ValueError("request-aware Resolution primary는 원 후보여야 합니다.")
+        return self.resolve(Resolution(intent=self.intent, primary=primary, rationale=rationale))
+
+    def advance_concurrence_round(self) -> "ConflictCase":
+        if self.status != "open":
+            raise ValueError("open ConflictCase만 다음 concurrence round로 갈 수 있습니다.")
+        return replace(self, concurrence_round=self.concurrence_round + 1)
+
+    def escalate(self, manager_item_id: str) -> "ConflictCase":
+        if self.status != "open":
+            raise ValueError("open ConflictCase만 escalated로 전이할 수 있습니다.")
+        return replace(self, status="escalated", manager_item_id=manager_item_id)
+
+    def decline(self) -> "ConflictCase":
+        if self.status != "escalated":
+            raise ValueError("escalated ConflictCase만 declined로 전이할 수 있습니다.")
+        return replace(self, status="declined", decline_reason="manager_declined")
 
 
 # ── 1인칭 합의 액션: ConcurOnPrimary ──────────────────────────────────
@@ -295,6 +424,34 @@ class ConflictCaseStore(Protocol):
     def mark_resolved(self, case: ConflictCase) -> None: ...
 
 
+class RequestAwareConflictCaseStore(Protocol):
+    """Request-first 경로가 쓰는 요청별 원자 생성·조회 보조 포트.
+
+    기존 ``ConflictCaseStore``의 intent 단위 legacy 계약을 넓히지 않는다.
+    ``get_by_request``는 open/resolved 여부와 무관하게 마지막 저장본을 반환한다.
+    """
+
+    def create_or_get_for_request(
+        self,
+        case: ConflictCase,
+    ) -> tuple[ConflictCase, bool]: ...
+
+    def get_by_request(self, request_id: str) -> ConflictCase | None: ...
+
+    def get_request_case(self, case_id: str) -> ConflictCase | None: ...
+
+
+def _conflict_request_fingerprint(
+    case: ConflictCase,
+) -> tuple[str, str, str, tuple[tuple[str, str], ...]]:
+    """생성 ID·시각·상태를 제외한 request-derived Case payload."""
+    from agent_org_network.request_correlation import require_request_id
+
+    request_id = require_request_id(case.request_id)
+    candidates = tuple((candidate.agent_id, candidate.owner) for candidate in case.candidates)
+    return request_id, case.intent, case.question, candidates
+
+
 class InMemoryConflictCaseStore:
     """append-only 정신의 in-memory 처리함 저장소.
 
@@ -303,29 +460,156 @@ class InMemoryConflictCaseStore:
     동일 intent의 중복 open 방지를 위해 `open_for_intent`로 먼저 조회한다.
     """
 
+    workflow_durability: Literal["ephemeral", "durable"] = "ephemeral"
+
     def __init__(self) -> None:
         self._open: dict[str, ConflictCase] = {}
-        self.history: list[ConflictCase] = []
+        self._by_request: dict[str, ConflictCase] = {}
+        self._request_by_case: dict[str, str] = {}
+        self._history: list[ConflictCase] = []
+        self._lock = RLock()
+
+    @property
+    def history(self) -> list[ConflictCase]:
+        with self._lock:
+            return deepcopy(self._history)
 
     def open_case(self, case: ConflictCase) -> None:
-        self._open[case.case_id] = case
-        self.history.append(case)
+        canonical = deepcopy(case)
+        if canonical.request_id is not None:
+            raise ValueError(
+                "request-aware ConflictCase는 create_or_get_for_request로만 생성합니다."
+            )
+        with self._lock:
+            existing_request = self._request_by_case.get(canonical.case_id)
+            if existing_request is not None:
+                raise ValueError("ConflictCase.case_id가 request-aware Case와 충돌합니다.")
+            self._open[canonical.case_id] = deepcopy(canonical)
+            self._history.append(deepcopy(canonical))
 
     def get(self, case_id: str) -> ConflictCase | None:
-        return self._open.get(case_id)
+        with self._lock:
+            case = self._open.get(case_id)
+            return None if case is None else deepcopy(case)
 
     def open_for_owner(self, owner_id: str) -> list[ConflictCase]:
-        return [c for c in self._open.values() if c.involves_owner(owner_id)]
+        with self._lock:
+            return [deepcopy(c) for c in self._open.values() if c.involves_owner(owner_id)]
 
     def open_for_intent(self, intent: str) -> ConflictCase | None:
-        for c in self._open.values():
-            if c.intent == intent:
-                return c
+        with self._lock:
+            for c in self._open.values():
+                if c.request_id is None and c.intent == intent:
+                    return deepcopy(c)
         return None
 
     def mark_resolved(self, case: ConflictCase) -> None:
-        self._open.pop(case.case_id, None)
-        self.history.append(case)
+        canonical = deepcopy(case)
+        if canonical.request_id is not None:
+            raise ValueError(
+                "request-aware ConflictCase는 generation-bound claim으로만 전이합니다."
+            )
+        if canonical.status != "resolved" or canonical.resolution is None:
+            raise ValueError("legacy mark_resolved는 resolved ConflictCase만 받습니다.")
+        with self._lock:
+            current = self._open.get(canonical.case_id)
+            if current is not None and current.request_id is not None:
+                raise ValueError(
+                    "request-aware ConflictCase는 generation-bound claim으로만 전이합니다."
+                )
+            self._open.pop(canonical.case_id, None)
+            self._history.append(deepcopy(canonical))
+
+    def create_or_get_for_request(
+        self,
+        case: ConflictCase,
+    ) -> tuple[ConflictCase, bool]:
+        """요청별 Case를 한 번만 만들고 semantic 재시도만 멱등 수용한다."""
+        from agent_org_network.request_correlation import LinkedEntityMismatchError
+
+        canonical = deepcopy(case)
+        fingerprint = _conflict_request_fingerprint(canonical)
+        request_id = fingerprint[0]
+        candidate_pairs = fingerprint[3]
+        if len(candidate_pairs) != len(set(candidate_pairs)):
+            raise ValueError("request-aware ConflictCase 후보는 중복될 수 없습니다.")
+        with self._lock:
+            existing = self._by_request.get(request_id)
+            if existing is not None:
+                if _conflict_request_fingerprint(existing) != fingerprint:
+                    raise LinkedEntityMismatchError(
+                        f"Question Request {request_id!r}의 ConflictCase payload가 다릅니다."
+                    )
+                return deepcopy(existing), False
+            if (
+                canonical.status != "open"
+                or canonical.resolution is not None
+                or canonical.concurrence_round != 1
+            ):
+                raise ValueError("request-aware ConflictCase 생성은 open 원형만 받습니다.")
+            owner_request = self._request_by_case.get(canonical.case_id)
+            if owner_request is not None and owner_request != request_id:
+                raise LinkedEntityMismatchError(
+                    f"ConflictCase.case_id가 다른 Request와 충돌합니다: {canonical.case_id!r}"
+                )
+            if any(
+                stored.case_id == canonical.case_id and stored.request_id != request_id
+                for stored in self._history
+            ):
+                raise LinkedEntityMismatchError(
+                    f"ConflictCase.case_id가 다른 Request와 충돌합니다: {canonical.case_id!r}"
+                )
+            self._open[canonical.case_id] = deepcopy(canonical)
+            self._by_request[request_id] = deepcopy(canonical)
+            self._request_by_case[canonical.case_id] = request_id
+            self._history.append(deepcopy(canonical))
+            return deepcopy(canonical), True
+
+    def get_by_request(self, request_id: str) -> ConflictCase | None:
+        from agent_org_network.request_correlation import require_request_id
+
+        correlated_request_id = require_request_id(request_id)
+        with self._lock:
+            case = self._by_request.get(correlated_request_id)
+            return None if case is None else deepcopy(case)
+
+    def get_request_case(self, case_id: str) -> ConflictCase | None:
+        with self._lock:
+            request_id = self._request_by_case.get(case_id)
+            if request_id is None:
+                return None
+            case = self._by_request.get(request_id)
+            return None if case is None else deepcopy(case)
+
+    def _current_request_case_unlocked(self, case_id: str) -> ConflictCase | None:
+        request_id = self._request_by_case.get(case_id)
+        if request_id is None:
+            return None
+        return self._by_request.get(request_id)
+
+    def _replace_request_case_unlocked(self, target: ConflictCase) -> ConflictCase:
+        request_id = target.request_id
+        if request_id is None:
+            raise ValueError("request-aware ConflictCase 전이에 request_id가 필요합니다.")
+        current = self._current_request_case_unlocked(target.case_id)
+        if current is None:
+            raise ValueError("request-aware ConflictCase를 찾을 수 없습니다.")
+        if (
+            current.request_id != request_id
+            or current.intent != target.intent
+            or current.question != target.question
+            or current.candidates != target.candidates
+            or current.opened_at != target.opened_at
+        ):
+            raise ValueError("ConflictCase 전이 target이 저장 원형과 다릅니다.")
+        canonical = deepcopy(target)
+        self._by_request[request_id] = canonical
+        if canonical.status == "open":
+            self._open[canonical.case_id] = canonical
+        else:
+            self._open.pop(canonical.case_id, None)
+        self._history.append(deepcopy(canonical))
+        return deepcopy(canonical)
 
 
 # ── 합의 시도의 결과: ConsensusOutcome ────────────────────────────────
@@ -386,6 +670,10 @@ class ConsensusService:
         case = self._case_store.get(case_id)
         if case is None:
             raise ValueError(f"미존재 case: {case_id!r}")
+        if case.request_id is not None:
+            raise ValueError(
+                "request-aware ConflictCase는 P17ConflictDispositionApplication으로 처리합니다."
+            )
         if not case.involves_owner(vote.by_owner):
             raise ValueError(f"후보 owner 아님: {vote.by_owner!r}")
 
@@ -405,9 +693,7 @@ class ConsensusService:
             return Deadlocked(case=case, reason=f"표 갈림: {targets}")
 
         primary = next(iter(targets))
-        rationale = "; ".join(
-            f"{o}→{v.on_agent}" for o, v in current_votes.items()
-        )
+        rationale = "; ".join(f"{o}→{v.on_agent}" for o, v in current_votes.items())
         resolution = Resolution(intent=case.intent, primary=primary, rationale=rationale)
         precedent = self._precedents.record(resolution)
         resolved_case = case.resolve(resolution)

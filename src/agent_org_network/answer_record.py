@@ -41,9 +41,9 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Self, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from agent_org_network.reeval import AnswerSubject, ReevalItem, ReevalStore
 from agent_org_network.runtime import AnswerMode
@@ -73,19 +73,206 @@ class AnswerRecord(BaseModel, frozen=True):
     answered_by: str
     agent_id: str
     mode: AnswerMode
+    sources: tuple[str, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
+    snapshot_sha: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     session_id: str | None
     answered_at: datetime
     needs_correction_review: bool = False
+    # legacy model_dump/model_dump_json key shape를 보존한다. 상관키가 있는 새 기록에만
+    # 직렬화되며, None 행을 question/time 유사도로 추정하지 않는다.
+    request_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @field_validator("request_id")
+    @classmethod
+    def _validate_request_id(cls, value: str | None) -> str | None:
+        from agent_org_network.request_correlation import validate_optional_request_id
+
+        return validate_optional_request_id(value)
+
+    @field_validator("sources")
+    @classmethod
+    def _validate_sources(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not source.strip() for source in value):
+            raise ValueError("AnswerRecord.sources에는 빈 출처를 둘 수 없습니다.")
+        return value
+
+    @classmethod
+    def for_request(
+        cls,
+        *,
+        request_id: str,
+        record_id: str,
+        question: str,
+        answer_text: str,
+        answered_by: str,
+        agent_id: str,
+        mode: AnswerMode,
+        sources: tuple[str, ...] = (),
+        snapshot_sha: str | None = None,
+        session_id: str | None,
+        answered_at: datetime,
+        needs_correction_review: bool = False,
+    ) -> Self:
+        """Request-aware 답 기록 생성 관문. terminal 유일성은 후속 UoW가 맡는다."""
+        from agent_org_network.request_correlation import require_request_id
+
+        return cls(
+            record_id=record_id,
+            question=question,
+            answer_text=answer_text,
+            answered_by=answered_by,
+            agent_id=agent_id,
+            mode=mode,
+            sources=sources,
+            snapshot_sha=snapshot_sha,
+            session_id=session_id,
+            answered_at=answered_at,
+            needs_correction_review=needs_correction_review,
+            request_id=require_request_id(request_id),
+        )
 
 
-class AnswerRecordStore(Protocol):
-    """`AnswerRecord` 보관·조회 포트(`BackupReviewStore` 정신) — 담당자 모니터링 원천."""
-
-    def add(self, rec: AnswerRecord) -> None: ...
+class AnswerRecordReader(Protocol):
+    """legacy·P17 기록을 같은 감독 표면에 보이는 읽기 포트."""
 
     def get(self, record_id: str) -> AnswerRecord | None: ...
 
     def for_agent(self, agent_id: str) -> list[AnswerRecord]: ...
+
+
+class AnswerRecordStore(AnswerRecordReader, Protocol):
+    """`AnswerRecord` append 저장소. P17 Finalization은 이 쓰기 포트를 쓰지 않는다."""
+
+    def add(self, rec: AnswerRecord) -> None: ...
+
+
+class CompletionAnswerRecordReader(Protocol):
+    """Finalization 저장소의 exact-link 검증을 거친 AnswerRecord 읽기 포트."""
+
+    def answer_record(self, record_id: str) -> AnswerRecord | None: ...
+
+    def answer_records_for_agent(self, agent_id: str) -> list[AnswerRecord]: ...
+
+
+class AnswerRecordReadIntegrityError(RuntimeError):
+    """감독 읽기 증거가 canonical·exact 계약을 만족하지 못함."""
+
+
+class AnswerRecordReadCollisionError(AnswerRecordReadIntegrityError):
+    """legacy Store와 P17 Finalization의 같은 record_id가 서로 다른 기록을 가리킴."""
+
+
+def _canonical_read_record(value: object, *, expected_id: str | None = None) -> AnswerRecord:
+    if type(value) is not AnswerRecord:
+        raise AnswerRecordReadIntegrityError("AnswerRecord 읽기 결과의 타입이 손상됐습니다.")
+    assert isinstance(value, AnswerRecord)
+    try:
+        record = AnswerRecord.model_validate(
+            {
+                "record_id": value.record_id,
+                "question": value.question,
+                "answer_text": value.answer_text,
+                "answered_by": value.answered_by,
+                "agent_id": value.agent_id,
+                "mode": value.mode,
+                "sources": value.sources,
+                "snapshot_sha": value.snapshot_sha,
+                "session_id": value.session_id,
+                "answered_at": value.answered_at,
+                "needs_correction_review": value.needs_correction_review,
+                "request_id": value.request_id,
+            },
+            strict=True,
+        )
+    except Exception as error:
+        raise AnswerRecordReadIntegrityError(
+            "AnswerRecord 읽기 결과가 canonical 계약과 다릅니다."
+        ) from error
+    if expected_id is not None and record.record_id != expected_id:
+        raise AnswerRecordReadIntegrityError("AnswerRecord 조회 키와 반환 record_id가 다릅니다.")
+    return record
+
+
+class CompositeAnswerRecordReader:
+    """legacy Store와 P17 Finalization을 복제 없이 합치는 fail-closed read view."""
+
+    def __init__(
+        self,
+        legacy: AnswerRecordReader,
+        completion: CompletionAnswerRecordReader,
+    ) -> None:
+        self._legacy = legacy
+        self._completion = completion
+
+    def get(self, record_id: str) -> AnswerRecord | None:
+        legacy = self._optional_record(self._legacy.get(record_id), expected_id=record_id)
+        completion = self._optional_record(
+            self._completion.answer_record(record_id),
+            expected_id=record_id,
+        )
+        if legacy is not None and completion is not None:
+            if legacy != completion:
+                raise AnswerRecordReadCollisionError(
+                    f"legacy/P17 AnswerRecord ID 충돌: {record_id!r}"
+                )
+            return completion
+        return completion if completion is not None else legacy
+
+    def for_agent(self, agent_id: str) -> list[AnswerRecord]:
+        legacy = self._canonical_list(self._legacy.for_agent(agent_id), agent_id=agent_id)
+        completion = self._canonical_list(
+            self._completion.answer_records_for_agent(agent_id),
+            agent_id=agent_id,
+        )
+        by_id: dict[str, AnswerRecord] = {}
+        for record in legacy:
+            if record.record_id in by_id:
+                raise AnswerRecordReadCollisionError(
+                    f"AnswerRecord 목록 ID 충돌: {record.record_id!r}"
+                )
+            by_id[record.record_id] = record
+        for record in completion:
+            existing = by_id.get(record.record_id)
+            if existing is not None and existing != record:
+                raise AnswerRecordReadCollisionError(
+                    f"AnswerRecord 목록 ID 충돌: {record.record_id!r}"
+                )
+            by_id[record.record_id] = record
+        return sorted(by_id.values(), key=lambda record: (record.answered_at, record.record_id))
+
+    @staticmethod
+    def _optional_record(value: object, *, expected_id: str) -> AnswerRecord | None:
+        if value is None:
+            return None
+        return _canonical_read_record(value, expected_id=expected_id)
+
+    @staticmethod
+    def _canonical_list(value: object, *, agent_id: str) -> list[AnswerRecord]:
+        if type(value) is not list:
+            raise AnswerRecordReadIntegrityError("AnswerRecord 목록 결과가 list가 아닙니다.")
+        assert isinstance(value, list)
+        values = cast(list[object], value)
+        result: list[AnswerRecord] = []
+        seen: set[str] = set()
+        for raw in values:
+            record = _canonical_read_record(raw)
+            if record.agent_id != agent_id:
+                raise AnswerRecordReadIntegrityError(
+                    "AnswerRecord agent 조회에 다른 카드 기록이 섞였습니다."
+                )
+            if record.record_id in seen:
+                raise AnswerRecordReadCollisionError(
+                    f"하나의 AnswerRecord 원천에 ID가 중복됐습니다: {record.record_id!r}"
+                )
+            seen.add(record.record_id)
+            result.append(record)
+        return result
 
 
 class InMemoryAnswerRecordStore:
@@ -161,9 +348,9 @@ def _correction_event_id(record_id: str, by_owner: str, corrected_text: str) -> 
     같은 정정 재제출이 이벤트를 중복 적재하지 않도록 하는 멱등 키 도출(`ReevalItem.
     notification_ref` 정신 — 값에서 결정론적으로 식별자를 만든다).
     """
-    digest = hashlib.sha256(
-        f"{record_id}\x00{by_owner}\x00{corrected_text}".encode()
-    ).hexdigest()[:16]
+    digest = hashlib.sha256(f"{record_id}\x00{by_owner}\x00{corrected_text}".encode()).hexdigest()[
+        :16
+    ]
     return f"corr-{digest}"
 
 
@@ -191,7 +378,7 @@ class CorrectionService:
 
     def __init__(
         self,
-        answer_store: AnswerRecordStore,
+        answer_store: AnswerRecordReader,
         correction_store: CorrectionStore,
         reeval_store: ReevalStore,
         clock: Clock = default_clock,
@@ -378,7 +565,7 @@ class MonitoringItem:
 
 
 def monitoring_for_owner(
-    answer_store: AnswerRecordStore,
+    answer_store: AnswerRecordReader,
     correction_store: CorrectionStore,
     *,
     agent_id: str,
@@ -430,7 +617,7 @@ class AnswerCorrectionView:
 
 
 def view_answer_with_correction(
-    answer_store: AnswerRecordStore,
+    answer_store: AnswerRecordReader,
     correction_store: CorrectionStore,
     *,
     record_id: str,
@@ -464,7 +651,12 @@ def view_answer_with_correction(
 
 __all__ = [
     "AnswerRecord",
+    "AnswerRecordReader",
     "AnswerRecordStore",
+    "CompletionAnswerRecordReader",
+    "AnswerRecordReadIntegrityError",
+    "AnswerRecordReadCollisionError",
+    "CompositeAnswerRecordReader",
     "InMemoryAnswerRecordStore",
     "CorrectionEvent",
     "CorrectionStore",

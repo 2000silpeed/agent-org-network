@@ -25,7 +25,7 @@ ADR 0022:
   통지는 fire-and-forget push라 작업 디스패치(round-trip·claim/submit·큐 상태기계)와 다른 도메인.
 - 결정 9(T8.2): 페이로드 렌더 순수 함수 `render_mcp_notification(notification) -> str` — 노출
   불변식의 게이트 내 본체(`mcp_server.reply_to_mcp_text` 정신). `Notification`(식별자만)에서만
-  투영해 사용자向 비밀·조직 내부값이 구조적으로 안 샌다. kind(Literal 4종)를 match+assert_never로
+  투영해 사용자向 비밀·조직 내부값이 구조적으로 안 샌다. kind(Literal 5종)를 match+assert_never로
   망라(새 종류 누락을 pyright가 잡음). 렌더는 게이트 내·순수, 실 전송은 게이트 밖.
 - 결정 10(T8.2): 첫 실 채널 = MCP·fire-and-forget MVP 확정·Slack/Email은 후속 stub. `McpChannel`은
   transport 주입(`send_fn: Callable[[recipient_id, payload], None]`) 실 어댑터 — Fake send_fn 주입
@@ -53,13 +53,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from threading import RLock
 from typing import Literal, Protocol, assert_never
 
 from pydantic import BaseModel
 
 # ── 통지 종류: NotificationKind (Literal — sealed sum 아님) ──────────────────
 #
-# 어느 처리함/큐 적재가 이 통지를 낳았나. 네 종류가 *필드 구조가 같다*(전부 recipient·
+# 어느 처리함/큐 적재가 이 통지를 낳았나. 다섯 종류가 *필드 구조가 같다*(전부 recipient·
 # subject_ref·created_at만 든다) — 종류는 분기 없는 *라벨*이라 Literal이 정확하다(ADR 0022
 # 결정 2). sealed sum(RoutingDecision·ReevalOutcome)은 각 변이가 자기 필드를 다르게 들 때·
 # *처분*(행위 선택)에 쓴다. 통지는 처분이 아니라 *사건 라벨*이라 Literal — ReevalItem.
@@ -70,6 +71,7 @@ NotificationKind = Literal[
     "backup_review_added",  # BackupReviewItem add(백업 답 검토 적재 — dispatcher submit)
     "reeval_flagged",  # ReevalItem add(재평가 적재 — StalenessPropagator, ADR 0019)
     "manager_escalated",  # ManagerItem enqueue(escalation 적재 — ask_org/ConsensusService)
+    "approval_assignment_ready",  # ApprovalItem 최초/후속 배정(승인 처리함 새 일)
 ]
 
 
@@ -168,8 +170,8 @@ class FakeChannel:
 #      비밀은 애초에 Notification에 없어 실릴 수 없다(reply_to_mcp_text Pending 중립 안내 정신).
 #
 # Literal 망라(reply_to_mcp_text의 match+assert_never 정신을 Literal에 적용): `kind`가 Literal
-# 4종이라 match로 전부 분기하고 `case _ as never: assert_never(never)`로 *빠짐을 타입 검사 시점에
-# 막는다*. NotificationKind에 5번째 종류를 더하면 pyright가 이 match의 assert_never를 도달 가능으로
+# 5종이라 match로 전부 분기하고 `case _ as never: assert_never(never)`로 *빠짐을 타입 검사 시점에
+# 막는다*. NotificationKind에 6번째 종류를 더하면 pyright가 이 match의 assert_never를 도달 가능으로
 # 보아 에러를 낸다 — 새 종류가 렌더 누락 없이 강제된다(sealed sum match 망라와 같은 안전망).
 
 
@@ -184,7 +186,7 @@ def render_mcp_notification(notification: Notification) -> str:
     kind별 *중립 안내* + `subject_ref` *손잡이*만 낸다 — owner/manager가 처리함에서 그 항목을
     찾도록. 실 전송(McpChannel.send)은 이 텍스트를 그대로 실어 보낸다(렌더와 전송 분리).
 
-    match+assert_never로 NotificationKind(Literal 4종)를 망라한다 — 5번째 종류를 더하면 pyright가
+    match+assert_never로 NotificationKind(Literal 5종)를 망라한다 — 6번째 종류를 더하면 pyright가
     누락을 잡는다(sealed sum match 망라와 같은 안전망·`reply_to_mcp_text` 정신을 Literal에 적용).
     """
     ref = notification.subject_ref
@@ -197,6 +199,8 @@ def render_mcp_notification(notification: Notification) -> str:
             head = "판례 재평가가 필요한 항목이 적재됐습니다 — 처리함에서 확인하세요"
         case "manager_escalated":
             head = "에스컬레이션이 매니저 큐로 올라왔습니다 — 큐에서 확인하세요"
+        case "approval_assignment_ready":
+            head = "승인 검토 항목이 배정됐습니다 — 승인 처리함에서 확인하세요"
         case _ as never:
             assert_never(never)
     return f"{head} (대상: {ref})"
@@ -304,6 +308,11 @@ class Notifier:
     발화가 두 번 와도 통지 한 번 — `StalenessPropagator`의 needs_review 가드·answer dedup,
     `ManagerQueueStore.get_by_case` 중복 방지와 동형 멱등). 분산 `ticket_id` 멱등의 *패턴*만
     따른다(코드 재사용 아님 — 통지는 fire-and-forget push라 작업 디스패치와 다른 도메인).
+
+    같은 키의 동시 호출과 채널의 동기 재진입은 process-local in-flight 예약으로 한 번만
+    `send`에 들어간다. 채널 IO 중에는 lock을 놓으므로 다른 키는 독립적으로 진행한다. 이 장치는
+    한 `Notifier` 인스턴스 안의 중복 진입만 막는다. 채널이 실제 전달 뒤 예외를 내거나 프로세스가
+    재시작되는 경우의 물리적 exactly-once는 주장하지 않는다.
     """
 
     def __init__(self, subscriptions: dict[str, NotificationChannel] | None = None) -> None:
@@ -311,25 +320,36 @@ class Notifier:
         self._subscriptions: dict[str, NotificationChannel] = dict(subscriptions or {})
         # 이미 보낸 멱등 키 (recipient_id, kind, subject_ref) — 중복 발송 차단(결정 5).
         self._sent: set[tuple[str, NotificationKind, str]] = set()
+        # check/reserve/finish를 한 process 안에서 직렬화한다. 외부 channel.send는 lock 밖에서
+        # 실행해 다른 키의 통지와 동기 재진입을 막지 않는다.
+        self._lock = RLock()
+        self._inflight: set[tuple[str, NotificationKind, str]] = set()
 
     def notify(self, notification: Notification) -> None:
         """한 적재 사건의 통지를 구독 채널로 push한다(멱등·미구독 skip — ADR 0022 결정 3·5).
 
-        절차: ① 멱등 — `(recipient_id, kind, subject_ref)`가 이미 보냈으면 skip ② 구독 조회 —
-        recipient에 채널이 없으면 skip(처리함 pull 그대로·미아 없음) ③ `channel.send` 1회 +
-        멱등 키 기록. 전송 실패(채널이 던짐)는 삼키고 전달 로그에 실패로 남긴다(MVP fire-and-
-        forget — 실 재시도/dead-letter는 게이트 밖, 결정 5·8).
-
-        **현재는 shape stub(미구현)** — 본문은 tdd-engineer가 red→green으로 채운다.
+        절차: ① lock 안에서 `(recipient_id, kind, subject_ref)`의 sent/in-flight를 확인하고 예약
+        ② 구독이 없으면 skip ③ lock 밖에서 `channel.send` 1회 ④ 성공만 sent로 확정하고 in-flight를
+        해제한다. 전송 실패는 삼키며 sent로 표시하지 않아, 전송이 끝난 뒤의 새 호출이 재시도할 수
+        있다(MVP fire-and-forget — 실 재시도/dead-letter는 게이트 밖, 결정 5·8).
         """
         key = (notification.recipient_id, notification.kind, notification.subject_ref)
-        if key in self._sent:
-            return
-        channel = self._subscriptions.get(notification.recipient_id)
-        if channel is None:
-            return
+        with self._lock:
+            if key in self._sent or key in self._inflight:
+                return
+            channel = self._subscriptions.get(notification.recipient_id)
+            if channel is None:
+                return
+            self._inflight.add(key)
+        delivered = False
         try:
             channel.send(notification)
         except Exception:
-            return
-        self._sent.add(key)
+            pass
+        else:
+            delivered = True
+        finally:
+            with self._lock:
+                if delivered:
+                    self._sent.add(key)
+                self._inflight.discard(key)

@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from agent_org_network.answer_record import (
+    AnswerRecordReader,
     CorrectionStore,
     FeedbackStore,
     InMemoryAnswerRecordStore,
@@ -25,8 +26,7 @@ from agent_org_network.answer_record import (
     monitoring_for_owner,
 )
 from agent_org_network.presence import PresenceStatus
-from agent_org_network.runtime import Answer, StubRuntime
-from agent_org_network.transport import WebSocketDispatcher
+from agent_org_network.runtime import StubRuntime
 from agent_org_network.web import create_app
 
 
@@ -67,7 +67,7 @@ def _client(
     correction_store: CorrectionStore | None = None,
     feedback_store: FeedbackStore | None = None,
     presence_of: Any = None,
-) -> tuple[TestClient, InMemoryAnswerRecordStore, CorrectionStore]:
+) -> tuple[TestClient, AnswerRecordReader, CorrectionStore]:
     ars = answer_record_store if answer_record_store is not None else InMemoryAnswerRecordStore()
     cs = correction_store if correction_store is not None else InMemoryCorrectionStore()
     app = create_app(
@@ -77,7 +77,7 @@ def _client(
         feedback_store=feedback_store,
         presence_of=presence_of,
     )
-    return TestClient(app), ars, cs
+    return TestClient(app), cast(AnswerRecordReader, app.state.answer_record_view), cs
 
 
 def _seed_answer(client: TestClient) -> dict[str, Any]:
@@ -94,15 +94,14 @@ def test_ask가_답을_내면_answer_record가_적재된다() -> None:
     # 답변 페이지 정정 조회용 불투명 손잡이가 사용자向 응답에 실린다.
     record_id = body["record_id"]
     assert isinstance(record_id, str) and record_id
-    # 중앙 스토어에 그 답이 감사 단위로 append됐다.
+    # Finalization 저장소의 read view에 감사 단위가 보인다.
     rec = ars.get(record_id)
     assert rec is not None
     assert rec.answer_text == body["text"]
     assert rec.agent_id == body["answered_by"]["agent_id"]
 
 
-def test_오프라인_담당자_자동발신은_검토필요로_적재된다() -> None:
-    # presence_of가 그 에이전트를 offline으로 보고하고 mode=full이면 검토 필요 표식.
+def test_P17_Finalization_record는_offline_policy_증거를_원자_보존한다() -> None:
     client, ars, _ = _client(presence_of=_fixed_presence("offline"))
     body = _seed_answer(client)
     rec = ars.get(body["record_id"])
@@ -110,12 +109,13 @@ def test_오프라인_담당자_자동발신은_검토필요로_적재된다() -
     assert rec.needs_correction_review is True
 
 
-def test_온라인_담당자는_검토필요_아님() -> None:
+def test_온라인_담당자는_사전승인_대기라_AnswerRecord가_없다() -> None:
     client, ars, _ = _client(presence_of=_fixed_presence("online"))
     body = _seed_answer(client)
-    rec = ars.get(body["record_id"])
-    assert rec is not None
-    assert rec.needs_correction_review is False
+    assert body["type"] == "pending"
+    assert body["state"] == "awaiting_approval"
+    assert "record_id" not in body
+    assert ars.for_agent("contract_ops") == []
 
 
 # ── (A) 담당자 모니터링 목록 ─────────────────────────────────────────────
@@ -146,16 +146,18 @@ def test_모니터링_검토필요_필터() -> None:
         )
     )
     assert len(items) == 1
+    assert items[0]["record_id"] == body["record_id"]
     assert items[0]["needs_correction_review"] is True
 
-    # 온라인 답은 검토 필요 필터에서 빠진다.
+    # 온라인 후보는 사전승인 대기이므로 아직 감독 대상 AnswerRecord가 없다.
     client2, _, _ = _client(presence_of=_fixed_presence("online"))
     body2 = _seed_answer(client2)
+    assert body2["type"] == "pending"
     items2 = _list(
         _get(
             client2,
             "/supervision/answers",
-            params={"agent_id": body2["answered_by"]["agent_id"], "needs_review": "true"},
+            params={"agent_id": agent_id, "needs_review": "true"},
         )
     )
     assert items2 == []
@@ -322,38 +324,25 @@ def test_supervision_페이지가_서빙된다() -> None:
     assert "답변 감독" in res.text
 
 
-def test_분산_회신_경로도_answer_record를_멱등_적재한다() -> None:
-    ars = InMemoryAnswerRecordStore()
+def test_P17_질문은_legacy_WS_회신_경로를_통하지_않는다() -> None:
+    legacy = InMemoryAnswerRecordStore()
     cs = InMemoryCorrectionStore()
-    ws = WebSocketDispatcher()
     app = create_app(
         runtime=StubRuntime(),
-        dispatcher=ws,
-        answer_record_store=ars,
+        answer_record_store=legacy,
         correction_store=cs,
     )
-    client = TestClient(app)
+    reader = cast(AnswerRecordReader, app.state.answer_record_view)
 
-    # 워커 미연결 → dispatched(tracking).
-    asked = _json(_post(client, "/ask", {"question": "환불 되나요?"}))
-    assert asked["kind"] == "dispatched"
-    tracking = asked["tracking"]
+    with TestClient(app) as client:
+        asked = _json(_post(client, "/ask", {"question": "환불 되나요?"}))
+        again = _json(_get(client, f"/ask/{asked['request_id']}"))
 
-    # 워커 회신 시뮬.
-    ticket = ws.claim("cs_lead")
-    assert ticket is not None
-    ws.submit(ticket.ticket_id, Answer(text="환불 가능합니다", sources=(), mode="full"))
-
-    # 첫 회수 → answered + record_id, 스토어에 적재.
-    after = _json(_get(client, f"/ask/{tracking}"))
-    assert after["type"] == "answered"
-    record_id = after["record_id"]
-    assert ars.get(record_id) is not None
-
-    # 재회수 → 같은 record_id(멱등 — 새 레코드 안 만듦).
-    again = _json(_get(client, f"/ask/{tracking}"))
-    assert again["record_id"] == record_id
-    assert len(ars.for_agent("cs_ops")) == 1
+    assert asked["type"] == "answered"
+    assert again["record_id"] == asked["record_id"]
+    assert reader.get(asked["record_id"]) is not None
+    assert len(reader.for_agent("cs_ops")) == 1
+    assert legacy.get(asked["record_id"]) is None
 
 
 # ── 도메인 조회 코어 회귀(모니터링 투영이 정정 이력을 싣는다) ─────────────

@@ -1,8 +1,8 @@
 # ADR 0037 — Co-grounding(다중 에이전트 지식 접지): Authority primary 단일 귀속 · 포트 최소 진화 · 답+합의 병행
 
-- 상태: 채택(Accepted)
+- 상태: 채택(Accepted) · **적용 범위 메모:** ADR 0042가 request-aware Contested의 즉시 답변과 사전순 primary를 대체했다. ADR 0046은 이 경로의 다중 접지를 primary 확정 뒤로 옮기고 bare string grounding resolver 대신 typed `GroundingKnowledgeReader(Found | Missing | Invalid)`를 요구한다. 이 문서의 답+합의 병행과 문자열 resolver는 `request_id is None`인 legacy 경로의 기록으로 남는다.
 - 날짜: 2026-07-06 (사용자 승인)
-- 계보: ADR 0036 결정 5(에스컬레이션 사다리 ①·COMPLEMENTS 엣지가 다중 접지를 구동하는 다리)의 **첫 코드 액션 구체화**. ADR 0024(발화 스레드 `assemble_context`·이름 충돌 해소 대상)·ADR 0027(공급자 런타임 포트 무변경 원칙)·ADR 0033(중앙 답변·`Knowledge Store`)·ADR 0028(§17 stage-2·`TwoStageRouter`·Contested tie-break)·ADR 0002/0008/0014(Contested·1인칭 합의·Manager 큐)·ADR 0012(`Answer Record`·`BackupReview` HITL)의 후속(supersede 아님).
+- 계보: ADR 0036 결정 5(에스컬레이션 사다리 ①·COMPLEMENTS 엣지가 다중 접지를 구동하는 다리)의 **첫 코드 액션 구체화**. ADR 0024(발화 스레드 `assemble_context`·이름 충돌 해소 대상)·ADR 0027(공급자 런타임 포트 무변경 원칙)·ADR 0033(중앙 답변·`Knowledge Store`)·ADR 0028(§17 stage-2·`TwoStageRouter`·Contested tie-break)·ADR 0002/0008/0014(Contested·1인칭 합의·Manager 큐)·ADR 0012(`Answer Record`·`BackupReview` HITL)의 후속이다. 이후 ADR 0042가 request-aware 즉시 답변을 대체했고, ADR 0046이 post-primary 접지와 Request 재개 계약을 제안한다.
 - 근거 본체: [`docs/trustgraph-eval-2026-07-06.md`](../trustgraph-eval-2026-07-06.md) §3(답변 통증 = 경계 넘는 접지)·§9-3(D1 단일 접지=절반 답 vs D2 이중 접지=완전한 답 실증).
 
 ---

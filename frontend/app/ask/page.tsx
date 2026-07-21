@@ -10,18 +10,32 @@ import { Tag } from "@/components/ui/tag";
 import { RoutingTrace } from "@/components/ask/routing-trace";
 import { SourceCard } from "@/components/ask/source-card";
 import type { RoutingStep, SourceCard as SourceCardData } from "@/lib/mock-data";
-import { streamAsk, modeMeta, pendingTraceLabel, AskError } from "@/lib/ask-api";
+import {
+  streamAsk,
+  getRequest,
+  modeMeta,
+  reviewStatusLabel,
+  pendingTraceLabel,
+  pendingUserMessage,
+  AskError,
+  type AnswerMode,
+  type AskDone,
+  type ReviewStatus,
+} from "@/lib/ask-api";
 
 type UserTurn = { id: string; role: "user"; text: string };
 
 type OrgTurn = {
   id: string;
   role: "org";
+  requestId?: string;
+  recordId?: string;
   // answered
   text?: string;
   owner?: string;
   agentId?: string;
-  confidence?: keyof typeof modeMeta;
+  mode?: AnswerMode;
+  reviewStatus?: ReviewStatus;
   sources?: SourceCardData[];
   // pending / error
   trace?: RoutingStep[];
@@ -97,64 +111,117 @@ export default function AskPage() {
     ]);
 
     try {
-      // SSE token streaming (ADR 0031): meta(담당 즉시) → token*(델타 누적) →
-      // done(최종 신뢰 배지). Pending(다툼/담당 없음/대기)은 단독 안내. error는 중립.
+      let completed: AskDone | undefined;
       await streamAsk(q, {
-        onMeta: (m) => {
+        onAccepted: (event) => {
           patchTurn(orgId, (t) => {
-            t.owner = m.answered_by.owner;
-            t.agentId = m.answered_by.agent_id;
-            t.confidence = m.mode;
-            t.sources = toSourceCards(
-              m.sources,
-              m.answered_by.owner,
-              m.answered_by.agent_id
-            );
+            t.requestId = event.request_id;
             t.trace = [
-              { id: "tr1", label: "담당 찾는 중", state: "done" },
-              { id: "tr2", label: `${m.answered_by.agent_id} 전달됨`, state: "done" },
-              { id: "tr3", label: "답변 작성 중", state: "active" },
+              { id: "tr1", label: "질문 접수됨", state: "done" },
+              { id: "tr2", label: "담당 확인 중", state: "active" },
             ];
           });
         },
-        onToken: (delta) => {
+        onToken: (event) => {
           patchTurn(orgId, (t) => {
             t.loading = false;
-            t.text = (t.text ?? "") + delta;
+            t.text = (t.text ?? "") + event.text;
           });
         },
-        onDone: (d) => {
+        onDone: (event) => {
+          completed = event;
           patchTurn(orgId, (t) => {
-            t.loading = false;
-            t.confidence = d.mode;
-            if (d.sources.length > 0 && t.owner) {
-              t.sources = toSourceCards(d.sources, t.owner, t.agentId ?? t.owner);
-            }
+            t.requestId = event.request_id;
+            t.recordId = event.record_id;
+            t.loading = true;
+            t.mode = event.mode;
+            t.reviewStatus = event.review_status;
             t.trace = [
-              { id: "tr1", label: "담당 찾는 중", state: "done" },
-              { id: "tr2", label: `${t.agentId ?? "담당"} 전달됨`, state: "done" },
-              { id: "tr3", label: "답변 작성 완료", state: "done" },
+              { id: "tr1", label: "질문 접수됨", state: "done" },
+              { id: "tr2", label: "답변 확정됨", state: "done" },
+              { id: "tr3", label: "확정된 답 불러오는 중", state: "active" },
             ];
           });
         },
-        onPending: (p) => {
+        onPending: (event) => {
           patchTurn(orgId, (t) => {
+            t.requestId = event.request_id;
             t.loading = false;
-            t.pendingMessage = p.message;
+            t.text = undefined;
+            t.pendingMessage = pendingUserMessage(event);
             t.trace = [
-              { id: "tr1", label: "담당 찾는 중", state: "done" },
-              { id: "tr2", label: pendingTraceLabel(p.kind), state: "done" },
+              { id: "tr1", label: "질문 접수됨", state: "done" },
+              { id: "tr2", label: pendingTraceLabel(event.kind), state: "done" },
             ];
           });
         },
-        onError: (msg) => {
+        onDeclined: (event) => {
           patchTurn(orgId, (t) => {
+            t.requestId = event.request_id;
             t.loading = false;
-            t.error = msg;
+            t.text = undefined;
+            t.error = "질문 처리가 거절되었습니다.";
+            t.trace = undefined;
+          });
+        },
+        onFailed: (event) => {
+          patchTurn(orgId, (t) => {
+            t.requestId = event.request_id;
+            t.loading = false;
+            t.text = undefined;
+            t.error = "질문을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+            t.trace = undefined;
+          });
+        },
+        onInterrupted: (event) => {
+          patchTurn(orgId, (t) => {
+            t.requestId = event.request_id;
+            t.loading = false;
+            t.text = undefined;
+            t.error = event.retryable
+              ? "처리가 잠시 중단되었습니다. 같은 요청 ID로 다시 확인해 주세요."
+              : "처리를 이어갈 수 없습니다. 새 질문으로 다시 시도해 주세요.";
             t.trace = undefined;
           });
         },
       });
+
+      const done = completed;
+      if (done) {
+        const canonical = await getRequest(done.request_id);
+        if (
+          canonical?.type !== "answered" ||
+          canonical.record_id !== done.record_id ||
+          canonical.mode !== done.mode ||
+          canonical.review_status !== done.review_status ||
+          canonical.answered_by.owner !== done.answered_by ||
+          canonical.answered_by.agent_id !== done.agent_id ||
+          canonical.sources.length !== done.sources.length ||
+          canonical.sources.some((source, index) => source !== done.sources[index])
+        ) {
+          throw new AskError("확정된 답변을 안전하게 불러오지 못했습니다.");
+        }
+        patchTurn(orgId, (t) => {
+          t.requestId = canonical.request_id;
+          t.recordId = canonical.record_id;
+          t.loading = false;
+          t.text = canonical.text;
+          t.owner = canonical.answered_by.owner;
+          t.agentId = canonical.answered_by.agent_id;
+          t.mode = canonical.mode;
+          t.reviewStatus = canonical.review_status;
+          t.sources = toSourceCards(
+            canonical.sources,
+            canonical.answered_by.owner,
+            canonical.answered_by.agent_id
+          );
+          t.trace = [
+            { id: "tr1", label: "질문 접수됨", state: "done" },
+            { id: "tr2", label: "답변 확정됨", state: "done" },
+            { id: "tr3", label: "확정된 답 확인 완료", state: "done" },
+          ];
+        });
+      }
     } catch (err) {
       const msg =
         err instanceof AskError ? err.message : "알 수 없는 오류가 발생했습니다.";
@@ -240,16 +307,23 @@ export default function AskPage() {
 
                     {/* error bubble — real network/4xx/5xx state, not a mock */}
                     {turn.error ? (
-                      <div
-                        role="alert"
-                        className="flex items-start gap-ds-8 rounded-lg rounded-tl-sm border border-[color-mix(in_srgb,var(--ds-color-danger)_40%,transparent)] bg-[color-mix(in_srgb,var(--ds-color-danger)_8%,transparent)] px-ds-16 py-ds-12 text-sm text-[var(--ds-color-ink)]"
-                      >
-                        <AlertCircle
-                          aria-hidden
-                          className="mt-[2px] h-4 w-4 shrink-0 text-[var(--ds-color-danger)]"
-                        />
-                        <span>{turn.error}</span>
-                      </div>
+                      <>
+                        <div
+                          role="alert"
+                          className="flex items-start gap-ds-8 rounded-lg rounded-tl-sm border border-[color-mix(in_srgb,var(--ds-color-danger)_40%,transparent)] bg-[color-mix(in_srgb,var(--ds-color-danger)_8%,transparent)] px-ds-16 py-ds-12 text-sm text-[var(--ds-color-ink)]"
+                        >
+                          <AlertCircle
+                            aria-hidden
+                            className="mt-[2px] h-4 w-4 shrink-0 text-[var(--ds-color-danger)]"
+                          />
+                          <span>{turn.error}</span>
+                        </div>
+                        {turn.requestId && (
+                          <div className="mt-ds-8 flex flex-wrap items-center gap-ds-8">
+                            <Tag tone="neutral">요청 {turn.requestId}</Tag>
+                          </div>
+                        )}
+                      </>
                     ) : turn.loading && !turn.text ? (
                       <div className="inline-flex items-center gap-ds-8 rounded-lg rounded-tl-sm border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-16 py-ds-12 text-sm text-[var(--ds-color-ink-muted)]">
                         <Loader2
@@ -266,9 +340,12 @@ export default function AskPage() {
                           {turn.text ?? turn.pendingMessage}
                         </div>
 
-                        {/* owner · confidence — the only routing-facing chips users see */}
-                        {(turn.owner || turn.confidence) && (
+                        {/* Request ID와 확정된 책임·신뢰 표식만 표시한다. */}
+                        {(turn.requestId || turn.owner || turn.mode || turn.reviewStatus) && (
                           <div className="mt-ds-8 flex flex-wrap items-center gap-ds-8">
+                            {turn.requestId && (
+                              <Tag tone="neutral">요청 {turn.requestId}</Tag>
+                            )}
                             {turn.owner && (
                               <Tag tone="info">
                                 담당 {turn.owner}
@@ -279,11 +356,16 @@ export default function AskPage() {
                                 )}
                               </Tag>
                             )}
-                            {turn.confidence && (
+                            {turn.mode && (
                               <StatusBadge
-                                tone={modeMeta[turn.confidence].tone}
-                                label={modeMeta[turn.confidence].label}
+                                tone={modeMeta[turn.mode].tone}
+                                label={modeMeta[turn.mode].label}
                               />
+                            )}
+                            {turn.reviewStatus && (
+                              <Tag tone="success">
+                                {reviewStatusLabel[turn.reviewStatus]}
+                              </Tag>
                             )}
                           </div>
                         )}

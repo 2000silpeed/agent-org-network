@@ -194,18 +194,178 @@
       log.scrollTop = log.scrollHeight;
     }
 
+    const internalReplyKeys = [
+      "route", "routes", "candidate", "candidates", "policy", "policy_version",
+      "confidence", "reason", "manager_id", "ticket_id"
+    ];
+
+    function nonBlank(value) {
+      return typeof value === "string" && value.trim().length > 0;
+    }
+
+    function hasInternalReplyKey(value) {
+      return internalReplyKeys.some((key) => Object.prototype.hasOwnProperty.call(value, key));
+    }
+
+    function parseReply(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      if (hasInternalReplyKey(value) || !nonBlank(value.request_id) || !nonBlank(value.type)) {
+        return null;
+      }
+
+      if (value.type === "answered") {
+        const by = value.answered_by;
+        const validMode = ["full", "draft_only", "backup"].includes(value.mode);
+        const validReview = ["not_required", "approved"].includes(value.review_status);
+        if (
+          !nonBlank(value.record_id) || !nonBlank(value.text) || !validMode ||
+          !validReview || !Array.isArray(value.sources) ||
+          !value.sources.every(nonBlank) || !by || typeof by !== "object" ||
+          Array.isArray(by) || hasInternalReplyKey(by) || !nonBlank(by.owner) ||
+          !nonBlank(by.agent_id)
+        ) return null;
+        return value;
+      }
+
+      if (value.type === "pending") {
+        const validKind = ["dispatched", "contested", "unowned"].includes(value.kind);
+        if (
+          !validKind || !nonBlank(value.state) || typeof value.retryable !== "boolean" ||
+          !nonBlank(value.message) || value.tracking !== value.request_id
+        ) return null;
+        return {
+          type: value.type,
+          request_id: value.request_id,
+          kind: value.kind,
+          state: value.state,
+          retryable: value.retryable
+        };
+      }
+
+      if (
+        value.type === "declined" && nonBlank(value.reason_code) && nonBlank(value.message)
+      ) return value;
+      if (
+        value.type === "failed" && nonBlank(value.error_code) && nonBlank(value.message)
+      ) return value;
+      return null;
+    }
+
+    function parseRequestResult(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      if (
+        hasInternalReplyKey(value) || !nonBlank(value.request_id) ||
+        Object.prototype.hasOwnProperty.call(value, "type") ||
+        Object.prototype.hasOwnProperty.call(value, "tracking") ||
+        Object.prototype.hasOwnProperty.call(value, "text")
+      ) return null;
+
+      const markers = ["answer_text", "kind", "reason_code", "error_code"]
+        .filter((key) => Object.prototype.hasOwnProperty.call(value, key));
+      if (markers.length !== 1) return null;
+
+      if (markers[0] === "answer_text") {
+        const validMode = ["full", "draft_only", "backup"].includes(value.mode);
+        const validReview = ["not_required", "approved"].includes(value.review_status);
+        if (
+          !nonBlank(value.answer_text) || !nonBlank(value.record_id) || !validMode ||
+          !validReview || !Array.isArray(value.sources) ||
+          !value.sources.every(nonBlank) || !nonBlank(value.answered_by) ||
+          !nonBlank(value.agent_id)
+        ) return null;
+        return {
+          type: "answered",
+          request_id: value.request_id,
+          record_id: value.record_id,
+          text: value.answer_text,
+          answered_by: { owner: value.answered_by, agent_id: value.agent_id },
+          mode: value.mode,
+          sources: value.sources,
+          review_status: value.review_status
+        };
+      }
+
+      if (markers[0] === "kind") {
+        const validKind = ["routing", "routed", "contested", "unowned"].includes(value.kind);
+        const validState = [
+          "received", "ready_to_dispatch", "awaiting_answer", "awaiting_conflict",
+          "awaiting_manager", "awaiting_approval"
+        ].includes(value.state);
+        if (
+          !validKind || !validState || typeof value.retryable !== "boolean" ||
+          !nonBlank(value.message)
+        ) return null;
+        return {
+          type: "pending",
+          request_id: value.request_id,
+          kind: value.kind,
+          state: value.state,
+          retryable: value.retryable
+        };
+      }
+
+      if (
+        markers[0] === "reason_code" && nonBlank(value.reason_code) && nonBlank(value.message)
+      ) return { type: "declined", request_id: value.request_id };
+      if (
+        markers[0] === "error_code" && nonBlank(value.error_code) && nonBlank(value.message)
+      ) return { type: "failed", request_id: value.request_id };
+      return null;
+    }
+
+    function requestFooter(reply) {
+      const footer = el("div", "footer");
+      footer.appendChild(el("span", null, "요청 " + reply.request_id));
+      return footer;
+    }
+
+    function pendingMessage(reply) {
+      if (reply.kind === "unowned") {
+        return "담당을 지정하고 있습니다. 답변은 아직 준비되지 않았습니다.";
+      }
+      if (reply.kind === "contested") {
+        return "담당 범위를 확인하고 있습니다. 답변은 아직 준비되지 않았습니다.";
+      }
+      if (reply.state === "awaiting_approval") {
+        return "답변을 검토하고 있습니다. 승인 전에는 본문을 표시하지 않습니다.";
+      }
+      return "질문을 처리하고 있습니다. 답변이 준비되면 같은 요청 ID로 확인할 수 있습니다.";
+    }
+
     function fillBubble(bubble, reply) {
       bubble.textContent = "";
       if (reply.type === "pending") {
-        bubble.appendChild(el("div", null, reply.message));
+        bubble.appendChild(el("div", null, pendingMessage(reply)));
+        bubble.appendChild(requestFooter(reply));
+        return;
+      }
+      if (reply.type === "declined") {
+        bubble.appendChild(el("div", null, "질문 처리가 거절되었습니다."));
+        bubble.appendChild(requestFooter(reply));
+        return;
+      }
+      if (reply.type === "failed") {
+        bubble.appendChild(el("div", null, "질문을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요."));
+        bubble.appendChild(requestFooter(reply));
         return;
       }
       bubble.appendChild(el("div", null, reply.text));
 
-      const footer = el("div", "footer");
-      footer.appendChild(el("span", null, "담당 " + reply.answered_by.agent_id));
-      const modeLabel = reply.mode === "full" ? "답변 확정" : "초안";
+      const footer = requestFooter(reply);
+      footer.appendChild(el(
+        "span",
+        null,
+        "담당 " + reply.answered_by.owner + " · " + reply.answered_by.agent_id
+      ));
+      const modeLabels = {
+        full: "확정 답변",
+        draft_only: "승인 대기",
+        backup: "백업 답변"
+      };
+      const modeLabel = modeLabels[reply.mode];
       footer.appendChild(el("span", "badge " + reply.mode, modeLabel));
+      const reviewLabel = reply.review_status === "approved" ? "검토 완료" : "별도 검토 불필요";
+      footer.appendChild(el("span", null, reviewLabel));
 
       if (reply.sources && reply.sources.length) {
         const src = el("div", "sources");
@@ -276,20 +436,22 @@
       return { row, bubble };
     }
 
-    // dispatched(워커) 답은 즉답이 아니라 워커가 나중에 회신한다 — tracking으로 폴링해
-    // 준비되면 Answer를 돌려준다(미아 없음: 안 와도 처리함은 그대로). 진행 표시는 stage가 맡는다.
-    async function pollForAnswer(tracking) {
+    // request_id 하나로 질문의 전체 수명주기를 조회한다. 별도 bearer나 보조 추적값은 없다.
+    async function pollRequest(requestId) {
       for (let i = 0; i < 90; i++) {
         await new Promise((r) => setTimeout(r, 2000));
-        let data;
+        let reply;
         try {
-          const res = await fetch("/ask/" + encodeURIComponent(tracking));
+          const res = await fetch("/requests/" + encodeURIComponent(requestId));
+          if (res.status === 404) return null;
           if (!res.ok) continue;
-          data = await res.json();
+          if (res.headers.get("x-request-id") !== requestId) return null;
+          reply = parseRequestResult(await res.json());
         } catch (_) {
           continue;
         }
-        if (data.type === "answered") return data;
+        if (!reply || reply.request_id !== requestId) return null;
+        if (reply.type !== "pending" || !reply.retryable) return reply;
       }
       return null;
     }
@@ -347,7 +509,9 @@
         body: JSON.stringify({ question }),
       });
       if (!res.ok) throw new Error("요청 실패: " + res.status);
-      return res.json();
+      const reply = parseReply(await res.json());
+      if (!reply) throw new Error("예상치 못한 응답 형식입니다.");
+      return reply;
     }
 
     form.addEventListener("submit", async (e) => {
@@ -375,17 +539,20 @@
       if (reply.type === "answered") {
         stage.done("담당이 답했어요");
         addOrg(reply);
-      } else if (reply.type === "pending" && reply.tracking) {
+      } else if (reply.type === "pending" && reply.retryable) {
         stage.dispatched(); // ② "담당에게 전달됨 · 답변 작성 중 (n초)"
-        const answer = await pollForAnswer(reply.tracking);
-        if (answer) {
+        const result = await pollRequest(reply.request_id);
+        if (result && result.type === "answered") {
           stage.done("담당이 답했어요"); // ③ 정착
-          addOrg(answer); // 답은 별도 말풍선으로
+          addOrg(result); // 답은 별도 말풍선으로
+        } else if (result) {
+          stage.done("확인됨");
+          addOrg(result);
         } else {
-          stage.fail("아직 답을 받지 못했어요 — 담당 워커가 처리 중이거나 미연결");
+          stage.fail("아직 답을 받지 못했어요. 잠시 후 다시 확인해 주세요.");
+          addOrg(reply);
         }
       } else {
-        // escalation·contested 등 — 단계는 끝났고 안내 메시지를 말풍선으로 보여준다.
         stage.done("확인됨");
         addOrg(reply);
       }

@@ -131,6 +131,8 @@ OPERATOR_SESSION_SECRET=$(openssl rand -hex 32) uv run uvicorn agent_org_network
 # 운영 화면 들어가기 전에: POST /login {"user_id":"cs_lead"} 로 로그인
 ```
 
+로컬에선 `scripts/run_web.sh`(기본 포트 8011)를 쓰면 편합니다 — 처음 실행 시 서명 키를 한 번 만들어 gitignored `.env`에 보존하므로(재시작에도 같은 키), **로그인이 기본으로 동작**합니다. 직접 채울 변수는 `.env.example` 참고.
+
 **질문을 더 똑똑하게 알아듣게 하기** — 기본은 키워드로 담당을 찾습니다(`환불`·`가격`·`계약` 같은 단어가 있어야 함). 자연스러운 문장까지 알아듣게 하려면 `AON_CLASSIFIER=llm`으로 띄우세요. 그러면 실제 claude가 질문을 읽고 담당을 정합니다.
 
 ```bash

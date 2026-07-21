@@ -246,7 +246,7 @@ def create_scoped_credential_issue_bridge_capability(
     path: object,
     scoped_capability: CredentialIssueScopedOperationsCapability,
     delivery: _ReleaseDelivery,
-    secret_factory: object,
+    secret_factory: Callable[[], str],
     cleanup_readiness: CredentialIssueCleanupReadinessCapability,
 ) -> ScopedCredentialIssueBridgeCapability:
     if (

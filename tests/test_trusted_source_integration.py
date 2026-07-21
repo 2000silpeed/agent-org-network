@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from agent_org_network.question_surface_composition import QuestionSurfaceComposition
+from agent_org_network.reciprocal_review import SourceBindingAuthorizationEnvelopeV7
 from agent_org_network.sqlite_source_binding_worker_v7 import SourceBindingOperationRequest
 from agent_org_network.production_bootstrap import (
     ProductionBootstrapHandle,
@@ -12,15 +15,18 @@ from agent_org_network.production_bootstrap import (
     bootstrap_authorized_production,
     bootstrap_production,
 )
-from agent_org_network.trusted_source_binding_authority import _bootstrap_source_binding_wiring
+from agent_org_network.trusted_source_binding_authority import (
+    _bootstrap_source_binding_wiring,  # pyright: ignore[reportPrivateUsage]
+)
 from agent_org_network.trusted_source_integration import (
     DeterministicSignedFakeTransport,
     SourceConditionalConflict,
+    SourceIntegrationProfile,
     TrustedSourceIntegrationRegistry,
     TrustedSourceIntegrationUnavailable,
-    _bootstrap_source_integration_profile,
-    _bootstrap_trusted_source_integration_registry,
-    _bootstrap_trusted_source_integration_wiring,
+    _bootstrap_source_integration_profile,  # pyright: ignore[reportPrivateUsage]
+    _bootstrap_trusted_source_integration_registry,  # pyright: ignore[reportPrivateUsage]
+    _bootstrap_trusted_source_integration_wiring,  # pyright: ignore[reportPrivateUsage]
 )
 import test_production_authority as production_authority
 
@@ -58,7 +64,14 @@ def test_registry_rejects_arbitrary_profile_and_profile_constructor_is_sealed() 
     with pytest.raises(TypeError):
         TrustedSourceIntegrationRegistry("caller", {}, {})
     with pytest.raises(TypeError):
-        type(_profile())("caller")
+        SourceIntegrationProfile(
+            "caller",
+            profile_id="confluence-prod", profile_version="1", profile_digest="a" * 64,
+            org_id="org", source_ref="source", external_target_fingerprint="target-sha256",
+            mtls_client_identity_ref="hsm://mtls/client-1", tls_server_identity="source.example",
+            credential_ref="vault://opaque/rotation-7", credential_generation=7,
+            policy_digest="policy", signing_key_id="source-observer-1",
+        )
 
 
 def test_profile_never_accepts_credential_material() -> None:
@@ -126,12 +139,22 @@ def test_only_authorized_live_bootstrap_opens_profile_and_close_or_source_mismat
     capability = production_authority._capability()  # pyright: ignore[reportPrivateUsage]
     surface = capability._question_surface  # pyright: ignore[reportPrivateUsage]
     target = tmp_path / "binding.sqlite"
+
+    def _resolver(
+        envelope: SourceBindingAuthorizationEnvelopeV7, purpose: str, now: datetime
+    ) -> bool:
+        return True
+
     binding_wiring = _bootstrap_source_binding_wiring(
-        issuer_registry={"issuer": b"issuer-key"}, resolver=lambda *_args: True,
+        issuer_registry={"issuer": b"issuer-key"}, resolver=_resolver,
         database_wiring=target, source_wiring="source:trusted",
     )
+
+    def _composition_factory(*, production_style: bool) -> QuestionSurfaceComposition:
+        return surface
+
     dependencies = ProductionDependencies(
-        composition_factory=lambda *, production_style: surface,
+        composition_factory=_composition_factory,
         close=lambda: None, authority_capability=capability, source_binding_wiring=binding_wiring,
         trusted_source_integration_wiring=integration_wiring,
     )
@@ -143,11 +166,15 @@ def test_only_authorized_live_bootstrap_opens_profile_and_close_or_source_mismat
     # A new single-use authority/capability is required for the authorized bootstrap.
     capability = production_authority._capability()  # pyright: ignore[reportPrivateUsage]
     surface = capability._question_surface  # pyright: ignore[reportPrivateUsage]
+
+    def _authorized_composition_factory(*, production_style: bool) -> QuestionSurfaceComposition:
+        return surface
+
     authorized = bootstrap_authorized_production(
         environ=production_authority._environ(),  # pyright: ignore[reportPrivateUsage]
         dependency_factory=production_authority._Factory(  # pyright: ignore[reportPrivateUsage]
             ProductionDependencies(
-                composition_factory=lambda *, production_style: surface, close=lambda: None,
+                composition_factory=_authorized_composition_factory, close=lambda: None,
                 authority_capability=capability, source_binding_wiring=binding_wiring,
                 trusted_source_integration_wiring=integration_wiring,
             )

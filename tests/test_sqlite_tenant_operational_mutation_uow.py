@@ -374,7 +374,10 @@ def test_eight_connections_same_transfer_replay_once(tmp_path: Path) -> None:
     lock = threading.Lock()
 
     def contender() -> None:
-        connection = sqlite3.connect(path, timeout=5)
+        # CI 저사양 러너에서 8커넥션 락 큐 대기가 5s를 넘어 R1.0 검증이
+        # OperationalError→unavailable로 오탐된 flake(2026-07-22 run 29892932953).
+        # 대기 여유만 늘린다 — 1 winner + 7 exact replay 단언은 불변.
+        connection = sqlite3.connect(path, timeout=30)
         try:
             barrier.wait(timeout=5)
             result = execute_sqlite_tenant_operational_mutation(connection, command)
@@ -390,7 +393,7 @@ def test_eight_connections_same_transfer_replay_once(tmp_path: Path) -> None:
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(timeout=10)
+        thread.join(timeout=60)
     assert failures == []
     assert len(outcomes) == 8
     assert sum(getattr(value, "replayed", None) is False for value in outcomes) == 1
@@ -426,7 +429,10 @@ def test_eight_connections_different_session_commands_have_one_winner(tmp_path: 
     lock = threading.Lock()
 
     def contender(index: int) -> None:
-        connection = sqlite3.connect(path, timeout=5)
+        # CI 저사양 러너에서 8커넥션 락 큐 대기가 5s를 넘어 R1.0 검증이
+        # OperationalError→unavailable로 오탐된 flake(2026-07-22 run 29892932953).
+        # 대기 여유만 늘린다 — 1 winner + 7 exact replay 단언은 불변.
+        connection = sqlite3.connect(path, timeout=30)
         try:
             barrier.wait(timeout=5)
             command = SessionEndCommand(
@@ -445,7 +451,7 @@ def test_eight_connections_different_session_commands_have_one_winner(tmp_path: 
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(timeout=10)
+        thread.join(timeout=60)
     assert len(outcomes) == 8
     assert sum(value != "conflict" for value in outcomes) == 1
     verify = sqlite3.connect(path)

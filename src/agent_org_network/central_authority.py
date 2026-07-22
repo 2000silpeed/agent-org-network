@@ -36,6 +36,7 @@ Action: TypeAlias = Literal[
     "approval.reassign",
     "approval.expire",
     "conflict.open",
+    "conflict.escalate",
     "conflict.list",
     "conflict.concur",
     "conflict.document.read",
@@ -80,6 +81,7 @@ AUTHORITY_ACTION_MANIFEST: frozenset[str] = frozenset(
         "approval.reassign",
         "approval.expire",
         "conflict.open",
+        "conflict.escalate",
         "conflict.list",
         "conflict.concur",
         "conflict.document.read",
@@ -139,12 +141,13 @@ DYNAMIC_SUBJECT_REQUIREMENTS: Mapping[Action, frozenset[Role]] = MappingProxyTyp
 
 # RBAC와 별도로 action은 자신이 허용하는 ResourceRef 종류를 가진다. 아직
 # 존재하지 않는 ConflictCase가 아니라, 이미 접수된 Question Request만
-# conflict.open의 대상이다.
+# conflict.open의 대상이다. conflict.escalate는 반대로 이미 durable하게
+# 존재하는 open conflict_case만 대상이다(ADR 0050 §11).
 ACTION_RESOURCE_KIND_REQUIREMENTS: Mapping[Action, str] = MappingProxyType(
-    {"conflict.open": "question_request"}
+    {"conflict.open": "question_request", "conflict.escalate": "conflict_case"}
 )
 ACTION_ALLOWED_ROLES: Mapping[Action, frozenset[Role]] = MappingProxyType(
-    {"conflict.open": frozenset({"requester"})}
+    {"conflict.open": frozenset({"requester"}), "conflict.escalate": frozenset({"operator"})}
 )
 
 PolicyFailureKind: TypeAlias = Literal[
@@ -222,6 +225,24 @@ class ConflictOpenRequestResolver(Protocol):
     def resolve_conflict_open_request(
         self, *, request_id: str
     ) -> ConflictOpenRequestSnapshot | None: ...
+
+
+@final
+class ConflictEscalateCaseSnapshot(_FrozenAuthorityModel):
+    """Read-only proof that a durable open Conflict Case remains escalatable."""
+
+    org_id: str
+    conflict_id: str
+    state_kind: Literal["open"]
+    awaiting_request_state_kind: Literal["awaiting_conflict"]
+
+
+class ConflictEscalateCaseResolver(Protocol):
+    """ResourceRef is untrusted input; this server-side resolver is the proof."""
+
+    def resolve_conflict_escalate_case(
+        self, *, conflict_id: str
+    ) -> ConflictEscalateCaseSnapshot | None: ...
 
 
 @final
@@ -690,6 +711,7 @@ class SnapshotCentralAuthorizer:
         snapshot: AuthorityPolicySnapshot | PolicySnapshotProvider,
         *,
         conflict_open_request_resolver: ConflictOpenRequestResolver | None = None,
+        conflict_escalate_case_resolver: ConflictEscalateCaseResolver | None = None,
     ) -> None:
         try:
             candidate = snapshot if type(snapshot) is AuthorityPolicySnapshot else snapshot()
@@ -697,6 +719,7 @@ class SnapshotCentralAuthorizer:
         except Exception:
             self._snapshot = None
         self._conflict_open_request_resolver = conflict_open_request_resolver
+        self._conflict_escalate_case_resolver = conflict_escalate_case_resolver
 
     def authorize(
         self,
@@ -721,14 +744,21 @@ class SnapshotCentralAuthorizer:
         ):
             return AuthorizationDenied(kind="not_found_or_denied")
         required_kind = ACTION_RESOURCE_KIND_REQUIREMENTS.get(canonical_action)
-        if required_kind is not None and (
-            canonical_resource.kind != required_kind
-            or canonical_resource.resource_id is None
-            or canonical_resource.owner_subject_id is None
-        ):
-            return AuthorizationDenied(kind="not_found_or_denied")
+        if required_kind is not None:
+            if canonical_resource.kind != required_kind or canonical_resource.resource_id is None:
+                return AuthorizationDenied(kind="not_found_or_denied")
+            # conflict_case는 existing open Case 실재로 동적 결박한다(owner_subject_id 불요).
+            if required_kind != "conflict_case" and canonical_resource.owner_subject_id is None:
+                return AuthorizationDenied(kind="not_found_or_denied")
         if canonical_action == "conflict.open" and not self._current_conflict_open_request_matches(
             canonical_principal, canonical_resource
+        ):
+            return AuthorizationDenied(kind="not_found_or_denied")
+        if (
+            canonical_action == "conflict.escalate"
+            and not self._current_conflict_escalate_case_matches(
+                canonical_principal, canonical_resource
+            )
         ):
             return AuthorizationDenied(kind="not_found_or_denied")
 
@@ -796,6 +826,24 @@ class SnapshotCentralAuthorizer:
         except Exception:
             return False
 
+    def _current_conflict_escalate_case_matches(
+        self, principal: AuthenticatedPrincipal, resource: ResourceRef
+    ) -> bool:
+        resolver = self._conflict_escalate_case_resolver
+        if resolver is None or resource.resource_id is None:
+            return False
+        try:
+            current = resolver.resolve_conflict_escalate_case(conflict_id=resource.resource_id)
+            return (
+                type(current) is ConflictEscalateCaseSnapshot
+                and current.org_id == principal.org_id == resource.org_id
+                and current.conflict_id == resource.resource_id
+                and current.state_kind == "open"
+                and current.awaiting_request_state_kind == "awaiting_conflict"
+            )
+        except Exception:
+            return False
+
     def verify(
         self,
         grant: AuthorizationGrant,
@@ -813,6 +861,7 @@ class SnapshotCentralAuthorizer:
             resource,
             snapshot,
             conflict_open_request_resolver=self._conflict_open_request_resolver,
+            conflict_escalate_case_resolver=self._conflict_escalate_case_resolver,
         )
 
 
@@ -864,6 +913,7 @@ def verify_authorization_grant(
     snapshot: AuthorityPolicySnapshot,
     *,
     conflict_open_request_resolver: ConflictOpenRequestResolver | None = None,
+    conflict_escalate_case_resolver: ConflictEscalateCaseResolver | None = None,
 ) -> bool:
     """grant를 현재 호출과 exact 비교해 다른 명령·리소스 재사용을 막는다."""
 
@@ -889,6 +939,7 @@ def verify_authorization_grant(
         expected = SnapshotCentralAuthorizer(
             canonical_snapshot,
             conflict_open_request_resolver=conflict_open_request_resolver,
+            conflict_escalate_case_resolver=conflict_escalate_case_resolver,
         ).authorize(
             canonical_principal,
             action,

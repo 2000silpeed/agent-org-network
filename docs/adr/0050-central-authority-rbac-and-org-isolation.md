@@ -97,7 +97,7 @@ CentralAuthorizer.authorize(principal, action, resource)
 - owner: 자기 Agent Card·후보 ConflictCase·자기 supervision·authoring, 중앙 permission이 있고 현재 지정된 경우의 Approval
 - manager: 중앙 permission과 현재 ManagerItem 귀속을 모두 만족하는 queue/read/act
 - approver: 중앙 permission과 현재 Approval assignment를 모두 만족하는 list/detail/decide/reassign
-- operator: monitor·org graph·scorecard·session·HITL 운영
+- operator: monitor·org graph·scorecard·session·HITL 운영, 그리고 open durable ConflictCase의 `conflict.escalate`. 이 action은 정책이 다른 역할에 잘못 permission을 부여해도 operator role만 grant할 수 있고, server-side Conflict Case resolver가 exact org·case_id의 durable `open` Case(AwaitingConflict Request 동반)를 읽기 전에는 arbitrary `ResourceRef`에 grant하지 않는다. 대상은 `question_request`가 아니라 이미 존재하는 `conflict_case` ResourceRef다. 자세한 계약은 §11과 ADR 0065다.
 - auditor: audit·monitor의 read-only 표면
 - admin: Agent Card 등록·Owner 이전, 워커 credential 발급·revoke, 정책 관리 준비 표면
 
@@ -109,7 +109,7 @@ admin, operator와 auditor는 합치지 않는다. mutation 직전에는 저장 
 
 ```text
 question.create | question.read | question.stream
-conflict.open
+conflict.open | conflict.escalate
 approval.list | approval.read | approval.decide | approval.reassign
 conflict.list | conflict.concur | conflict.document.read
 manager.list | manager.act
@@ -172,6 +172,17 @@ push는 `ticket·attempt·Agent Card·Owner·connection epoch`를 묶은 `WorkDe
 `ProductionAuthorityCapability`은 configuration org, strict policy snapshot, 그 snapshot에서 만든 exact `SnapshotCentralAuthorizer`, identity resolver, operational/worker authorization과 worker binding source를 같은 객체 계보로 결박한다. `bootstrap_authorized_production()`은 실제 `QuestionSurfaceComposition`의 Question Resolution authorizer와 production resolver·operational boundary 결속도 대조한다. 주입 일부 누락, duck object, 다른 snapshot·authorizer, 조립 뒤 binding 대체와 재사용된 capability claim은 모두 조립 전 거부한다.
 
 capability claim과 Question Surface close/revoke는 같은 lifecycle lock으로 직렬화한다. 닫힌 composition은 claim할 수 없고 close가 claim을 revoke한 뒤 재claim도 허용하지 않는다. 이 proof는 trusted Python process 안의 `composition_contract_only`다. 실제 OIDC/JWKS·production FastAPI·port, durable policy epoch, durable worker credential authority와 multi-instance lifecycle은 여전히 범위 밖이다.
+
+### 11. P17.9 durable escalation을 위한 `conflict.escalate` action (2026-07-22·S4.3c.1)
+
+P17.9 S4.3c는 deadlock/Registry drift에 빠진 open durable ConflictCase를 durable하게 Manager로 넘긴다. InMemory ADR 0046은 마지막 상이 표결이 escalation을 자동 seal했지만, durable 전이(Case `escalated`·FromDeadlock ManagerItem·Request `AwaitingManager`)는 되돌리기 어려운 운영 처분이므로 중앙 action과 사람 통제 gate를 명시한다. 이 절은 action/role/resource mapping만 정하고, 승인 증거 lifecycle과 3중 결박은 ADR 0065가 정한다.
+
+- **action:** `conflict.escalate`를 중앙 action manifest에 추가한다. HTTP·MCP·UoW가 같은 action을 호출한다.
+- **role hard-limit(operator 전용):** `conflict.open`이 requester로 hard-limit된 선례를 그대로 복제한다. `ACTION_ALLOWED_ROLES["conflict.escalate"] = {operator}`로 두어, 정책이 owner·manager·admin 등에 permission을 잘못 부여해도 operator 외 role은 grant를 받지 못한다. escalation은 owner concurrence(`conflict.concur`)도, Manager 처분(`manager.act`)도 아닌 운영 human-control 처분이므로, `session.end`·`hitl.write`와 같은 operator 계열에 둔다.
+- **resource kind(`conflict_case`):** `ACTION_RESOURCE_KIND_REQUIREMENTS["conflict.escalate"] = "conflict_case"`. `conflict.open`의 대상이 아직 없는 Case가 아니라 existing `question_request`였던 것과 대칭으로, `conflict.escalate`의 대상은 이미 durable하게 존재하는 open `conflict_case`다. `ResourceRef.kind`가 `conflict_case`이고 `resource_id`(conflict_id)가 있어야 한다.
+- **resolver re-read:** `ResourceRef`는 신뢰하지 않는 입력이므로, 서버 측 Conflict Case resolver가 exact org·conflict_id의 durable `open` Case(그리고 그 Case에 연결된 `AwaitingConflict` Question Request)를 읽어 증명하기 전에는 arbitrary `ResourceRef`에 grant하지 않는다. 이는 `conflict.open`의 `ConflictOpenRequestResolver` re-read와 같은 패턴이다. 단 `conflict.escalate`는 특정 subject 귀속(owner_subject_id == principal)이 아니라 open Case 실재로 동적 결박하므로 `DYNAMIC_SUBJECT_REQUIREMENTS`에는 넣지 않는다.
+- **HITL은 AND 2층(R5.4 동형):** 중앙 operator grant는 첫 층일 뿐이다. 두 번째 층으로, 별도 sealed 사람 승인 증거(ADR 0065의 `ConflictEscalationApprovalEvidence`)가 command·resource·escalation cause·graph selection에 exact 결박된 채 취득·재확인돼야 한다. 두 층은 AND이며, `worker_credential.revoke`의 중앙 grant AND `CredentialApprovalEvidence` 2층(R5.4)과 같은 결이다. 기존 답변 HITL toggle(ADR 0025)은 이 escalation 승인이 아니다.
+- **경계:** 이 절은 read-only authorization contract만 연다. Case escalated·ManagerItem·Request 전이와 receipt/audit/outbox write는 S4.3c.3 UoW, receipt graph schema는 S4.3c.2 범위다.
 
 ## S1 RED 인수조건
 

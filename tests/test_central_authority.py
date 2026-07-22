@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import cast
 
 import pytest
@@ -9,6 +10,8 @@ import yaml
 from pydantic import ValidationError
 
 from agent_org_network.central_authority import (
+    ACTION_ALLOWED_ROLES,
+    ACTION_RESOURCE_KIND_REQUIREMENTS,
     AUTHORITY_ACTION_MANIFEST,
     DYNAMIC_SUBJECT_REQUIREMENTS,
     AuthenticatedPrincipal,
@@ -16,6 +19,7 @@ from agent_org_network.central_authority import (
     AuthorityPolicySnapshot,
     AuthorizationDenied,
     AuthorizationGrant,
+    ConflictEscalateCaseSnapshot,
     ResourceRef,
     SnapshotCentralAuthorizer,
     canonical_policy_digest,
@@ -703,6 +707,7 @@ def test_action_manifest는_ADR의_전체_action과_exact하다() -> None:
         "approval.reassign",
         "approval.expire",
         "conflict.open",
+        "conflict.escalate",
         "conflict.list",
         "conflict.concur",
         "conflict.document.read",
@@ -732,3 +737,203 @@ def test_action_manifest는_ADR의_전체_action과_exact하다() -> None:
         "worker.publish_index",
         "worker.sync_knowledge",
     }
+
+
+@dataclass(frozen=True)
+class _EscalateCaseResolver:
+    current: ConflictEscalateCaseSnapshot | None
+
+    def resolve_conflict_escalate_case(
+        self, *, conflict_id: str
+    ) -> ConflictEscalateCaseSnapshot | None:
+        return (
+            self.current
+            if self.current is not None and self.current.conflict_id == conflict_id
+            else None
+        )
+
+
+def _escalate_document(
+    *, subject_id: str = "operator-1", permission_role: str = "operator"
+) -> dict[str, object]:
+    document = _document()
+    cast(list[dict[str, object]], document["subject_roles"]).append(
+        {"org_id": "acme", "subject_id": subject_id, "roles": [permission_role]}
+    )
+    role_permissions = cast(list[dict[str, object]], document["role_permissions"])
+    existing = next(
+        (permission for permission in role_permissions if permission["role"] == permission_role),
+        None,
+    )
+    if existing is None:
+        role_permissions.append({"role": permission_role, "actions": ["conflict.escalate"]})
+    else:
+        existing["actions"] = [*cast(list[str], existing["actions"]), "conflict.escalate"]
+    return document
+
+
+def _escalate_authorizer(
+    *,
+    subject_id: str = "operator-1",
+    permission_role: str = "operator",
+    case: ConflictEscalateCaseSnapshot | None = None,
+    with_resolver: bool = True,
+) -> SnapshotCentralAuthorizer:
+    document = _escalate_document(subject_id=subject_id, permission_role=permission_role)
+    document["content_sha256"] = canonical_policy_digest(document)
+    snapshot = load_authority_policy_yaml(
+        yaml.safe_dump(document, allow_unicode=True, sort_keys=False), expected_org_id="acme"
+    )
+    if not with_resolver:
+        return SnapshotCentralAuthorizer(snapshot)
+    return SnapshotCentralAuthorizer(
+        snapshot,
+        conflict_escalate_case_resolver=_EscalateCaseResolver(
+            case
+            or ConflictEscalateCaseSnapshot(
+                org_id="acme",
+                conflict_id="conflict-1",
+                state_kind="open",
+                awaiting_request_state_kind="awaiting_conflict",
+            )
+        ),
+    )
+
+
+def _escalate_principal(subject_id: str = "operator-1") -> AuthenticatedPrincipal:
+    return AuthenticatedPrincipal(
+        org_id="acme", subject_id=subject_id, identity_provider="oidc", identity_session_id="s1"
+    )
+
+
+def test_conflict_escalate는_manifest_role_resource_mapping이_ADR과_exact하다() -> None:
+    assert "conflict.escalate" in AUTHORITY_ACTION_MANIFEST
+    assert ACTION_ALLOWED_ROLES["conflict.escalate"] == frozenset({"operator"})
+    assert ACTION_RESOURCE_KIND_REQUIREMENTS["conflict.escalate"] == "conflict_case"
+    assert "conflict.escalate" not in DYNAMIC_SUBJECT_REQUIREMENTS
+
+
+def test_conflict_escalate는_operator의_durable_open_case만_허용한다() -> None:
+    resource = ResourceRef(org_id="acme", kind="conflict_case", resource_id="conflict-1")
+    authorizer = _escalate_authorizer()
+    principal = _escalate_principal()
+
+    grant = authorizer.authorize(principal, "conflict.escalate", resource)
+    assert isinstance(grant, AuthorizationGrant)
+    assert grant.roles == ("operator",)
+    assert authorizer.verify(grant, principal, "conflict.escalate", resource)
+
+    assert isinstance(
+        authorizer.authorize(
+            principal,
+            "conflict.escalate",
+            resource.model_copy(update={"kind": "question_request"}),
+        ),
+        AuthorizationDenied,
+    )
+    assert isinstance(
+        authorizer.authorize(
+            principal,
+            "conflict.escalate",
+            resource.model_copy(update={"resource_id": "other-conflict"}),
+        ),
+        AuthorizationDenied,
+    )
+
+
+@pytest.mark.parametrize("role", ["owner", "manager", "admin"])
+def test_conflict_escalate는_정책이_잘못_부여해도_operator_외_role을_거부한다(role: str) -> None:
+    resource = ResourceRef(org_id="acme", kind="conflict_case", resource_id="conflict-1")
+    authorizer = _escalate_authorizer(
+        subject_id=role,
+        permission_role=role,
+        case=ConflictEscalateCaseSnapshot(
+            org_id="acme",
+            conflict_id="conflict-1",
+            state_kind="open",
+            awaiting_request_state_kind="awaiting_conflict",
+        ),
+    )
+    principal = _escalate_principal(role)
+
+    assert authorizer.authorize(principal, "conflict.escalate", resource) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+def test_conflict_escalate는_resolver_미증명이면_grant_0이다() -> None:
+    resource = ResourceRef(org_id="acme", kind="conflict_case", resource_id="conflict-1")
+    authorizer = _escalate_authorizer(with_resolver=False)
+    principal = _escalate_principal()
+
+    assert authorizer.authorize(principal, "conflict.escalate", resource) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+def test_conflict_escalate는_resolver의_current_org_case_awaiting_exact_proof를_요구한다() -> None:
+    resource = ResourceRef(org_id="acme", kind="conflict_case", resource_id="conflict-1")
+    other_org_case = ConflictEscalateCaseSnapshot(
+        org_id="other-org",
+        conflict_id="conflict-1",
+        state_kind="open",
+        awaiting_request_state_kind="awaiting_conflict",
+    )
+    authorizer = _escalate_authorizer(case=other_org_case)
+    principal = _escalate_principal()
+
+    assert authorizer.authorize(principal, "conflict.escalate", resource) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+def test_conflict_escalate는_hitl_write_grant로_열리지_않는다() -> None:
+    resource = ResourceRef(org_id="acme", kind="conflict_case", resource_id="conflict-1")
+    document = _escalate_document()
+    cast(list[dict[str, object]], document["role_permissions"])[-1]["actions"] = ["hitl.write"]
+    document["content_sha256"] = canonical_policy_digest(document)
+    authorizer = SnapshotCentralAuthorizer(
+        load_authority_policy_yaml(
+            yaml.safe_dump(document, allow_unicode=True, sort_keys=False), expected_org_id="acme"
+        ),
+        conflict_escalate_case_resolver=_EscalateCaseResolver(
+            ConflictEscalateCaseSnapshot(
+                org_id="acme",
+                conflict_id="conflict-1",
+                state_kind="open",
+                awaiting_request_state_kind="awaiting_conflict",
+            )
+        ),
+    )
+    principal = _escalate_principal()
+
+    assert authorizer.authorize(principal, "conflict.escalate", resource) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+def test_conflict_escalate_추가는_conflict_open_resource_kind_요구를_바꾸지않는다() -> None:
+    assert ACTION_RESOURCE_KIND_REQUIREMENTS["conflict.open"] == "question_request"
+    resource = ResourceRef(
+        org_id="acme", kind="question_request", resource_id="request-1", owner_subject_id="user-1"
+    )
+    without_owner = resource.model_copy(update={"owner_subject_id": None})
+    document = _document()
+    cast(list[dict[str, object]], document["role_permissions"])[0]["actions"] = [
+        "question.create",
+        "question.read",
+        "conflict.open",
+    ]
+    document["content_sha256"] = canonical_policy_digest(document)
+    authorizer = SnapshotCentralAuthorizer(
+        load_authority_policy_yaml(
+            yaml.safe_dump(document, allow_unicode=True, sort_keys=False), expected_org_id="acme"
+        )
+    )
+    principal = AuthenticatedPrincipal(
+        org_id="acme", subject_id="user-1", identity_provider="oidc", identity_session_id="s1"
+    )
+
+    assert authorizer.authorize(principal, "conflict.open", without_owner) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )

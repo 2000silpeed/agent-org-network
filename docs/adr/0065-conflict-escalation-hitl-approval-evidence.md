@@ -4,7 +4,7 @@
 - 날짜: 2026-07-22
 - 계보: ADR 0046(request-aware Contested 책임 결정·escalation 도메인)이 InMemory 단일 프로세스로 미룬 durable escalation 권한·사람 통제를 P17.9 S4.3c.1로 잇는다. ADR 0050(중앙 Authority·RBAC — §11의 `conflict.escalate` action/role/resource)·ADR 0051(운영 변경 승인 증거 — canonical command digest·resource fingerprint 1:1 결박)·ADR 0052(R5.4 `CredentialApprovalEvidence` 취득/재확인 패턴)·ADR 0044(SQLite Completion UoW)를 재사용하고, S4.3b `SealedEscalationEvidence`·S4.3c.0 `ConflictEscalationRegistrySnapshot`(graph_digest)를 소비 결박한다.
 - 적용 범위: durable open ConflictCase를 Manager로 넘기는 `conflict.escalate` 명령의 사람 통제(HITL) 승인 증거 — 값 객체 shape, canonical command/cause digest, 취득 provider·재확인 resolver 포트, 순수 검증 계약, 승인자·만료·취소·재승인의 표현 위치.
-- 제외 범위: escalation receipt graph 스키마(S4.3c.2), start/write 직전 재인가·재확인과 Case/ManagerItem/Request 전이를 한 transaction에 쓰는 UoW(S4.3c.3), 동시성/장애 게이트(S4.3c.4), reconciliation 게이트(S4.3d). 파일럿 조직의 구체 승인자 신원·실 HITL UI·durable policy epoch·다중 인스턴스는 여전히 후속이다.
+- 제외 범위: start/write 직전 재인가·재확인과 Case/ManagerItem/Request 전이를 한 transaction에 쓰는 UoW(S4.3c.3), 동시성/장애 게이트(S4.3c.4), reconciliation 게이트(S4.3d). 파일럿 조직의 구체 승인자 신원·실 HITL UI·durable policy epoch·다중 인스턴스는 여전히 후속이다. escalation receipt graph 스키마의 지속 shape는 §8에서 보강했다(전이·write·transaction은 여전히 c.3 밖).
 
 ## 맥락 — escalation 자동 seal에서 durable 사람 통제 처분으로
 
@@ -77,6 +77,15 @@ c.1이 못박는 것은 **소비 가능한 granted 증거 값 객체 하나**다
 
 의미 backing: provider·resolver 포트는 HITL toggle을 승인 원천으로 받지도 조회하지도 않는다. resolver는 escalation 승인 증거 store만 읽는다.
 
+### 8. c.2 escalation receipt graph 스키마 — receipt-parent 허브 + sealed 증거 recompute (2026-07-22 보강)
+
+c.1이 값 객체·포트·순수 검증(shape)을 닫았으므로, c.2는 그 계약이 durable하게 어떻게 기록되는지를 별 versioned component `durable_conflict_escalation_receipts_v1`로 설치한다. 새 되돌리기 어려운 도메인 결정은 없고(권한·lifecycle·toggle 불인정은 §1~§7이 이미 정함), c.2는 §5 4중 결박·S4.3b sealed cause·S4.3c.0 graph selection의 지속 shape만 못박으므로 자기 ADR 없이 이 ADR 보강으로 둔다(S4.2a schema가 자기 ADR 없이 ADR 0046/0051 계보로 처리된 선례와 같다).
+
+- **receipt가 parent다(R1.0 판, S4.2a 판 아님).** S4.3b·c.0은 read-only라 escalation 명령 전에 어떤 durable row도 남기지 않는다. sealed cause·graph selection은 명령 시점에 계산·봉인돼 c.3의 한 transaction으로 receipt와 *함께* 처음 쓰인다. S4.2a votes처럼 명령 이전에 누적되는 독립 lifecycle이 없으므로, evidence를 parent로 두면 실제 생성 순서를 뒤집는다. escalation 하나 = receipt 하나이고 sealed 산물은 그 명령의 속성이다 — 이는 receipt가 source-scope proof digest를 자기 컬럼으로 지니는 R1.0 판과 동형이다. child(sealed evidence·result projection·audit·outbox intent)는 R1.0의 `(org_id, receipt_id)` same-org composite FK로 receipt에 1:1 결박해 cross-org row stitching을 DB 수준(PRAGMA foreign_keys=ON)에서 막는다.
+- **secret-free 컬럼만.** opaque typed ref(`kind:<lowercase SHA-256>`)·64-hex digest·canonical UTC timestamp·범위 정수만 저장한다(S4.1 규율). raw claim·사유 원문·secret은 없다. c.0 `manager_subject_ref`(nullable)·`root_subject_ref`는 *digest가 아닌 typed subject ref*로 저장한다 — baseline이 `candidate_owner_subject_ref`를 저장하는 것과 같은 secret-free 문법이고, c.3가 선택 target을 FromDeadlock ManagerItem `manager_subject_id`에 mirror하려면 봉인된 선택 대상이 durable해야 하기 때문이다. raw User ID는 여전히 저장하지 않는다.
+- **`escalation_cause_digest`만 recompute(자기 정합), 나머지 digest는 store+mirror.** sealed cause 필드(kind·org/conflict/request ref·revision·round·candidate_snapshot/baseline/candidate_claim/vote_set sha256·variant)를 evidence row에 저장하고 c.1과 같은 canonical 필드 순서로 `escalation_cause_digest`를 재계산해 receipt 값과 일치를 강제한다(S4.2a `command_digest`·baseline `baseline_sha256` recompute 규율). `graph_selection_digest`(c.0 소유)·`command_digest`·`resource_fingerprint`(c.1/c.3 소유, 원본 command·ResourceRef 미저장)는 재계산하지 않고 64-hex·receipt↔evidence mirror만 강제한다. `durable_credentials`·c.1 domain 값 객체를 import하지 않고 canonical hash를 도메인-local로 재현한다(§4 no-import 규율).
+- **validate-only·write API 0.** open/reconcile은 검증만 하고 repair 0이다(S4.1 판). c.3가 소비할 쓰기 표면은 c.2가 예비하지 않는다 — S4.1/S4.2a/S4.3a 전 선례가 schema는 validate/migrate/open/reconcile만 노출하고 write는 UoW 모듈(S4.2b 동형)이 소유하며 schema validate를 호출할 뿐이다(inactive port 아님, 스키마만). fault-atomic migration·manifest 없는 partial/DDL drift fail-closed·S4.1/S4.2/S4.3a DDL 무변경은 전 선례 그대로다.
+
 ## Consequences
 
 - **불변식 영향 없음:**
@@ -92,6 +101,8 @@ c.1이 못박는 것은 **소비 가능한 granted 증거 값 객체 하나**다
 - CONTEXT.md: **Conflict Escalation Approval Evidence** 용어 등재(Conflict Escalation Registry Snapshot 다음).
 - ADR 0050 §6 manifest·§5 operator·§11: `conflict.escalate` action/role/resource(이 ADR과 함께 보강 완료).
 - docs/tasks-v0.md S4.3c.1: 설계·shape 완료 시 갱신(구현은 tdd-engineer).
+- CONTEXT.md: **Conflict Escalation Receipt Graph** 용어 등재(§8 c.2 보강과 함께·Conflict Escalation Approval Evidence 다음).
+- docs/tasks-v0.md S4.3c.2: c.2 schema 설계 확정 기록(구현은 tdd-engineer).
 
 ## S4.3c.1 RED 인수조건 (shape)
 

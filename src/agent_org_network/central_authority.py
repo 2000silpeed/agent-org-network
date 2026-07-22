@@ -144,10 +144,18 @@ DYNAMIC_SUBJECT_REQUIREMENTS: Mapping[Action, frozenset[Role]] = MappingProxyTyp
 # conflict.open의 대상이다. conflict.escalate는 반대로 이미 durable하게
 # 존재하는 open conflict_case만 대상이다(ADR 0050 §11).
 ACTION_RESOURCE_KIND_REQUIREMENTS: Mapping[Action, str] = MappingProxyType(
-    {"conflict.open": "question_request", "conflict.escalate": "conflict_case"}
+    {
+        "conflict.open": "question_request",
+        "conflict.escalate": "conflict_case",
+        "manager.act": "manager_item",
+    }
 )
 ACTION_ALLOWED_ROLES: Mapping[Action, frozenset[Role]] = MappingProxyType(
-    {"conflict.open": frozenset({"requester"}), "conflict.escalate": frozenset({"operator"})}
+    {
+        "conflict.open": frozenset({"requester"}),
+        "conflict.escalate": frozenset({"operator"}),
+        "manager.act": frozenset({"manager"}),
+    }
 )
 
 PolicyFailureKind: TypeAlias = Literal[
@@ -243,6 +251,23 @@ class ConflictEscalateCaseResolver(Protocol):
     def resolve_conflict_escalate_case(
         self, *, conflict_id: str
     ) -> ConflictEscalateCaseSnapshot | None: ...
+
+
+@final
+class ManagerActItemSnapshot(_FrozenAuthorityModel):
+    """Read-only proof that a durable open ManagerItem remains actionable (ADR 0050 §12)."""
+
+    org_id: str
+    item_id: str
+    manager_subject_ref: str
+    state_kind: Literal["open"]
+    request_state_kind: Literal["awaiting_manager"]
+
+
+class ManagerActItemResolver(Protocol):
+    """ResourceRef is untrusted input; this server-side resolver is the proof."""
+
+    def resolve_manager_act_item(self, *, item_id: str) -> ManagerActItemSnapshot | None: ...
 
 
 @final
@@ -712,6 +737,7 @@ class SnapshotCentralAuthorizer:
         *,
         conflict_open_request_resolver: ConflictOpenRequestResolver | None = None,
         conflict_escalate_case_resolver: ConflictEscalateCaseResolver | None = None,
+        manager_act_item_resolver: ManagerActItemResolver | None = None,
     ) -> None:
         try:
             candidate = snapshot if type(snapshot) is AuthorityPolicySnapshot else snapshot()
@@ -720,6 +746,7 @@ class SnapshotCentralAuthorizer:
             self._snapshot = None
         self._conflict_open_request_resolver = conflict_open_request_resolver
         self._conflict_escalate_case_resolver = conflict_escalate_case_resolver
+        self._manager_act_item_resolver = manager_act_item_resolver
 
     def authorize(
         self,
@@ -759,6 +786,11 @@ class SnapshotCentralAuthorizer:
             and not self._current_conflict_escalate_case_matches(
                 canonical_principal, canonical_resource
             )
+        ):
+            return AuthorizationDenied(kind="not_found_or_denied")
+        if (
+            canonical_action == "manager.act"
+            and not self._current_manager_act_item_matches(canonical_principal, canonical_resource)
         ):
             return AuthorizationDenied(kind="not_found_or_denied")
 
@@ -844,6 +876,27 @@ class SnapshotCentralAuthorizer:
         except Exception:
             return False
 
+    def _current_manager_act_item_matches(
+        self, principal: AuthenticatedPrincipal, resource: ResourceRef
+    ) -> bool:
+        resolver = self._manager_act_item_resolver
+        if resolver is None or resource.resource_id is None or resource.owner_subject_id is None:
+            return False
+        try:
+            current = resolver.resolve_manager_act_item(item_id=resource.resource_id)
+            return (
+                type(current) is ManagerActItemSnapshot
+                and current.org_id == principal.org_id == resource.org_id
+                and current.item_id == resource.resource_id
+                and current.manager_subject_ref == "subject:" + sha256(
+                    principal.subject_id.encode("utf-8")
+                ).hexdigest()
+                and current.state_kind == "open"
+                and current.request_state_kind == "awaiting_manager"
+            )
+        except Exception:
+            return False
+
     def verify(
         self,
         grant: AuthorizationGrant,
@@ -862,6 +915,7 @@ class SnapshotCentralAuthorizer:
             snapshot,
             conflict_open_request_resolver=self._conflict_open_request_resolver,
             conflict_escalate_case_resolver=self._conflict_escalate_case_resolver,
+            manager_act_item_resolver=self._manager_act_item_resolver,
         )
 
 
@@ -914,6 +968,7 @@ def verify_authorization_grant(
     *,
     conflict_open_request_resolver: ConflictOpenRequestResolver | None = None,
     conflict_escalate_case_resolver: ConflictEscalateCaseResolver | None = None,
+    manager_act_item_resolver: ManagerActItemResolver | None = None,
 ) -> bool:
     """grant를 현재 호출과 exact 비교해 다른 명령·리소스 재사용을 막는다."""
 
@@ -940,6 +995,7 @@ def verify_authorization_grant(
             canonical_snapshot,
             conflict_open_request_resolver=conflict_open_request_resolver,
             conflict_escalate_case_resolver=conflict_escalate_case_resolver,
+            manager_act_item_resolver=manager_act_item_resolver,
         ).authorize(
             canonical_principal,
             action,

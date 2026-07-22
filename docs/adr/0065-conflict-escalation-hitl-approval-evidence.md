@@ -126,6 +126,17 @@ c.2(§8)가 receipt graph 지속 shape를, c.3(§9)가 세 aggregate·receipt gr
 
 - **불변식 보존.** **전이 ≠ 기록** — S4.3d는 read-only 증명이라 전이도 기록도 쓰지 않는다(repair 0). **미아 없음** — ①②가 escalated Case → receipt → 반드시 존재하는 FromDeadlock ManagerItem(유일 Manager 또는 root 큐)까지 durable 도달을 검증한다. **Authority 중앙** — 검증만 하고 어떤 권한·상태도 선언하지 않는다. **노출 불변식** — report는 typed ref·enum·정수만 담고 raw claim·Manager/root User·원문 0.
 
+### 11. S4.4 durable Manager 처분의 FromDeadlock 소비 계약 — read-only escalation receipt 결박·Case 불변 (2026-07-22 보강)
+
+§9(c.3)가 FromDeadlock ManagerItem을 `status="open"`으로 *생성*까지만 하고 처분(Assign/Dismiss)을 S4.4로 이월했으므로, S4.4d는 그 open Item을 durable 처분으로 소비한다. 새 되돌리기 어려운 도메인 결정은 없다 — escalation의 사람 승인은 c.3가 이미 취득·소비했고 Case escalation의 terminal 성격은 §10이 정했다. S4.4d는 그 계약들 위에서 "처분이 무엇을 evidence로 삼는가(③)"와 "Case를 건드리지 않음(D)"만 확정하므로 자기 ADR 없이 이 보강으로 둔다. 처분의 중앙 role·resource 계약은 ADR 0050 §12다. tdd 소유 모듈은 신규 `sqlite_durable_manager_disposition_uow.py`(FromUnowned b/c와 공유·source별 분기).
+
+- **③ evidence proof = committed escalation receipt graph의 read-only 결박(새 HITL 0).** InMemory deadlock 처분(`p17_deadlock_manager_disposition`)은 원 Conflict claim과 Manager claim을 full handle로 묶은 mediation proof가 저장된 뒤에만 처분했다. durable 판의 동형은 **FromDeadlock Item이 committed escalation receipt(c.2 graph)에 durable하게 결박됨을 read-only로 증명**하는 것이다. escalation의 사람 승인(HITL)은 c.3가 이미 취득·소비했으므로 처분은 승인을 재취득하지 않는다 — 처분은 Manager의 routine `manager.act`(1인칭·ADR 0050 §12)다. UoW는 c.2 escalation receipt를 `(org_id, request_id)`로 조회해 (a) 존재, (b) `source:sha256(conflict_id)`가 Item의 `source_ref`와 일치, (c) `awaiting_revision`이 Item과 일치를 확인한다. 이 결박은 승인된 escalation 없이 위조된 orphan deadlock Item이 처분되는 것을 막는다(§10 reconciliation의 receipt↔ManagerItem 결박을 명령 시점에 재확인). 새 HITL 승인 증거는 만들지 않는다.
+  - **기각한 대안 (b) 처분마다 새 HITL 승인 증거:** escalation 승인(operator·c.3)과 처분(manager·routine)을 혼동하고, ADR 0050 §12가 `manager.act`를 사람 승인 2층 없는 1인칭 처분으로 정한 것과 어긋난다. 처분은 escalation 승인의 재취득이 아니라 그 committed 결과의 소비다. InMemory의 mediation proof도 새 승인이 아니라 두 claim의 결박 재확인이었다.
+
+- **D Case 불변 — 처분은 ManagerItem·Request만 전이, Case는 escalated terminal 고정.** InMemory deadlock 처분은 `_resolve_case`(Assign)·`_decline_case`(Dismiss)로 ConflictCase를 resolved/declined로 바꿨다. durable 판은 이를 **복사하지 않는다** — §10이 `receipt(org,conflict_id) 존재 ⟺ Case escalated`를 terminal·영구 불변식으로 못박았고, S4.3d reconciliation의 ①(양방향 결박)이 escalated Case를 다른 status로 바꾸는 것을 손상으로 잡는다. 따라서 S4.4d FromDeadlock 처분은 **`durable_linked_conflict_cases`를 읽지도 쓰지도 않고**(evidence 결박은 c.2 receipt로), ManagerItem(open→resolved/dismissed)과 Request(AwaitingManager(public_kind="contested")→ReadyToDispatch/DeclinedRequest)만 전이한다. §10 말미의 "S4.4가 durable Case를 escalated에서 다른 status로 바꾸지 *않는다*"가 이 결정의 downstream 결박이다. S4.4d 완료 판정은 처분 후 S4.3d reconciliation green(Case escalated 불변·ManagerItem resolved/dismissed·Request 진행 tolerant)을 포함한다.
+
+- **불변식 보존.** **미아 없음** — Assign은 같은 Request를 실행 가능한 `ReadyToDispatch`로, Dismiss는 중립 `DeclinedRequest(manager_declined)`로 닫아 escalated deadlock을 종착시킨다. **Authority 중앙** — 처분 role(manager·ADR 0050 §12)·evidence 결박(c.2 receipt)은 중앙에서만 온다. **전이 ≠ 기록** — ManagerItem·Request 전이(도메인)와 S4.1 command receipt/audit/outbox(기록)를 한 transaction에 함께 쓰되 개념은 구분한다. **노출 불변식** — Dismiss는 고정 `manager_declined` reason_code·중립 메시지만 투영하고 rationale은 durable하게 지속하지 않는다.
+
 ## Consequences
 
 - **불변식 영향 없음:**
@@ -147,6 +158,9 @@ c.2(§8)가 receipt graph 지속 shape를, c.3(§9)가 세 aggregate·receipt gr
 - docs/tasks-v0.md S4.3c.3: c.3 UoW 설계 확정 기록(구현은 tdd-engineer).
 - CONTEXT.md: **Conflict Escalation Reconciliation Gate** 용어 등재(§10 c.4 S4.3d 보강과 함께·Conflict Escalation Unit of Work 다음).
 - docs/tasks-v0.md S4.3d: reconciliation gate 설계 확정 기록(구현은 tdd-engineer).
+- ADR 0050 §12: `manager.act` resource-aware 계약(§11 S4.4 FromDeadlock 소비 계약과 함께 보강 완료 — role/resource/resolver는 0050, evidence proof·Case 불변은 이 ADR §11).
+- CONTEXT.md: **Durable Manager Disposition Unit of Work** 용어 등재(§11 S4.4 보강과 함께·Conflict Escalation Reconciliation Gate 다음).
+- docs/tasks-v0.md S4.4: durable Manager 처분 설계 확정 기록(구현은 tdd-engineer).
 
 ## S4.3c.1 RED 인수조건 (shape)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from agent_org_network.central_authority import (
     AuthorizationDenied,
     AuthorizationGrant,
     ConflictEscalateCaseSnapshot,
+    ManagerActItemSnapshot,
     ResourceRef,
     SnapshotCentralAuthorizer,
     canonical_policy_digest,
@@ -935,5 +937,279 @@ def test_conflict_escalate_추가는_conflict_open_resource_kind_요구를_바�
     )
 
     assert authorizer.authorize(principal, "conflict.open", without_owner) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+@dataclass(frozen=True)
+class _ManagerActItemResolver:
+    current: ManagerActItemSnapshot | None
+
+    def resolve_manager_act_item(self, *, item_id: str) -> ManagerActItemSnapshot | None:
+        return (
+            self.current
+            if self.current is not None and self.current.item_id == item_id
+            else None
+        )
+
+
+def _manager_subject_ref(subject_id: str) -> str:
+    return "subject:" + hashlib.sha256(subject_id.encode("utf-8")).hexdigest()
+
+
+def _manager_act_document(
+    *, subject_id: str = "manager-1", permission_role: str = "manager"
+) -> dict[str, object]:
+    document = _document()
+    cast(list[dict[str, object]], document["subject_roles"]).append(
+        {"org_id": "acme", "subject_id": subject_id, "roles": [permission_role]}
+    )
+    role_permissions = cast(list[dict[str, object]], document["role_permissions"])
+    existing = next(
+        (permission for permission in role_permissions if permission["role"] == permission_role),
+        None,
+    )
+    if existing is None:
+        role_permissions.append({"role": permission_role, "actions": ["manager.act"]})
+    else:
+        existing["actions"] = [*cast(list[str], existing["actions"]), "manager.act"]
+    return document
+
+
+def _manager_act_authorizer(
+    *,
+    subject_id: str = "manager-1",
+    permission_role: str = "manager",
+    item: ManagerActItemSnapshot | None = None,
+    resolver_returns_none: bool = False,
+    with_resolver: bool = True,
+) -> SnapshotCentralAuthorizer:
+    document = _manager_act_document(subject_id=subject_id, permission_role=permission_role)
+    document["content_sha256"] = canonical_policy_digest(document)
+    snapshot = load_authority_policy_yaml(
+        yaml.safe_dump(document, allow_unicode=True, sort_keys=False), expected_org_id="acme"
+    )
+    if not with_resolver:
+        return SnapshotCentralAuthorizer(snapshot)
+    current = (
+        None
+        if resolver_returns_none
+        else item
+        or ManagerActItemSnapshot(
+            org_id="acme",
+            item_id="manager-item-1",
+            manager_subject_ref=_manager_subject_ref(subject_id),
+            state_kind="open",
+            request_state_kind="awaiting_manager",
+        )
+    )
+    return SnapshotCentralAuthorizer(
+        snapshot, manager_act_item_resolver=_ManagerActItemResolver(current)
+    )
+
+
+def _manager_act_principal(subject_id: str = "manager-1") -> AuthenticatedPrincipal:
+    return AuthenticatedPrincipal(
+        org_id="acme", subject_id=subject_id, identity_provider="oidc", identity_session_id="s1"
+    )
+
+
+def test_manager_act는_manifest_role_resource_mapping이_ADR과_exact하다() -> None:
+    assert "manager.act" in AUTHORITY_ACTION_MANIFEST
+    assert ACTION_ALLOWED_ROLES["manager.act"] == frozenset({"manager"})
+    assert ACTION_RESOURCE_KIND_REQUIREMENTS["manager.act"] == "manager_item"
+    assert DYNAMIC_SUBJECT_REQUIREMENTS["manager.act"] == frozenset({"manager"})
+
+
+def test_manager_act_item_snapshot는_frozen이고_open_상태만_허용한다() -> None:
+    snapshot = ManagerActItemSnapshot(
+        org_id="acme",
+        item_id="manager-item-1",
+        manager_subject_ref=_manager_subject_ref("manager-1"),
+        state_kind="open",
+        request_state_kind="awaiting_manager",
+    )
+    with pytest.raises(ValidationError):
+        snapshot.item_id = "manager-item-2"  # type: ignore[misc]
+    with pytest.raises(ValidationError):
+        ManagerActItemSnapshot(
+            org_id="acme",
+            item_id="manager-item-1",
+            manager_subject_ref=_manager_subject_ref("manager-1"),
+            state_kind="resolved",  # type: ignore[arg-type]
+            request_state_kind="awaiting_manager",
+        )
+
+
+def test_manager_act는_1인칭_manager의_durable_open_item만_허용한다() -> None:
+    resource = ResourceRef(
+        org_id="acme",
+        kind="manager_item",
+        resource_id="manager-item-1",
+        owner_subject_id="manager-1",
+    )
+    authorizer = _manager_act_authorizer()
+    principal = _manager_act_principal()
+
+    grant = authorizer.authorize(principal, "manager.act", resource)
+    assert isinstance(grant, AuthorizationGrant)
+    assert grant.roles == ("manager",)
+    assert authorizer.verify(grant, principal, "manager.act", resource)
+
+    assert isinstance(
+        authorizer.authorize(
+            principal,
+            "manager.act",
+            resource.model_copy(update={"kind": "conflict_case"}),
+        ),
+        AuthorizationDenied,
+    )
+    assert isinstance(
+        authorizer.authorize(
+            principal,
+            "manager.act",
+            resource.model_copy(update={"resource_id": "other-item"}),
+        ),
+        AuthorizationDenied,
+    )
+
+
+def test_manager_act는_owner_subject_id_없으면_거부한다() -> None:
+    resource = ResourceRef(org_id="acme", kind="manager_item", resource_id="manager-item-1")
+    authorizer = _manager_act_authorizer()
+    principal = _manager_act_principal()
+
+    assert authorizer.authorize(principal, "manager.act", resource) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+@pytest.mark.parametrize("role", ["owner", "operator", "admin"])
+def test_manager_act는_정책이_잘못_부여해도_manager_외_role을_거부한다(role: str) -> None:
+    resource = ResourceRef(
+        org_id="acme", kind="manager_item", resource_id="manager-item-1", owner_subject_id=role
+    )
+    authorizer = _manager_act_authorizer(
+        subject_id=role,
+        permission_role=role,
+        item=ManagerActItemSnapshot(
+            org_id="acme",
+            item_id="manager-item-1",
+            manager_subject_ref=_manager_subject_ref(role),
+            state_kind="open",
+            request_state_kind="awaiting_manager",
+        ),
+    )
+    principal = _manager_act_principal(role)
+
+    assert authorizer.authorize(principal, "manager.act", resource) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+def test_manager_act는_resolver_미배선이면_grant_0이다() -> None:
+    resource = ResourceRef(
+        org_id="acme",
+        kind="manager_item",
+        resource_id="manager-item-1",
+        owner_subject_id="manager-1",
+    )
+    authorizer = _manager_act_authorizer(with_resolver=False)
+    principal = _manager_act_principal()
+
+    assert authorizer.authorize(principal, "manager.act", resource) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+def test_manager_act는_open_아닌_item에는_grant_0이다() -> None:
+    """resolved/dismissed된 Item은 resolver가 None을 돌려주므로(§12) replay가 새 grant를 못 받는다."""
+    resource = ResourceRef(
+        org_id="acme",
+        kind="manager_item",
+        resource_id="manager-item-1",
+        owner_subject_id="manager-1",
+    )
+    authorizer = _manager_act_authorizer(resolver_returns_none=True)
+    principal = _manager_act_principal()
+
+    assert authorizer.authorize(principal, "manager.act", resource) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+def test_manager_act는_다른_manager_subject의_item은_거부한다() -> None:
+    resource = ResourceRef(
+        org_id="acme",
+        kind="manager_item",
+        resource_id="manager-item-1",
+        owner_subject_id="manager-2",
+    )
+    authorizer = _manager_act_authorizer(
+        subject_id="manager-2",
+        item=ManagerActItemSnapshot(
+            org_id="acme",
+            item_id="manager-item-1",
+            manager_subject_ref=_manager_subject_ref("manager-1"),
+            state_kind="open",
+            request_state_kind="awaiting_manager",
+        ),
+    )
+    principal = _manager_act_principal("manager-2")
+
+    assert authorizer.authorize(principal, "manager.act", resource) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+def test_manager_act는_resolver의_current_org_item_exact_proof를_요구한다() -> None:
+    resource = ResourceRef(
+        org_id="acme",
+        kind="manager_item",
+        resource_id="manager-item-1",
+        owner_subject_id="manager-1",
+    )
+    other_org_item = ManagerActItemSnapshot(
+        org_id="other-org",
+        item_id="manager-item-1",
+        manager_subject_ref=_manager_subject_ref("manager-1"),
+        state_kind="open",
+        request_state_kind="awaiting_manager",
+    )
+    authorizer = _manager_act_authorizer(item=other_org_item)
+    principal = _manager_act_principal()
+
+    assert authorizer.authorize(principal, "manager.act", resource) == AuthorizationDenied(
+        kind="not_found_or_denied"
+    )
+
+
+def test_manager_act는_hitl_write_grant로_열리지_않는다() -> None:
+    resource = ResourceRef(
+        org_id="acme",
+        kind="manager_item",
+        resource_id="manager-item-1",
+        owner_subject_id="manager-1",
+    )
+    document = _manager_act_document()
+    cast(list[dict[str, object]], document["role_permissions"])[-1]["actions"] = ["hitl.write"]
+    document["content_sha256"] = canonical_policy_digest(document)
+    authorizer = SnapshotCentralAuthorizer(
+        load_authority_policy_yaml(
+            yaml.safe_dump(document, allow_unicode=True, sort_keys=False), expected_org_id="acme"
+        ),
+        manager_act_item_resolver=_ManagerActItemResolver(
+            ManagerActItemSnapshot(
+                org_id="acme",
+                item_id="manager-item-1",
+                manager_subject_ref=_manager_subject_ref("manager-1"),
+                state_kind="open",
+                request_state_kind="awaiting_manager",
+            )
+        ),
+    )
+    principal = _manager_act_principal()
+
+    assert authorizer.authorize(principal, "manager.act", resource) == AuthorizationDenied(
         kind="not_found_or_denied"
     )

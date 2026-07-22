@@ -184,6 +184,34 @@ P17.9 S4.3c는 deadlock/Registry drift에 빠진 open durable ConflictCase를 du
 - **HITL은 AND 2층(R5.4 동형):** 중앙 operator grant는 첫 층일 뿐이다. 두 번째 층으로, 별도 sealed 사람 승인 증거(ADR 0065의 `ConflictEscalationApprovalEvidence`)가 command·resource·escalation cause·graph selection에 exact 결박된 채 취득·재확인돼야 한다. 두 층은 AND이며, `worker_credential.revoke`의 중앙 grant AND `CredentialApprovalEvidence` 2층(R5.4)과 같은 결이다. 기존 답변 HITL toggle(ADR 0025)은 이 escalation 승인이 아니다.
 - **경계:** 이 절은 read-only authorization contract만 연다. Case escalated·ManagerItem·Request 전이와 receipt/audit/outbox write는 S4.3c.3 UoW, receipt graph schema는 S4.3c.2 범위다.
 
+### 12. P17.9 durable Manager 처분을 위한 `manager.act` resource-aware 계약 (2026-07-22·S4.4a)
+
+P17.9 S4.4는 open durable ManagerItem(FromUnowned·FromDeadlock)을 durable하게 Assign/Dismiss로 처분한다. §11의 `conflict.escalate`가 open Case를 Manager로 넘기는 operator human-control 처분이었던 것과 달리, `manager.act`는 그 escalated/unowned Item을 *받은* Manager의 1인칭 routine 처분이다. 그래서 별도 사람 승인(HITL) 2층이 아니라 중앙 grant(1층) + 현재 durable 상태 resolver로 못박는다. 이 절은 `manager.act`의 resource-aware read-only authorization contract만 정하고, ManagerItem·Request 전이와 receipt/audit/outbox write는 S4.4b~d UoW 범위다.
+
+- **action(기존):** `manager.act`는 이미 manifest에 있다. HTTP·MCP·durable UoW가 같은 action을 호출한다.
+- **role hard-limit(manager 전용):** `ACTION_ALLOWED_ROLES["manager.act"] = {manager}`. `conflict.escalate`가 operator로 hard-limit된 선례처럼, 정책이 owner·operator·admin 등에 permission을 잘못 부여해도 manager 외 role은 grant를 받지 못한다. 처분은 escalation(operator)도 owner concurrence(owner)도 아닌 Manager 1인칭 처분이므로 manager 계열에 hard-limit한다.
+- **resource kind(`manager_item`):** `ACTION_RESOURCE_KIND_REQUIREMENTS["manager.act"] = "manager_item"`. `conflict.escalate`가 existing open `conflict_case`를 대상으로 하듯, `manager.act`의 대상은 이미 durable하게 존재하는 open `manager_item`이다. `ResourceRef.kind`가 `manager_item`, `resource_id`(item_id), `owner_subject_id`(item의 manager_subject_id)를 가져야 한다(`conflict_case`와 달리 owner_subject_id 필수 — 처분은 subject 귀속이다). `manager.list`는 `manager_item_collection`이라 resource kind requirement에 넣지 않는다.
+- **subject 귀속 유지(1인칭):** `conflict.escalate`와 달리 `manager.act`는 `DYNAMIC_SUBJECT_REQUIREMENTS["manager.act"] = {manager}`를 그대로 둔다. 처분은 그 Item에 귀속된 Manager만 내릴 수 있으므로(1인칭), manager role은 `resource.owner_subject_id == principal.subject_id`일 때만 eligible이다. escalation이 open Case 실재로만 결박한 것과 달리, 처분은 subject 귀속 **AND** state-aware 둘 다다.
+- **ManagerItem-state-aware resolver re-read:** `ResourceRef`는 신뢰하지 않는 입력이므로, 서버 측 `ManagerActItemResolver`가 exact org·item_id의 durable `open` ManagerItem(그리고 그 Item에 연결된 `AwaitingManager` Question Request)을 읽어 증명하기 전에는 arbitrary `ResourceRef`에 grant하지 않는다. `ConflictEscalateCaseResolver` re-read와 같은 패턴이다. snapshot은 typed reference·리터럴만 반환한다:
+
+  ```python
+  class ManagerActItemSnapshot(_FrozenAuthorityModel):
+      org_id: str
+      item_id: str
+      manager_subject_ref: str          # durable 저장 그대로의 typed ref "subject:<sha256>"
+      state_kind: Literal["open"]
+      request_state_kind: Literal["awaiting_manager"]
+
+  class ManagerActItemResolver(Protocol):
+      def resolve_manager_act_item(self, *, item_id: str) -> ManagerActItemSnapshot | None: ...
+  ```
+
+  - **1인칭을 durable 상태에 결박(central·ref-space):** durable manager_item의 `manager_subject_id`는 raw가 아니라 typed ref(`subject:<sha256>`)로 저장되고 principal.subject_id는 raw이므로, resolver match는 `current.manager_subject_ref == "subject:" + sha256(principal.subject_id)`로 ref-space에서 대조한다(central_authority는 이미 `sha256`을 import). 이로써 1인칭이 카드 자기보고가 아니라 durable Item 소유에 중앙 결박된다. `DYNAMIC_SUBJECT_REQUIREMENTS`의 raw `owner_subject_id == principal.subject_id`(UoW가 owner_subject_id=principal.subject_id로 echo)는 coarse gate이고, 이 ref 대조가 durable authoritative 결박이다.
+  - resolver는 `source_kind`(unowned/deadlock/dispatch)·`public_kind`(unowned/contested/dispatched)를 보지 않는다 — RBAC는 "이 open Item의 Manager가 처분할 수 있다"만 증명하고, source별 유효성(FromDispatch 거부·FromDeadlock evidence 결박·FromUnowned intent 검증)은 UoW가 판정한다.
+- **replay는 이 state-aware 가정에 선다(ADR 0065 §9 note ① 동형):** durable 처분이 성공하면 Item은 `resolved`/`dismissed`가 되어 resolver의 `state_kind == "open"`이 더는 성립하지 않는다. 따라서 같은 canonical command의 replay는 새 grant를 받을 수 없고(resolver `None` → deny), 불변 command receipt가 authorization proof다. S4.4 UoW replay는 중앙 재인가를 재실행하지 않는다 — Case가 escalated라 escalation replay가 재인가를 못 하는 것(ADR 0065 §9 Q3·note ①)과 정확히 같은 구조다. 실 `SnapshotCentralAuthorizer`에 `manager_act_item_resolver`를 배선할 때(P17.9 후속) 이 open-요구 가정을 명세·테스트로 못박아야 한다.
+- **하위호환:** 현 InMemory P17.4/deadlock 처분 조립(`question_surface_composition`)은 `central_authorizer=None`(RBAC 우회·legacy `ManagerPrincipal`)이거나 테스트 Fake authorizer라 `SnapshotCentralAuthorizer.authorize("manager.act")` 실경로가 없다. 따라서 resolver gate·resource kind·role hard-limit 추가는 기존 green을 깨지 않는다. 실 authorizer로 manager.act를 authorize하는 곳(durable S4.4 UoW·후속 배선)은 반드시 `ManagerActItemResolver`를 배선한다(미배선 = fail-closed deny).
+- **경계:** 이 절은 read-only authorization contract만 연다. ManagerItem open→resolved/dismissed·Request AwaitingManager→ReadyToDispatch/DeclinedRequest 전이와 S4.1 receipt/audit/outbox write는 S4.4b~d UoW 범위다.
+
 ## S1 RED 인수조건
 
 - strict fixture가 snapshot으로 정규화되고 같은 내용은 같은 digest를 만든다.

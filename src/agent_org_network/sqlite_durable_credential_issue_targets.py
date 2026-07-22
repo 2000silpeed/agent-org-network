@@ -569,13 +569,36 @@ def _validate(connection: sqlite3.Connection) -> None:
     _validate_rows(connection)
 
 
+def _validate_snapshotted(connection: sqlite3.Connection) -> None:
+    """Run ``_validate`` under one atomic read snapshot.
+
+    ``_validate`` issues several sequential SELECTs (manifest, catalog, then
+    every target/fence row for cross-matrix checks). Without an explicit
+    transaction each SELECT is its own read, so a concurrent writer's commit
+    between them can produce a torn cross-view that fails validation on
+    otherwise-legitimate state. Callers that already own a transaction (e.g.
+    ``reserve_...``) keep it — nesting a second BEGIN would be an error.
+    """
+    if connection.in_transaction:
+        _validate(connection)
+        return
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        _validate(connection)
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+    connection.commit()
+
+
 def validate_sqlite_durable_credential_issue_targets_connection(
     connection: sqlite3.Connection,
 ) -> None:
     old = connection.row_factory
     connection.row_factory = sqlite3.Row
     try:
-        _validate(connection)
+        _validate_snapshotted(connection)
     finally:
         connection.row_factory = old
 
@@ -671,7 +694,7 @@ def open_sqlite_durable_credential_issue_targets_connection(path: str | Path) ->
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA foreign_keys=ON")
-        _validate(connection)
+        _validate_snapshotted(connection)
     except Exception:
         connection.close()
         raise

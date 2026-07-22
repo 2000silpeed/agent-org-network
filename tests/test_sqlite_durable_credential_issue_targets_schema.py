@@ -16,7 +16,10 @@ from agent_org_network.sqlite_durable_credential_issue_targets import (
     open_sqlite_durable_credential_issue_targets_connection,
     reconcile_sqlite_durable_credential_issue_targets_schema,
     reserve_sqlite_durable_credential_issue_target,
+    validate_sqlite_durable_credential_issue_targets_connection,
 )
+
+_WRITE_TOKENS = frozenset({"INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"})
 
 
 def _parent(path: Path) -> None:
@@ -467,3 +470,93 @@ def test_opaque_scalar_grammar_and_raw_content_are_rejected_by_ddl_and_open(
     connection.close()
     with pytest.raises(SqliteDurableCredentialIssueTargetsSchemaError):
         open_sqlite_durable_credential_issue_targets_connection(path)
+
+
+def test_open_wraps_standalone_validate_selects_in_one_snapshot_with_zero_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "credential.sqlite"
+    _parent(path)
+    migrate_sqlite_durable_credential_issue_targets_schema(path)
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def _trace(sql: str) -> None:
+        statements.append(sql.strip().split()[0].upper())
+
+    def _spy_connect(database: str, *, uri: bool = False, timeout: float = 5.0) -> sqlite3.Connection:
+        connection = real_connect(database, uri=uri, timeout=timeout)
+        if uri and "mode=rw" in database:
+            connection.set_trace_callback(_trace)
+        return connection
+
+    monkeypatch.setattr(
+        "agent_org_network.sqlite_durable_credential_issue_targets.sqlite3.connect",
+        _spy_connect,
+    )
+
+    connection = open_sqlite_durable_credential_issue_targets_connection(path)
+    try:
+        begin_indices = [i for i, s in enumerate(statements) if s == "BEGIN"]
+        commit_indices = [i for i, s in enumerate(statements) if s == "COMMIT"]
+        assert len(begin_indices) == 1
+        assert len(commit_indices) == 1
+        begin_at, commit_at = begin_indices[0], commit_indices[0]
+        assert begin_at < commit_at
+        between = statements[begin_at + 1 : commit_at]
+        assert len([s for s in between if s == "SELECT"]) >= 5
+        assert not _WRITE_TOKENS.intersection(between)
+    finally:
+        connection.close()
+
+
+def test_standalone_validate_connection_wraps_its_selects_in_one_snapshot(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "credential.sqlite"
+    _parent(path)
+    migrate_sqlite_durable_credential_issue_targets_schema(path)
+
+    connection = sqlite3.connect(path)
+    statements: list[str] = []
+    connection.set_trace_callback(lambda sql: statements.append(sql.strip().split()[0].upper()))
+    try:
+        assert connection.in_transaction is False
+        validate_sqlite_durable_credential_issue_targets_connection(connection)
+        begin_indices = [i for i, s in enumerate(statements) if s == "BEGIN"]
+        commit_indices = [i for i, s in enumerate(statements) if s == "COMMIT"]
+        assert len(begin_indices) == 1
+        assert len(commit_indices) == 1
+        begin_at, commit_at = begin_indices[0], commit_indices[0]
+        assert begin_at < commit_at
+        assert commit_at == len(statements) - 1
+        between = statements[begin_at + 1 : commit_at]
+        assert len([s for s in between if s == "SELECT"]) >= 5
+        assert not _WRITE_TOKENS.intersection(between)
+    finally:
+        connection.close()
+
+
+def test_validate_connection_reuses_callers_transaction_without_nested_begin(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "credential.sqlite"
+    _parent(path)
+    migrate_sqlite_durable_credential_issue_targets_schema(path)
+
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        statements: list[str] = []
+        connection.set_trace_callback(
+            lambda sql: statements.append(sql.strip().split()[0].upper())
+        )
+        validate_sqlite_durable_credential_issue_targets_connection(connection)
+        assert connection.in_transaction is True
+        assert "BEGIN" not in statements
+        assert "COMMIT" not in statements
+        assert "ROLLBACK" not in statements
+        connection.commit()
+    finally:
+        connection.close()

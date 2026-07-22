@@ -1,6 +1,6 @@
 # ADR 0041 — 큐레이션 골든셋: 답변 품질 축 + 라벨 provenance(사람 확정만)
 
-- 상태: 채택(Accepted, 2026-07-13) — 사용자가 큐레이션 골든셋과 사람 확정 라벨 원칙을 확정했다.
+- 상태: 채택(Accepted, 2026-07-13) — 사용자가 큐레이션 골든셋과 사람 확정 라벨 원칙을 확정했다. · **보강(2026-07-22 — 갭 라벨 채점 보정·어휘 사영)**: unowned 갭 질문의 `expected_intent`는 사람 가독 라벨(주차 등·어휘 밖)을 그대로 유지하되, `run_eval(..., vocabulary=...)`이 분류 축 채점만 어휘 사영(`expected ∉ vocab → ""`)으로 보정한다 — `LlmClassifier` 계약(어휘 안 라벨 또는 `""`)과 라벨 provenance 보존을 양립시키는 채점 규약(사용자 확정·구현 tasks P17.11 기록).
 - 계보: **ADR 0003**(라우터 정확성=TDD·LLM 품질=골든셋 eval)의 구체화 — 0003이 "분류·**답변 품질**은 골든셋 임계 eval"이라 이미 답변 품질을 eval 스코프에 명시했으나, `SampleQuestion`/`run_eval`은 분류·라우팅 축만 구현돼 있었다. 이 ADR이 미구현 축과 라벨 provenance를 채운다. **ADR 0047**은 이 정책을 승격용 독립 held-out 평가로 확장하고, Precedent·운영 결과의 자동 라벨화를 명시적으로 금지한다. **ADR 0035**(Owner Scorecard — Goodhart 방지·"지표가 목표가 되면 지표이기를 그친다")의 정신 인접 — 정답 라벨의 무결성을 코드가 굳기 전에 못박는다. **ADR 0039**(실조직 배포·채택 사활 기준)의 검증 축 — S7/S8·§8 채택 기준을 실측하려면 라우팅뿐 아니라 답변 품질까지 재야 한다. ADR 0004(Authority 중앙·under-claim만 자기보고) 정합.
 - 구현 상태: `AnswerExpectation`·`AnswerGrader`·`FakeGrader`·`SubstringGrader`와 세 축 집계 구조는 구현됐다. 현재 시드 30문항에는 `answer_expectation`이 한 건도 없고 `LlmGrader`는 `NotImplementedError` 자리다. routing 기대 필드에는 별 `label_provenance`가 없으며, `CurationProvenance.curated_by`도 인증된 사람 receipt가 아닌 문자열이다. 따라서 현재 데이터는 coherence 확인용일 뿐 production 승격 게이트가 아니다.
 - 성격: **도메인 모델 변경 + 되돌리기 어려운 검증 정책.** 정답 라벨의 무결성(누가 확정하나·무엇이 라벨이 될 수 있나)을 박는 foundational 결정이므로 정식 ADR감이다.

@@ -11,16 +11,20 @@ ADR 0015 단일 출처: ②의 Router는 분류기를 *내장*한다(생성 시 
 """
 
 from datetime import date
+from pathlib import Path
+
+import pytest
 
 from agent_org_network.agent_card import AgentCard
-from agent_org_network.classifier import Classifier
+from agent_org_network.classifier import Classifier, FakeClassifier, RuleBasedClassifier
 from agent_org_network.eval import DEFAULT_ACCURACY_THRESHOLD, EvalReport, run_eval
-from agent_org_network.golden import SampleQuestion
+from agent_org_network.golden import SampleQuestion, load_golden
 from agent_org_network.registry import Registry
 from agent_org_network.router import Router
 from agent_org_network.user import User
 
 ROOT_USER = "root_manager"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 # ── 인메모리 fixture: routed/contested/unowned 각 케이스를 덮는 최소 registry ──
@@ -211,3 +215,111 @@ def test_빈_골든셋이면_passed_False_total_0():
     assert report.classification_accuracy == 0.0
     assert report.routing_accuracy == 0.0
     assert report.passed is False
+
+
+# ── 갭 라벨 채점 보정(어휘 사영) — run_eval(vocabulary=...) ───────────────────
+#
+# 골든 라벨(expected_intent)이 registry 어휘(카드 domains 합집합) 밖인 unowned 갭
+# 질문(주차 등)은 LlmClassifier 계약상 ""(어휘 밖 환각의 정규화 결과)가 *정답*이다.
+# vocabulary 주입 시 expected_intent를 어휘로 사영해 비교한다 — 라우팅 축은 무변경.
+
+_GAP_SAMPLE = SampleQuestion(
+    question="주차권 갱신은 어디서",
+    expected_intent="주차",  # registry 어휘(예: "환불") 밖 — unowned 갭 라벨
+    expected_disposition="unowned",
+)
+
+_IN_VOCAB_SAMPLE = SampleQuestion(
+    question="환불 절차 알려줘",
+    expected_intent="환불",  # registry 어휘 안
+    expected_disposition="unowned",  # 이 절의 관심사는 분류 축이라 라우팅은 임의값
+)
+
+
+def _classification_only_router(classifier: Classifier) -> Router:
+    """카드 0장 registry — 분류 축만 보는 테스트라 라우팅은 항상 Unowned(관심사 밖)."""
+    return Router(Registry(), classifier, root_user=ROOT_USER)
+
+
+def test_어휘_밖_expected_분류기가_빈값이면_vocabulary_없으면_miss():
+    classifier = FakeClassifier("")
+    report = run_eval(
+        [_GAP_SAMPLE], classifier, _classification_only_router(classifier)
+    )
+    assert report.classification_accuracy == 0.0
+
+
+def test_어휘_밖_expected_분류기가_빈값이면_vocabulary_주면_hit():
+    classifier = FakeClassifier("")
+    report = run_eval(
+        [_GAP_SAMPLE],
+        classifier,
+        _classification_only_router(classifier),
+        vocabulary=["환불"],
+    )
+    assert report.classification_accuracy == 1.0
+
+
+def test_어휘_밖_expected_분류기가_어휘_안_라벨_내면_vocabulary_줘도_miss():
+    classifier = FakeClassifier("환불")
+    report = run_eval(
+        [_GAP_SAMPLE],
+        classifier,
+        _classification_only_router(classifier),
+        vocabulary=["환불"],
+    )
+    assert report.classification_accuracy == 0.0
+
+
+def test_어휘_안_expected는_vocabulary_유무와_무관하게_hit_동일():
+    classifier = FakeClassifier("환불")
+    without = run_eval(
+        [_IN_VOCAB_SAMPLE], classifier, _classification_only_router(classifier)
+    )
+    with_vocab = run_eval(
+        [_IN_VOCAB_SAMPLE],
+        classifier,
+        _classification_only_router(classifier),
+        vocabulary=["환불", "가격"],
+    )
+    assert without.classification_accuracy == with_vocab.classification_accuracy == 1.0
+
+
+def test_어휘_안_expected는_vocabulary_유무와_무관하게_miss_동일():
+    classifier = FakeClassifier("")
+    without = run_eval(
+        [_IN_VOCAB_SAMPLE], classifier, _classification_only_router(classifier)
+    )
+    with_vocab = run_eval(
+        [_IN_VOCAB_SAMPLE],
+        classifier,
+        _classification_only_router(classifier),
+        vocabulary=["환불", "가격"],
+    )
+    assert without.classification_accuracy == with_vocab.classification_accuracy == 0.0
+
+
+# ── CLI 경로 회귀 — 실 골든셋 + RuleBasedClassifier(결정론) + 사영 보정 ───────
+
+
+def test_CLI_rule_경로_보정후_분류_정확도_실측_고정():
+    """main()이 조립하는 것과 같은 구성(registry+golden+intents+RuleBasedClassifier)을
+    직접 조립해 vocabulary 사영 보정 후 분류 정확도가 결정론적으로 22/30임을 고정한다
+    (보정 전 0.600 → 보정 후 0.733... — unowned 갭 4건 중 분류기가 계약대로 ""를 낸
+    3건이 hit로 바뀌고, "보상"을 "계약 검토"로 오분류한 1건은 여전히 miss).
+    """
+    registry = Registry()
+    registry.load(REPO_ROOT / "registry")
+    registry.validate()
+    samples = load_golden(REPO_ROOT / "samples" / "questions.jsonl")
+    intents = sorted({d for c in registry.all_cards() for d in c.domains})
+
+    from agent_org_network.demo import demo_keyword_intents
+
+    classifier = RuleBasedClassifier(demo_keyword_intents())
+    router = Router(registry, classifier, root_user=ROOT_USER)
+
+    report = run_eval(samples, classifier, router, vocabulary=intents)
+
+    assert report.total == 30
+    assert report.classification_accuracy == pytest.approx(22 / 30)

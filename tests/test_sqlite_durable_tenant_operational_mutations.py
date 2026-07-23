@@ -182,3 +182,33 @@ def test_open_fails_closed_when_foreign_keys_cannot_be_enabled(tmp_path: Path) -
     finally:
         connection.rollback()
         connection.close()
+
+
+def test_validate_only_does_not_spuriously_reject_after_an_unrelated_committed_source_write(
+    tmp_path: Path,
+) -> None:
+    """validate_only() checks schema/catalog canonicality, not a source-content CAS.
+
+    open() and validate_only() are two separate reads; a legitimate concurrent
+    writer's commit landing between them must not fail the availability check.
+    Command-level scope staleness is a separate concern the caller checks
+    against its own command-time expected_scope."""
+    path = tmp_path / "operational.sqlite"
+    connection = sqlite3.connect(path)
+    try:
+        _parent(connection)
+        migrate_sqlite_durable_tenant_operational_mutations(connection)
+        capability = open_sqlite_durable_tenant_operational_mutations(connection)
+
+        other = sqlite3.connect(path)
+        try:
+            other.execute(
+                "INSERT INTO operational_hitl_toggles VALUES('acme','other-card',1,0,0,'2026-01-01T00:00:02.000Z')"
+            )
+            other.commit()
+        finally:
+            other.close()
+
+        capability.validate_only()
+    finally:
+        connection.close()

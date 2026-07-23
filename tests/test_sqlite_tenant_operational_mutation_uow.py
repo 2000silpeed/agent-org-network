@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import agent_org_network.sqlite_durable_tenant_operational_mutations as sqlite_durable_tenant_operational_mutations
 from agent_org_network.sqlite_durable_tenant_operational_mutations import (
     capture_sqlite_tenant_operational_mutation_scope_snapshot,
     migrate_sqlite_durable_tenant_operational_mutations,
@@ -415,6 +416,65 @@ def test_eight_connections_same_transfer_replay_once(tmp_path: Path) -> None:
             assert verify.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 1
     finally:
         verify.close()
+
+
+def test_replay_survives_a_committed_unrelated_source_write_between_open_and_validate_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deterministic trace-based reproduction of the 8-way replay flake.
+
+    open() captures one R1.0 scope snapshot; validate_only() re-captures a
+    second one to compare against it. A committed write from an unrelated
+    connection landing between those two captures must not surface as
+    "R1.0 capability가 unavailable입니다." for a pure replay — R1.0
+    availability is schema canonicality, not a source-content CAS."""
+    path = tmp_path / "race.sqlite"
+    connection = _connection(path)
+    try:
+        connection.execute(
+            'UPDATE operational_registry_state SET payload_json=\'{"cards":{"card":{"owner":"one"}},"manager_refs":{},"users":["one","two"]}\' WHERE org_id=\'acme\''
+        )
+        connection.commit()
+        command = CardTransferOwnerCommand(**_base(connection), card_id="card", owner_id="two")
+        winning = execute_sqlite_tenant_operational_mutation(connection, command)
+        assert winning.replayed is False
+    finally:
+        connection.close()
+
+    calls = {"n": 0}
+    original_capture = (
+        sqlite_durable_tenant_operational_mutations.capture_sqlite_tenant_operational_mutation_scope_snapshot
+    )
+
+    def interleaving_capture(target: sqlite3.Connection):
+        calls["n"] += 1
+        result = original_capture(target)
+        if calls["n"] == 1:
+            # This lands after open()'s snapshot capture but before
+            # validate_only()'s re-capture — exactly the window observed in
+            # the 8-way race.
+            other = sqlite3.connect(path)
+            try:
+                other.execute(
+                    "INSERT INTO operational_hitl_toggles VALUES('acme','other-card',1,0,0,'2026-01-01T00:00:02.000Z')"
+                )
+                other.commit()
+            finally:
+                other.close()
+        return result
+
+    monkeypatch.setattr(
+        sqlite_durable_tenant_operational_mutations,
+        "capture_sqlite_tenant_operational_mutation_scope_snapshot",
+        interleaving_capture,
+    )
+
+    replay_connection = sqlite3.connect(path)
+    try:
+        result = execute_sqlite_tenant_operational_mutation(replay_connection, command)
+    finally:
+        replay_connection.close()
+    assert result.replayed is True
 
 
 def test_eight_connections_different_session_commands_have_one_winner(tmp_path: Path) -> None:

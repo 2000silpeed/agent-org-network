@@ -266,9 +266,22 @@ class SqliteDurableTenantOperationalMutationsCapability:
     scope_snapshot: SqliteTenantOperationalMutationScopeSnapshot
 
     def validate_only(self) -> None:
+        """Re-check schema/catalog canonicality only.
+
+        This does not re-compare ``scope_snapshot`` against a fresh capture:
+        every caller invokes ``open(...).validate_only()`` back-to-back with
+        no work in between, so the two captures are two separate untransacted
+        reads of mutable source-table content with no atomicity linking them.
+        Any unrelated writer committing in that window would make them
+        legitimately differ, which is not evidence R1.0 itself is
+        unavailable. Callers that need a source-content CAS compare a fresh
+        ``capture_sqlite_tenant_operational_mutation_scope_snapshot`` against
+        their own command-time ``expected_scope`` explicitly (see R1.1's
+        ``_require_scope``); ``scope_snapshot.is_current(...)`` remains
+        available directly for callers that hold this capability across real
+        intervening work and want that staleness check.
+        """
         _validate(self.connection)
-        if not self.scope_snapshot.is_current(self.connection):
-            raise SqliteDurableTenantOperationalMutationsError("R1.0 source scope snapshot이 drift했습니다.")
 
 
 def open_sqlite_durable_tenant_operational_mutations(

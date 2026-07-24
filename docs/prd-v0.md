@@ -26,6 +26,8 @@
 
 > **P17.9 S4.3c.0 진행 상태.** escalation 대상 선택은 기존 Registry의 개별 Manager 필드를 추정하지 않는다. 새 Case용 graph-aware snapshot이 조직 scope, ordered claim과 현재 Card/Owner/intent/route/under-claim, 무순환 Owner path와 유일 nearest common Manager 또는 유일 root fallback을 함께 증명할 때만 선택 결과를 typed reference/digest로 제공한다. cycle·self-loop·dangling 관계·복수 root·동점·drift는 unavailable이며, 이 계약은 `conflict.escalate` 권한·사람 승인·어떤 상태 전이도 열지 않는다.
 
+> **P17.9 S4 계열 완결(2026-07-22~24).** durable Conflict escalation(사람 승인 증거 4중 결박·receipt graph·세 aggregate 원자 전이·32-way 게이트·reconciliation), durable Manager 처분(FromUnowned Assign/Dismiss·FromDeadlock은 escalation receipt 결박 소비·Case escalated terminal 불변), durable WorkTicket enqueue(system 전이·실패는 전부 ReadyToDispatch 잔류로 미아 없음), linked command-receipt reconciliation(receipt 없는 partial state 검출·resting-revision 판별자)이 전부 게이트 내 결정론으로 닫혔다(ADR 0050 §11~§12·ADR 0065 §1~§12). 여전히 SQLite 단일 프로세스 경계다 — ticket lease/claim/send/timeout·outbox delivery·recovery는 S5, PostgreSQL은 S6이 남으며, 그 전에는 실 다중 인스턴스·실 배포 준비를 주장하지 않는다.
+
 > **P17.9 운영 MCP R2a 진행 상태.** 조직 provenance를 실제로 증명할 수 없는 legacy Registry·Session·Audit·HITL·graph source는 central 운영 조립의 권위가 아니다. raw legacy central mode는 503으로 닫히며 principal·카드·본문을 먼저 읽어 존재 여부를 관측하지 않는다. 이는 실제 기업 운영 source가 준비됐다는 뜻이 아니다. 조직별 source adapter가 current provenance·mixed-row·fault를 검증해 central 기능을 다시 여는 R2b와, mutation+감사 durable UoW·credential delivery recovery는 아직 남아 있다.
 
 > **P17.9 운영 MCP R2b S0~S1 진행 상태.** 중앙 운영 source는 Registry·graph·session·audit reader·audit writer·HITL의 여섯 typed tenant capability를 모두 갖춰야 하며, 각각은 실제 조직·provenance·row scope·fault를 live validate한다. raw/partial/self-reported source와 reader/writer 혼동은 거부한다. 이 기반은 아직 user-facing central MCP를 다시 열거나 production adapter 준비를 주장하지 않는다.

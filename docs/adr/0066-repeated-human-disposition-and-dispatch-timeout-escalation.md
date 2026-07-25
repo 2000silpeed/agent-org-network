@@ -3,7 +3,7 @@
 - 상태: **채택(Accepted, 2026-07-25 — 사용자 확인 완료)**. 확인 내용: "한 Request가 사람 처분 큐에 **실행 시도(attempt)마다 최대 한 번** 들어갈 수 있다"(결정 §1의 제안 답)와 그 저장 경계(FromDispatch Item은 S5 소유 `durable_dispatch_escalation_v1` component·`UNIQUE(request_id, attempt)`·S4.1 DDL 무변경)를 사용자가 승인했다. 기각 대안(평생 1회 유지 = 재실행 실패 시 사람에게 다시 묻지 않음)은 그 Request가 `AwaitingAnswer`에서 종착을 잃어 미아 없음 불변식을 깨므로 채택하지 않았다.
 - 날짜: 2026-07-25
 - 계보: ADR 0042(§2 전이표·§4 사람 처분·§9 S5 경계)·ADR 0014(Manager 큐)·ADR 0050 §12(`manager.act`)·ADR 0065 §11·§12(FromDeadlock 소비·linked command 정합)를 잇는다. ADR 0042 §9 S5.1~S5.5는 이 결정에 의존하지 않는다 — S5.6만 이 결정 위에 선다.
-- 구현 상태: 미구현. 이 ADR은 P17.9 S5.6 착수 전에 사용자 확인을 받아야 하는 **제품 의미 결정**을 명시한다.
+- 구현 상태: 미구현(결정만 확정). 사용자 확인은 2026-07-25에 완료돼 **S5.6 착수 차단은 해제**됐다. S5.6 상세 설계(component DDL·처분 UoW 분기·escalation UoW·S5.7 reconciliation arm·§3의 세 교정)는 S5.5 랜딩 뒤 domain-architect가 이어서 확정한다.
 
 ## 맥락 — 세 겹으로 얽힌 사실
 

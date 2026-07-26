@@ -114,7 +114,12 @@ def _open(path: str | Path) -> sqlite3.Connection:
             uri=True,
             timeout=5.0,
         )
-    except sqlite3.Error as error:
+    # expanduser/resolve/as_uri는 sqlite3.Error가 아닌 ValueError(임베디드 NUL)·
+    # RuntimeError(`~unknownuser` 확장 실패)·OSError도 던진다 — 이걸 놓치면
+    # capability가 서지 않을 때 typed report로 fail-closed한다는 이 게이트의
+    # 존재 이유가 그 입력에 대해 성립하지 않는다(ADR 0042 §9 ⑱, S5.5와 공통
+    # 교정). Exception으로 넓히지 않는다 — 프로그래밍 오류는 삼키지 않는다.
+    except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
         raise DurableLinkedReconciliationError(
             "linked reconciliation gate SQLite DB를 열 수 없습니다."
         ) from error

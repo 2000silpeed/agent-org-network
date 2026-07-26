@@ -56,10 +56,63 @@ S5.6은 `durable_dispatch_escalation_v1` component를 신설하고 `durable_disp
 
 `_manager_request_fingerprint`의 `ValueError`는 **InMemory request-aware store**의 중복 적재 방지 경로다. durable S5.6은 이 store를 거치지 않고 자기 테이블에 쓰므로 우회가 아니라 **정의역이 다르다**. InMemory 경로에 FromDispatch를 여는 것은 별 결정이며 이 ADR은 열지 않는다.
 
+## 5. 상세 설계 (domain-architect·2026-07-26)
+
+결정 §1~§4와 ADR 0042 §9 ⑯(교차 write)·⑰(시간 안전)이 제약을 이미 깔았으므로, 아래는 그 위에서 남은 선택만 확정한다.
+
+### 5.1 component — 2테이블, audit/outbox intent mirror 없음
+
+`durable_dispatch_escalation_v1`이 `durable_dispatch_manager_items`(FromDispatch Item)와 `durable_dispatch_escalation_receipts`(3 action 공용 command receipt)만 소유한다. **S4.1이 receipt마다 붙이는 audit/outbox intent mirror를 복제하지 않는다** — 그 두 테이블은 receipt와 필드가 exact 일치해야 하는 순수 중복이고 소비자가 오늘 0이며(§9 ③·⑥), S5.4가 같은 이유로 이미 mirror를 두지 않았다. receipt 자체가 그 명령의 durable 기록이고, 운영 감사 로그로 내보내는 것은 소비자 관심사로 이월한다. 이는 S4.1 shape에서 의도적으로 벗어난 지점이므로 리뷰가 반박할 수 있게 명시해 둔다.
+
+**status enum은 S4.1과 같은 `{open, resolved, dismissed}`를 쓴다.** `rerouted`가 이 표에서 더 정직하지만, §2의 S6 테이블 통합을 기계적으로 만들기 위해 값 집합을 일치시킨다. 대신 **이 표에서는 `resolved ⟺ manager.reroute`**이고 S4.1에서는 `resolved ⟺ manager.assign_owner`라는 차이가 생기며, 그 차이를 눈에 보이게 만드는 것이 §3의 source 전제 명시다.
+
+**시간 표현 경계 — S4.1 timestamp와 문자열 비교가 일어나는 지점은 0이다.** escalation 행의 `created_at`·`observed_due_at`은 S5 canonical instant(고정폭 UTC·microseconds)로 저장한다. Item은 S4.1 ticket에 FK로 붙지만 **두 표의 timestamp를 비교하는 코드는 없다** — 경계를 넘는 값은 정수(`attempt`·`awaiting_revision`)와 typed ref뿐이다. SLA 판정(`due_at <= now`)은 문자열이 아니라 **Python `datetime` 객체 사이에서** 수행하고, 그 결과를 저장할 때만 canonical 문자열로 정규화한다. 이 “정수·typed ref만 경계를 넘는다”가 red로 고정할 불변식이다.
+
+### 5.2 처분 UoW — S4.4 확장이 아니라 S5 소유 신 UoW
+
+§1의 “처분 UoW 분기”는 **S4.4 `sqlite_durable_manager_disposition_uow`에 `dispatch` 분기를 넣는 것이 아니다**. 두 이유로 불가능하다.
+
+1. **S4.6이 깨진다.** S4.4는 처분을 S4.1 `durable_linked_command_receipts`에 `target_ref = manager_item_id`로 쓴다. FromDispatch Item은 S5 표에 있으므로 그 receipt의 `target_ref`는 S4.1 Item 표에서 join되지 않고, S4.6 forward sweep이 `manager_disposition_receipt_mismatch`로 잡는다. §1이 약속한 “S4.1 DDL 무변경·S4.6 무변경”과 정면으로 충돌한다.
+2. **계층이 역전된다.** S4.4가 S5 component를 알게 되면 S4가 S5에 의존한다(S5는 S4.1 위에 서 있다).
+
+따라서 FromDispatch 처분은 **S5 소유 UoW가 S5 receipt 표에 기록**하고, 분기는 UoW 안이 아니라 **어느 표에 그 Item이 있는지로 갈리는 application 진입점**에 둔다. S4.4의 `source_kind == "dispatch" → Unavailable` 거부는 그대로 유지한다(정의역이 다르다는 사실의 표현이다).
+
+중앙 권한은 **새 action을 만들지 않는다** — FromDispatch 처분도 `manager.act`(ADR 0050 §12·role hard-limit·`manager_item` resource·1인칭 귀속)이며, `ManagerActItemResolver`에 S5 표를 읽는 구현을 주면 된다(`resource_id`는 S5 `manager_item_id`). ADR 0050 계약 변경은 없다.
+
+### 5.3 escalation UoW — system 전이, SLA는 transaction 안에서 다시 판정
+
+timeout escalation은 사람 명령이 아니라 **system 전이**다(S4.5 `work_ticket.create`와 같은 결) — 중앙 재인가 0, `principal_ref`는 system subject 상수, `CentralAuthorizer` 미주입. 권한 근거는 “SLA가 지났다”는 durable 사실 자체다.
+
+⑰ (1)(2)(3)을 그대로 적용한다. 특히 **⑰(2)의 transaction 내 SLA 재판정에는 세 번째 독립 근거가 있다** — ① 시간 안전(호출자 `now` 비전이성) ② TOCTOU(스캔~write 사이 답 도착) ③ **S5.4 거부의 정당성**: escalation이 ticket을 `pending`에서 떠나게 하면 그 뒤 도착한 워커의 답은 S5.4의 stale 판정으로 거부된다. 그 거부가 정당한 유일한 근거는 “escalation 시점에 SLA가 실제로 지나 있었다”이고, 그것을 만드는 것이 재판정이다. 근거가 셋이므로 하나가 반박돼도 요구는 남는다.
+
+**늦은 답의 처분은 의도된 동작이다.** SLA가 진짜 지나 사람이 개입한 뒤라면 늦은 답을 받아들이는 것이 오히려 위험하다(Manager의 처분과 경쟁해 두 종착 경로가 열린다). 워커 측 계약은 “재시도가 아니라 폐기”이며, 그 Request는 Manager의 reroute로 **새 attempt의 새 ticket**을 받는다(§4 ADR 0042).
+
+**새 SLA가 필요하다 — 이월할 수 없다.** c.3 escalation UoW는 `AwaitingConflict`의 `due_at`을 그대로 이월했지만, S5.6은 **그 `due_at`이 지났기 때문에** 전이하므로 이월하면 `QuestionRequest`의 “비종결 상태의 `due_at`은 전이 시각보다 빠를 수 없다”를 즉시 위반한다. 따라서 `escalation_sla: timedelta`를 **생성자 1지점**에 주입해 `due_at = now + escalation_sla`로 만든다(⑤의 `lease_ttl`과 같은 판·`0 < sla <= 30일` 검증). 조직별 SLA가 필요해지면 그 인자 하나를 port로 교체하는 것이 swap point다.
+
+**escalation 대상 Manager는 ticket Owner의 nearest manager, 없으면 유일 root User다.** ADR 0065 §10 c.0가 conflict escalation에 세운 선택 규칙을 그대로 쓰되, 앵커는 후보 집합이 아니라 **답하지 않은 Owner**다(답을 못 낸 주체의 상위가 처분해야 한다). c.0 snapshot reader는 conflict ingress claim에 강하게 결합돼 재사용할 수 없으므로 좁은 신 port(`DispatchEscalationTargetDirectory.resolve_manager(org_id, owner_subject_ref) -> subject_ref | None`)를 두고, `None`은 fail-closed(Request를 `AwaitingAnswer`에 남겨 다음 run이 재시도 — 미아 없음)다. 이 선택은 “누가 호출을 받는가”라는 사용자 가시 결정이지만 기존 선례를 그대로 적용한 것이므로 별 사용자 확인 없이 진행하고, 다른 큐로 보내고 싶다면 이 port 구현만 바꾸면 되도록(스키마 변경 0) 격리한다.
+
+**⑯ 전수 대조 결과.** S5.6이 쓰는 남의 행은 둘이다.
+- **`durable_linked_work_tickets.status`(`pending → escalated`)** — S4.1 `_validate_rows`의 ticket 규칙은 `attempt`·`awaiting_revision` 정수, `route_sha256` SHA, `owner_subject_id` typed ref, `status` enum, `created_at` timestamp, 그리고 (ticket_id·org_id·request_id) typed ref + org/request lineage다. 이 write가 건드릴 수 있는 것은 **`status` enum 하나뿐**이고 값은 리터럴 `'escalated'`(허용 집합 소속)이므로 문법 위반이 불가능하다. 단조 전방성(§9 ②)은 S4.1이 검증하지 않으므로 **CAS `WHERE status='pending'`이 유일한 집행 지점**이다. 다른 컬럼은 SET에 넣지 않는다.
+- **`durable_dispatch_leases`(release)** — S5.4가 밟은 함정과 **같은 지점**이다. S5.1의 행 불변식 `expires_at >= acquired_at`을 CAS가 지켜야 하므로 `WHERE ticket_id=? AND state='leased' AND acquired_at<=?`를 S5.4와 **동형으로** 쓴다. rowcount 0(만료·부재·clock skew)은 정상이며, 그때 `leased` lease가 비-`pending` ticket에 남는 것은 **의도적으로 관용되는 상태**다(아래 5.4).
+
+### 5.4 S5.7 arm — 그리고 절대 단언하면 안 되는 것
+
+S5.7의 증분은 S4.6(S4.1 receipt ⟺ S4.1 aggregate ⟺ Request)·S5.5(read-only 스캔)·S5.1(행 문법+parent lineage)이 보지 않는 **S5 소유 cross-aggregate 정합**이다.
+
+- **answer receipt ⟺ ticket `completed`**(양방향·terminal 영구).
+- **escalation Item ⟺ ticket `escalated`**(양방향·1:1) + Item ⟺ receipt(`work_ticket.escalate` 정확히 하나) + 처분된 Item(`resolved`/`dismissed`) ⟺ 대응 처분 receipt.
+- **Request 결박은 resting-revision 판별자**(S4.6 판 계승): `request.revision == receipt.expected_request_revision + 1`이면 정확한 shape(`AwaitingManager(public_kind="dispatched")`·`item_id`·route/attempt 보존·handling), 초과면 revision floor + org만.
+- **`leased` lease ⇒ ticket `pending`을 단언하지 않는다.** S5.4의 release CAS가 `acquired_at<=?` 가드로 rowcount 0을 허용하므로 **`completed`/`escalated` ticket에 `leased` lease가 남는 것은 문서화된 안전 상태**다(그 lease는 `status='pending'`만 스캔하는 S5.3·S5.5에 무해하다). 이걸 위반으로 잡으면 의도적 관용 상태를 오탐한다. 단언 가능한 것은 `attempt.lease_epoch <= lease.lease_epoch`(S5.1 소관)와 “delivery attempt가 있으면 그 ticket에 lease 행이 있(었)다”뿐이다.
+- **P2-4 표면화 위치는 S5.7 게이트가 아니라 S5.6 runner 리포트다.** S5.7은 S4.6 판 그대로 `capable ⟺ violation 0`이고, “관측이 손상으로 멈췄다”를 정상 유휴와 구분해야 하는 주체는 escalation runner다 → `DispatchEscalationRunReport(scanned, escalated, skipped, contended, scan_capable: bool, scan_detail: str)`.
+
+### 5.5 §3 삼자 교정의 확정 형태
+
+`durable_linked_manager_items`는 구성상 `source_kind ∈ {unowned, deadlock}`만 담는다(FromDispatch는 5.1의 S5 표). 따라서 S4.6 assign arm의 `attempt == 1`은 참이지만 **전제가 암묵적**이다. 교정은 (1) 코드 — assign arm에 `item["source_kind"] IN ('unowned','deadlock')`를 명시 검사로 추가하고 `dispatch` source에 결박된 assign receipt는 fail-closed violation, (2) ADR 0065 §12 Q1① 문면(완료), (3) CONTEXT(완료)다. S4.1 `_COMMAND_ACTION`의 미사용 `manager.reroute`는 **그대로 둔다** — S5는 자기 receipt 표의 자기 action enum을 쓰므로 S4.1 표에 그 값을 쓰는 writer는 계속 0이고, S4.6이 그것을 `unbindable_command_receipt`로 fail-closed하는 현행이 옳다.
+
 ## 결과와 이행 순서
 
 1. ~~**사용자 확인**~~ — **완료(2026-07-25)**. 두 항목(attempt마다 최대 1회·S5 소유 테이블) 모두 승인됐다. S5.6 착수 차단 해제.
-2. 확인 뒤 S5.6 상세 설계(component DDL·처분 UoW 분기·escalation UoW·S5.7 reconciliation arm)를 domain-architect가 이어서 확정한다.
+2. ~~확인 뒤 S5.6 상세 설계~~ — **완료(2026-07-26·§5)**. component 2테이블·S5 소유 처분 UoW·system 전이 escalation UoW·S5.7 arm·§3 교정 형태를 확정했다.
 3. §3의 세 교정(코드·ADR 0065 §12·CONTEXT)은 S5.6과 같은 슬라이스에서 함께 랜딩한다.
 4. S6 PostgreSQL 이관에서 두 Manager Item 테이블을 `(request_id, attempt)` 키의 한 테이블로 합친다.
 

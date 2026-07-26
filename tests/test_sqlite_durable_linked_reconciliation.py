@@ -1074,3 +1074,26 @@ def test_dismiss_이후_request의_reason_code만_어긋나면_request_state_inc
     report = reconcile_sqlite_durable_linked_gate(path, org_id=ORG_ID)
     assert report.capable is False
     assert any(v.kind == "request_state_inconsistent" for v in report.violations)
+
+
+# ---------------------------------------------------------------------------
+# review-s55b P2-2 — 경로 오류(ValueError·RuntimeError)도 typed report로 닫힌다
+# (ADR 0042 §9 ⑱ S4.6 공통 교정 — S5.5와 동형 결함을 상속했으므로 함께 고친다)
+# ---------------------------------------------------------------------------
+
+
+def test_경로에_임베디드_nul이_있으면_valueerror가_typed_report로_닫힌다() -> None:
+    # Path(...).resolve()가 embedded NUL에 ValueError를 던진다 — sqlite3.Error만
+    # 잡으면 이 예외가 raw로 누수해 호출자가 capable=False 대신 예외로 중단된다.
+    report = reconcile_sqlite_durable_linked_gate("\x00abc")
+    assert report.capable is False
+    assert len(report.violations) == 1
+    assert report.violations[0].kind == "linked_capability_uncertain"
+
+
+def test_expanduser가_실패하면_runtimeerror가_typed_report로_닫힌다() -> None:
+    # 존재하지 않는 사용자의 `~user` 확장은 RuntimeError다.
+    report = reconcile_sqlite_durable_linked_gate("~nosuchuser1234/x.sqlite")
+    assert report.capable is False
+    assert len(report.violations) == 1
+    assert report.violations[0].kind == "linked_capability_uncertain"

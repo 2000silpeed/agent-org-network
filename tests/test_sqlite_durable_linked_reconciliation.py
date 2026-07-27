@@ -547,6 +547,33 @@ def test_assign_이후_request의_attempt가_1이_아니면_request_state_incons
     assert any(v.kind == "request_state_inconsistent" for v in report.violations)
 
 
+def test_dispatch_source_아이템에_결박된_assign_receipt는_fail_closed_위반이다(
+    tmp_path: Path,
+) -> None:
+    """ADR 0066 §3/§5.5 교정 — `durable_linked_manager_items`는 구성상
+    unowned/deadlock source만 담아야 한다(FromDispatch는 S5 소유 별 표).
+    S4.1 스키마 자체는 `source_kind='dispatch'`를 여전히 허용값으로 두므로
+    (S6 이전 하위호환), 그런 행이 실수로 섞여도 attempt==1 판별만으로는
+    조용히 통과한다(attempt는 그대로 1이라 미탐/false negative). 이 테스트는
+    정상 assign 커밋 뒤 source_kind만 raw로 'dispatch'로 바꿔 그 미탐을
+    드러낸다 — 교정 전에는 이 테스트가 실패한다(report.capable이 여전히
+    True로 남는다)."""
+    path, completion = _prepared(tmp_path)
+    try:
+        _assign(completion)
+        _raw_execute(
+            completion,
+            "UPDATE durable_linked_manager_items SET source_kind='dispatch' WHERE manager_item_id=?",
+            (ITEM_REF,),
+        )
+    finally:
+        completion.close()
+
+    report = reconcile_sqlite_durable_linked_gate(path, org_id=ORG_ID)
+    assert report.capable is False
+    assert any(v.kind == "dispatch_source_manager_disposition" for v in report.violations)
+
+
 def test_enqueue_이후_request의_ticket_id가_어긋나면_request_state_inconsistent이다(
     tmp_path: Path,
 ) -> None:

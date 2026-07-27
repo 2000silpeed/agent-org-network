@@ -72,6 +72,7 @@ type _ViolationKind = Literal[
     "disposed_item_without_receipt",
     "work_ticket_without_receipt",
     "linked_capability_uncertain",
+    "dispatch_source_manager_disposition",
 ]
 
 _ASSIGN = "manager.assign_owner"
@@ -195,6 +196,12 @@ def _check_assign_request(
     # 너머로 진행했으면(revision >, floor는 이미 확인됨) tolerant다.
     if request.revision != receipt["expected_request_revision"] + 1:
         return
+    # 기대 attempt는 source에서 도출한다(ADR 0065 §12 Q1①·ADR 0066 §3) — 이
+    # 함수는 `_forward_assign_or_dismiss`가 이미 item["source_kind"]가
+    # unowned/deadlock임을 확인한 뒤에만 호출된다(dispatch source는 그
+    # 앞단에서 fail-closed로 걸린다). 그 둘은 전이표상 항상 attempt=1로만
+    # AwaitingManager에 진입하므로 기대 attempt는 여기서 **무조건 1**이지,
+    # "assign은 늘 1"이라는 임의 가정이 아니다.
     ok = (
         isinstance(request.state, ReadyToDispatch)
         and request.state.trigger_key == receipt["receipt_id"]
@@ -285,6 +292,24 @@ def _forward_assign_or_dismiss(
                 receipt["receipt_id"],
                 "manager_disposition_receipt_mismatch",
                 "ManagerItem이 command receipt와 결박되지 않습니다.",
+            )
+        )
+        return
+    assert item is not None
+    # ADR 0066 §3/§5.5 교정 — `durable_linked_manager_items`는 구성상
+    # source_kind가 unowned/deadlock인 Item만 담는다(FromDispatch는 S5 소유
+    # 별 표 `durable_dispatch_manager_items`). S4.1 스키마 자체는 하위호환으로
+    # `source_kind='dispatch'`를 여전히 허용값으로 두므로, 이 전제가 암묵적인
+    # 채로 두면 그런 행이 섞여도 아래 attempt==1 판별만으로는 조용히
+    # 통과한다(미탐). 명시 검사로 fail-closed한다 — dispatch source Item이
+    # manager.assign_owner/manager.dismiss receipt에 결박되는 것은 구성상
+    # 있을 수 없는 상태다.
+    if item["source_kind"] not in ("unowned", "deadlock"):
+        violations.append(
+            _violation(
+                receipt["receipt_id"],
+                "dispatch_source_manager_disposition",
+                "durable_linked_manager_items는 unowned/deadlock source Item만 담을 수 있습니다.",
             )
         )
         return

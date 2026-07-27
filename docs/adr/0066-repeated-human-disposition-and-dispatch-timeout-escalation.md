@@ -79,6 +79,8 @@ S5.6은 `durable_dispatch_escalation_v1` component를 신설하고 `durable_disp
 
 중앙 권한은 **새 action을 만들지 않는다** — FromDispatch 처분도 `manager.act`(ADR 0050 §12·role hard-limit·`manager_item` resource·1인칭 귀속)이며, `ManagerActItemResolver`에 S5 표를 읽는 구현을 주면 된다(`resource_id`는 S5 `manager_item_id`). ADR 0050 계약 변경은 없다.
 
+**reroute의 RouteTarget — 새 대상 카드에서 `requires_approval`·eligibility를 재도출한다(2026-07-27 구현 판정).** 최초 구현안은 "reroute는 대상만 바꾸는 조작이니 기존 `AwaitingManager.route`(`intent`/`requires_approval`/`authority_version`)를 그대로 보존하고 `agent_id`만 교체한다"였다. 독립 리뷰(team-lead)가 이를 **승인 우회**로 판정해 기각했다 — `requires_approval`은 intent 단독 속성이 아니라 **(intent, 대상 카드)** 쌍에서 나오며, 저장소의 기존 세 처분 경로가 전부 그렇게 재도출한다(`p17_manager_disposition.py:1540`·`p17_deadlock_manager_disposition.py:755`·`p17_conflict_disposition.py:2385`, 전부 `intent in card.approval_when`형). reroute는 대상 카드를 바꾸는 조작이므로, 옛 카드에서는 승인이 필요 없던 intent가 새 카드에서는 승인이 필요할 수 있는데 route를 그대로 베끼면 `requires_approval=False`가 실려 **답이 승인 게이트를 건너뛴다**. 이건 S4.4 assign만의 사정(Unowned라 신규 결선이 필요해서)이 아니라 **대상을 바꾸는 모든 처분의 공통 규율**이다 — `manager.act` 중앙 재인가는 "이 Manager가 재지정할 권한이 있는가"만 답하지 "그 답이 누구의 승인 정책을 따르는가"는 답하지 않는다. 두 질문은 별개다. 따라서 처분 UoW는 S4.4의 `DurableManagerRegistry`/`DurableManagerAssignTarget` 포트를 그대로 계승해 생성자에 주입받는다. `intent`는 기존 route에서 가져온다(reroute는 같은 질문의 재지정이므로 intent는 불변 — command는 intent를 싣지 않는다). 바뀌는 것은 **대상 카드와 그로부터 재도출되는 `requires_approval`·eligibility·`authority_version`**뿐이다. `resolve_assign_target`이 `None`이면 fail-closed(write 0·Item `open`·Request `AwaitingManager` 잔류 — 미아 없음).
+
 ### 5.3 escalation UoW — system 전이, SLA는 transaction 안에서 다시 판정
 
 timeout escalation은 사람 명령이 아니라 **system 전이**다(S4.5 `work_ticket.create`와 같은 결) — 중앙 재인가 0, `principal_ref`는 system subject 상수, `CentralAuthorizer` 미주입. 권한 근거는 “SLA가 지났다”는 durable 사실 자체다.

@@ -166,6 +166,9 @@ class DispatchFrame:
     question: str
     context_snapshot: str | None
     session_id: str | None
+    intent: str = "remote_worker"
+    expected_request_revision: int = 1
+    enqueued_at: datetime = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -482,6 +485,9 @@ class DurableDispatchRunner:
             question=request.question,
             context_snapshot=request.context_snapshot,
             session_id=request.session_id,
+            intent=request.state.route.intent,
+            expected_request_revision=request.revision,
+            enqueued_at=datetime.fromisoformat(ticket["created_at"]),
         )
         return None, target_ref, frame
 

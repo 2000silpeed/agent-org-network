@@ -438,6 +438,23 @@ class QuestionResolutionApplication:
             return RequestNotFound()
         return self._project(request)
 
+    def resolve_question_owner(self, request_id: str) -> ResourceRef | None:
+        """Return the canonical Question Request ownership for an internal gateway.
+
+        This narrow read port exists so an HTTP/MCP gateway can construct its
+        central Authority ``ResourceRef`` from persisted request ownership,
+        rather than from the caller's self-reported identity.
+        """
+        request = self._requests.get(request_id)
+        if request is None:
+            return None
+        return ResourceRef(
+            org_id=request.org_id,
+            kind="question",
+            resource_id=request.request_id,
+            owner_subject_id=request.requester_id,
+        )
+
     def _authorize_create(self, principal: object) -> QuestionPrincipal:
         if self._central_authorizer is None:
             if type(principal) not in (RequesterPrincipal, AuthenticatedPrincipal):

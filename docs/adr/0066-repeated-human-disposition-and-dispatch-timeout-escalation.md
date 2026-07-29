@@ -136,3 +136,8 @@ S5.7의 증분은 S4.6(S4.1 receipt ⟺ S4.1 aggregate ⟺ Request)·S5.5(read-o
 - ADR 0065 §12 Q1①: source-derived attempt 정밀화(§3).
 - ADR 0042 §9: S5.6 경계 참조(이미 이 ADR을 가리킨다).
 - docs/tasks-v0.md S5.6: 사용자 확인 결과와 설계 확정 기록.
+## 2026-07-27 S5.8 우선 실행과 S5.7 범위 정밀화
+
+계획상의 S5.7→S5.8 순서를 실행 가치에 따라 뒤집어 실제 WebSocket 전송을 먼저 연결했다. durable runner가 outbound 권위이고 durable answer ingestion이 inbound terminal 권위이며, legacy InMemory Work Queue는 production durable 경로의 권위가 아니다. production credential lifecycle 권위는 canonical `durable_credentials` 행이고 정책 허용 권위는 strict Worker Binding이다. 양쪽의 org·Owner·role·credential ID·generation이 일치해야 하며 legacy AdmissionToken mapping, generation 추정, backfill은 금지한다. 연결 뒤 revoke·generation·Owner/Card drift도 전송·답 write 직전에 다시 검증한다.
+
+S5.7은 §5.4 교차 정합 arm만 구현한다. answer receipt⟺completed ticket, escalation Item⟺escalated ticket, Item 상태⟺처분 receipt, resting revision exact/downstream floor를 read-only로 검사한다. terminal ticket의 잔여 leased lease는 위반이 아니며 `leased ⇒ pending`은 단언하지 않는다. 32-way·restart·multi-instance 경쟁은 SQLite `BEGIN IMMEDIATE`의 직렬화 재확인이 아니라 PostgreSQL에서 실제 CAS loser branch를 검증해야 하므로 S6로 이월한다. 이 결정은 담당자 무응답 경로의 종착과 경쟁·장애·복구 전반의 질문 종결 보장을 구분한다.

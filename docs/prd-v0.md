@@ -194,3 +194,30 @@ Phase 13 스코어카드, 멀티 LLM 선택, 백업 워커, YAML 빌더, Org 그
 - **owner 자발 유지 = 3명** — 3~5명 중 3명이 4주 중 ≥2주 활동하고 제거 요청 0. (유지부담이 감당 가능하다는 증거. "자발적 유지"의 조작적 정의는 파일럿 준비에서 확정 — 외부결정.)
 - **사람 개입 없는 종결 = 종결된 질문 중 ≥70%** — 종결에 도달한 질문(in-flight/awaiting 제외) 중 담당 신뢰답으로 종결(HITL·escalation·합의 개입 없이)된 비율. in-flight는 분모에서 빼고 별도 계상해 최근 질문이 비율을 저평가하지 않게 한다(리뷰 m2 확정). 저물량 왜곡을 피해 절대건수보다 비율을 기본으로 둔다(참고 절대값 ~20건/4주).
 - **논쟁 판례 종결 = 3건 + 같은 적용 조건의 재논쟁 0** — 넓은 intent 전체를 한 판례로 덮지 않는다. 실 조직에서 논쟁 3건이 합의→원 요청 종결→범위 있는 판례로 닫히고, 조건이 같은 질문이 다시 다퉈지지 않아야 루프가 산다. **선행 사망신호로 "N일 이상 안 닫힌 Question Request"를 함께 관측**한다.
+
+## 2026-07-27 P17.9 S5 전송·검증 범위 정밀화
+
+S5는 실제 WebSocket 전송을 durable WorkTicket/lease/answer ingestion에 연결하고, 한 머신의 별도 중앙·Owner Worker 프로세스와 named SQLite에서 실 왕복을 수동 시연했다. 이 수동 시연은 결정론 게이트 통과로 계상하지 않는다. S5.7은 answer/ticket·escalation Item/ticket·처분 receipt의 교차 정합 arm만 닫았고, SQLite 단일 writer에서 의미가 약한 32-way·restart·multi-instance 경쟁은 PostgreSQL S6로 이월했다. 따라서 담당자 무응답 경로의 종착이 생겼다는 것과 경쟁·장애·복구에서도 모든 질문이 종결된다는 주장을 구분하며, 후자는 아직 완료로 선언하지 않는다.
+
+## 2026-07-27 P17.15 O1 제품형 User·SSO 온보딩
+
+중앙 설치의 `/onboarding`은 Registry User 등록과 기존 회사 SSO 연결 상태를 durable receipt에서 복원한다. User email은 조직을 넘어 전역 유일하며 verified OIDC email과 정확히 일치할 때만 SSO Identity Link가 파생된다. IdP 계정 생성·초대·JIT와 별 `(issuer, sub)` binding row는 만들지 않는다. authorization-code+PKCE와 opaque server-side identity session을 구현했지만 실제 회사 IdP·HTTPS 환경의 수동 관통은 O7에 남아 있으므로 production 또는 pilot 준비 완료를 뜻하지 않는다.
+
+## 2026-07-27 P17.15 O2 Agent Card 라이브 등록
+
+온보딩의 Agent Card 단계는 YAML 미리보기나 복사로 완료되지 않고 중앙의 durable live-registration receipt와 current owned Card projection으로만 완료된다. 기본 User는 자기 소유 Card만 등록하며 별 중앙 delegation 없이 다른 Owner Card를 만들 수 없다. Card의 domain·answer 범위는 under-claim일 뿐 중앙 Authority action/role을 선언하지 않는다. 등록은 register-only이고 ownership transfer/update/deactivate는 후속이다.
+
+## 2026-07-28 P17.15 O4 Owner Review
+
+Card Owner의 review는 body-free 중앙 `AuthoringRun`에서 exact revision·Card·source/draft digest를 다시 확인하고 `author.publish` 권한으로만 `Approved | Edited | Rejected`를 CAS한다. 중앙에는 raw 문서·full draft·수정 patch가 도달하지 않는다. `Edited` 수정본은 새 AuthoringRun으로 다시 admission해야 하며, review 자체는 index·serving·git publish를 실행하지 않는다.
+
+## 2026-07-28 P17.15 O5a Publish Claim
+
+중앙은 exact `Reviewed(Approved)` revision을 먼저 body-free `Publishing`으로 예약한다. 이 예약은 현재 권한과 O4 승인 증거를 다시 확인하지만 git commit·index 수용·사용자 노출을 실행하지 않는다. 따라서 외부 publish 장애나 응답 유실은 후속 saga/reconciliation이 처리하며, claim만으로 published 또는 pilot-ready를 주장하지 않는다.
+## 제품형 3-install 온보딩 요구 (ADR 0067·2026-07-27)
+
+제품 설치는 정확히 **Central Server / Card Owner / Question User MCP** 세 신뢰 경계로 나뉜다. 중앙은 Registry·Authority·routing·durable workflow·관리 UI를, Card Owner는 자기 Agent Card와 raw 문서·OKF 초안·Owner review/publish 및 선택 Owner Worker를, 질문 MCP는 질문과 자기 결과 조회만 소유한다. 한 UI에서 연속 동선으로 보여도 비밀·데이터·권한 경계는 합치지 않는다.
+
+첫 제품 온보딩은 `Registry User 등록 → 기존 회사 SSO 확인 → Agent Card 라이브 등록 → 문서 기반 OKF 자동 초안 → durable Owner 검토 → 승인 revision publish → MCP 질문/조회`를 새로고침·재시도·재시작 뒤에도 이어야 한다. IdP 계정을 생성·초대하거나 JIT User를 만들지 않는다. SSO 연결은 verified email과 전역 유일한 `Registry User.email`의 파생 결박이며 별 `(issuer, sub)` row를 만들지 않는다.
+
+중앙은 raw 문서·staged/full OKF 본문·Owner LLM/OAuth·git/source credential을 저장하지 않는다. 질문 MCP에는 Registry/Card/저작/worker/운영 mutation이 없다. production은 demo/Fake·무비밀번호 신원 선택·CLI owner/role·환경변수 `user_id`로 우회할 수 없다. 실제 세 프로세스 관통 시연은 필수지만 결정론 gate로 계상하지 않으며 PostgreSQL/P17.13 전에는 production·파일럿 준비 완료를 주장하지 않는다.

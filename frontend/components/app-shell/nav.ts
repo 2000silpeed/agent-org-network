@@ -4,6 +4,7 @@ import {
   IdCard,
   Inbox,
   MonitorDot,
+  ListChecks,
   type LucideIcon,
 } from "lucide-react";
 
@@ -18,6 +19,14 @@ export interface NavItem {
 
 // The product surfaces of the question-routing org.
 export const NAV_ITEMS: NavItem[] = [
+  {
+    href: "/onboarding",
+    label: "온보딩",
+    surface: "Onboarding",
+    description: "User · Card · Knowledge",
+    icon: ListChecks,
+    persona: "운영자",
+  },
   {
     href: "/ask",
     label: "질문하기",

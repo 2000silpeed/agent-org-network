@@ -26,6 +26,7 @@ escalation)는 합성한 `WebSocketDispatcher`(→`InMemoryWorkQueueDispatcher`)
 import asyncio
 import logging
 import os
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -42,16 +43,19 @@ from agent_org_network.transport import (
     PublishIndex,
     RegisterWorker,
     SubmitAnswer,
+    Welcome,
     WebSocketDispatcher,
     WorkerFrame,
     from_answer_frame,
 )
+from agent_org_network.worker_authorization import WorkerConnectionPrincipal
 
 if TYPE_CHECKING:
     from agent_org_network.console import ConsoleFeed
     from agent_org_network.hitl import HitlToggleMap
     from agent_org_network.manager_queue import ManagerQueueStore
     from agent_org_network.token import TokenStore
+    from agent_org_network.durable_websocket_transport import DurableWebSocketDispatchChannel
 
 _log = logging.getLogger("agent_org_network.server")
 
@@ -237,6 +241,80 @@ def create_worker_app(dispatcher: WebSocketDispatcher) -> FastAPI:
     app = FastAPI(title="Agent Org Network — 중앙 워커 WS")
     _mount_worker_endpoint(app, dispatcher)
     return app
+
+
+def create_durable_worker_app(
+    channel: "DurableWebSocketDispatchChannel",
+    authenticate: Callable[[RegisterWorker], WorkerConnectionPrincipal | None],
+) -> FastAPI:
+    """durable dispatch 전용 실 WS 앱.
+
+    인증 adapter가 확정한 principal만 connection registry에 넣는다. 회신은 legacy
+    dispatcher를 거치지 않고 channel의 durable answer ingestion으로 직행한다.
+    """
+    app = FastAPI(title="Agent Org Network — durable 중앙 워커 WS")
+
+    @app.websocket("/worker")
+    async def durable_worker_endpoint(
+        websocket: WebSocket,
+    ) -> None:  # pyright: ignore[reportUnusedFunction]
+        await _handle_durable_worker(websocket, channel, authenticate)
+
+    _ = durable_worker_endpoint
+    return app
+
+
+async def _handle_durable_worker(
+    websocket: WebSocket,
+    channel: "DurableWebSocketDispatchChannel",
+    authenticate: Callable[[RegisterWorker], WorkerConnectionPrincipal | None],
+) -> None:
+    await websocket.accept()
+    try:
+        raw = await websocket.receive_json()
+    except WebSocketDisconnect:
+        return
+    register = _parse_worker_frame(raw)
+    principal = authenticate(register) if isinstance(register, RegisterWorker) else None
+    if (
+        principal is None
+        or not isinstance(register, RegisterWorker)
+        or principal.owner_id != register.owner_id
+        or principal.role != register.role
+    ):
+        await websocket.send_json(AuthError(reason="워커 인증 실패").model_dump(mode="json"))
+        await websocket.close()
+        return
+    loop = asyncio.get_running_loop()
+    outbound: asyncio.Queue[BaseModel] = asyncio.Queue()
+
+    def send(frame: BaseModel) -> None:
+        loop.call_soon_threadsafe(outbound.put_nowait, frame)
+
+    channel.register(principal, send)
+    await websocket.send_json(
+        Welcome().model_dump(mode="json")
+    )
+
+    async def send_loop() -> None:
+        while True:
+            frame = await outbound.get()
+            await websocket.send_json(frame.model_dump(mode="json"))
+
+    async def receive_loop() -> None:
+        while True:
+            frame = _parse_worker_frame(await websocket.receive_json())
+            if isinstance(frame, SubmitAnswer):
+                channel.submit(principal, frame)
+
+    send_task = asyncio.create_task(send_loop())
+    receive_task = asyncio.create_task(receive_loop())
+    try:
+        await asyncio.wait({send_task, receive_task}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        send_task.cancel()
+        receive_task.cancel()
+        channel.disconnect(principal)
 
 
 def _mount_worker_endpoint(app: FastAPI, dispatcher: WebSocketDispatcher) -> None:

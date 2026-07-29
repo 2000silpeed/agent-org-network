@@ -103,3 +103,6 @@ R5.5 enabled credential MCP는 legacy zero-tool factory와 별개다. R5.2 issue
 ## 결과와 한계
 
 credential MCP가 실제로 열리기 전 선행 조건을 명확히 하고, token 발급·철회와 worker binding을 durable evidence에 결박할 수 있다. 하지만 at-least-once outbox는 외부 채널의 physical exactly-once를 뜻하지 않으며, migration·복구·backup/restore·DR의 실행 증명은 뒤 단계에 남는다.
+## 2026-07-27 production Owner Worker 인증 재사용 경계
+
+P17.9 S5.8의 production WebSocket 등록은 legacy `AdmissionToken`을 durable credential로 승격하거나 generation을 추정하지 않는다. canonical `durable_credentials` 행의 secret hash·org·Owner·role·generation·active/revoked/expiry를 exact-read하고 strict Worker Binding과 일치시킨다. 연결 뒤에도 전송과 답 수신 write 전에 current 행과 binding을 재검증한다. legacy-only 또는 noncanonical schema는 migration/backfill 없이 unavailable로 닫는다.

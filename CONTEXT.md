@@ -1172,3 +1172,28 @@ _Avoid_: Ranking/순위·Benchmark(오너 간 절대 비교 함의)
 — "Router가 등록된 Agent Card들이랑 대조해서 담당 후보를 골라. 카드 자체는 Registry에 있고."
 — "그 카드 누가 관리하는데?"
 — "각 Owner가 자기 카드만 관리해. 중앙은 카드 내용을 직접 소유하지 않아."
+
+## Durable Owner Worker WebSocket Channel
+
+P17.9 S5.8의 실제 전송 어댑터. durable `DispatchDeliveryRunner`가 만든 `DispatchFrame`을 기존 와이어 `PushWork(TicketFrame)`로 투영하고, Owner Worker의 `SubmitAnswer`를 legacy InMemory Work Queue가 아니라 `Durable Answer Ingestion Unit of Work`에 직접 인계한다. 답 수신은 process-local delivery cache나 lease epoch를 권위로 쓰지 않고 WorkTicket·AwaitingAnswer Request를 exact-read하므로 재연결·재기동 뒤의 느린 유효 답도 S5.4가 판정한다. 연결·전송·답 수신마다 canonical durable credential의 current generation/status/expiry, strict Worker Binding, current Owner/Agent Card를 재검증한다. (ADR 0042 §9·ADR 0052·ADR 0066 §5)
+
+## Durable Dispatch Reconciliation Gate
+
+P17.9 S5.7의 read-only 교차 정합 arm. answer receipt와 completed WorkTicket, escalation Item과 escalated WorkTicket, Item 상태와 처분 receipt, Request의 resting revision을 양방향으로 검사한다. `completed|escalated WorkTicket + leased lease`는 정상이며 lease 존재만으로 ticket이 pending이라고 추론하지 않는다. repair·scheduler·write가 없고, 전체 PostgreSQL 경쟁·복구 검증은 S6 책임이다. (ADR 0066 §5.4)
+## 제품 설치·온보딩 경계 (ADR 0067)
+
+- **Central Server Installation** — Registry·조직 graph·중앙 Authority/RBAC·routing·durable workflow·safe audit/outbox·관리 UI와 질문 gateway를 소유하는 서버 설치. raw 문서, staged/full OKF 본문, Owner OAuth token과 demo/Fake 기본값은 소유하지 않는다.
+- **Card Owner Installation** — 한 Registry User가 소유한 Agent Card와 문서/OKF 저작, local durable AuthoringRun, Owner review/publish, 선택 Owner Worker를 제공하는 설치. 다른 User/Card 관리와 중앙 Authority 편집 권한은 없다.
+- **Question User MCP Installation** — 검증된 질문 사용자의 `question.create`·자기 Request/Answer 조회만 중앙에 중계하는 thin MCP 설치. Registry/Card/저작/worker/운영 도구와 수동 `user_id` surface는 없다.
+- **Installation Pairing** — OIDC로 증명된 Registry User와 설치 device key를 짧은 TTL·single-use·audience·org·generation에 결박해 scoped credential을 발급하는 bootstrap 전이. 공유 token이나 CLI의 owner/role 주장을 권위로 쓰지 않는다.
+- **OIDC Identity Proof** — 실 provider가 서명·issuer·audience·시간을 검증해 만든 `iss/sub/email/email_verified/aud` 신원 증거. token 원문은 저장·감사하지 않는다.
+- **SSO Identity Link** — `email_verified=True`인 OIDC Identity Proof의 email이 전역 유일한 `Registry User.email`과 정확히 일치할 때 생기는 **파생 관계**. 별 `(issuer, sub)` row가 아니며 IdP 계정 생성·초대·JIT User 생성을 뜻하지 않는다.
+- **AuthoringRun** — Card Owner Installation이 raw·full draft를 소유한 채 중앙에는 Card/Owner/stage/revision과 source·draft·review·index digest만 남기는 durable 저작 작업. `Extracting → AwaitingOwnerReview → Reviewed → Publishing → Published`로 전진하며 승인 전 serving/index write는 없다.
+- **Owner Review** — current Card Owner가 exact AuthoringRun revision과 body-free bundle digest에 `Approved | Edited | Rejected` 처분을 CAS하는 전이. 현재는 singleton `bundle`만 검토하고 source/draft digest가 AuthoringRun의 source-set/admitted bundle과 정확히 같아야 한다. `Edited`의 수정 본문·patch는 중앙에 보내지 않으며, 수정본 publish는 새 AuthoringRun admission을 요구한다. 검토 기록은 raw 본문을 소유하지 않고 exact reviewed revision만 publish 자격을 얻는다.
+- **Publish Claim** — exact `Reviewed(Approved, revision=2)`를 `Publishing(3)`으로 원자 예약하는 중앙 body-free 전이. 현재 `author.publish` grant와 O4 review의 receipt/audit/outbox anchor를 재검증하며, claim은 git commit·index acceptance·`Published`를 뜻하지 않는다.
+- **Publish Semantic Key** — `(org_id, agent_id, run_id, review_revision=2)`로 정한 한 AuthoringRun publish saga의 불변 식별자. 후속 commit SHA와 index digest는 이 키의 immutable terminal evidence가 되며, 다른 값으로 자동 덮어쓰지 않는다.
+- **Published Index Acceptance Receipt** — durable index subsystem이 semantic key·commit SHA·index digest·payload digest를 결박해 남기는 immutable 수용 증거. O5c는 current authorization 아래 이 receipt와 `Published AuthoringRun`을 같은 transaction으로 확정한다.
+- **Published AuthoringRun** — exact immutable Published Index Acceptance Receipt를 가진 `AuthoringRun`의 terminal revision 4 projection. receipt 없는 `Publishing`은 Published가 아니다.
+- **Production Registry User** — 중앙 설치의 authoritative SQLite User row. 전역 유일 email과 same-org manager, shared registry revision을 가지며 등록 receipt·safe audit·outbox와 한 transaction으로 확정된다. email 원문은 이 canonical row에만 있고 신원 proof·session·receipt에는 digest만 남는다.
+- **Production Identity Session** — verified-email OIDC proof를 current Production Registry User fingerprint와 결박한 server-side session. 브라우저 cookie에는 CSPRNG opaque session ID만 있으며 code/token/`sub`/claims/email 원문은 저장하지 않는다. 매 요청 org/provider/expiry/current User revision을 다시 확인한다.
+- **Production Agent Card** — 중앙 설치의 authoritative org-scoped Agent Card row. current Production Registry User Owner/Maintainer와 shared registry revision에 결박되고, live-registration receipt·safe audit·outbox와 한 transaction으로 확정된다. full card prose는 card row에만 있으며 companions에는 digest/ref와 중앙 authorization snapshot만 남는다.

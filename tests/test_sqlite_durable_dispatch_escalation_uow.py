@@ -43,6 +43,9 @@ from agent_org_network.sqlite_durable_dispatch_delivery import (
 from agent_org_network.sqlite_durable_dispatch_escalation import (
     migrate_sqlite_durable_dispatch_escalation_schema,
 )
+from agent_org_network.sqlite_durable_dispatch_reconciliation import (
+    reconcile_sqlite_durable_dispatch_gate,
+)
 from agent_org_network.sqlite_durable_dispatch_escalation_uow import (
     SYSTEM_SUBJECT_REF,
     DurableDispatchEscalated,
@@ -1108,5 +1111,81 @@ def test_request_state_json이_손상되면_남의_계열이_wrap_없이_통과�
         with pytest.raises(CorruptQuestionRequestError) as excinfo:
             uow.escalate(ticket_id=ticket_id)
         assert not isinstance(excinfo.value, DurableDispatchEscalationError)
+    finally:
+        completion.close()
+
+
+def test_s5_7_escalation교차정합과_terminal잔여lease는_capable이다(tmp_path: Path) -> None:
+    completion = _open_all(tmp_path / "workflow.sqlite")
+    try:
+        request_id = _ref("request", "r-s5-7-escalated")
+        ticket_id, _route, _revision = _seed_awaiting_answer(
+            completion, request_id=request_id, ticket_label="ticket-s5-7-escalated"
+        )
+        DurableDispatchLeaseUnitOfWork(
+            completion=completion,
+            holder_id="dispatcher-a",
+            clock=lambda: T0,
+            lease_ttl=_LEASE_TTL,
+        ).claim(ticket_id=ticket_id)
+        _uow(completion, clock=lambda: OVERDUE_NOW).escalate(ticket_id=ticket_id)
+
+        # §5.4 negative: release CAS가 놓친 leased 행은 terminal ticket에서도
+        # 무해하다. gate는 leased => pending을 역으로 단언하지 않는다.
+        tx = completion.durable_transaction()
+        with tx.scope():
+            tx.begin_immediate()
+            tx.execute(
+                "UPDATE durable_dispatch_leases SET state='leased' WHERE ticket_id=?",
+                (ticket_id,),
+            )
+            tx.commit()
+
+        report = reconcile_sqlite_durable_dispatch_gate(tmp_path / "workflow.sqlite")
+        assert report.capable
+        assert report.violations == ()
+        assert report.mode == "ro+deferred"
+    finally:
+        completion.close()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_kind"),
+    [
+        (
+            "UPDATE durable_linked_work_tickets SET status='pending' WHERE ticket_id=?",
+            "escalation_item_ticket_mismatch",
+        ),
+        (
+            "UPDATE durable_dispatch_escalation_receipts SET action='manager.dismiss' "
+            "WHERE manager_item_id=(SELECT manager_item_id FROM durable_dispatch_manager_items "
+            "WHERE ticket_id=?)",
+            "escalation_receipt_mismatch",
+        ),
+    ],
+)
+def test_s5_7_escalation교차정합손상은_readonly_fail_closed이다(
+    tmp_path: Path, mutation: str, expected_kind: str
+) -> None:
+    path = tmp_path / "workflow.sqlite"
+    completion = _open_all(path)
+    try:
+        request_id = _ref("request", expected_kind)
+        ticket_id, _route, _revision = _seed_awaiting_answer(
+            completion, request_id=request_id, ticket_label=f"ticket-{expected_kind}"
+        )
+        _uow(completion).escalate(ticket_id=ticket_id)
+        before = path.read_bytes()
+        connection = sqlite3.connect(path)
+        connection.execute(mutation, (ticket_id,))
+        connection.commit()
+        connection.close()
+        corrupted = path.read_bytes()
+
+        report = reconcile_sqlite_durable_dispatch_gate(path)
+        assert not report.capable
+        assert expected_kind in {violation.kind for violation in report.violations}
+        assert path.read_bytes() == corrupted
+        assert corrupted != before
     finally:
         completion.close()

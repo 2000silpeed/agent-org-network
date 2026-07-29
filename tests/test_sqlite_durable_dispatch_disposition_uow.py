@@ -60,6 +60,9 @@ from agent_org_network.sqlite_durable_dispatch_escalation_uow import (
     DurableDispatchEscalationError,
     DurableDispatchEscalationUnitOfWork,
 )
+from agent_org_network.sqlite_durable_dispatch_reconciliation import (
+    reconcile_sqlite_durable_dispatch_gate,
+)
 from agent_org_network.sqlite_durable_linked_aggregates import (
     migrate_sqlite_durable_linked_aggregates_schema,
 )
@@ -787,6 +790,9 @@ def test_reroute_후_s4_6_및_s5_6a_게이트가_green이다(tmp_path: Path) -> 
     assert linked_report.violations == ()
     escalation_report = reconcile_sqlite_durable_dispatch_escalation_schema(path)
     assert escalation_report.capable is True
+    s5_report = reconcile_sqlite_durable_dispatch_gate(path)
+    assert s5_report.capable is True
+    assert s5_report.violations == ()
 
 
 def test_dismiss_후_s4_6_및_s5_6a_게이트가_green이다(tmp_path: Path) -> None:
@@ -812,6 +818,9 @@ def test_dismiss_후_s4_6_및_s5_6a_게이트가_green이다(tmp_path: Path) -> 
     assert linked_report.violations == ()
     escalation_report = reconcile_sqlite_durable_dispatch_escalation_schema(path)
     assert escalation_report.capable is True
+    s5_report = reconcile_sqlite_durable_dispatch_gate(path)
+    assert s5_report.capable is True
+    assert s5_report.violations == ()
 
 
 # ---------------------------------------------------------------------------

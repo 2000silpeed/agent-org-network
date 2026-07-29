@@ -13,6 +13,9 @@ dependencies = [
     "websockets>=16.0",
 ]
 
+[project.scripts]
+aon-mcp = "agent_org_network.question_user_mcp:main"
+
 # 공급자 SDK = 선택 의존성(extra). 코어는 *어떤 공급자에도 종속되지 않는다*(ADR 0027 결정 1·11).
 # owner는 자기 구독 공급자만 설치: pip install agent-org-network[claude-api]  (또는 후속 [codex]·[gemini])
 # 미설치 공급자 어댑터는 그 공급자를 선택(AON_PROVIDER)했을 때만 import되므로 다른 공급자 owner엔 무영향.
@@ -28,6 +31,9 @@ dedup = ["fastembed>=0.4.0"]
 # PyJWT+cryptography로 한다. 코어는 SSO를 FakeOidcProvider(결정론·게이트 내)로만 돌리므로 이
 # extra 미설치여도 코어·게이트 무영향(지연 import·미설치 시 명확한 SystemExit 안내).
 oidc = ["pyjwt[crypto]>=2.10.0"]
+owner-keychain = [
+    "keyring>=25.6,<26",
+]
 
 [dependency-groups]
 dev = [
@@ -45,6 +51,7 @@ dev = [
     # HttpOidcProvider(oidc extra) 타입검사·결정론 테스트용 — pyright가 jwt 타입을 보고
     # 결정론 테스트가 fixture fetcher로 실 서명을 검증하게 dev에 둔다(런타임 코어 의존 아님).
     "pyjwt[crypto]>=2.10.0",
+    "keyring>=25.6,<26",
 ]
 
 [build-system]

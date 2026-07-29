@@ -79,7 +79,78 @@ curl -s -X POST http://127.0.0.1:8099/ask -H 'Content-Type: application/json' \
 
 브라우저로 `http://127.0.0.1:8099/` 를 열면 채팅 화면이 나옵니다.
 
-> 이 명령은 demo profile입니다. 인증·조직 격리·production Authority가 없는 기본 실행을 실제 회사 네트워크나 데이터에 연결하지 마세요. P17.7은 조립 계약만 검사하는 readiness-only 경계라 별도 production 서버 명령이 아직 없습니다. 실제 환경은 P17.8 Authority/RBAC와 P17.9 durable workflow가 끝날 때까지 시작에 실패합니다.
+> 이 명령은 demo profile입니다. 인증·조직 격리·production Authority가 없는 기본 실행을 실제 회사 네트워크나 데이터에 연결하지 마세요. P17.15에서 Central Server / Card Owner / Question User MCP의 제품 경계와 durable 온보딩·저작·검토·질문 클라이언트 구성요소를 추가했지만, 실제 IdP·TLS를 쓰는 세 프로세스 관통 시연(O7), PostgreSQL 및 P17.13 운영 게이트가 남아 있습니다. 따라서 이 저장소는 여전히 개발·평가용이며 production 또는 pilot-ready가 아닙니다.
+
+---
+
+## 제품형 3-install 설치와 사용 (P17.15)
+
+이번 진행분은 한 프로그램에 모든 권한을 넣지 않고 다음 세 설치물로 나눕니다. Central Server는 Registry·Authority·질문 workflow를, Card Owner는 원문과 OKF 초안을, Question User MCP는 질문과 자기 결과 조회만 가집니다. 중앙에는 raw 문서·full draft·Owner LLM/OAuth·git/source credential을 보내지 않습니다.
+
+| 설치물 | 담당 | 현재 제공 범위 |
+|---|---|---|
+| Central Server | 조직 관리자 | Registry User/SSO, Agent Card live registration, body-free AuthoringRun·review·publish control, 중앙 권한과 HTTPS 질문 gateway 조립 |
+| Card Owner | 카드 소유자 | 로컬 원문·초안 저장, 저작/검토/commit·index publish operation 및 중앙 pairing |
+| Question User MCP | 질문 사용자 | PKCE pairing 뒤 `ask_org`, `get_question` 두 MCP 도구만 제공 |
+
+### 공통 설치
+
+개발·통합 검증용으로는 저장소 루트에서 모든 선택 의존성을 설치합니다.
+
+```bash
+uv sync --locked --all-extras --dev
+```
+
+Central Server와 Card Owner의 실제 배포 조립에는 회사 IdP, HTTPS 인증서, Authority 정책 및 durable 저장소를 명시적으로 주입해야 합니다. 현재 공개된 `uvicorn agent_org_network.web:app`와 `scripts/run_central.sh`는 이 제품 조립을 대신하지 않는 개발 데모입니다.
+
+### Card Owner 온보딩과 저작 흐름
+
+Central Server가 `/onboarding`을 제공할 때, Card Owner는 다음 순서로 진행합니다.
+
+1. Registry User를 등록하고 회사 SSO로 로그인합니다. IdP 계정 생성·초대·JIT provisioning은 하지 않습니다.
+2. 자신의 Agent Card를 live registration으로 등록합니다. Card의 담당 범위는 under-claim이며 권한 선언이 아닙니다.
+3. Owner 장치를 중앙과 pairing하고, 원문을 Owner-local 저장소에서 저작해 OKF draft를 만듭니다.
+4. 중앙에는 source/draft digest와 상태만 담긴 `AuthoringRun`을 시작·완료합니다. Owner가 local draft를 확인해 `Approved`, `Edited`, `Rejected`로 검토합니다.
+5. `Approved` revision만 Owner-local git commit 및 KnowledgeIndex 생성으로 이어지고, 중앙은 immutable acceptance receipt를 확인해 `Published` control 상태를 확정하거나 재시작 뒤 reconciliation합니다.
+
+`Edited` 결과는 중앙에서 patch를 보관하거나 바로 publish하지 않습니다. 수정한 local draft는 새 AuthoringRun으로 다시 제출해야 합니다. 이 흐름의 HTTP 조립은 body-free metadata만 받으며, 각 mutation에는 현재 세션과 `Idempotency-Key`가 필요합니다.
+
+### Question User MCP 설치와 사용
+
+Question User 컴퓨터에는 패키지를 설치한 뒤, Central Server가 발급한 **비밀 없는** profile JSON을 둡니다. profile에는 HTTPS `gateway_url`, `authorization_url`, `token_url`, `client_id`만 들어가며, pair 뒤 받은 token은 OS keychain에만 저장됩니다. profile 파일 자체도 해당 사용자만 읽을 수 있게 보호하세요.
+
+```json
+{
+  "gateway_url": "https://aon.example.com",
+  "authorization_url": "https://idp.example.com/authorize",
+  "token_url": "https://idp.example.com/token",
+  "client_id": "aon-question-user"
+}
+```
+
+다음 명령은 브라우저를 열어 authorization-code + PKCE를 수행합니다. callback은 오직 이 로컬 loopback 주소에만 HTTP를 허용하며, IdP·token·Central gateway는 모두 HTTPS여야 합니다.
+
+```bash
+aon-mcp pair \
+  --profile question-user-profile.json \
+  --output question-user-paired.json \
+  --port 8765
+```
+
+성공하면 paired profile을 MCP host의 stdio 서버로 실행합니다.
+
+```bash
+aon-mcp serve-stdio --profile question-user-paired.json
+```
+
+MCP host에는 이 stdio 명령을 등록합니다. 노출되는 도구는 정확히 다음 둘입니다.
+
+- `ask_org(question)` — 현재 로그인한 Registry User 권한으로 질문을 접수합니다.
+- `get_question(request_id)` — 중앙이 request owner와 현재 Authority를 다시 확인한 뒤 결과를 조회합니다.
+
+`user_id`, 조직, 역할, Authority, token, feedback 또는 Registry/Card/저작/worker/관리 도구를 인자로 주거나 환경변수로 우회할 수 없습니다. 인증·소유권 해석 실패는 fail-closed 처리됩니다.
+
+> 실제 IdP client 등록, TLS 종료, Central Server에 `CentralQuestionGatewayRoutes`를 주입한 배포, 서로 다른 세 프로세스/머신에서의 재-pair·revoke·Card transfer 수동 시연은 O7에서 수행합니다. 위 MCP 명령은 그 구성이 제공된 환경에서만 사용하세요.
 
 ---
 
@@ -155,14 +226,14 @@ scripts/run_worker.sh cs_lead primary 8000 # 담당자 워커 — 인자: <소�
 
 > 이 경로에는 과거 분산 실행 모델과 현재 지식 동기화·presence 기능이 함께 남아 있습니다. `/worker`는 지금도 지식·인덱스·legacy 운영 기능을 담당하지만, `/ask*` 사용자 질문은 P17 Request/Finalization을 사용하며 WS WorkTicket으로 이중 전송하지 않습니다. 분산 질문 실행은 durable WorkTicket·lease·복구가 들어오는 P17.9 전까지 비활성입니다. Unowned와 Contested 책임 결정·재개, typed grounding, 채널 조립과 전체 경쟁·fault 검증은 단일 프로세스 개발 경계까지 구현됐습니다. production 인증·Authority와 workflow 내구성이 없어 production 보장은 아직 성립하지 않습니다.
 
-### 3) MCP 서버 — 내 MCP 클라이언트에서 질문
+### 3) 레거시 MCP fixture — 개발 계약 확인용
 
 ```bash
 uv run python -m agent_org_network.mcp_server   # 도구: ask_org(question)
 # Claude Desktop 같은 데 등록하는 법은 scripts/run_mcp.sh 참고
 ```
 
-`ask_org(question)`과 `get_question(request_id)`은 웹과 같은 Request-first·Finalization DTO를 사용합니다. 다만 standalone MCP와 웹은 별 프로세스·별 composition입니다. 같은 계약을 쓴다는 사실만으로 메모리 상태를 공유하지 않으며, 현재 기본 팩토리는 각각 InMemory completion을 사용합니다. 같은 상태가 필요하면 공유 durable composition을 명시적으로 조립해야 합니다.
+`mcp_server`는 기존 in-process 개발/테스트 fixture입니다. 웹과 같은 Request-first·Finalization DTO를 사용하지만 standalone MCP와 웹은 별 프로세스·별 composition이며 기본 팩토리는 InMemory completion을 사용합니다. 실제 Question User 설치에는 위의 `aon-mcp pair`·`aon-mcp serve-stdio`를 사용하세요. 같은 상태가 필요하면 공유 durable composition을 명시적으로 조립해야 합니다.
 
 ### 4) 정확도 측정 (골든셋 eval)
 

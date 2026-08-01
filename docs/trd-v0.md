@@ -854,6 +854,18 @@ release completion(RB3.5)으로 고정한다. 따라서 RB3.4가 요구하는 se
 Owner Runtime으로 완료하지 않으며 실제 Owner answer submit은 RB3.5/RB3.7 cross-install evidence로
 닫는다.
 
+RB3.3b contract foundation은 `central_owner_control.py`의 strict `OwnerControlBinding`, safe
+Answer/Presence/Correction/Scorecard projection, `supervision.read|supervision.correct|scorecard.read`
+Authority action과 injected auth/read/write port를 고정한다. 매 read는 source serialization 뒤,
+correction write는 D2 pre-commit 직전에 current binding을 재인가하고, org/Card/Owner/assignment
+generation이 다른 projection은 foreign이면 403, stale면 503으로 닫는다. correction writer의 D2
+current Assignment/Authority CAS와 replay/conflict receipt는 후속 durable adapter가 소유하며,
+이 foundation은 command/receipt binding과 pre-commit write 0만 강제한다. 최소 route shape는 `GET /v1/owner/answers`,
+`GET /v1/owner/presence`, `GET /v1/owner/scorecard`, `GET /v1/owner/answers/{record_id}/corrections`,
+`POST /v1/owner/corrections`이며, 현재 Central composition은 durable source/route/pairing seam을
+주입하지 않아 503이다. 이 foundation은 실제 route wiring, Central lifecycle adapter, pair/redeem,
+OS keychain과 Owner-local Next 구현을 완료한 것으로 해석하지 않는다(ADR 0083).
+
 ### Card Owner 목표 경계
 
 - 원문, 추출물, 전체 초안, 로컬 Git/index workspace

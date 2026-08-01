@@ -523,10 +523,17 @@ RB3.8까지 보류하고 각 slice는 Fast·Contract·Affected gate와 독립 re
 
 ### RB3.3b Owner-scoped Central control API 선행
 
+- [~] ADR 0083의 versioned `/v1/owner/*` contract foundation을 추가했다. strict paired binding
+  (`org`/Owner/Card revision+digest/assignment·credential generation/device/origin), safe AnswerRecord/
+  Presence/correction/scorecard DTO, `supervision.read|supervision.correct|scorecard.read` Authority
+  actions, injected auth/read/write ports와 read serialization/write pre-commit reauthorization을
+  고정했다. default composition에는 capability를 주입하지 않아 unavailable로 닫으며, 결정론 Fake
+  contract 13개가 self-only filter, stale/foreign/unknown fail-close, secret non-egress와 write 0을
+  검증한다. 실제 Central route·durable source adapter·Owner pairing/current fence 조립은 아직 남았다.
 - [ ] versioned Central owner-scoped control API를 Owner API가 호출하도록 조립: paired current
   binding으로 self AnswerRecord list/presence/correction/own scorecard를 매 read/write 재인가
 - [ ] 다른 Card/Owner의 control read/write는 403, body/query owner·role 자기보고는 0, transfer/revoke/
-  unavailable이면 local correction submit 0을 결정론 Contract로 검증
+  unavailable이면 local correction submit 0을 실제 route/adapter Contract로 검증
 - [ ] 이 API와 Owner API가 준비되기 전에는 RB3.4 Owner Next를 start하지 않는다. Central 전체
   scorecard/Authority/admin scope는 RB3.2b.6 `/admin`에 남긴다.
 

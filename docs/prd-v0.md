@@ -291,6 +291,11 @@ backlog로 둔다”는 범위를 대체합니다. 상세 경계와 금지 흐�
   admission과 함께 PolicyRevision/scorecard read-only panel을 표시한다. Owner transfer/revoke capability가
   없으면 UI와 BFF 모두 성공을 가장하지 않고 unavailable로 닫는다. 구현 B–E는 Fast+Contract만 실행하고
   Full Gate 또는 RB3.5 완료를 주장하지 않는다.
+- RB3.3b는 ADR 0083에 따라 Owner self-supervision을 위한 별도 versioned `/v1/owner/*` 계약부터
+  고정한다. 현재는 paired binding·strict safe projection·Authority action·read/write 재인가를
+  검증하는 contract foundation만 제공하며, 기본 composition에는 실제 route/source/pairing capability를
+  조립하지 않아 503으로 닫힌다. Central admin scorecard와 requester Question projection을 Owner
+  self scorecard/AnswerRecord source로 재사용하지 않으며, Owner Next는 실제 route 조립 후에만 시작한다.
 - Central profile의 browser OIDC field는 `browser_oidc_authorization_url`, `browser_oidc_token_url`,
   `browser_oidc_client_id`, exact `browser_oidc_scope`뿐이다. redirect URI는 profile 입력이 아니라
   HTTPS `central_public_origin + "/api/auth/callback"`으로 고정한다.

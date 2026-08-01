@@ -866,8 +866,10 @@ Owner Runtime으로 완료하지 않으며 실제 Owner answer submit은 RB3.5/R
   Owner API는 local encrypted workspace/keychain profile만 조립하고 Central Browser의 BFF가
   호출할 수 없다. self-supervision은 versioned Central owner-scoped control API를 통해
   every-read/every-write reauthorization한다. 현재 composition은 explicit read-only
-  `OwnerPairingReadiness` seam이 active binding을 확인할 때만 paired/ready를 인정하며,
-  profile의 pairing reference나 metadata-only workspace만으로 ready를 반환하지 않는다.
+  `OwnerPairingReadiness` seam과 active-bundle adapter가 Central origin, device thumbprint,
+  credential generation/expiry, pending 상태를 확인할 때만 paired/ready를 인정하며, profile의
+  pairing reference나 metadata-only workspace만으로 ready를 반환하지 않는다. pair/redeem과
+  실제 OS keychain 조립은 후속 RB3.3a bounded slice다.
 
 Remote A2A Agent Card는 remote 통신 설정용 untrusted metadata다. Central Authority, Registry
 Agent Card admission, Knowledge Index 또는 Answer source evidence로 승격하지 않는다. Central

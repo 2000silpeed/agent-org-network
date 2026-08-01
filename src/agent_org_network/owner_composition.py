@@ -7,16 +7,19 @@ future paired workspace implementation can extend this explicit boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import sqlite3
 import re
+from collections.abc import Callable
 from typing import Literal, Protocol, cast
 from urllib.parse import urlsplit
 
 OWNER_SCHEMA_NAME = "owner-installation"
 OWNER_SCHEMA_VERSION = 1
 _OPAQUE_REFERENCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 class OwnerInstallationConfigurationError(ValueError):
@@ -34,6 +37,12 @@ class OwnerPairingReadiness(Protocol):
     def ready(self, config: "OwnerInstallationConfig") -> bool: ...
 
 
+class OwnerBundleLoader(Protocol):
+    """Narrow read-only adapter over an Owner secret-bundle store."""
+
+    def load(self, key: str) -> object | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class OwnerInstallationConfig:
     profile: Literal["local-reference", "production"]
@@ -43,6 +52,57 @@ class OwnerInstallationConfig:
     port: int
     central_url: str | None = None
     pairing_reference: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerActiveBindingReadiness:
+    """Validate a loaded active Owner binding without importing a keychain.
+
+    The store implementation remains an installation concern. This adapter
+    only consumes its already-validated public shape and never returns or
+    serializes credential material.
+    """
+
+    loader: OwnerBundleLoader
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+
+    def ready(self, config: OwnerInstallationConfig) -> bool:
+        key = config.pairing_reference
+        if key is None or config.central_url is None:
+            return False
+        try:
+            bundle = self.loader.load(key)
+            if bundle is None:
+                return False
+            binding = getattr(bundle, "binding", None)
+            active = getattr(bundle, "active", None)
+            if (
+                getattr(binding, "central_origin", None) != config.central_url
+                or not _DIGEST.fullmatch(str(getattr(bundle, "binding_digest", "")))
+                or active is None
+                or getattr(bundle, "pending", None) is not None
+                or getattr(bundle, "pairing_pending", None) is not None
+                or getattr(binding, "device_key_thumbprint", None)
+                != getattr(getattr(bundle, "device", None), "device_key_thumbprint", None)
+            ):
+                return False
+            generation = getattr(active, "credential_generation", None)
+            expires_at = getattr(active, "expires_at", None)
+            if type(generation) is not int or generation <= 0 or type(expires_at) is not str:
+                return False
+            expiry = datetime.fromisoformat(expires_at)
+            now = self.clock()
+            if (
+                expiry.tzinfo is None
+                or expiry.utcoffset() != timedelta(0)
+                or now.tzinfo is None
+                or now.utcoffset() != timedelta(0)
+                or expiry <= now
+            ):
+                return False
+            return True
+        except Exception:
+            return False
 
 
 @dataclass(frozen=True, slots=True)

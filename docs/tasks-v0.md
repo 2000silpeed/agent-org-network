@@ -507,8 +507,10 @@ RB3.8까지 보류하고 각 slice는 Fast·Contract·Affected gate와 독립 re
 - [~] `owner_composition.py`, `owner_api.py`, `owner_cli.py`와
   `aon-owner api serve|workspace serve|doctor`: API skeleton 완료, workspace/worker는 unavailable.
   Owner profile의 `pairing_reference`만으로 paired를 주장하지 않도록 read-only
-  `OwnerPairingReadiness` seam을 추가했고, seam·workspace·schema marker가 모두 없으면 doctor/
-  readyz가 fail-closed한다.
+  `OwnerPairingReadiness` seam과 active bundle의 Central origin·device binding·credential
+  generation/expiry·pending 상태를 검증하는 adapter를 추가했고, seam·workspace·schema marker가
+  모두 없으면 doctor/readyz가 fail-closed한다. 실제 pair/redeem mutation과 OS keychain wiring은
+  다음 bounded slice다.
 - [ ] Central-issued pair/redeem의 current generation을 exact compare하는 active Owner Installation
   binding, encrypted workspace/keychain profile, local durable AuthoringRun/draft/Git repository와
   default loopback Owner API `127.0.0.1:8012`를 조립

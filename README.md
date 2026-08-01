@@ -25,7 +25,7 @@
 | 온보딩·저작·pairing·gateway 조립 | `tested_component_factory` | 테스트에서 주입해 검증하는 팩토리; 배포 서버/CLI 아님 |
 | A2A Remote Runtime | `tested_component_factory` | Card Owner outbound-only strict A2A 1.0 `HTTP+JSON` adapter; active Owner profile loader는 아직 없음 |
 | Central RB3.1a/RB3.2a/RB3.2b.1 entrypoint | `tested_component_factory` | `aon-central migrate\|doctor\|bootstrap-admin\|api serve\|web serve`; durable intake/bootstrap과 prebuilt Central Next packaging/process component |
-| Owner entrypoint skeleton | `tested_component_factory` | `aon-owner`; API health/readiness 외 pair/workspace/worker는 unavailable |
+| Owner entrypoint skeleton | `tested_component_factory` | `aon-owner`; API health/readiness 외 pair/workspace/worker는 unavailable. profile metadata만으로 paired를 주장하지 않고, 주입형 active-binding 검증이 없는 기본 경로는 fail-closed |
 | 3-install 제품 | `product_target_not_available` | `Central Server` / `Card Owner` / `Question User MCP` 목표 구조 |
 
 이 표에서 `tested_component_factory`는 “코드와 결정론 테스트가 있다”는 뜻이지,

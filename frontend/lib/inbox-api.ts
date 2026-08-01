@@ -1,340 +1,84 @@
-// /inbox real client. Mirrors web.py serializers exactly:
-//   serialize_case        (web.py:231) → /inbox/cases
-//   serialize_review_item (web.py:289) → /inbox/backup-reviews
-//   serialize_outcome     (web.py:269) → POST /cases/{id}/concur response
-//   FetchDocument result  (web.py:889) → POST /inbox/cases/{id}/document
-//
-// These are operational surfaces (운영 면) — internal values (domains, coverage)
-// MAY be exposed here (the opposite of the /ask OrgReply invariant). All requests
-// flow through the Next proxy so the session cookie scopes to the logged-in owner
-// (자기 처리함만 · 미로그인 401 · 스코프 위반 403).
+/** Strict browser client for ADR 0080's 13 dedicated Central inbox routes. */
 
-export interface RelevantConcept {
-  id: string;
-  label: string;
-  core_question: string;
+export type ConflictSummary = { case_id: string; request_id: string; request_revision: number; state: "open" | "resolved" | "escalated"; round: number; revision: number; candidate_card_ids: string[]; opened_at: string };
+export type ConflictCandidate = { card_id: string; card_revision: number; card_digest: string; owner_user_id: string; concept_ref: string; coverage_digest: string };
+export type EvidenceGrant = { grant_id: string; candidate_card_id: string; candidate_card_revision: number; concept_ref: string; expires_at: string; single_use: boolean; status: "available" | "consumed" | "expired" };
+export type ConflictDetail = ConflictSummary & { expected_case_revision: number; expected_request_revision: number; expected_round: number; question: string; candidates: ConflictCandidate[]; own_concurrence: null | { on_candidate_card_id: string; stance: "keep_as_complement" | "withdraw"; rationale: string; round: number }; evidence_grants: EvidenceGrant[] };
+export type BackupSummary = { review_id: string; request_id: string; source_answer_record_id: string; revision: number; state: "open" | "reviewed"; created_at: string };
+export type BackupDetail = BackupSummary & { question: string; backup_answer_text: string; answering_card_id: string; answering_card_revision: number; owner_user_id: string; answered_at: string };
+export type ReevaluationSummary = { reevaluation_id: string; request_id: string; feedback_id: string; source_answer_record_id: string; revision: number; state: "open" | "reviewed"; created_at: string };
+export type ReevaluationDetail = ReevaluationSummary & { question: string; answer_text: string; feedback_verdict: "bad"; feedback_comment: string; answering_card_id: string; answering_card_revision: number; owner_user_id: string; flagged_at: string };
+export type ApprovalSummary = { approval_item_id: string; request_id: string; request_revision: number; approval_round: number; revision: number; assigned_at: string; due_at: string; state: "open" };
+export type ApprovalDetail = ApprovalSummary & { question: string; candidate_text: string; candidate_digest: string; policy_digest: string; binding_version: number; assigned_approver_user_id: string; assigned_approval_card_id: string };
+
+export type ConcurrenceInput = { on_candidate_card_id: string; stance: "keep_as_complement" | "withdraw"; rationale: string; expected_case_revision: number; expected_request_revision: number; expected_round: number };
+export type BackupDisposition = { kind: "approve" | "dismiss"; rationale: string; expected_revision: number } | { kind: "correct"; corrected_text: string; rationale: string; expected_revision: number };
+export type ReevaluationDisposition = { kind: "acknowledge" | "request_reanswer"; rationale: string; expected_revision: number };
+export type ApprovalDisposition = { kind: "approve"; expected_approval_item_revision: number; expected_request_revision: number } | { kind: "approve_with_edit"; edited_text: string; expected_approval_item_revision: number; expected_request_revision: number } | { kind: "reject"; reason_code: string; expected_approval_item_revision: number; expected_request_revision: number };
+export type ApprovalReassignment = { target_approver_user_id: string; target_approval_card_id: string; expected_approval_item_revision: number; expected_request_revision: number };
+export type ConflictResult = { receipt_id: string; concurrence_command_digest: string; case_id: string; case_revision: number; request_id: string; request_revision: number; state: "open" | "resolved"; outcome: "still_open" | "agreed" | "deadlocked" | "route_rejected"; replayed: boolean };
+export type ReviewResult = { receipt_id: string; revision: number; state: "reviewed"; replayed: boolean; correction_record_id?: string | null; reanswer_requested_id?: string | null };
+export type ApprovalResult = { receipt_id: string; approval_item_id: string; approval_item_revision: number; request_id: string; request_revision: number; state: "approved" | "rejected"; replayed: boolean };
+export type ReassignmentResult = { receipt_id: string; superseded_approval_item_id: string; successor_approval_item_id: string; successor_approval_item_revision: number; request_id: string; request_revision: number; state: "open"; replayed: boolean };
+
+export class InboxClientError extends Error {
+  constructor(message: string, readonly status?: number, readonly code = "unavailable", readonly reload = false) { super(message); this.name = "InboxClientError"; }
 }
 
-export interface CaseCandidate {
-  agent_id: string;
-  owner: string;
-  summary?: string;
-  domains?: string[];
-  knowledge_sources?: string[];
-  relevant_concepts?: RelevantConcept[];
-}
+const REF = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SHA = /^[0-9a-f]{64}$/;
+const ERROR_MESSAGE: Record<number, string> = { 401: "로그인이 필요하거나 세션이 만료되었습니다.", 403: "처리함 요청을 안전하게 확인하지 못했습니다.", 404: "처리함 항목을 찾을 수 없습니다.", 409: "항목이 변경되었습니다. 새로 고친 뒤 다시 시도해 주세요.", 422: "처리함 요청 형식이 올바르지 않습니다.", 502: "처리함 서비스를 지금 연결할 수 없습니다.", 503: "처리함 서비스를 지금 사용할 수 없습니다." };
+type Json = Record<string, unknown>;
 
-export interface ConflictCase {
-  case_id: string;
-  request_id?: string;
-  status?: "open" | "escalated" | "resolved" | "declined";
-  current_round?: number;
-  intent: string;
-  question: string;
-  candidates: CaseCandidate[];
-}
+function object(value: unknown): Json | null { return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Json : null; }
+function exact(value: Json, keys: readonly string[]): boolean { return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
+function ref(value: unknown): value is string { return typeof value === "string" && REF.test(value); }
+function positive(value: unknown): value is number { return Number.isInteger(value) && Number(value) > 0; }
+function nonnegative(value: unknown): value is number { return Number.isInteger(value) && Number(value) >= 0; }
+function timestamp(value: unknown): value is string { return typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value); }
+function safeText(value: unknown, empty = true): value is string { return typeof value === "string" && (empty || value !== "") && !loneSurrogate(value); }
+function loneSurrogate(value: string): boolean { for (let i = 0; i < value.length; i += 1) { const unit = value.charCodeAt(i); if (unit >= 0xd800 && unit <= 0xdbff) { if (i + 1 >= value.length || value.charCodeAt(i + 1) < 0xdc00 || value.charCodeAt(i + 1) > 0xdfff) return true; i += 1; } else if (unit >= 0xdc00 && unit <= 0xdfff) return true; } return false; }
+function summaryKeys(kind: "conflict" | "backup" | "reevaluation" | "approval"): string[] { if (kind === "conflict") return ["case_id", "request_id", "request_revision", "state", "round", "revision", "candidate_card_ids", "opened_at"]; if (kind === "backup") return ["review_id", "request_id", "source_answer_record_id", "revision", "state", "created_at"]; if (kind === "reevaluation") return ["reevaluation_id", "request_id", "feedback_id", "source_answer_record_id", "revision", "state", "created_at"]; return ["approval_item_id", "request_id", "request_revision", "approval_round", "revision", "assigned_at", "due_at", "state"]; }
 
-export type ConcurrenceStance = "withdraw" | "keep_as_complement";
+function conflictSummary(value: unknown): value is ConflictSummary { const v = object(value); return !!v && exact(v, summaryKeys("conflict")) && ref(v.case_id) && ref(v.request_id) && nonnegative(v.request_revision) && (v.state === "open" || v.state === "resolved" || v.state === "escalated") && positive(v.round) && positive(v.revision) && Array.isArray(v.candidate_card_ids) && v.candidate_card_ids.every(ref) && timestamp(v.opened_at); }
+function backupSummary(value: unknown): value is BackupSummary { const v = object(value); return !!v && exact(v, summaryKeys("backup")) && ref(v.review_id) && ref(v.request_id) && ref(v.source_answer_record_id) && positive(v.revision) && (v.state === "open" || v.state === "reviewed") && timestamp(v.created_at); }
+function reevaluationSummary(value: unknown): value is ReevaluationSummary { const v = object(value); return !!v && exact(v, summaryKeys("reevaluation")) && ref(v.reevaluation_id) && ref(v.request_id) && ref(v.feedback_id) && ref(v.source_answer_record_id) && positive(v.revision) && (v.state === "open" || v.state === "reviewed") && timestamp(v.created_at); }
+function approvalSummary(value: unknown): value is ApprovalSummary { const v = object(value); return !!v && exact(v, summaryKeys("approval")) && ref(v.approval_item_id) && ref(v.request_id) && positive(v.request_revision) && positive(v.approval_round) && positive(v.revision) && timestamp(v.assigned_at) && timestamp(v.due_at) && v.state === "open"; }
+function list<T>(value: unknown, decoder: (item: unknown) => item is T): T[] | null { const v = object(value); return v && exact(v, ["items"]) && Array.isArray(v.items) && v.items.every(decoder) ? [...v.items] : null; }
+export const decodeConflictList = (value: unknown): ConflictSummary[] | null => list(value, conflictSummary);
+export const decodeBackupList = (value: unknown): BackupSummary[] | null => list(value, backupSummary);
+export const decodeReevaluationList = (value: unknown): ReevaluationSummary[] | null => list(value, reevaluationSummary);
+export const decodeApprovalList = (value: unknown): ApprovalSummary[] | null => list(value, approvalSummary);
 
-export type ConsensusOutcome =
-  | {
-      type: "agreed";
-      request_id?: string;
-      case_id?: string;
-      primary: string;
-      intent: string;
-    }
-  | {
-      type: "still_open";
-      request_id?: string;
-      case_id?: string;
-      current_round?: number;
-      pending_owners: string[];
-    }
-  | {
-      type: "deadlocked";
-      request_id?: string;
-      case_id?: string;
-      current_round?: number;
-      manager_item_id?: string;
-    }
-  | {
-      type: "route_rejected";
-      request_id: string;
-      case_id: string;
-      current_round: number;
-      next_round: number;
-      reason_code: string;
-    };
+export function decodeConflictDetail(value: unknown): ConflictDetail | null { const v = object(value); if (!v || !exact(v, [...summaryKeys("conflict"), "expected_case_revision", "expected_request_revision", "expected_round", "question", "candidates", "own_concurrence", "evidence_grants"])) return null; const base = Object.fromEntries(summaryKeys("conflict").map((key) => [key, v[key]])); const candidates = Array.isArray(v.candidates) && v.candidates.every((item) => { const c = object(item); return !!c && exact(c, ["card_id", "card_revision", "card_digest", "owner_user_id", "concept_ref", "coverage_digest"]) && ref(c.card_id) && positive(c.card_revision) && typeof c.card_digest === "string" && SHA.test(c.card_digest) && ref(c.owner_user_id) && ref(c.concept_ref) && typeof c.coverage_digest === "string" && SHA.test(c.coverage_digest); }); const own = v.own_concurrence === null || (() => { const c = object(v.own_concurrence); return !!c && exact(c, ["on_candidate_card_id", "stance", "rationale", "round"]) && ref(c.on_candidate_card_id) && (c.stance === "keep_as_complement" || c.stance === "withdraw") && safeText(c.rationale) && positive(c.round); })(); const grants = Array.isArray(v.evidence_grants) && v.evidence_grants.every((item) => { const g = object(item); return !!g && exact(g, ["grant_id", "candidate_card_id", "candidate_card_revision", "concept_ref", "expires_at", "single_use", "status"]) && ref(g.grant_id) && ref(g.candidate_card_id) && positive(g.candidate_card_revision) && ref(g.concept_ref) && timestamp(g.expires_at) && typeof g.single_use === "boolean" && (g.status === "available" || g.status === "consumed" || g.status === "expired"); }); return conflictSummary(base) && positive(v.expected_case_revision) && nonnegative(v.expected_request_revision) && positive(v.expected_round) && safeText(v.question) && candidates && own && grants ? v as ConflictDetail : null; }
+export function decodeBackupDetail(value: unknown): BackupDetail | null { const v = object(value); return v && exact(v, [...summaryKeys("backup"), "question", "backup_answer_text", "answering_card_id", "answering_card_revision", "owner_user_id", "answered_at"]) && backupSummary(Object.fromEntries(summaryKeys("backup").map((key) => [key, v[key]]))) && safeText(v.question) && safeText(v.backup_answer_text) && ref(v.answering_card_id) && positive(v.answering_card_revision) && ref(v.owner_user_id) && timestamp(v.answered_at) ? v as BackupDetail : null; }
+export function decodeReevaluationDetail(value: unknown): ReevaluationDetail | null { const v = object(value); return v && exact(v, [...summaryKeys("reevaluation"), "question", "answer_text", "feedback_verdict", "feedback_comment", "answering_card_id", "answering_card_revision", "owner_user_id", "flagged_at"]) && reevaluationSummary(Object.fromEntries(summaryKeys("reevaluation").map((key) => [key, v[key]]))) && safeText(v.question) && safeText(v.answer_text) && v.feedback_verdict === "bad" && safeText(v.feedback_comment) && ref(v.answering_card_id) && positive(v.answering_card_revision) && ref(v.owner_user_id) && timestamp(v.flagged_at) ? v as ReevaluationDetail : null; }
+export function decodeApprovalDetail(value: unknown): ApprovalDetail | null { const v = object(value); return v && exact(v, [...summaryKeys("approval"), "question", "candidate_text", "candidate_digest", "policy_digest", "binding_version", "assigned_approver_user_id", "assigned_approval_card_id"]) && approvalSummary(Object.fromEntries(summaryKeys("approval").map((key) => [key, v[key]]))) && safeText(v.question) && safeText(v.candidate_text) && typeof v.candidate_digest === "string" && SHA.test(v.candidate_digest) && typeof v.policy_digest === "string" && SHA.test(v.policy_digest) && positive(v.binding_version) && ref(v.assigned_approver_user_id) && ref(v.assigned_approval_card_id) ? v as ApprovalDetail : null; }
 
-export type BackupReviewStatus = "pending" | "approved" | "corrected" | "dismissed";
+async function responseJson(response: Response): Promise<unknown> { try { return await response.json(); } catch { throw new InboxClientError("처리함 응답 형식이 올바르지 않습니다.", response.status); } }
+async function get<T>(path: string, decoder: (value: unknown) => T | null, signal?: AbortSignal): Promise<T> { let response: Response; try { response = await fetch(path, { credentials: "same-origin", cache: "no-store", signal }); } catch (error) { if (signal?.aborted) throw error; throw new InboxClientError(ERROR_MESSAGE[502], 502, "unavailable", true); } if (!response.ok) throw await httpError(response); const decoded = decoder(await responseJson(response)); if (decoded === null) throw new InboxClientError("처리함 응답 형식이 올바르지 않습니다.", response.status); return decoded; }
+async function httpError(response: Response): Promise<InboxClientError> { const body = object(await responseJson(response)); const code = body && exact(body, ["code", "message"]) && typeof body.code === "string" ? body.code : "unavailable"; return new InboxClientError(ERROR_MESSAGE[response.status] ?? "처리함 요청을 안전하게 처리하지 못했습니다.", response.status, code, response.status === 409 || response.status === 503); }
+function csrf(): string | null { if (typeof document === "undefined") return null; const found = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("__Host-aon-central-csrf=")); if (!found) return null; try { return decodeURIComponent(found.slice(found.indexOf("=") + 1)); } catch { return null; } }
+function validateBody(body: Json): string { for (const value of Object.values(body)) if (typeof value === "string" && loneSurrogate(value)) throw new InboxClientError("입력 형식이 올바르지 않습니다.", 422, "invalid_input"); for (const key of ["rationale", "corrected_text", "edited_text", "reason_code"]) if (Object.hasOwn(body, key) && body[key] === "") throw new InboxClientError("필수 입력을 작성해 주세요.", 422, "invalid_input"); const serialized = JSON.stringify(body); if (new TextEncoder().encode(serialized).byteLength > 65536) throw new InboxClientError("요청은 최대 65536 UTF-8 bytes까지 보낼 수 있습니다.", 422, "invalid_input"); return serialized; }
+async function post<T>(path: string, body: Json, key: string, decoder: (value: unknown) => T | null, signal?: AbortSignal): Promise<T> { const token = csrf(); if (!token || !REF.test(key)) throw new InboxClientError("브라우저 보안 확인을 완료할 수 없습니다.", 422, "invalid_input"); const serialized = validateBody(body); let response: Response; try { response = await fetch(path, { method: "POST", credentials: "same-origin", cache: "no-store", signal, headers: { "content-type": "application/json", "X-AON-CSRF": token, "Idempotency-Key": key }, body: serialized }); } catch (error) { if (signal?.aborted) throw error; throw new InboxClientError(ERROR_MESSAGE[502], 502, "unavailable", true); } if (!response.ok) throw await httpError(response); const decoded = decoder(await responseJson(response)); if (decoded === null) throw new InboxClientError("처리함 처분 응답 형식이 올바르지 않습니다.", response.status); return decoded; }
 
-export interface BackupReview {
-  type: "approve" | "correct" | "dismiss";
-  by_owner: string;
-  rationale: string;
-  corrected_text?: string;
-  sources?: string[];
-}
+export const listConflicts = (signal?: AbortSignal) => get("/api/inbox/conflicts", decodeConflictList, signal);
+export const getConflictDetail = (id: string, signal?: AbortSignal) => get(`/api/inbox/conflicts/${encodeURIComponent(id)}`, decodeConflictDetail, signal);
+export const listBackupReviews = (signal?: AbortSignal) => get("/api/inbox/backup-reviews", decodeBackupList, signal);
+export const getBackupDetail = (id: string, signal?: AbortSignal) => get(`/api/inbox/backup-reviews/${encodeURIComponent(id)}`, decodeBackupDetail, signal);
+export const listReevaluations = (signal?: AbortSignal) => get("/api/inbox/reevaluations", decodeReevaluationList, signal);
+export const getReevaluationDetail = (id: string, signal?: AbortSignal) => get(`/api/inbox/reevaluations/${encodeURIComponent(id)}`, decodeReevaluationDetail, signal);
+export const listApprovals = (signal?: AbortSignal) => get("/api/inbox/approvals", decodeApprovalList, signal);
+export const getApprovalDetail = (id: string, signal?: AbortSignal) => get(`/api/inbox/approvals/${encodeURIComponent(id)}`, decodeApprovalDetail, signal);
 
-export interface BackupReviewItem {
-  item_id: string;
-  owner_id: string;
-  agent_id: string;
-  question: string;
-  backup_answer_text: string;
-  ticket_id: string;
-  snapshot_at: string;
-  answered_at: string;
-  status: BackupReviewStatus;
-  review: BackupReview | null;
-}
+function conflictResult(value: unknown): ConflictResult | null { const v = object(value); return v && exact(v, ["receipt_id", "concurrence_command_digest", "case_id", "case_revision", "request_id", "request_revision", "state", "outcome", "replayed"]) && ref(v.receipt_id) && typeof v.concurrence_command_digest === "string" && SHA.test(v.concurrence_command_digest) && ref(v.case_id) && positive(v.case_revision) && ref(v.request_id) && nonnegative(v.request_revision) && (v.state === "open" || v.state === "resolved") && (v.outcome === "still_open" || v.outcome === "agreed" || v.outcome === "deadlocked" || v.outcome === "route_rejected") && typeof v.replayed === "boolean" ? v as ConflictResult : null; }
+function reviewResult(idKey: "review_id" | "reevaluation_id", companion: "correction_record_id" | "reanswer_requested_id") { return (value: unknown): ReviewResult | null => { const v = object(value); return v && exact(v, ["receipt_id", idKey, "revision", "state", companion, "replayed"]) && ref(v.receipt_id) && ref(v[idKey]) && positive(v.revision) && v.state === "reviewed" && (v[companion] === null || ref(v[companion])) && typeof v.replayed === "boolean" ? v as ReviewResult : null; }; }
+function approvalResult(value: unknown): ApprovalResult | null { const v = object(value); return v && exact(v, ["receipt_id", "approval_item_id", "approval_item_revision", "request_id", "request_revision", "state", "replayed"]) && ref(v.receipt_id) && ref(v.approval_item_id) && positive(v.approval_item_revision) && ref(v.request_id) && positive(v.request_revision) && (v.state === "approved" || v.state === "rejected") && typeof v.replayed === "boolean" ? v as ApprovalResult : null; }
+function reassignmentResult(value: unknown): ReassignmentResult | null { const v = object(value); return v && exact(v, ["receipt_id", "superseded_approval_item_id", "successor_approval_item_id", "successor_approval_item_revision", "request_id", "request_revision", "state", "replayed"]) && ref(v.receipt_id) && ref(v.superseded_approval_item_id) && ref(v.successor_approval_item_id) && positive(v.successor_approval_item_revision) && ref(v.request_id) && positive(v.request_revision) && v.state === "open" && typeof v.replayed === "boolean" ? v as ReassignmentResult : null; }
 
-export type FetchDocumentResult =
-  | { found: true; available: true; content: string }
-  | { found: false; available: boolean; message: string };
-
-export class InboxError extends Error {
-  status?: number;
-  constructor(message: string, status?: number) {
-    super(message);
-    this.name = "InboxError";
-    this.status = status;
-  }
-}
-
-async function getJson<T>(path: string): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(path, { headers: { accept: "application/json" } });
-  } catch {
-    throw new InboxError("네트워크 오류 — 백엔드에 연결할 수 없습니다.");
-  }
-  if (res.status === 401) {
-    throw new InboxError("로그인이 필요합니다.", 401);
-  }
-  if (!res.ok) {
-    throw new InboxError(`요청 실패 (HTTP ${res.status}).`, res.status);
-  }
-  return (await res.json()) as T;
-}
-
-/** GET /api/inbox/cases — contested cases for the session owner. */
-export function getInboxCases(): Promise<ConflictCase[]> {
-  return getJson<ConflictCase[]>("/api/inbox/cases");
-}
-
-/** GET /api/inbox/backup-reviews — pending backup answers for the session owner. */
-export function getBackupReviews(): Promise<BackupReviewItem[]> {
-  return getJson<BackupReviewItem[]>("/api/inbox/backup-reviews");
-}
-
-/** POST /api/cases/{id}/concur — vote to assign an agent as primary. */
-export async function postConcur(
-  caseId: string,
-  onAgent: string,
-  expectedRound: number | null = null,
-  stance: ConcurrenceStance = "withdraw",
-  rationale = "",
-): Promise<ConsensusOutcome> {
-  let res: Response;
-  try {
-    res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/concur`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        on_agent: onAgent,
-        rationale,
-        expected_round: expectedRound,
-        stance,
-      }),
-    });
-  } catch {
-    throw new InboxError("네트워크 오류 — 합의 전송에 실패했습니다.");
-  }
-  if (res.status === 401) throw new InboxError("로그인이 필요합니다.", 401);
-  if (res.status === 403) {
-    throw new InboxError("이 케이스의 후보 owner가 아닙니다.", 403);
-  }
-  if (res.status === 404) throw new InboxError("케이스를 찾을 수 없습니다.", 404);
-  if (!res.ok) throw new InboxError(`합의 실패 (HTTP ${res.status}).`, res.status);
-  return (await res.json()) as ConsensusOutcome;
-}
-
-/** POST /api/inbox/cases/{id}/document — on-demand fetch a candidate's concept doc. */
-export async function fetchCaseDocument(
-  caseId: string,
-  agentId: string,
-  conceptId: string,
-): Promise<FetchDocumentResult> {
-  let res: Response;
-  try {
-    res = await fetch(`/api/inbox/cases/${encodeURIComponent(caseId)}/document`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent_id: agentId, concept_id: conceptId }),
-    });
-  } catch {
-    throw new InboxError("네트워크 오류 — 문서를 가져오지 못했습니다.");
-  }
-  if (res.status === 401) throw new InboxError("로그인이 필요합니다.", 401);
-  if (res.status === 403) {
-    throw new InboxError("자기 케이스 후보 문서만 열 수 있습니다.", 403);
-  }
-  if (!res.ok) throw new InboxError(`문서 fetch 실패 (HTTP ${res.status}).`, res.status);
-  return (await res.json()) as FetchDocumentResult;
-}
-
-/* ---- 재평가 (reeval) — 처리함 세 번째 탭 · serialize_reeval_item (web.py) ---- */
-
-export type ReevalSubjectKind = "precedent" | "answer";
-export type ReevalStatus = "pending_review" | "reviewed";
-// owner 처분 — KeepPrecedent·InvalidatePrecedent·SupersedePrecedent·AcknowledgeAnswer·ReAnswer
-export type ReevalOutcomeKind =
-  | "keep"
-  | "invalidate"
-  | "supersede"
-  | "acknowledge"
-  | "reanswer";
-
-export interface ReevalReview {
-  kind: ReevalOutcomeKind;
-  by_owner: string;
-  rationale: string;
-  new_primary?: string;
-}
-
-export interface ReevalItem {
-  item_id: string;
-  owner_id: string;
-  agent_id: string;
-  subject_kind: ReevalSubjectKind;
-  subject_ref: string;
-  trigger_sha: string;
-  flagged_at: string;
-  status: ReevalStatus;
-  question: string;
-  reason: string;
-  review: ReevalReview | null;
-}
-
-/** GET /api/inbox/reeval — stale 판례·답 재평가 항목(세션 owner). */
-export function getReeval(): Promise<ReevalItem[]> {
-  return getJson<ReevalItem[]>("/api/inbox/reeval");
-}
-
-/** POST /api/reeval/{id}/review — owner 재평가 처분(유지/재답변/무효화 등). */
-export async function postReevalReview(
-  itemId: string,
-  kind: ReevalOutcomeKind,
-  opts: { rationale?: string; newPrimary?: string } = {},
-): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetch(`/api/reeval/${encodeURIComponent(itemId)}/review`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        kind,
-        rationale: opts.rationale ?? "",
-        new_primary: opts.newPrimary,
-      }),
-    });
-  } catch {
-    throw new InboxError("네트워크 오류 — 재평가 처분 전송에 실패했습니다.");
-  }
-  if (res.status === 401) throw new InboxError("로그인이 필요합니다.", 401);
-  if (res.status === 403) {
-    throw new InboxError("자기 재평가 항목만 처분할 수 있습니다.", 403);
-  }
-  if (res.status === 404) throw new InboxError("재평가 항목을 찾을 수 없습니다.", 404);
-  if (!res.ok) throw new InboxError(`재평가 처분 실패 (HTTP ${res.status}).`, res.status);
-}
-
-/* ---- Approval — 본문 없는 queue, 선택한 항목만 lazy detail ---- */
-
-export interface ApprovalPendingSummary {
-  item_id: string;
-  request_id: string;
-  approval_round: number;
-  assigned_at: string;
-  due_at: string;
-}
-
-export interface ApprovalCandidate {
-  text: string;
-  sources: string[];
-  mode: "full" | "draft_only" | "backup";
-  snapshot_sha: string | null;
-}
-
-export interface ApprovalPendingDetail extends ApprovalPendingSummary {
-  question: string;
-  draft_id: string;
-  candidate: ApprovalCandidate;
-}
-
-export type ApprovalDecisionIntent =
-  | { kind: "approve" }
-  | { kind: "approve_with_edit"; edited_text: string }
-  | { kind: "reject"; reason_code: string };
-
-async function postApproval(path: string, body: object, action: string): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetch(path, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch {
-    throw new InboxError(`네트워크 오류 — ${action} 전송에 실패했습니다.`);
-  }
-  if (res.status === 401) throw new InboxError("로그인이 필요합니다.", 401);
-  if (res.status === 403) {
-    throw new InboxError("이 Approval 항목을 처리할 권한이 없습니다.", 403);
-  }
-  if (res.status === 404) {
-    throw new InboxError("Approval 항목을 찾을 수 없습니다.", 404);
-  }
-  if (!res.ok) throw new InboxError(`${action} 실패 (HTTP ${res.status}).`, res.status);
-}
-
-/** GET /api/inbox/approvals — 본문 없는 현재 Approval 배정 목록. */
-export function getInboxApprovals(): Promise<ApprovalPendingSummary[]> {
-  return getJson<ApprovalPendingSummary[]>("/api/inbox/approvals");
-}
-
-/** GET /api/inbox/approvals/{item_id} — 선택한 현재 배정의 질문·후보 상세. */
-export function getApprovalDetail(itemId: string): Promise<ApprovalPendingDetail> {
-  return getJson<ApprovalPendingDetail>(
-    `/api/inbox/approvals/${encodeURIComponent(itemId)}`,
-  );
-}
-
-/** POST /api/inbox/approvals/{item_id}/decide — 인증 principal 기반 처분. */
-export function postApprovalDecision(
-  itemId: string,
-  intent: ApprovalDecisionIntent,
-): Promise<void> {
-  const exactIntent: ApprovalDecisionIntent =
-    intent.kind === "approve"
-      ? { kind: "approve" }
-      : intent.kind === "approve_with_edit"
-        ? { kind: "approve_with_edit", edited_text: intent.edited_text }
-        : { kind: "reject", reason_code: intent.reason_code };
-  return postApproval(
-    `/api/inbox/approvals/${encodeURIComponent(itemId)}/decide`,
-    exactIntent,
-    "Approval 처분",
-  );
-}
-
-/** POST /api/inbox/approvals/{item_id}/reassign — actor 없는 새 승인자 target. */
-export function postApprovalReassignment(itemId: string, approverId: string): Promise<void> {
-  return postApproval(
-    `/api/inbox/approvals/${encodeURIComponent(itemId)}/reassign`,
-    { approver_id: approverId },
-    "Approval 재지정",
-  );
-}
+export const concurConflict = (id: string, input: ConcurrenceInput, key: string, signal?: AbortSignal) => post(`/api/inbox/conflicts/${encodeURIComponent(id)}/concurrences`, input as unknown as Json, key, conflictResult, signal);
+export const disposeBackup = (id: string, input: BackupDisposition, key: string, signal?: AbortSignal) => post(`/api/inbox/backup-reviews/${encodeURIComponent(id)}/dispositions`, input as unknown as Json, key, reviewResult("review_id", "correction_record_id"), signal);
+export const disposeReevaluation = (id: string, input: ReevaluationDisposition, key: string, signal?: AbortSignal) => post(`/api/inbox/reevaluations/${encodeURIComponent(id)}/dispositions`, input as unknown as Json, key, reviewResult("reevaluation_id", "reanswer_requested_id"), signal);
+export const disposeApproval = (id: string, input: ApprovalDisposition, key: string, signal?: AbortSignal) => post(`/api/inbox/approvals/${encodeURIComponent(id)}/dispositions`, input as unknown as Json, key, approvalResult, signal);
+export const reassignApproval = (id: string, input: ApprovalReassignment, key: string, signal?: AbortSignal) => post(`/api/inbox/approvals/${encodeURIComponent(id)}/reassignments`, input as unknown as Json, key, reassignmentResult, signal);
+export function isCurrentLoad(captured: number, current: number, aborted: boolean): boolean { return captured === current && !aborted; }

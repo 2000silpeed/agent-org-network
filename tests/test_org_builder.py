@@ -418,19 +418,19 @@ class TestBuilderValidateRoute:
         assert body["ok"] is False  # 내부 검증 실패
 
 
-class TestOrgBuilderHtmlRoute:
-    """GET /org/view · GET /builder → 200 (HTML FileResponse)."""
+class TestOrgBuilderApiOnlyBoundary:
+    """Developer API는 조직/빌더 HTML을 제공하지 않는다."""
 
-    def test_org_view_200(self) -> None:
+    def test_org_view_404(self) -> None:
         app = create_app(runtime=StubRuntime())
         client = TestClient(app)
         http: Any = client
         res: Response = cast(Response, http.get("/org/view"))
-        assert res.status_code == 200
+        assert res.status_code == 404
 
-    def test_builder_get_200(self) -> None:
+    def test_builder_get_404(self) -> None:
         app = create_app(runtime=StubRuntime())
         client = TestClient(app)
         http: Any = client
         res: Response = cast(Response, http.get("/builder"))
-        assert res.status_code == 200
+        assert res.status_code == 404

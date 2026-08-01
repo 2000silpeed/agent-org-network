@@ -1,9 +1,16 @@
 /** @type {import('next').NextConfig} */
 
-// /api/* is proxied to the FastAPI backend by a server-side route handler
-// (app/api/[...path]/route.ts), not next.config rewrites — the dev rewrite
-// proxy hangs on POST request bodies. The route handler forwards method, body,
-// and cookies (anonymous session aon_uid flows transparently, same origin).
-const nextConfig = {};
+const nextConfig = {
+  output: "standalone",
+  images: {
+    // All present image sources are versioned local brand assets.  Serving
+    // them directly avoids a native sharp runtime dependency in the small
+    // standalone artifact and keeps image delivery deterministic.
+    unoptimized: true,
+  },
+  experimental: {
+    instrumentationHook: true,
+  },
+};
 
 export default nextConfig;

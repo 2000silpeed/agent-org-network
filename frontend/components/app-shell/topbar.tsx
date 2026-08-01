@@ -4,7 +4,6 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { NAV_ITEMS } from "./nav";
-import { IdentitySwitcher } from "@/components/session/identity-switcher";
 import { ThemeToggle } from "./theme";
 import { cn } from "@/lib/utils";
 
@@ -30,7 +29,6 @@ export function Topbar() {
         </span>
         <div className="ml-auto flex items-center gap-ds-8">
           <ThemeToggle />
-          <IdentitySwitcher />
         </div>
       </div>
       <nav

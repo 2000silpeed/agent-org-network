@@ -46,6 +46,7 @@ from agent_org_network.question_request import (
     AwaitingAnswer,
     AwaitingApproval,
     DeclinedRequest,
+    declined_request_message,
     FailedRequest,
     QuestionPendingKind,
     QuestionRequest,
@@ -317,7 +318,6 @@ QuestionStreamLookup: TypeAlias = (
 
 
 _PENDING_MESSAGE = "질문을 처리하고 있습니다."
-_DECLINED_MESSAGE = "질문 처리가 거절되었습니다."
 _FAILED_MESSAGE = "질문을 처리하지 못했습니다."
 _INTERRUPTED_MESSAGE = "처리가 일시 중단됐습니다. 잠시 후 다시 연결해 주세요."
 
@@ -443,7 +443,7 @@ class QuestionStreamExecutionService:
                 end=DeclinedEvent(
                     request_id=request.request_id,
                     reason_code=state.reason_code,
-                    message=_DECLINED_MESSAGE,
+                    message=declined_request_message(state.reason_code),
                 ),
             )
         if isinstance(state, FailedRequest):

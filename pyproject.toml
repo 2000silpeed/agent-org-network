@@ -15,11 +15,14 @@ dependencies = [
 
 [project.scripts]
 aon-mcp = "agent_org_network.question_user_mcp:main"
+aon-central = "agent_org_network.central_cli:main"
+aon-owner = "agent_org_network.owner_cli:main"
 
 # 공급자 SDK = 선택 의존성(extra). 코어는 *어떤 공급자에도 종속되지 않는다*(ADR 0027 결정 1·11).
 # owner는 자기 구독 공급자만 설치: pip install agent-org-network[claude-api]  (또는 후속 [codex]·[gemini])
 # 미설치 공급자 어댑터는 그 공급자를 선택(AON_PROVIDER)했을 때만 import되므로 다른 공급자 owner엔 무영향.
 [project.optional-dependencies]
+a2a = ["a2a-sdk==1.1.1"]
 claude-api = ["anthropic>=0.112.0"]
 codex = ["openai>=2.0.0"]
 # 후속(공급자 추가 시 대칭 확장): gemini = ["google-genai>=..."]
@@ -37,6 +40,9 @@ owner-keychain = [
 
 [dependency-groups]
 dev = [
+    # strict A2A Remote Runtime SDK adapter contract/type tests use the exact
+    # interoperability baseline without making it a core runtime dependency.
+    "a2a-sdk==1.1.1",
     "pytest>=8",
     "ruff>=0.6",
     "pyright>=1.1",
@@ -60,6 +66,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_org_network"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"frontend/.next/standalone" = "agent_org_network/_central_frontend/.next/standalone"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -16,7 +16,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 Clock: TypeAlias = Callable[[], datetime]
 RequestIdFactory: TypeAlias = Callable[[], str]
-InitialDisposition: TypeAlias = Literal["routed", "contested", "unowned"]
+InitialDisposition: TypeAlias = Literal[
+    "routed",
+    "contested",
+    "unowned",
+    "non_actionable",
+]
+NON_ACTIONABLE_CONVERSATION_REASON = "non_actionable_conversation"
+NON_ACTIONABLE_CONVERSATION_MESSAGE = "안녕하세요. 조직 업무나 지식에 관한 질문을 입력해 주세요."
 ManagerPublicKind: TypeAlias = Literal["contested", "unowned", "dispatched"]
 QuestionPendingKind: TypeAlias = Literal["routing", "routed", "contested", "unowned"]
 HandlingKind: TypeAlias = Literal[
@@ -214,7 +221,15 @@ RequestStateKind: TypeAlias = Literal[
 
 _TERMINAL_KINDS: frozenset[RequestStateKind] = frozenset({"answered", "declined", "failed"})
 _ALLOWED_TRANSITIONS: dict[RequestStateKind, frozenset[RequestStateKind]] = {
-    "received": frozenset({"ready_to_dispatch", "awaiting_conflict", "awaiting_manager", "failed"}),
+    "received": frozenset(
+        {
+            "ready_to_dispatch",
+            "awaiting_conflict",
+            "awaiting_manager",
+            "declined",
+            "failed",
+        }
+    ),
     "ready_to_dispatch": frozenset({"awaiting_answer", "awaiting_approval", "answered", "failed"}),
     "awaiting_answer": frozenset({"awaiting_approval", "answered", "awaiting_manager", "failed"}),
     "awaiting_conflict": frozenset({"ready_to_dispatch", "awaiting_manager", "declined", "failed"}),
@@ -228,6 +243,7 @@ _INITIAL_TARGET_KIND: dict[InitialDisposition, RequestStateKind] = {
     "routed": "ready_to_dispatch",
     "contested": "awaiting_conflict",
     "unowned": "awaiting_manager",
+    "non_actionable": "declined",
 }
 
 
@@ -380,6 +396,39 @@ class QuestionRequest(_FrozenModel):
             raise ValueError(
                 "routed/contested initial_disposition에는 nonblank intent가 필요합니다."
             )
+        elif disposition == "non_actionable":
+            if self.intent is not None:
+                raise ValueError("non_actionable initial_disposition의 intent는 None이어야 합니다.")
+            if self.revision != 1:
+                raise ValueError(
+                    "non_actionable initial_disposition은 최초 처분 revision 1이어야 합니다."
+                )
+            if (
+                not isinstance(self.state, DeclinedRequest)
+                or self.state.reason_code != NON_ACTIONABLE_CONVERSATION_REASON
+            ):
+                raise ValueError(
+                    "non_actionable initial_disposition은 정확한 non_actionable DeclinedRequest여야 합니다."
+                )
+
+        if (
+            isinstance(self.state, DeclinedRequest)
+            and self.state.reason_code == NON_ACTIONABLE_CONVERSATION_REASON
+            and disposition != "non_actionable"
+        ):
+            raise ValueError(
+                "non_actionable_conversation DeclinedRequest에는 non_actionable initial_disposition이 필요합니다."
+            )
+
+        if isinstance(self.state, DeclinedRequest) and self.revision == 1:
+            if not (
+                disposition == "non_actionable"
+                and self.intent is None
+                and self.state.reason_code == NON_ACTIONABLE_CONVERSATION_REASON
+            ):
+                raise ValueError(
+                    "revision 1 최초 DeclinedRequest는 non_actionable 초기 처분이어야 합니다."
+                )
 
         if self.intent is not None and isinstance(
             self.state,
@@ -462,13 +511,10 @@ class QuestionRequest(_FrozenModel):
             isinstance(self.state, Received)
             and self.intent is None
             and self.initial_disposition is None
-            and isinstance(
-                target,
-                (ReadyToDispatch, AwaitingConflict, AwaitingManager),
-            )
+            and isinstance(target, (ReadyToDispatch, AwaitingConflict, AwaitingManager, DeclinedRequest))
         ):
             raise QuestionRequestTransitionError(
-                "최초 라우팅은 record_initial_routing(...)으로 기록해야 합니다."
+                "최초 처분은 record_initial_routing(...)으로 기록해야 합니다."
             )
 
         violation = _transition_violation(self.state, target)
@@ -581,14 +627,11 @@ class QuestionRequest(_FrozenModel):
         if violation is not None:
             raise QuestionRequestTransitionError(violation)
         now = self._transition_time(clock)
-        if not isinstance(
-            target,
-            (ReadyToDispatch, AwaitingConflict, AwaitingManager),
-        ):
+        if not isinstance(target, (ReadyToDispatch, AwaitingConflict, AwaitingManager, DeclinedRequest)):
             raise QuestionRequestTransitionError(
-                "최초 라우팅 target은 Routed·Contested·Unowned 상태여야 합니다."
+                "최초 처분 target은 Routed·Contested·Unowned·non_actionable Declined 상태여야 합니다."
             )
-        if target.handling.due_at < now:
+        if not isinstance(target, DeclinedRequest) and target.handling.due_at < now:
             raise QuestionRequestTransitionError(
                 "target HandlingAssignment.due_at은 전이 시각보다 빠를 수 없습니다."
             )
@@ -634,6 +677,13 @@ def question_pending_kind(request: QuestionRequest) -> QuestionPendingKind:
     raise QuestionRequestTransitionError("terminal Question Request에는 Pending kind가 없습니다.")
 
 
+def declined_request_message(reason_code: str) -> str:
+    """질문자에게 안전하게 노출할 terminal Declined 문구를 reason별로 고정한다."""
+    if reason_code == NON_ACTIONABLE_CONVERSATION_REASON:
+        return NON_ACTIONABLE_CONVERSATION_MESSAGE
+    return "질문 처리가 거절되었습니다."
+
+
 def _initial_routing_violation(
     current: QuestionRequest,
     intent: str | None,
@@ -648,6 +698,8 @@ def _initial_routing_violation(
         return "최초 라우팅 intent는 nonblank여야 합니다."
     if disposition in ("routed", "contested") and intent is None:
         return f"{disposition} 최초 라우팅에는 nonblank intent가 필요합니다."
+    if disposition == "non_actionable" and intent is not None:
+        return "non_actionable 최초 처분에는 intent=None이 필요합니다."
     expected_kind = _INITIAL_TARGET_KIND.get(disposition)
     if expected_kind is None:
         return f"알 수 없는 initial disposition: {disposition!r}"
@@ -659,6 +711,11 @@ def _initial_routing_violation(
         return "최초 routed 실행 attempt는 1이어야 합니다."
     if isinstance(target, AwaitingManager) and target.public_kind != "unowned":
         return "최초 unowned AwaitingManager.public_kind는 'unowned'여야 합니다."
+    if (
+        isinstance(target, DeclinedRequest)
+        and target.reason_code != NON_ACTIONABLE_CONVERSATION_REASON
+    ):
+        return "non_actionable 최초 DeclinedRequest의 reason_code가 다릅니다."
     return None
 
 

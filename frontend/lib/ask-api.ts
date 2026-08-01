@@ -1,705 +1,183 @@
-// P17 Request-first /ask client. request_id is the only request identity.
-// Legacy `tracking` is validated as an identity alias and discarded; it is
-// never treated as a bearer token or a second lifecycle key.
+/** Browser client for the sealed Central Question lifecycle. */
 
-import type { StatusTone } from "@/components/ui/status-badge";
-
-export type AnswerMode = "full" | "draft_only" | "backup";
-export type ReviewStatus = "not_required" | "approved";
-export type RequestState =
-  | "received"
-  | "ready_to_dispatch"
-  | "awaiting_answer"
-  | "awaiting_conflict"
-  | "awaiting_manager"
-  | "awaiting_approval"
-  | "answered"
-  | "declined"
-  | "failed";
+export type PendingState = "received" | "ready_to_dispatch" | "awaiting_answer" | "awaiting_approval" | "awaiting_conflict" | "awaiting_manager";
 export type PendingKind = "routing" | "routed" | "contested" | "unowned";
-export type LegacyPendingKind = "dispatched" | "contested" | "unowned";
+export type AnswerMode = "full" | "backup";
+export type ReviewStatus = "not_required" | "approved";
 
-interface RequestReply {
-  request_id: string;
+export type ReceivedQuestion = { request_id: string; state: "received"; created_at: string; replayed: boolean };
+export type PendingProjection = { type: "pending"; state: PendingState; kind: PendingKind; retryable: boolean; request_id: string; message: string };
+export type AnsweredProjection = { type: "answered"; state: "answered"; retryable: false; request_id: string; record_id: string; text: string; answered_by: { owner: string; agent_id: string }; mode: AnswerMode; sources: string[]; review_status: ReviewStatus };
+export type DeclinedProjection = { type: "declined"; state: "declined"; retryable: false; request_id: string; reason_code: string; message: string };
+export type FailedProjection = { type: "failed"; state: "failed"; retryable: false; request_id: string; error_code: string; message: string };
+export type QuestionProjection = PendingProjection | AnsweredProjection | DeclinedProjection | FailedProjection;
+/** `interrupted` has no server message: denial/unavailability meaning is local UI copy. */
+export type InterruptedEvent = { type: "interrupted"; request_id: string; retryable: boolean };
+export type TokenEvent = { type: "token"; request_id: string; text: string };
+export type QuestionStreamEvent = { type: "accepted"; request_id: string } | TokenEvent | { type: "pending"; event: PendingProjection } | { type: "done"; event: AnsweredProjection } | { type: "declined"; event: DeclinedProjection } | { type: "failed"; event: FailedProjection } | InterruptedEvent;
+export type DecodedStreamEvent = QuestionStreamEvent & { cursor: string };
+export type FeedbackInput = { record_id: string; verdict: "good" | "bad"; comment: string };
+export type FeedbackReceipt = { request_id: string; record_id: string; feedback_id: string; verdict: "good" | "bad"; submitted_at: string; replayed: boolean };
+export type QuestionEventSource = { addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void; close(): void; onerror?: ((event: Event) => void) | null };
+export type QuestionSubscriptionHandlers = { onEvent(event: QuestionStreamEvent): void; onFault(error: QuestionClientError): void; onReconnect?(): void };
+
+export class QuestionClientError extends Error {
+  constructor(message: string, readonly status?: number, readonly retryable = false) { super(message); this.name = "QuestionClientError"; }
 }
 
-export interface AnsweredReply extends RequestReply {
-  type: "answered";
-  record_id: string;
-  text: string;
-  answered_by: { owner: string; agent_id: string };
-  mode: AnswerMode;
-  sources: string[];
-  review_status: ReviewStatus;
+const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const CURSOR = /^[1-9][0-9]{0,18}$/;
+const PENDING_STATES = new Set<PendingState>(["received", "ready_to_dispatch", "awaiting_answer", "awaiting_approval", "awaiting_conflict", "awaiting_manager"]);
+const PENDING_KINDS = new Set<PendingKind>(["routing", "routed", "contested", "unowned"]);
+const ERROR_MESSAGES: Record<number, string> = {
+  401: "조직 SSO 세션이 필요합니다.", 403: "현재 권한으로 질문을 처리할 수 없습니다.", 404: "질문 요청을 찾을 수 없습니다.",
+  409: "같은 요청 키로 다른 내용을 보낼 수 없습니다.", 422: "질문 요청 형식이 올바르지 않습니다.",
+  502: "질문 서비스를 지금 연결할 수 없습니다.", 503: "질문 서비스를 지금 사용할 수 없습니다.",
+};
+
+function object(value: unknown): Record<string, unknown> | null { return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null; }
+function exact(value: Record<string, unknown>, keys: readonly string[]): boolean { return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
+function id(value: unknown): value is string { return typeof value === "string" && REQUEST_ID.test(value); }
+function text(value: unknown, blank = false): value is string { return typeof value === "string" && (blank || value.trim().length > 0) && !loneSurrogate(value); }
+function loneSurrogate(value: string): boolean { for (let i = 0; i < value.length; i += 1) { const code = value.charCodeAt(i); if (code >= 0xd800 && code <= 0xdbff) { if (i + 1 === value.length || value.charCodeAt(i + 1) < 0xdc00 || value.charCodeAt(i + 1) > 0xdfff) return true; i += 1; } else if (code >= 0xdc00 && code <= 0xdfff) return true; } return false; }
+function bytes(value: string): number { return new TextEncoder().encode(value).byteLength; }
+function cookie(name: string): string | null { if (typeof document === "undefined") return null; const prefix = `${name}=`; const found = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith(prefix)); if (!found) return null; try { return decodeURIComponent(found.slice(prefix.length)); } catch { return null; } }
+function errorFor(status: number): QuestionClientError { return new QuestionClientError(ERROR_MESSAGES[status] ?? "질문 요청을 안전하게 처리하지 못했습니다.", status, status === 502 || status === 503); }
+function randomKey(): string { return `${Date.now().toString(36)}-${crypto.getRandomValues(new Uint32Array(2)).join("")}`; }
+
+export function decodeReceivedQuestion(value: unknown): ReceivedQuestion | null {
+  const raw = object(value);
+  return raw && exact(raw, ["request_id", "state", "created_at", "replayed"]) && id(raw.request_id) && raw.state === "received" && typeof raw.created_at === "string" && !Number.isNaN(Date.parse(raw.created_at)) && typeof raw.replayed === "boolean"
+    ? raw as ReceivedQuestion : null;
 }
 
-export interface PendingReply extends RequestReply {
-  type: "pending";
-  kind: LegacyPendingKind;
-  state: Exclude<RequestState, "answered" | "declined" | "failed">;
-  retryable: boolean;
-  message: string;
-}
-
-export interface DeclinedReply extends RequestReply {
-  type: "declined";
-  reason_code: string;
-  message: string;
-}
-
-export interface FailedReply extends RequestReply {
-  type: "failed";
-  error_code: string;
-  message: string;
-}
-
-export type OrgReply = AnsweredReply | PendingReply | DeclinedReply | FailedReply;
-
-export interface RequestPendingResult extends RequestReply {
-  type: "pending";
-  kind: PendingKind;
-  state: Exclude<RequestState, "answered" | "declined" | "failed">;
-  retryable: boolean;
-  message: string;
-}
-
-export type RequestResult =
-  | AnsweredReply
-  | RequestPendingResult
-  | DeclinedReply
-  | FailedReply;
-
-export class AskError extends Error {
-  status?: number;
-  constructor(message: string, status?: number) {
-    super(message);
-    this.name = "AskError";
-    this.status = status;
-  }
-}
-
-type JsonObject = Record<string, unknown>;
-
-const FORBIDDEN_INTERNAL_KEYS = [
-  "route",
-  "routes",
-  "candidate",
-  "candidates",
-  "policy",
-  "policy_version",
-  "confidence",
-  "reason",
-  "manager_id",
-  "ticket_id",
-] as const;
-
-const ANSWER_MODES = new Set<AnswerMode>(["full", "draft_only", "backup"]);
-const REVIEW_STATUSES = new Set<ReviewStatus>(["not_required", "approved"]);
-const REQUEST_STATES = new Set<RequestState>([
-  "received",
-  "ready_to_dispatch",
-  "awaiting_answer",
-  "awaiting_conflict",
-  "awaiting_manager",
-  "awaiting_approval",
-  "answered",
-  "declined",
-  "failed",
-]);
-const LEGACY_PENDING_KINDS = new Set<LegacyPendingKind>([
-  "dispatched",
-  "contested",
-  "unowned",
-]);
-const STREAM_PENDING_KINDS = new Set<PendingKind>([
-  "routing",
-  "routed",
-  "contested",
-  "unowned",
-]);
-
-function asObject(value: unknown): JsonObject | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value as JsonObject;
-}
-
-function nonBlank(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function hasInternalFields(value: JsonObject): boolean {
-  return FORBIDDEN_INTERNAL_KEYS.some((key) => key in value);
-}
-
-function stringArray(value: unknown): string[] | null {
-  if (!Array.isArray(value) || !value.every(nonBlank)) return null;
-  return [...value];
-}
-
-function answerMode(value: unknown): AnswerMode | null {
-  return typeof value === "string" && ANSWER_MODES.has(value as AnswerMode)
-    ? (value as AnswerMode)
-    : null;
-}
-
-function reviewStatus(value: unknown): ReviewStatus | null {
-  return typeof value === "string" && REVIEW_STATUSES.has(value as ReviewStatus)
-    ? (value as ReviewStatus)
-    : null;
-}
-
-function requestState(value: unknown): RequestState | null {
-  return typeof value === "string" && REQUEST_STATES.has(value as RequestState)
-    ? (value as RequestState)
-    : null;
-}
-
-/** Strictly parse the user-facing legacy JSON envelope. */
-export function parseOrgReply(value: unknown): OrgReply | null {
-  const raw = asObject(value);
-  if (!raw || hasInternalFields(raw) || !nonBlank(raw.request_id) || !nonBlank(raw.type)) {
-    return null;
-  }
-
-  if (raw.type === "answered") {
-    const attribution = asObject(raw.answered_by);
-    const mode = answerMode(raw.mode);
-    const sources = stringArray(raw.sources);
-    const review = reviewStatus(raw.review_status);
-    if (
-      !attribution ||
-      hasInternalFields(attribution) ||
-      !nonBlank(raw.record_id) ||
-      !nonBlank(raw.text) ||
-      !nonBlank(attribution.owner) ||
-      !nonBlank(attribution.agent_id) ||
-      !mode ||
-      !sources ||
-      !review
-    ) {
-      return null;
-    }
-    return {
-      type: "answered",
-      request_id: raw.request_id,
-      record_id: raw.record_id,
-      text: raw.text,
-      answered_by: {
-        owner: attribution.owner,
-        agent_id: attribution.agent_id,
-      },
-      mode,
-      sources,
-      review_status: review,
-    };
-  }
-
+export function decodeQuestionProjection(value: unknown): QuestionProjection | null {
+  const raw = object(value);
+  if (!raw || !id(raw.request_id) || typeof raw.type !== "string") return null;
   if (raw.type === "pending") {
-    const state = requestState(raw.state);
-    const kind = raw.kind;
-    if (
-      typeof kind !== "string" ||
-      !LEGACY_PENDING_KINDS.has(kind as LegacyPendingKind) ||
-      !state ||
-      state === "answered" ||
-      state === "declined" ||
-      state === "failed" ||
-      typeof raw.retryable !== "boolean" ||
-      !nonBlank(raw.message) ||
-      raw.tracking !== raw.request_id
-    ) {
-      return null;
-    }
-    return {
-      type: "pending",
-      request_id: raw.request_id,
-      kind: kind as LegacyPendingKind,
-      state,
-      retryable: raw.retryable,
-      message: raw.message,
-    };
+    if (!exact(raw, ["type", "state", "kind", "retryable", "request_id", "message"]) || !PENDING_STATES.has(raw.state as PendingState) || !PENDING_KINDS.has(raw.kind as PendingKind) || typeof raw.retryable !== "boolean" || !text(raw.message)) return null;
+    const legal = (raw.state === "received" && raw.kind === "routing" && raw.retryable) || (raw.state === "ready_to_dispatch" && raw.kind === "routed" && raw.retryable) || (raw.state === "awaiting_answer" && raw.kind === "routed" && raw.retryable) || (raw.state === "awaiting_approval" && raw.kind === "routed" && !raw.retryable) || (raw.state === "awaiting_conflict" && raw.kind === "contested" && !raw.retryable) || (raw.state === "awaiting_manager" && (raw.kind === "unowned" || raw.kind === "contested" || raw.kind === "routed") && !raw.retryable);
+    return legal ? raw as PendingProjection : null;
   }
-
-  if (raw.type === "declined" && nonBlank(raw.reason_code) && nonBlank(raw.message)) {
-    return {
-      type: "declined",
-      request_id: raw.request_id,
-      reason_code: raw.reason_code,
-      message: raw.message,
-    };
+  if (raw.type === "answered") {
+    const attribution = object(raw.answered_by);
+    if (!exact(raw, ["type", "state", "retryable", "request_id", "record_id", "text", "answered_by", "mode", "sources", "review_status"]) || raw.state !== "answered" || raw.retryable !== false || !id(raw.record_id) || !text(raw.text) || !attribution || !exact(attribution, ["owner", "agent_id"]) || !text(attribution.owner) || !text(attribution.agent_id) || (raw.mode !== "full" && raw.mode !== "backup") || !Array.isArray(raw.sources) || !raw.sources.every((source) => text(source)) || (raw.review_status !== "not_required" && raw.review_status !== "approved")) return null;
+    return raw as AnsweredProjection;
   }
-
-  if (raw.type === "failed" && nonBlank(raw.error_code) && nonBlank(raw.message)) {
-    return {
-      type: "failed",
-      request_id: raw.request_id,
-      error_code: raw.error_code,
-      message: raw.message,
-    };
-  }
+  if (raw.type === "declined" && exact(raw, ["type", "state", "retryable", "request_id", "reason_code", "message"]) && raw.state === "declined" && raw.retryable === false && text(raw.reason_code) && text(raw.message)) return raw as DeclinedProjection;
+  if (raw.type === "failed" && exact(raw, ["type", "state", "retryable", "request_id", "error_code", "message"]) && raw.state === "failed" && raw.retryable === false && text(raw.error_code) && text(raw.message)) return raw as FailedProjection;
   return null;
 }
 
-/** Parse the native /requests/{request_id} projection into a local discriminated union. */
-export function parseRequestResult(value: unknown): RequestResult | null {
-  const raw = asObject(value);
-  if (
-    !raw ||
-    hasInternalFields(raw) ||
-    !nonBlank(raw.request_id) ||
-    "type" in raw ||
-    "tracking" in raw ||
-    "text" in raw
-  ) {
-    return null;
-  }
-
-  const resultMarkers = ["answer_text", "kind", "reason_code", "error_code"].filter(
-    (key) => key in raw
-  );
-  if (resultMarkers.length !== 1) return null;
-
-  if ("answer_text" in raw) {
-    const mode = answerMode(raw.mode);
-    const sources = stringArray(raw.sources);
-    const review = reviewStatus(raw.review_status);
-    if (
-      !nonBlank(raw.answer_text) ||
-      !nonBlank(raw.record_id) ||
-      !mode ||
-      !sources ||
-      !review ||
-      !nonBlank(raw.answered_by) ||
-      !nonBlank(raw.agent_id)
-    ) {
-      return null;
-    }
-    return {
-      type: "answered",
-      request_id: raw.request_id,
-      record_id: raw.record_id,
-      text: raw.answer_text,
-      answered_by: { owner: raw.answered_by, agent_id: raw.agent_id },
-      mode,
-      sources,
-      review_status: review,
-    };
-  }
-
-  if ("kind" in raw) {
-    const state = requestState(raw.state);
-    const kind = raw.kind;
-    if (
-      typeof kind !== "string" ||
-      !STREAM_PENDING_KINDS.has(kind as PendingKind) ||
-      !state ||
-      state === "answered" ||
-      state === "declined" ||
-      state === "failed" ||
-      typeof raw.retryable !== "boolean" ||
-      !nonBlank(raw.message)
-    ) {
-      return null;
-    }
-    return {
-      type: "pending",
-      request_id: raw.request_id,
-      kind: kind as PendingKind,
-      state,
-      retryable: raw.retryable,
-      message: raw.message,
-    };
-  }
-
-  if ("reason_code" in raw && nonBlank(raw.reason_code) && nonBlank(raw.message)) {
-    return {
-      type: "declined",
-      request_id: raw.request_id,
-      reason_code: raw.reason_code,
-      message: raw.message,
-    };
-  }
-
-  if ("error_code" in raw && nonBlank(raw.error_code) && nonBlank(raw.message)) {
-    return {
-      type: "failed",
-      request_id: raw.request_id,
-      error_code: raw.error_code,
-      message: raw.message,
-    };
-  }
+export function decodeQuestionStreamEvent(event: { type: string; data: string; lastEventId: string }, requestId: string): DecodedStreamEvent | null {
+  if (!CURSOR.test(event.lastEventId)) return null;
+  let payload: unknown;
+  try { payload = JSON.parse(event.data); } catch { return null; }
+  const raw = object(payload);
+  if (!raw || !id(raw.request_id) || raw.request_id !== requestId) return null;
+  if (event.type === "accepted" && exact(raw, ["request_id"])) return { type: "accepted", request_id: raw.request_id, cursor: event.lastEventId };
+  if (event.type === "token" && exact(raw, ["request_id", "text"]) && text(raw.text, true)) return { type: "token", request_id: raw.request_id, text: raw.text, cursor: event.lastEventId };
+  if (event.type === "interrupted" && exact(raw, ["request_id", "retryable"]) && typeof raw.retryable === "boolean") return { type: "interrupted", request_id: raw.request_id, retryable: raw.retryable, cursor: event.lastEventId };
+  const projection = decodeQuestionProjection(payload);
+  if (!projection) return null;
+  if (event.type === "pending" && projection.type === "pending") return { type: "pending", event: projection, cursor: event.lastEventId };
+  if (event.type === "done" && projection.type === "answered") return { type: "done", event: projection, cursor: event.lastEventId };
+  if (event.type === "declined" && projection.type === "declined") return { type: "declined", event: projection, cursor: event.lastEventId };
+  if (event.type === "failed" && projection.type === "failed") return { type: "failed", event: projection, cursor: event.lastEventId };
   return null;
 }
 
-async function responseReply(res: Response): Promise<OrgReply> {
-  const data: unknown = await res.json();
-  const reply = parseOrgReply(data);
-  if (!reply) throw new AskError("예상치 못한 응답 형식입니다.");
-  return reply;
+async function json(response: Response): Promise<unknown> { try { return await response.json(); } catch { throw new QuestionClientError("질문 응답 형식이 올바르지 않습니다.", response.status); } }
+function postHeaders(idempotencyKey: string): Record<string, string> {
+  const csrf = cookie("__Host-aon-central-csrf");
+  if (!csrf || !IDEMPOTENCY_KEY.test(idempotencyKey)) throw new QuestionClientError("브라우저 보안 확인을 완료할 수 없습니다.");
+  return { "content-type": "application/json", "X-AON-CSRF": csrf, "Idempotency-Key": idempotencyKey };
 }
 
-/** POST /api/ask — blocking Request-first result. */
-export async function postAsk(question: string): Promise<OrgReply> {
-  let res: Response;
-  try {
-    res = await fetch("/api/ask", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ question }),
-    });
-  } catch {
-    throw new AskError("백엔드에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.");
-  }
-  if (!res.ok) {
-    throw new AskError(`질문 접수에 실패했습니다 (HTTP ${res.status}).`, res.status);
-  }
-  return responseReply(res);
+export async function createQuestion(question: string, idempotencyKey = randomKey()): Promise<ReceivedQuestion> {
+  if (!text(question) || bytes(question) > 65536) throw new QuestionClientError("질문을 입력해 주세요.");
+  let response: Response;
+  try { response = await fetch("/api/questions", { method: "POST", credentials: "same-origin", cache: "no-store", headers: postHeaders(idempotencyKey), body: JSON.stringify({ question }) }); } catch { throw new QuestionClientError("질문 서비스를 지금 연결할 수 없습니다.", undefined, true); }
+  if (!response.ok) throw errorFor(response.status);
+  const received = decodeReceivedQuestion(await json(response));
+  if (!received) throw new QuestionClientError("질문 접수 응답 형식이 올바르지 않습니다.", response.status);
+  return received;
 }
 
-/** GET /api/requests/{request_id} — native canonical request lookup. */
-export async function getRequest(requestId: string): Promise<RequestResult | null> {
-  let res: Response;
-  try {
-    res = await fetch(`/api/requests/${encodeURIComponent(requestId)}`, { method: "GET" });
-  } catch {
-    throw new AskError("질문 상태를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.");
-  }
-  if (res.status === 404) return null;
-  if (!res.ok) {
-    throw new AskError(`질문 상태 확인에 실패했습니다 (HTTP ${res.status}).`, res.status);
-  }
-  const headerRequestId = res.headers.get("x-request-id");
-  const data: unknown = await res.json();
-  const reply = parseRequestResult(data);
-  if (!reply) throw new AskError("예상치 못한 질문 상태 형식입니다.");
-  if (headerRequestId !== requestId || reply.request_id !== requestId) {
-    throw new AskError("요청 ID가 다른 응답을 받았습니다.");
-  }
-  return reply;
+export async function retrieveQuestion(requestId: string): Promise<QuestionProjection> {
+  if (!id(requestId)) throw new QuestionClientError("질문 요청 식별자가 올바르지 않습니다.");
+  let response: Response;
+  try { response = await fetch(`/api/questions/${encodeURIComponent(requestId)}`, { credentials: "same-origin", cache: "no-store" }); } catch { throw new QuestionClientError("질문 상태를 지금 확인할 수 없습니다.", undefined, true); }
+  if (!response.ok) throw errorFor(response.status);
+  const result = decodeQuestionProjection(await json(response));
+  if (!result || result.request_id !== requestId) throw new QuestionClientError("질문 요청 식별자가 일치하지 않습니다.");
+  return result;
 }
 
-const POLL_INTERVAL_MS = 700;
-const POLL_MAX_ATTEMPTS = 30;
-
-/** Poll the native canonical resource while the same request_id remains retryable. */
-export async function pollRequest(requestId: string): Promise<RequestResult> {
-  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    const reply = await getRequest(requestId);
-    if (reply === null) throw new AskError("질문 요청을 찾을 수 없습니다.", 404);
-    if (reply.type !== "pending" || !reply.retryable) return reply;
-  }
-  throw new AskError("답변이 늦어지고 있습니다. 잠시 후 다시 확인해 주세요.");
+export async function submitFeedback(requestId: string, input: FeedbackInput, idempotencyKey = randomKey()): Promise<FeedbackReceipt> {
+  if (!id(requestId) || !id(input.record_id) || (input.verdict !== "good" && input.verdict !== "bad") || typeof input.comment !== "string" || loneSurrogate(input.comment) || bytes(input.comment) > 4096) throw new QuestionClientError("피드백은 최대 4096 UTF-8 bytes까지 보낼 수 있습니다.");
+  let response: Response;
+  try { response = await fetch(`/api/questions/${encodeURIComponent(requestId)}/feedback`, { method: "POST", credentials: "same-origin", cache: "no-store", headers: postHeaders(idempotencyKey), body: JSON.stringify(input) }); } catch { throw new QuestionClientError("피드백 서비스를 지금 연결할 수 없습니다.", undefined, true); }
+  if (!response.ok) throw errorFor(response.status);
+  const raw = object(await json(response));
+  if (!raw || !exact(raw, ["request_id", "record_id", "feedback_id", "verdict", "submitted_at", "replayed"]) || raw.request_id !== requestId || raw.record_id !== input.record_id || !id(raw.feedback_id) || raw.verdict !== input.verdict || typeof raw.submitted_at !== "string" || Number.isNaN(Date.parse(raw.submitted_at)) || typeof raw.replayed !== "boolean") throw new QuestionClientError("피드백 응답 형식이 올바르지 않습니다.", response.status);
+  return raw as FeedbackReceipt;
 }
 
-/* ---- P17 sealed SSE contract ---- */
-
-export interface AskAccepted {
-  type: "accepted";
-  request_id: string;
-}
-export interface AskToken {
-  type: "token";
-  request_id: string;
-  text: string;
-}
-export interface AskPending {
-  type: "pending";
-  request_id: string;
-  kind: PendingKind;
-  state: Exclude<RequestState, "answered" | "declined" | "failed">;
-  retryable: boolean;
-  message: string;
-}
-export interface AskDone {
-  type: "done";
-  request_id: string;
-  record_id: string;
-  mode: AnswerMode;
-  sources: string[];
-  review_status: ReviewStatus;
-  answered_by: string;
-  agent_id: string;
-}
-export interface AskDeclined {
-  type: "declined";
-  request_id: string;
-  reason_code: string;
-  message: string;
-}
-export interface AskFailed {
-  type: "failed";
-  request_id: string;
-  error_code: string;
-  message: string;
-}
-export interface AskInterrupted {
-  type: "interrupted";
-  request_id: string;
-  retryable: boolean;
-  message: string;
+export function lifecycleMessage(event: QuestionProjection | InterruptedEvent): string {
+  if (event.type === "answered") return "답변이 확정되었습니다.";
+  if (event.type === "declined") return event.message;
+  if (event.type === "failed") return event.message;
+  if (event.type === "interrupted") return event.retryable ? "연결이 끊겨 질문 상태를 다시 확인하고 있습니다." : "현재 권한으로 질문 상태를 계속 확인할 수 없습니다.";
+  if (event.state === "received") return "질문을 접수했습니다. 담당을 찾고 있습니다.";
+  if (event.state === "ready_to_dispatch") return "담당에게 전달할 준비를 하고 있습니다. 아직 답변은 확정되지 않았습니다.";
+  if (event.state === "awaiting_answer") return "담당이 답변을 준비하고 있습니다. 아직 답변은 확정되지 않았습니다.";
+  if (event.state === "awaiting_approval") return "답변을 검토하고 있습니다. 아직 확정되지 않았습니다.";
+  if (event.state === "awaiting_conflict") return "담당 범위를 확인하고 있습니다. 아직 답변은 확정되지 않았습니다.";
+  return "담당 처분을 기다리고 있습니다. 아직 답변은 확정되지 않았습니다.";
 }
 
-export type AskStreamEvent =
-  | AskAccepted
-  | AskToken
-  | AskPending
-  | AskDone
-  | AskDeclined
-  | AskFailed
-  | AskInterrupted;
-
-export interface AskStreamHandlers {
-  onAccepted?: (event: AskAccepted) => void;
-  onToken?: (event: AskToken) => void;
-  onPending?: (event: AskPending) => void;
-  onDone?: (event: AskDone) => void;
-  onDeclined?: (event: AskDeclined) => void;
-  onFailed?: (event: AskFailed) => void;
-  onInterrupted?: (event: AskInterrupted) => void;
-}
-
-/** Pure parser for one P17 SSE frame; comments/keep-alives return null. */
-export function parseAskSseFrame(frame: string): AskStreamEvent | null {
-  let eventName = "";
-  const dataLines: string[] = [];
-  for (const line of frame.split("\n")) {
-    if (line.startsWith(":")) continue;
-    if (line.startsWith("event:")) eventName = line.slice(6).trim();
-    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
-  }
-  if (!eventName && dataLines.length === 0) return null;
-  if (!eventName || dataLines.length === 0) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(dataLines.join("\n"));
-  } catch {
-    return null;
-  }
-  const raw = asObject(parsed);
-  if (!raw || hasInternalFields(raw) || !nonBlank(raw.request_id)) return null;
-  const requestId = raw.request_id;
-
-  if (eventName === "accepted") return { type: "accepted", request_id: requestId };
-  if (eventName === "token" && typeof raw.text === "string" && raw.text.length > 0) {
-    return { type: "token", request_id: requestId, text: raw.text };
-  }
-  if (eventName === "pending") {
-    const state = requestState(raw.state);
-    const kind = raw.kind;
-    if (
-      typeof kind === "string" &&
-      STREAM_PENDING_KINDS.has(kind as PendingKind) &&
-      state &&
-      state !== "answered" &&
-      state !== "declined" &&
-      state !== "failed" &&
-      typeof raw.retryable === "boolean" &&
-      nonBlank(raw.message)
-    ) {
-      return {
-        type: "pending",
-        request_id: requestId,
-        kind: kind as PendingKind,
-        state,
-        retryable: raw.retryable,
-        message: raw.message,
-      };
+/**
+ * EventSource owns its Last-Event-ID cursor across native reconnects.  We do
+ * not manufacture a query cursor (the BFF intentionally rejects one).  After
+ * four transport errors the subscription closes and asks the caller to
+ * converge with canonical GET; backend execution is never cancelled.
+ */
+export function subscribeQuestion(
+  requestId: string,
+  handlers: QuestionSubscriptionHandlers,
+  factory: (url: string) => QuestionEventSource = (url) => new EventSource(url),
+): () => void {
+  if (!id(requestId)) throw new QuestionClientError("질문 요청 식별자가 올바르지 않습니다.");
+  let closed = false;
+  let errors = 0;
+  const source = factory(`/api/questions/${encodeURIComponent(requestId)}/stream`);
+  const stop = (): void => { if (!closed) { closed = true; source.close(); } };
+  const receive = (wire: MessageEvent<string>): void => {
+    if (closed) return;
+    const decoded = decodeQuestionStreamEvent({ type: wire.type, data: wire.data, lastEventId: wire.lastEventId }, requestId);
+    if (!decoded) { stop(); handlers.onFault(new QuestionClientError("질문 스트림 응답을 안전하게 확인하지 못했습니다.")); return; }
+    errors = 0;
+    let event: QuestionStreamEvent;
+    switch (decoded.type) {
+      case "accepted": event = { type: "accepted", request_id: decoded.request_id }; break;
+      case "token": event = { type: "token", request_id: decoded.request_id, text: decoded.text }; break;
+      case "pending": event = { type: "pending", event: decoded.event }; break;
+      case "done": event = { type: "done", event: decoded.event }; break;
+      case "declined": event = { type: "declined", event: decoded.event }; break;
+      case "failed": event = { type: "failed", event: decoded.event }; break;
+      case "interrupted": event = { type: "interrupted", request_id: decoded.request_id, retryable: decoded.retryable }; break;
     }
-    return null;
-  }
-  if (eventName === "done") {
-    const mode = answerMode(raw.mode);
-    const sources = stringArray(raw.sources);
-    const review = reviewStatus(raw.review_status);
-    if (
-      nonBlank(raw.record_id) &&
-      mode &&
-      sources &&
-      review &&
-      nonBlank(raw.answered_by) &&
-      nonBlank(raw.agent_id)
-    ) {
-      return {
-        type: "done",
-        request_id: requestId,
-        record_id: raw.record_id,
-        mode,
-        sources,
-        review_status: review,
-        answered_by: raw.answered_by,
-        agent_id: raw.agent_id,
-      };
-    }
-    return null;
-  }
-  if (eventName === "declined" && nonBlank(raw.reason_code) && nonBlank(raw.message)) {
-    return {
-      type: "declined",
-      request_id: requestId,
-      reason_code: raw.reason_code,
-      message: raw.message,
-    };
-  }
-  if (eventName === "failed" && nonBlank(raw.error_code) && nonBlank(raw.message)) {
-    return {
-      type: "failed",
-      request_id: requestId,
-      error_code: raw.error_code,
-      message: raw.message,
-    };
-  }
-  if (eventName === "interrupted" && typeof raw.retryable === "boolean" && nonBlank(raw.message)) {
-    return {
-      type: "interrupted",
-      request_id: requestId,
-      retryable: raw.retryable,
-      message: raw.message,
-    };
-  }
-  return null;
-}
-
-function dispatchStreamEvent(event: AskStreamEvent, handlers: AskStreamHandlers): void {
-  switch (event.type) {
-    case "accepted":
-      handlers.onAccepted?.(event);
-      break;
-    case "token":
-      handlers.onToken?.(event);
-      break;
-    case "pending":
-      handlers.onPending?.(event);
-      break;
-    case "done":
-      handlers.onDone?.(event);
-      break;
-    case "declined":
-      handlers.onDeclined?.(event);
-      break;
-    case "failed":
-      handlers.onFailed?.(event);
-      break;
-    case "interrupted":
-      handlers.onInterrupted?.(event);
-      break;
-  }
-}
-
-function connectionEnds(event: AskStreamEvent): boolean {
-  return event.type === "pending" || event.type === "done" || event.type === "declined" || event.type === "failed" || event.type === "interrupted";
-}
-
-/** POST /api/ask/stream — consume exact-linked P17 SSE events. */
-export async function streamAsk(
-  question: string,
-  handlers: AskStreamHandlers,
-  signal?: AbortSignal
-): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetch("/api/ask/stream", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ question }),
-      signal,
-    });
-  } catch {
-    throw new AskError("백엔드에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.");
-  }
-  if (!res.ok || !res.body) {
-    throw new AskError(`질문 스트림을 열지 못했습니다 (HTTP ${res.status}).`, res.status);
-  }
-  const headerRequestId = res.headers.get("x-request-id");
-  if (!nonBlank(headerRequestId)) throw new AskError("응답에 요청 ID가 없습니다.");
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let acceptedRequestId: string | null = null;
-  let ended = false;
-
-  const consume = (frame: string): void => {
-    if (!frame.trim() || frame.trimStart().startsWith(":")) return;
-    const event = parseAskSseFrame(frame);
-    if (!event) throw new AskError("질문 스트림 형식이 올바르지 않습니다.");
-    if (event.type === "accepted") {
-      if (acceptedRequestId !== null || event.request_id !== headerRequestId) {
-        throw new AskError("질문 스트림의 요청 ID가 일치하지 않습니다.");
-      }
-      acceptedRequestId = event.request_id;
-    } else if (acceptedRequestId === null || event.request_id !== acceptedRequestId || ended) {
-      throw new AskError("질문 스트림의 요청 ID가 일치하지 않습니다.");
-    }
-    dispatchStreamEvent(event, handlers);
-    if (connectionEnds(event)) ended = true;
+    handlers.onEvent(event);
+    if (event.type === "done" || event.type === "declined" || event.type === "failed" || (event.type === "interrupted" && !event.retryable)) stop();
   };
-
-  try {
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      let separator: number;
-      while ((separator = buffer.indexOf("\n\n")) >= 0) {
-        const frame = buffer.slice(0, separator);
-        buffer = buffer.slice(separator + 2);
-        consume(frame);
-      }
-      if (ended) {
-        if (buffer.trim()) {
-          throw new AskError("완료된 질문 스트림 뒤에 추가 데이터가 있습니다.");
-        }
-        break;
-      }
-    }
-    buffer += decoder.decode();
-    if (buffer.trim()) consume(buffer);
-    if (acceptedRequestId === null || !ended) {
-      throw new AskError("질문 스트림이 완료되기 전에 연결이 끝났습니다.");
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // The transport may already be closed; releasing the reader is still required.
-    }
-    reader.releaseLock();
-  }
-}
-
-/* ---- UI mapping helpers ---- */
-
-export const modeMeta: Record<AnswerMode, { label: string; tone: StatusTone }> = {
-  full: { label: "확정 답변", tone: "success" },
-  draft_only: { label: "승인 대기", tone: "warning" },
-  backup: { label: "백업 답변", tone: "info" },
-};
-
-export const reviewStatusLabel: Record<ReviewStatus, string> = {
-  not_required: "별도 검토 불필요",
-  approved: "검토 완료",
-};
-
-export function pendingTraceLabel(kind: PendingKind | LegacyPendingKind): string {
-  switch (kind) {
-    case "unowned":
-      return "담당을 정하는 중";
-    case "routing":
-      return "담당을 찾는 중";
-    case "routed":
-    case "dispatched":
-      return "담당에게 전달됨";
-    case "contested":
-      return "담당을 확인하는 중";
-  }
-}
-
-export function pendingUserMessage(
-  event: AskPending | PendingReply | RequestPendingResult
-): string {
-  if (event.kind === "unowned") return "담당을 지정하고 있습니다. 답변은 아직 준비되지 않았습니다.";
-  if (event.kind === "contested") return "담당 범위를 확인하고 있습니다. 답변은 아직 준비되지 않았습니다.";
-  if (event.state === "awaiting_approval") return "답변을 검토하고 있습니다. 승인 전에는 본문을 표시하지 않습니다.";
-  return "질문을 처리하고 있습니다. 답변이 준비되면 같은 요청 ID로 확인할 수 있습니다.";
+  for (const kind of ["accepted", "token", "pending", "done", "declined", "failed", "interrupted"]) source.addEventListener(kind, receive);
+  source.onerror = () => {
+    if (closed) return;
+    errors += 1;
+    if (errors > 4) { stop(); handlers.onFault(new QuestionClientError("연결이 반복해서 끊겼습니다. 질문 상태를 다시 확인해 주세요.", undefined, true)); return; }
+    handlers.onReconnect?.();
+  };
+  return stop;
 }

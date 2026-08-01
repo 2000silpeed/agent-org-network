@@ -376,6 +376,21 @@ def test_Declined와_Failed는_원본_reason과_error를_노출하지_않는다(
         assert leak not in text
 
 
+def test_non_actionable_Declined만_안전한_안내문을_노출한다() -> None:
+    text = question_lookup_to_mcp_text(
+        DeclinedQuestionLookup(
+            request_id="request-non-actionable",
+            reason_code="non_actionable_conversation",
+            message="internal-route-secret",
+        )
+    )
+
+    assert text == (
+        "안녕하세요. 조직 업무나 지식에 관한 질문을 입력해 주세요.\n\n"
+        "요청 ID: request-non-actionable"
+    )
+
+
 @pytest.mark.parametrize(
     "error_code",
     [

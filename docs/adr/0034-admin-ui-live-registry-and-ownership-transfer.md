@@ -109,3 +109,13 @@
 2. **오너 변경 전이 — ✅ 재-admission + 구 owner 토큰 revoke 원자성**(agent_id 불변·frozen 값 교체·스위치와 revoke를 같은 임계 구역·owner 격리 보안 계약·결정 2).
 3. **정정 권한 판정 — ✅ 현재 카드 owner 기준**(`answered_by` 동등 → `registry.get(agent_id).owner` 대조·과거 기록 필드 불변·`CorrectionEvent.by_owner`에 실제 정정자 기록·결정 3).
 4. **권한 경계 — 현 단계 세션 신원 + 로컬 관례**(실 SSO 시 운영자 role 클레임 강화 지점 명시·ADR 0016/0021 계승·결정 4).
+
+## RB3.2b.6 product-path 대체 (2026-07-31)
+
+ADR 0081이 Central product path의 소유권 전이를 `CardOwnerAssignment` generation으로 대체한다.
+transfer는 old active generation close와 successor open, Agent Card/Registry revision, receipt,
+safe audit/outbox를 같은 SQLite UoW에 쓰고 current active assignment fence로 old Owner를 즉시
+deny한다. revoke는 successor 없이 generation을 닫되 required Agent Card owner를 null로 만들지
+않는다. 이 transaction은 legacy token store/Worker/WebSocket을 호출하지 않는다. Owner Installation
+credential/pairing generation의 물리 invalidation과 crash reconciliation은 RB3.5다. 이 ADR의 legacy
+in-process token revoke 임계 구역은 RB3.2b.6 Central product path에 더는 적용하지 않는다.

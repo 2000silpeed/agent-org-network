@@ -643,6 +643,32 @@ def test_open_stream_stores_request_then_subscribes_before_immediate_execution()
     )
 
 
+def test_SSE_surface는_non_actionable_초기_declined를_Runtime없이_종결한다() -> None:
+    scheduler = _ImmediateScheduler()
+    harness = _build(scheduler=scheduler)
+    command = AskQuestion(
+        principal=RequesterPrincipal(org_id="org-1", subject_id="user-1"),
+        question="안녕",
+    )
+
+    opened = harness.application.open_stream(command)
+
+    assert opened.subscription.get(timeout=1) == AcceptedEvent(request_id="req-1")
+    assert opened.subscription.get(timeout=1) == DeclinedEvent(
+        request_id="req-1",
+        reason_code="non_actionable_conversation",
+        message="안녕하세요. 조직 업무나 지식에 관한 질문을 입력해 주세요.",
+    )
+    reconnected = harness.application.subscribe("req-1", command.principal)
+    assert reconnected.get(timeout=1) == DeclinedEvent(
+        request_id="req-1",
+        reason_code="non_actionable_conversation",
+        message="안녕하세요. 조직 업무나 지식에 관한 질문을 입력해 주세요.",
+    )
+    assert scheduler.started == []
+    assert harness.source.calls == []
+
+
 def test_nonretryable_initial_routing_error_keeps_request_id_and_opens_neutral_stream() -> None:
     scheduler = _ImmediateScheduler()
     harness = _build(
@@ -1438,6 +1464,23 @@ def test_application_ask_snapshots_terminal_intake_result_without_execution(
         )
     assert execution.execute_calls == []
     assert execution.snapshot_calls == ["req-1"]
+    assert harness.source.calls == []
+
+
+def test_blocking_surface는_non_actionable_초기_declined를_Runtime없이_투영한다() -> None:
+    harness = _build(scheduler=_ImmediateScheduler())
+    command = AskQuestion(
+        principal=RequesterPrincipal(org_id="org-1", subject_id="user-1"),
+        question="안녕",
+    )
+
+    result = harness.application.ask(command)
+
+    assert result == DeclinedQuestionLookup(
+        request_id="req-1",
+        reason_code="non_actionable_conversation",
+        message="안녕하세요. 조직 업무나 지식에 관한 질문을 입력해 주세요.",
+    )
     assert harness.source.calls == []
 
 

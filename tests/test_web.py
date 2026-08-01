@@ -147,13 +147,11 @@ def test_backup_mode가_사용자에게_노출되고_내부값은_새지_않는�
             assert _LEAKY_KEYS.isdisjoint(nested)
 
 
-def test_create_app_은_조립된다():
+def test_Developer_API_호환_alias는_질문_API를_조립한다():
     app = create_app(runtime=StubRuntime())
 
     routes = {getattr(r, "path", None) for r in app.routes}
     assert "/ask" in routes
-    assert "/" in routes
-    assert "/inbox" in routes
     assert "/inbox/{owner_id}" in routes
     assert "/cases/{case_id}/concur" in routes
 

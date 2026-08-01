@@ -13,14 +13,19 @@ from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from agent_org_network.admin_registry import CardCandidate, admit_card
 from agent_org_network.agent_card import AgentCard
-from agent_org_network.registry import Registry
+from agent_org_network.central_operational_evidence import (
+    AgentCardChange,
+    SafeResourceRef,
+    SourceReceiptProvenance,
+    append_committed_source_evidence_if_v19,
+    canonical_v19_file_authority,
+    source_receipt_digest,
+)
 from agent_org_network.sqlite_production_registry_users import (
     ProductionRegistryUserUnavailable,
     validate_production_registry_user_connection,
 )
-from agent_org_network.user import User
 
 
 class ProductionAgentCardError(Exception):
@@ -37,6 +42,10 @@ class ProductionAgentCardDenied(ProductionAgentCardError):
 
 class ProductionAgentCardConflict(ProductionAgentCardError):
     pass
+
+
+class ProductionAgentCardInvalid(ProductionAgentCardConflict):
+    """The submitted Card cannot pass canonical Registry admission."""
 
 
 class ProductionAgentCardRevisionConflict(ProductionAgentCardConflict):
@@ -119,6 +128,28 @@ def _no_fault(_point: str) -> None:
     return None
 
 
+def _execute_schema(
+    connection: sqlite3.Connection, schema: str, *, fault: FaultInjector
+) -> None:
+    """Run the Card capability DDL atomically while exposing a deterministic fault seam."""
+    statement = ""
+    executed = 0
+    for line in schema.splitlines(keepends=True):
+        statement += line
+        if not sqlite3.complete_statement(statement):
+            continue
+        sql = statement.strip()
+        statement = ""
+        if not sql or sql.upper().startswith("PRAGMA "):
+            continue
+        connection.execute(sql)
+        executed += 1
+        if executed == 3:
+            fault("mid-DDL")
+    if statement.strip():
+        raise ProductionAgentCardUnavailable()
+
+
 _SCHEMA = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE production_agent_cards (
@@ -135,7 +166,10 @@ CREATE TABLE production_agent_card_command_receipts (
  result_agent_id TEXT NOT NULL, result_card_digest TEXT NOT NULL,
  result_revision INTEGER NOT NULL, authority_epoch INTEGER NOT NULL CHECK(authority_epoch >= 0),
  policy_digest TEXT NOT NULL, evidence_digest TEXT NOT NULL,
- resource_fingerprint TEXT NOT NULL,
+ resource_fingerprint TEXT NOT NULL, created_at TEXT NOT NULL,
+ principal_id TEXT NOT NULL, authority_policy_revision_id TEXT NOT NULL,
+ authority_policy_epoch INTEGER NOT NULL CHECK(authority_policy_epoch > 0),
+ authority_policy_digest TEXT NOT NULL CHECK(length(authority_policy_digest)=64),
  PRIMARY KEY(org_id,idempotency_key),
  FOREIGN KEY(org_id,result_agent_id) REFERENCES production_agent_cards(org_id,agent_id)
 );
@@ -342,6 +376,7 @@ def validate_production_agent_card_rows(
                 or int(receipt["authority_epoch"]) < 0
                 or re.fullmatch(r"[0-9a-f]{64}", str(receipt["policy_digest"])) is None
                 or re.fullmatch(r"[0-9a-f]{64}", str(receipt["evidence_digest"])) is None
+                or not str(receipt["created_at"]).strip()
                 or audit["action"] != "AgentCardRegistered"
                 or audit["principal_id"] != command.principal_id
                 or audit["subject_id"] != card.agent_id
@@ -379,20 +414,37 @@ def _canonical_json(value: object) -> str:
 
 class SqliteProductionAgentCards:
     @classmethod
-    def migrate(cls, path: str | Path) -> None:
+    def migrate(
+        cls,
+        path: str | Path,
+        *,
+        fault_injector: FaultInjector | None = None,
+    ) -> None:
+        """Mount only the exact canonical Card capability; never repair drift."""
         connection = sqlite3.connect(str(path))
+        fault = fault_injector or _no_fault
         try:
             connection.execute("PRAGMA foreign_keys=ON")
             try:
                 validate_production_registry_user_connection(connection)
             except ProductionRegistryUserUnavailable as error:
                 raise ProductionAgentCardUnavailable() from error
-            existing = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE name LIKE 'production_agent_card%'"
-            ).fetchone()
-            if existing is not None:
+            catalog = _catalog(connection)
+            if catalog == _CANONICAL_CATALOG:
+                return
+            if catalog[0]:
                 raise ProductionAgentCardUnavailable()
-            connection.executescript(_SCHEMA)
+            connection.execute("BEGIN EXCLUSIVE")
+            locked_catalog = _catalog(connection)
+            if locked_catalog == _CANONICAL_CATALOG:
+                connection.commit()
+                return
+            if locked_catalog[0]:
+                raise ProductionAgentCardUnavailable()
+            _execute_schema(connection, _SCHEMA, fault=fault)
+            fault("pre-readback")
+            validate_production_agent_card_connection(connection)
+            fault("precommit")
             connection.commit()
         except Exception:
             connection.rollback()
@@ -462,7 +514,43 @@ class SqliteProductionAgentCards:
                     card = self._decode_card(row)
                     if self._semantic_card(card) != self._semantic_card(command.card):
                         raise ProductionAgentCardUnavailable()
-                    self._verify_replay_companions(command, receipt, evidence)
+                    self._verify_replay_companions(command, receipt)
+                    # Replay still performs a second in-transaction current
+                    # authorization read.  Its evidence may legitimately differ
+                    # from the immutable original receipt after a policy reload.
+                    if not self._authorize.verify_precommit(command, evidence, tx):
+                        raise ProductionAgentCardDenied()
+                    replay_authority = canonical_v19_file_authority(
+                        source_policy_digest=str(receipt["authority_policy_digest"]),
+                        current_snapshot_digest=str(receipt["authority_policy_digest"]),
+                    )
+                    append_committed_source_evidence_if_v19(
+                        tx,
+                        org_id=command.org_id,
+                        receipt_id=f"agent-card:{command.idempotency_key}",
+                        command_digest=command_digest,
+                        event_type="agent_card_registered",
+                        action="registry.agent_card.register",
+                        resource=SafeResourceRef(
+                            kind="agent_card", resource_id=card.agent_id
+                        ),
+                        change=AgentCardChange(card_id=card.agent_id),
+                        actor_user_id=command.principal_id,
+                        occurred_at=str(receipt["created_at"]),
+                        policy_revision_id=replay_authority.policy_revision_id,
+                        policy_epoch=replay_authority.policy_epoch,
+                        policy_digest=replay_authority.policy_digest,
+                        source=SourceReceiptProvenance(
+                            kind="agent_card_registration",
+                            receipt_key=command.idempotency_key,
+                            receipt_digest=source_receipt_digest(
+                                tx,
+                                "agent_card_registration",
+                                command.org_id,
+                                command.idempotency_key,
+                            ),
+                        ),
+                    )
                     tx.commit()
                     return ProductionAgentCardResult(
                         revision=int(row["revision"]), card=card, replayed=True
@@ -510,9 +598,21 @@ class SqliteProductionAgentCards:
                 self._fault("after_revision")
                 if not self._authorize.verify_precommit(command, evidence, tx):
                     raise ProductionAgentCardDenied()
+                created_at = str(
+                    tx.execute(
+                        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+                    ).fetchone()[0]
+                )
+                audit_authority = canonical_v19_file_authority(
+                    source_policy_digest=evidence.policy_digest,
+                    current_snapshot_digest=evidence.policy_digest,
+                )
                 tx.execute(
                     "INSERT INTO production_agent_card_command_receipts "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "(org_id,idempotency_key,command_digest,result_agent_id,result_card_digest,"
+                    "result_revision,authority_epoch,policy_digest,evidence_digest,resource_fingerprint,"
+                    "created_at,principal_id,authority_policy_revision_id,authority_policy_epoch,"
+                    "authority_policy_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         command.org_id,
                         command.idempotency_key,
@@ -524,9 +624,41 @@ class SqliteProductionAgentCards:
                         evidence.policy_digest,
                         evidence.evidence_digest,
                         resource_fingerprint,
+                        created_at,
+                        command.principal_id,
+                        audit_authority.policy_revision_id,
+                        audit_authority.policy_epoch,
+                        audit_authority.policy_digest,
                     ),
                 )
                 self._fault("after_receipt")
+                append_committed_source_evidence_if_v19(
+                    tx,
+                    org_id=command.org_id,
+                    receipt_id=f"agent-card:{command.idempotency_key}",
+                    command_digest=command_digest,
+                    event_type="agent_card_registered",
+                    action="registry.agent_card.register",
+                    resource=SafeResourceRef(
+                        kind="agent_card", resource_id=card.agent_id
+                    ),
+                    change=AgentCardChange(card_id=card.agent_id),
+                    actor_user_id=command.principal_id,
+                    occurred_at=created_at,
+                    policy_revision_id=audit_authority.policy_revision_id,
+                    policy_epoch=audit_authority.policy_epoch,
+                    policy_digest=audit_authority.policy_digest,
+                    source=SourceReceiptProvenance(
+                        kind="agent_card_registration",
+                        receipt_key=command.idempotency_key,
+                        receipt_digest=source_receipt_digest(
+                            tx,
+                            "agent_card_registration",
+                            command.org_id,
+                            command.idempotency_key,
+                        ),
+                    ),
+                )
                 tx.execute(
                     "INSERT INTO production_agent_card_audit"
                     "(org_id,action,principal_id,subject_id,approval_evidence_digest,"
@@ -573,15 +705,15 @@ class SqliteProductionAgentCards:
         self,
         command: ProductionAgentCardCommand,
         receipt: sqlite3.Row,
-        evidence: CurrentCardRegistrationAuthorization,
     ) -> None:
         expected_resource = self._resource_fingerprint(
             command, str(receipt["result_card_digest"]), int(receipt["result_revision"])
         )
         if (
-            int(receipt["authority_epoch"]) != evidence.authority_epoch
-            or receipt["policy_digest"] != evidence.policy_digest
-            or receipt["evidence_digest"] != evidence.evidence_digest
+            int(receipt["authority_epoch"]) < 0
+            or re.fullmatch(r"[0-9a-f]{64}", str(receipt["policy_digest"])) is None
+            or re.fullmatch(r"[0-9a-f]{64}", str(receipt["evidence_digest"])) is None
+            or not str(receipt["created_at"]).strip()
             or receipt["resource_fingerprint"] != expected_resource
         ):
             raise ProductionAgentCardUnavailable()
@@ -663,21 +795,27 @@ class SqliteProductionAgentCards:
     def _admit(
         command: ProductionAgentCardCommand, transaction: sqlite3.Connection
     ) -> AgentCard:
-        registry = Registry()
         rows = transaction.execute(
-            "SELECT user_id,email,manager_id FROM production_registry_users "
-            "WHERE org_id=? ORDER BY revision",
+            "SELECT user_id FROM production_registry_users WHERE org_id=?",
             (command.org_id,),
         ).fetchall()
-        for row in rows:
-            registry.register_user(
-                User(id=row["user_id"], email=row["email"], manager=row["manager_id"])
-            )
-        candidate = CardCandidate(**command.card.model_dump(mode="json"))
-        card, errors = admit_card(candidate, registry)
-        if card is None or errors:
-            raise ProductionAgentCardConflict("; ".join(errors))
-        return card
+        user_ids = {str(row["user_id"]) for row in rows}
+        errors: list[str] = []
+        if command.card.owner not in user_ids:
+            errors.append("owner is not an admitted Registry User")
+        if command.card.maintainer is not None and command.card.maintainer not in user_ids:
+            errors.append("maintainer is not an admitted Registry User")
+        if errors:
+            # A malformed Card or an unknown owner/maintainer is an admission
+            # failure, not an idempotency/duplicate semantic conflict.  The
+            # private Central boundary maps this typed distinction to 422
+            # without exposing the individual reasons.
+            raise ProductionAgentCardInvalid("; ".join(errors))
+        # `ProductionAgentCardCommand.card` is itself the frozen canonical
+        # Agent Card admission value.  Keeping the reference-integrity check
+        # here avoids pulling the legacy Admin Registry service (and its
+        # runtime/audit graph) into the sealed Central installation.
+        return command.card
 
     @staticmethod
     def _decode_card(row: sqlite3.Row) -> AgentCard:
@@ -710,6 +848,14 @@ class SqliteProductionAgentCards:
             except Exception:
                 self._connection.rollback()
                 raise
+
+    def close(self) -> None:
+        """Release a request-scoped Card store connection, best-effort/idempotently."""
+        with self._lock:
+            try:
+                self._connection.close()
+            except sqlite3.Error:
+                pass
 
     def cards(self, org_id: str) -> tuple[AgentCard, ...]:
         with self._lock:
@@ -759,6 +905,7 @@ __all__ = [
     "ProductionAgentCardConflict",
     "ProductionAgentCardDenied",
     "ProductionAgentCardError",
+    "ProductionAgentCardInvalid",
     "ProductionAgentCardResult",
     "ProductionAgentCardRevisionConflict",
     "ProductionAgentCardUnavailable",

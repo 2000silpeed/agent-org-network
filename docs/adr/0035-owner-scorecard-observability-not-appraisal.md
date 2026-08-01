@@ -119,3 +119,11 @@ _Avoid_: KPI·Performance Review·Ranking·Rating·성과급·등급.
 질문자 채팅 표면 무유출). Authority 중앙 무관(지표는 관찰이지 담당 재선언 아님). 미아 없음
 무관(사후 관찰·라우팅·발신 무차단). 이 기능 고유 불변식 = **Goodhart 방지**(정정률=감독 축·
 품질 벌점=bad 피드백 축 분리·SC1 테스트로 고정).
+
+## RB3.2b.6 Organization projection 확장 (2026-07-31)
+
+ADR 0081의 Organization Scorecard는 이 ADR의 four axes·약신원 주석·비순위·비고과 계약을
+그대로 사용하되 Owner self `scorecard.read`와 별 `scorecard.organization.read` action으로
+분리한다. historical evidence는 기록 당시 `CardOwnerAssignment` generation에 귀속하고 transfer
+뒤 current Owner에게 이동시키지 않는다. owner ID 오름차순은 deterministic presentation order일
+뿐 rank/percentile/grade가 아니다.

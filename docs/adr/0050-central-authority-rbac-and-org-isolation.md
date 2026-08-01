@@ -229,3 +229,12 @@ P17.9 S4.4는 open durable ManagerItem(FromUnowned·FromDeadlock)을 durable하�
 이 결정은 Authority 원천을 중앙 정책으로 하나로 모으고, 역할 권한과 현재 리소스 귀속을 함께 확인하며, 워커 회신 시점의 소유권 drift를 막는다. Agent Card는 계속 under-claim만 하고 권한을 자기보고하지 않는다. 권한 거부가 질문을 미아로 만드는 것도 아니다. 권한 전에 거부된 입력은 Request가 아니며, Request 생성 뒤 실패는 기존 수명주기가 닫는다.
 
 정책 파일 자체의 배포 권한·secret rotation, 실 회사 IdP smoke, reverse proxy, mTLS와 다중 인스턴스 보장은 남아 있다. P17.9가 durable policy epoch·transaction·lease·outbox·재시작 복구를 닫기 전에는 production 서버 준비를 선언하지 않는다.
+
+## RB3.2b.6 runtime source 대체 (2026-07-31)
+
+ADR 0081이 Central marker v20부터 startup-immutable/file-reloading
+`AuthorityPolicySnapshot`을 runtime canonical source로 쓰는 부분을 대체한다. validated immutable
+SQLite `PolicyRevision`과 조직별 `ActivePolicyPointer` 하나만 every-read/every-write Authority
+source다. configured `routing_rules.yaml`은 epoch 1 bootstrap 또는 명시적 import input이며 marker
+v20 뒤 live reload/fallback하지 않는다. 기존 strict schema/canonicalizer, 중앙 선언,
+role/action/resource fail-close와 Card under-claim 불변식은 그대로 계승한다.

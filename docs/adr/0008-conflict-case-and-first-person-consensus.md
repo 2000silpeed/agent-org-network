@@ -1,6 +1,6 @@
 # 미해소 다툼을 ConflictCase로 저장하고, 1인칭 합의를 단일 축 표(ConcurOnPrimary)로 모델링
 
-상태: accepted (2026-06-20)
+상태: accepted (2026-06-20) · **RB3.2b.5 durable reducer 부분은 ADR 0080으로 대체됨**
 
 ADR 0002는 충돌(Overlap/Gap)을 "사람이 합의 → append-only Precedent로 학습"하는 루프로 정했고, T4.1이 그 후반부(Resolution → Precedent → 라우터 자동 적용)를 구현했다. T4.2는 그 전반부 — **Contested가 어떻게 사람 합의에 도달하는가** — 를 채운다. 두 가지 되돌리기 어려운 결정이 필요하다: (1) 미해소 다툼을 무엇으로 저장하는가, (2) "1인칭 합의"를 어떤 입력으로 표현하는가.
 
@@ -39,3 +39,13 @@ open ConflictCase 보관·조회를 `ConflictCaseStore` Protocol + `InMemoryConf
 - **Authority 중앙 원칙 불변.** 합의는 카드 자기보고가 아니라 후보 Owner들의 1인칭 표 → Resolution → Precedent. 권한 선언은 여전히 중앙(판례가 곧 중앙 누적 규칙)이다.
 - **합의 성공이 T4.2의 핵심.** 실패(Deadlocked)→Manager는 도메인에 자리만 두고 T5.2로 넘긴다. 미아 없음 불변식은 유지 — open 케이스는 영영 사라지지 않고 처리함/이력에 남는다.
 - ConflictCase·ConcurOnPrimary는 그대로 **결정론 테스트 케이스**가 된다(주입 clock·고정 case_id 시드). 합의→Precedent 루프는 라우팅 회귀 스위트로 이어진다(ADR 0002·0003 정합).
+
+## RB3.2b.5 durable reducer 대체
+
+위의 in-memory `ConcurOnPrimary`/`StillOpen|Agreed|Deadlocked` 설명은 historical baseline으로 남긴다.
+request-unique durable ConflictCase의 participant set, one-vote-per-owner-per-round, stance/complement
+reducer, `route_rejected`, exact Request CAS와 deadlock ManagerItem atomic transition은
+[ADR 0080](0080-central-inbox-durable-metadata-and-control-half.md) §2가 유일한 계약이다. 따라서
+ADR 0008의 "같은 intent의 open Case 하나"와 "Manager 처리는 후속" 문구를 RB3.2b.5 implementation에
+적용하지 않는다. durable Case는 Question Request마다 하나이며 deadlock은 같은 UoW에서 ManagerItem과
+AwaitingManager로 수렴한다.

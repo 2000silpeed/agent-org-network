@@ -1,0 +1,267 @@
+{
+  "schema_version": 1,
+  "runtime_baseline": {
+    "primary_platform": "windows",
+    "docker_required": false,
+    "wsl_required": false,
+    "git_bash_required": false,
+    "required_tools": [
+      "Python 3.12+",
+      "uv",
+      "Node.js 24+",
+      "Corepack/pnpm 11.18.0",
+      "PowerShell 5.1+ or PowerShell 7",
+      "SQLite"
+    ],
+    "native_scripts": [
+      "scripts/run-web.ps1",
+      "scripts/run-central.ps1",
+      "scripts/run-worker.ps1",
+      "scripts/run-mcp.ps1",
+      "scripts/verify-fast.ps1",
+      "scripts/verify-contract.ps1",
+      "scripts/verify-full.ps1"
+    ],
+    "docker_role": "optional_packaging_only"
+  },
+  "status_vocabulary": [
+    "runnable_developer_reference",
+    "runnable_legacy_fixture",
+    "installable_dependent_client",
+    "tested_component_factory",
+    "product_target_not_available"
+  ],
+  "support_matrix": [
+    {
+      "id": "developer_api",
+      "surface": "agent_org_network.web:app",
+      "status": "runnable_developer_reference",
+      "run": "uv run uvicorn agent_org_network.web:app --host 127.0.0.1 --port 8011",
+      "boundary": "Next Frontend가 호출하는 JSON·SSE·WebSocket 전용 개발 API이며 browser HTML과 production Central Server를 제공하지 않는다.",
+      "requirements": [
+        "Python 3.12 이상",
+        "uv로 프로젝트 의존성을 동기화한 개발 환경"
+      ],
+      "prohibited_claims": [
+        "browser frontend 또는 Central Server 배포 artifact",
+        "production 또는 pilot 준비 완료"
+      ]
+    },
+    {
+      "id": "browser_frontend",
+      "surface": "frontend Next standalone server",
+      "status": "runnable_developer_reference",
+      "run": "cd frontend && corepack pnpm build && AON_FRONTEND_MODE=development AON_BACKEND_URL=http://127.0.0.1:8011 corepack pnpm start",
+      "boundary": "유일한 browser frontend server이며 Developer API에 의존한다. standalone 배포 가능성은 production Central Server 완성을 뜻하지 않는다.",
+      "requirements": [
+        "Node.js와 packageManager에 고정된 pnpm",
+        "도달 가능한 Developer API",
+        "production에서는 HTTPS AON_PUBLIC_ORIGIN과 검증된 AON_BACKEND_URL"
+      ],
+      "prohibited_claims": [
+        "production Central Server 또는 3-install 완성",
+        "Card Owner raw source·full draft 중계"
+      ]
+    },
+    {
+      "id": "legacy_central_demo",
+      "surface": "agent_org_network.server:central_app, scripts/run_central.sh",
+      "status": "runnable_legacy_fixture",
+      "run": "scripts/run_central.sh 8000 127.0.0.1",
+      "boundary": "과거 중앙 수동 시연 및 호환 경계이며 현재 제품 배포 경로가 아니다.",
+      "requirements": [
+        "동일 저장소 checkout과 uv 개발 환경",
+        "로컬 수동 시연용 포트와 신뢰된 네트워크"
+      ],
+      "prohibited_claims": [
+        "현재 Central Server 제품 설치 경로",
+        "상시 운영 Central Server 배포"
+      ]
+    },
+    {
+      "id": "legacy_owner_worker_demo",
+      "surface": "agent_org_network.worker, scripts/run_worker.sh",
+      "status": "runnable_legacy_fixture",
+      "run": "scripts/run_worker.sh cs_lead primary 8000 127.0.0.1",
+      "boundary": "과거 Owner Worker 수동 시연 및 호환 경계이며 현재 Card Owner 제품 설치 경로가 아니다.",
+      "requirements": [
+        "동일 저장소 checkout과 uv 개발 환경",
+        "OWNER_ID, primary 또는 backup role, Central endpoint",
+        "기본 Claude Runtime이면 로컬 claude 로그인 또는 선택 provider credential과 extra"
+      ],
+      "prohibited_claims": [
+        "현재 Card Owner 제품 설치 경로",
+        "production Owner Worker 배포"
+      ]
+    },
+    {
+      "id": "legacy_mcp_demo",
+      "surface": "agent_org_network.mcp_server, scripts/run_mcp.sh",
+      "status": "runnable_legacy_fixture",
+      "run": "scripts/run_mcp.sh",
+      "boundary": "in-process 데모 composition을 쓰는 수동 MCP 시연이며 웹 상태와 공유하지 않는다.",
+      "requirements": [
+        "동일 저장소 checkout과 uv 개발 환경",
+        "stdio MCP 클라이언트 또는 수동 시연 환경"
+      ],
+      "prohibited_claims": [
+        "웹 개발 데모와 상태를 공유하는 MCP 서버",
+        "Question User MCP 제품 클라이언트"
+      ]
+    },
+    {
+      "id": "question_user_mcp_client",
+      "surface": "aon-mcp",
+      "status": "installable_dependent_client",
+      "run": "aon-mcp pair --profile <profile> --output <paired-profile> --port <port>; aon-mcp serve-stdio --profile <paired-profile>",
+      "boundary": "실행 가능한 사용자 MCP 클라이언트지만, 도달 가능한 중앙 Question Gateway·OIDC pairing·OS keychain 자격증명이 필요하다.",
+      "requirements": [
+        "aon-mcp 설치",
+        "owner-keychain extra와 동작하는 OS keychain",
+        "HTTPS Question Gateway, OIDC pairing profile, 네트워크 도달성"
+      ],
+      "prohibited_claims": [
+        "독립적으로 Central Server를 제공하는 설치물",
+        "IdP와 HTTPS gateway 없이 가능한 end-to-end 제품 실행"
+      ]
+    },
+    {
+      "id": "production_central_component_factories",
+      "surface": "create_production_onboarding_app, create_production_central_authoring_pairing_app",
+      "status": "tested_component_factory",
+      "run": null,
+      "boundary": "결정론 테스트로 조립 계약을 검증한 factory이며 패키지 CLI나 상시 실행 서버로 연결되어 있지 않다.",
+      "requirements": [
+        "테스트가 제공하는 정확한 production 의존성 주입",
+        "별도 Central Server composition 설계와 배포 경로"
+      ],
+      "prohibited_claims": [
+        "현재 실행 가능한 Central Server CLI",
+        "상시 운영 HTTP 서버"
+      ]
+    },
+    {
+      "id": "a2a_remote_runtime_component",
+      "surface": "A2ARemoteRuntime, A2ASdkInvocationAdapter",
+      "status": "tested_component_factory",
+      "run": null,
+      "boundary": "Card Owner outbound-only strict A2A 1.0 HTTP+JSON component다. exact MockTransport로 공식 SDK 계약을 검증하지만 기본 실제 egress는 fail-closed이며 paired Owner profile loader와 DNS-pinning HTTPS transport는 아직 제공하지 않는다.",
+      "requirements": [
+        "a2a optional extra",
+        "active Owner Installation에 결박된 local profile과 OOB credential provider",
+        "실제 egress에는 아직 구현되지 않은 DNS 결과와 TLS SNI 결박 transport"
+      ],
+      "prohibited_claims": [
+        "현재 실행 가능한 aon-owner A2A 통합 또는 production A2A 통합",
+        "Central A2A proxy, inbound server, discovery 또는 Registry 자동 등록"
+      ]
+    },
+    {
+      "id": "central_installation_entrypoint_skeleton",
+      "surface": "aon-central, create_central_api_app, bundled Central Next child",
+      "status": "tested_component_factory",
+      "run": "aon-central --help; aon-central migrate --profile <central-profile>; aon-central bootstrap-admin --profile <central-profile> --attestation <bootstrap-admin-attestation>; aon-central api serve --profile <central-profile>; aon-central web serve --profile <central-profile>",
+      "boundary": "명시 local-reference profile을 요구하는 Central 설치 진입점의 RB3.1a/RB3.2a/RB3.2b.1 component slice다. migrate, doctor, api serve와 strict OIDC→Registry User→Authority 검증, durable Received Question Request 생성·본인 조회를 제공한다. bootstrap-admin은 실제 RFC 8628 device authorization과 같은 Central SQLite DB의 immutable bootstrap seal로 최초 root User를 one-time admission한다. web serve는 prebuilt source 또는 wheel-bundled Central Next standalone을 fixed 127.0.0.1:3000에서 별 child process로 실행하고 fixed Central API 127.0.0.1:8010만 호출한다. browser SSO, Received 이후 lifecycle, Central 일곱 product destination과 독립 Central bundle은 아직 없어 완성된 Central Server가 아니다.",
+      "requirements": [
+        "설치된 agent-org-network package",
+        "migrate/doctor/api serve/web serve에는 absolute path의 명시 profile",
+        "bootstrap-admin에는 migrate된 schema, current Authority snapshot, one-time attestation과 실제 configured OIDC device authorization",
+        "ready intake에는 matching bootstrap seal을 가진 configured org의 root Registry User와 current Authority snapshot",
+        "web serve에는 Node.js 24+, strict HTTPS central_public_origin과 prebuilt manifest-validated source 또는 wheel-bundled standalone"
+      ],
+      "prohibited_claims": [
+        "현재 runnable_local_reference 또는 production Central Server",
+        "browser SSO, 추가 Registry User onboarding, Agent Card admission, Central 일곱 product destination 또는 전체 Central workflow 완성",
+        "Owner Next 또는 독립 3-install bundle 완료",
+        "CLI user/email/role/token 입력 또는 raw SQLite로 하는 bootstrap 우회"
+      ]
+    },
+    {
+      "id": "owner_installation_entrypoint_skeleton",
+      "surface": "aon-owner, create_owner_api_app",
+      "status": "tested_component_factory",
+      "run": "aon-owner --help",
+      "boundary": "literal loopback Owner API와 fail-closed command shape의 첫 slice다. pair, unpair, workspace serve, worker는 아직 stable unavailable로 종료하며 Owner workspace DB 초기화와 저작 flow를 제공하지 않는다.",
+      "requirements": [
+        "설치된 agent-org-network package",
+        "doctor/api serve에는 absolute path의 명시 profile"
+      ],
+      "prohibited_claims": [
+        "현재 runnable Card Owner Installation",
+        "pairing, workspace, authoring, worker 또는 A2A 관통 완료"
+      ]
+    },
+    {
+      "id": "production_owner_authoring_app",
+      "surface": "create_owner_authoring_app",
+      "status": "product_target_not_available",
+      "run": null,
+      "boundary": "Owner 저작 production composition은 의도적으로 닫혀 있으며 현재 호출하면 OwnerAuthoringProductionUnavailable이 발생한다.",
+      "requirements": [
+        "구체적인 Owner pairing 및 production wiring 구현",
+        "명시적으로 설계·검증된 Owner 설치 경로"
+      ],
+      "prohibited_claims": [
+        "현재 사용 가능한 Owner 저작 서버",
+        "현재 aon-owner가 제공하는 Owner 저작·pairing·worker capability"
+      ]
+    },
+    {
+      "id": "three_install_target",
+      "surface": "Central 설치, Owner 설치, User MCP 설치",
+      "status": "product_target_not_available",
+      "run": null,
+      "boundary": "ADR 0075의 P0은 Central Next+Central API, Owner-local Next+Owner API/worker/workspace, Question User MCP의 세 artifact와 아홉 legacy browser 기능 완전 이관을 목표로 한다. aon-central·aon-owner의 fail-closed entrypoint skeleton은 존재하지만 세 설치본을 잇는 검증된 local reference/product 배포 경로는 없다.",
+      "requirements": [
+        "Central Server와 Card Owner의 실제 설치 artifact",
+        "Central 3000/8010과 Owner 3001/8012의 별 process/BFF/forbidden-flow contract",
+        "test OIDC issuer·loopback TLS·test keychain을 쓰는 clean-install local reference acceptance",
+        "세 설치본을 잇는 OIDC·TLS·keychain·gateway 관통 검증"
+      ],
+      "prohibited_claims": [
+        "현재 설치·실행 가능한 3-install 제품",
+        "aon-central 또는 aon-owner 명령의 존재를 전체 설치 capability 완성으로 해석",
+        "Central raw/draft relay, Central A2A proxy 또는 Owner API public ingress"
+      ]
+    }
+  ],
+  "documentation_contract": {
+    "required_files": [
+      "README.md",
+      "docs/prd-v0.md",
+      "docs/trd-v0.md",
+      "docs/tasks-v0.md",
+      "CONTEXT.md",
+      "frontend/README.md"
+    ],
+    "required_reference": "support-contract.json",
+    "forbidden_current_command_patterns": [],
+    "required_statuses_by_file": {
+      "README.md": [
+        "runnable_developer_reference",
+        "installable_dependent_client",
+        "product_target_not_available"
+      ],
+      "docs/prd-v0.md": [
+        "runnable_developer_reference",
+        "product_target_not_available"
+      ],
+      "docs/trd-v0.md": [
+        "runnable_legacy_fixture",
+        "tested_component_factory",
+        "product_target_not_available"
+      ],
+      "docs/tasks-v0.md": [
+        "product_target_not_available"
+      ],
+      "CONTEXT.md": [
+        "runnable_developer_reference",
+        "product_target_not_available"
+      ],
+      "frontend/README.md": [
+        "runnable_developer_reference",
+        "product_target_not_available"
+      ]
+    }
+  }
+}

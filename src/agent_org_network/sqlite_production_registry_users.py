@@ -13,6 +13,16 @@ from typing import Protocol
 
 from pydantic import BaseModel, field_validator
 
+from agent_org_network.central_operational_evidence import (
+    RegistryChange,
+    SafeResourceRef,
+    SourceReceiptProvenance,
+    append_committed_source_evidence_if_v19,
+    canonical_v19_file_authority,
+    source_receipt_digest,
+)
+
+
 
 class ProductionRegistryUserError(Exception):
     pass
@@ -136,6 +146,8 @@ CREATE TABLE production_registry_user_command_receipts (
  command_digest TEXT NOT NULL, result_user_id TEXT NOT NULL, result_revision INTEGER NOT NULL,
  email_digest TEXT NOT NULL, registry_fingerprint TEXT NOT NULL,
  resource_fingerprint TEXT NOT NULL, evidence_digest TEXT NOT NULL, created_at TEXT NOT NULL,
+ authority_policy_revision_id TEXT NOT NULL, authority_policy_epoch INTEGER NOT NULL CHECK(authority_policy_epoch > 0),
+ authority_policy_digest TEXT NOT NULL CHECK(length(authority_policy_digest)=64),
  PRIMARY KEY(org_id,idempotency_key),
  FOREIGN KEY(org_id) REFERENCES production_registry_revisions(org_id)
 );
@@ -660,7 +672,7 @@ class SqliteProductionRegistryUsers:
                 evidence = self._current_authorization(command)
                 command_digest = self._command_digest(command)
                 receipt = tx.execute(
-                    "SELECT command_digest,result_user_id,result_revision "
+                    "SELECT command_digest,result_user_id,result_revision,created_at "
                     "FROM production_registry_user_command_receipts "
                     "WHERE org_id=? AND idempotency_key=?",
                     (command.org_id, command.idempotency_key),
@@ -687,6 +699,45 @@ class SqliteProductionRegistryUsers:
                     )
                     validate_production_registry_user_rows(
                         tx, command.org_id, command.user_id
+                    )
+                    # A receipt is an idempotency result, never a durable
+                    # authorization grant.  In particular a new browser
+                    # session may replay an exact command, but only after the
+                    # request-scoped authorizer has re-read the *current*
+                    # session, Registry binding and Authority at precommit.
+                    # This deliberately happens after companion validation so
+                    # a tampered historical receipt cannot be used as a
+                    # policy probe.
+                    if not self._authorize.verify_precommit(command, evidence, tx):
+                        raise ProductionRegistryUserDenied()
+                    replay_authority = canonical_v19_file_authority(
+                        source_policy_digest=evidence.policy_digest,
+                        current_snapshot_digest=evidence.policy_digest,
+                    )
+                    append_committed_source_evidence_if_v19(
+                        tx, org_id=command.org_id,
+                        receipt_id=f"registry:{command.idempotency_key}",
+                        command_digest=str(receipt["command_digest"]),
+                        event_type="registry_user_registered",
+                        action="registry.user.register",
+                        resource=SafeResourceRef(
+                            kind="registry_user",
+                            resource_id=str(receipt["result_user_id"]),
+                        ),
+                        change=RegistryChange(),
+                        actor_user_id=command.principal_id,
+                        occurred_at=str(receipt["created_at"]),
+                        policy_revision_id=replay_authority.policy_revision_id,
+                        policy_epoch=replay_authority.policy_epoch,
+                        policy_digest=replay_authority.policy_digest,
+                        source=SourceReceiptProvenance(
+                            kind="registry_user_registration",
+                            receipt_key=command.idempotency_key,
+                            receipt_digest=source_receipt_digest(
+                                tx, "registry_user_registration",
+                                command.org_id, command.idempotency_key,
+                            ),
+                        ),
                     )
                     tx.commit()
                     return result.model_copy(update={"replayed": True})
@@ -760,12 +811,17 @@ class SqliteProductionRegistryUsers:
                     email_digest,
                     registry_fingerprint,
                 )
+                audit_authority = canonical_v19_file_authority(
+                    source_policy_digest=evidence.policy_digest,
+                    current_snapshot_digest=evidence.policy_digest,
+                )
                 tx.execute(
                     "INSERT INTO production_registry_user_command_receipts "
                     "(org_id,idempotency_key,operation,principal_id,command_digest,"
                     "result_user_id,result_revision,email_digest,registry_fingerprint,"
-                    "resource_fingerprint,evidence_digest,created_at) "
-                    "VALUES (?,?,'user.register',?,?,?,?,?,?,?,?,?)",
+                    "resource_fingerprint,evidence_digest,created_at,"
+                    "authority_policy_revision_id,authority_policy_epoch,authority_policy_digest) "
+                    "VALUES (?,?,'user.register',?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         command.org_id,
                         command.idempotency_key,
@@ -778,6 +834,31 @@ class SqliteProductionRegistryUsers:
                         resource_fingerprint,
                         evidence.evidence_digest,
                         created_at,
+                        audit_authority.policy_revision_id,
+                        audit_authority.policy_epoch,
+                        audit_authority.policy_digest,
+                    ),
+                )
+                append_committed_source_evidence_if_v19(
+                    tx, org_id=command.org_id,
+                    receipt_id=f"registry:{command.idempotency_key}",
+                    command_digest=command_digest,
+                    event_type="registry_user_registered", action="registry.user.register",
+                    resource=SafeResourceRef(kind="registry_user", resource_id=command.user_id),
+                    change=RegistryChange(), actor_user_id=command.principal_id,
+                    occurred_at=created_at,
+                    policy_revision_id=audit_authority.policy_revision_id,
+                    policy_epoch=audit_authority.policy_epoch,
+                    policy_digest=audit_authority.policy_digest,
+                    source=SourceReceiptProvenance(
+                        kind="registry_user_registration",
+                        receipt_key=command.idempotency_key,
+                        receipt_digest=source_receipt_digest(
+                            tx,
+                            "registry_user_registration",
+                            command.org_id,
+                            command.idempotency_key,
+                        ),
                     ),
                 )
                 tx.execute(
@@ -844,6 +925,10 @@ class SqliteProductionRegistryUsers:
             "SELECT revision FROM production_registry_revisions WHERE org_id=?", (org_id,)
         ).fetchone()
         return 0 if row is None else int(row["revision"])
+
+    def close(self) -> None:
+        """Release the composition-owned SQLite connection."""
+        self._connection.close()
 
     def users(self, org_id: str) -> tuple[ProductionRegistryUser, ...]:
         rows = self._connection.execute(

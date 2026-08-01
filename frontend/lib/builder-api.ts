@@ -1,4 +1,6 @@
-// Central card builder client (T5.3). Mirrors web.py:
+// Legacy Card Owner builder client retained for the RB3.4 `owner-frontend/`
+// migration. Central Next must not import it or expose its validation route.
+// Mirrors web.py:
 //   BuilderValidateRequest (web.py:626) → POST /builder/validate
 //   validate_card_for_builder (web.py:653) — admission 검증(순수 함수)
 //

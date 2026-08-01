@@ -100,6 +100,7 @@ from agent_org_network.operational_application import (
 from agent_org_network.admin_registry import CardCandidate
 from agent_org_network.authoring_application import AuthoringApplication, AuthoringMutation
 from agent_org_network.agent_card import AgentCard
+from agent_org_network.question_request import declined_request_message
 
 if TYPE_CHECKING:
     from agent_org_network.answer_record import AnswerRecordStore, FeedbackStore
@@ -110,7 +111,6 @@ if TYPE_CHECKING:
 _DEFAULT_MCP_USER_ID = "mcp_guest"
 
 _QUESTION_PENDING_TEXT = "질문을 처리하고 있습니다."
-_QUESTION_DECLINED_TEXT = "질문 처리가 거절되었습니다."
 _QUESTION_FAILED_TEXT = "질문을 처리하지 못했습니다."
 _QUESTION_INTERRUPTED_TEXT = "질문 처리가 일시 중단되었습니다."
 _QUESTION_NOT_FOUND_TEXT = "질문 요청을 찾을 수 없습니다."
@@ -643,7 +643,7 @@ def question_lookup_to_mcp_text(raw: QuestionStreamLookup) -> str:
                 f"재시도 가능: {retryable}"
             )
         case DeclinedQuestionLookup():
-            return f"{_QUESTION_DECLINED_TEXT}\n\n요청 ID: {result.request_id}"
+            return f"{declined_request_message(result.reason_code)}\n\n요청 ID: {result.request_id}"
         case FailedQuestionLookup():
             body = f"{_QUESTION_FAILED_TEXT}\n\n요청 ID: {result.request_id}"
             if result.error_code in (

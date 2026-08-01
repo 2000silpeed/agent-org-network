@@ -34,6 +34,10 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
+from agent_org_network.a2a_remote_runtime import (
+    A2ARemoteRuntimeFailure,
+    A2ARemoteRuntimeFailureCode,
+)
 from agent_org_network.agent_card import AgentCard, is_safe_path_component
 from agent_org_network.knowledge_sync import (
     KnowledgeBundleContent,
@@ -157,6 +161,19 @@ class PendingDraft:
     agent_id: str
     context: str | None
     made_at: datetime
+
+
+@dataclass(frozen=True)
+class RuntimeFailed:
+    """A2A Remote Failure의 worker-local sealed 처리 결과.
+
+    remote endpoint, credential, Remote A2A Agent Card metadata나 원격 오류 본문은 절대
+    담지 않는다. dispatcher의 release/timeout/escalation이 종착을 소유하므로 이 결과는
+    SubmitAnswer도 PendingDraft도 아니다.
+    """
+
+    ticket_id: str
+    code: A2ARemoteRuntimeFailureCode
 
 
 # ── 워커 프레임 핸들링(결정론 로직) ─────────────────────────────────────────
@@ -348,7 +365,7 @@ class WorkerLogic:
             h.update(b"\0")
         return h.hexdigest()[:12]
 
-    def handle_push_work(self, push: PushWork) -> SubmitAnswer | None:
+    def handle_push_work(self, push: PushWork) -> SubmitAnswer | RuntimeFailed | None:
         """`PushWork` 한 건을 처리한다 — HITL 힌트 off면 즉시 `SubmitAnswer`, on이면 보류.
 
         흐름: `TicketFrame` → (연결 owner 귀속으로) `WorkTicket` 복원 → `agent_id`로
@@ -380,7 +397,12 @@ class WorkerLogic:
 
         # 분산 WS 경로 맥락 전파(ADR 0027 결정 13·T9.7 S1) — ticket.context가 그 사용자의
         # 발화 스레드를 owner 워커의 런타임까지 나른다(로컬 경로 answer(context=)와 대칭).
-        answer = self._runtime.answer(ticket.question, card, context=ticket.context)
+        try:
+            answer = self._runtime.answer(ticket.question, card, context=ticket.context)
+        except A2ARemoteRuntimeFailure as error:
+            # ADR 0074: remote failure는 답 또는 owner 검토 초안으로 위장하지 않는다.
+            # code만 보존해 수신 루프가 안전하게 기록하고 다음 PushWork를 계속 받게 한다.
+            return RuntimeFailed(ticket_id=ticket.ticket_id, code=error.code)
 
         if push.ticket.hitl:
             # HITL on 힌트 — 즉시 회신하지 않고 owner 검토를 기다린다(초안 보류, 결정 4).
@@ -755,6 +777,11 @@ def _serve(
                 f"— 로컬 claude 호출 중…"
             )
             submit = logic.handle_push_work(frame)
+            if isinstance(submit, RuntimeFailed):
+                # A2A remote failure는 중앙으로 SubmitAnswer를 보내지 않는다. 상세 remote
+                # 정보는 RuntimeFailure에 애초 없으므로 redacted code만 local log에 남긴다.
+                logging.warning("A2A Remote Failure code=%s", submit.code)
+                continue
             if submit is None:
                 # HITL on 힌트 — 초안이 보류됐다(owner 검토 대기, ADR 0025 결정 4). 즉시
                 # 회신하지 않는다(워커측 TTL 없음 — 종착은 중앙 큐 timeout이 떠받침).

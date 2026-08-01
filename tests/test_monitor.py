@@ -228,15 +228,14 @@ def client_and_audit() -> tuple[TestClient, InMemoryAuditLog]:  # pyright: ignor
     return TestClient(app), audit  # pyright: ignore[reportUnknownVariableType]
 
 
-def test_monitor_view_라우트가_200_HTML을_돌려준다(  # pyright: ignore[reportUnknownParameterType]
+def test_monitor_view_HTML_라우트는_제공하지_않는다(  # pyright: ignore[reportUnknownParameterType]
     client_and_audit: tuple[TestClient, InMemoryAuditLog],
 ) -> None:
-    """/monitor/view → 200(HTML FileResponse). {index}에 'view'가 안 잡힌다."""
+    """Developer API는 `/monitor/view` browser runtime을 제공하지 않는다."""
     client, _ = client_and_audit
     http: Any = client
     res = cast(Response, http.get("/monitor/view"))
-    # HTML이라 JSON 파싱 없이 상태코드만 확인한다.
-    assert res.status_code == 200
+    assert res.status_code == 404
 
 
 def test_monitor_초기_빈_목록(  # pyright: ignore[reportUnknownParameterType]

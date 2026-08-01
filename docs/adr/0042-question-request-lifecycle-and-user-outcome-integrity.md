@@ -3,7 +3,7 @@
 - 상태: 채택(Accepted)
 - 날짜: 2026-07-12
 - 계보: ADR 0008(ConflictCase)·0011(WorkTicket tracking)·0014(Manager 큐)·0024(Session)·0031(SSE)·0033(AnswerRecord)을 정밀화한다. ADR 0037의 **Contested 즉시 답+합의 병행**은 이 결정이 대체한다. ADR 0004의 중앙 Authority, 등록 무결성, 전이≠기록은 그대로 계승한다. 구현 경계와 Approval 선행 순서는 ADR 0043이 구체화한다.
-- 구현 상태: P17.2a~b 도메인·SQLite Request Store, P17.2c-1 Request-first 초기 라우팅 코어, P17.6a 최소 Approval 경계, P17.3a~c InMemory/SQLite Answer Finalization·SSE 실행 분리, P17.2c-2 웹·SSE·retrieve·MCP 전 표면 전환, P17.4 Unowned와 P17.5 Contested의 같은 Request 재개·종결까지 구현·독립 리뷰를 마쳤다. online Owner 사전승인과 offline 자동발신 사후교정 증거도 공통 Finalization에 결박했다. Unowned·Contested 처분은 아직 단일 프로세스 InMemory claim과 demo request-scoped Authority 범위다. P17.6b Approval 운영, durable linked workflow·Approval transaction·lease/outbox 소비, production Authority/RBAC는 후속이다. Approval 만료·재지정 의미는 ADR 0048이 정밀화한다. P17 파일럿 진입 게이트를 통과하기 전에는 기업 실사용을 주장하지 않는다.
+- 구현 상태: P17.2a~b 도메인·SQLite Request Store, P17.2c-1 Request-first 초기 라우팅 코어, P17.6a 최소 Approval 경계, P17.3a~c InMemory/SQLite Answer Finalization·SSE 실행 분리, P17.2c-2 웹·SSE·retrieve·MCP 전 표면 전환, P17.4 Unowned와 P17.5 Contested의 같은 Request 재개·종결까지 구현·독립 리뷰를 마쳤다. P17.15 maintenance는 보수적 non-actionable conversational input을 Router 앞에서 terminal intake로 닫는다. online Owner 사전승인과 offline 자동발신 사후교정 증거도 공통 Finalization에 결박했다. Unowned·Contested 처분은 아직 단일 프로세스 InMemory claim과 demo request-scoped Authority 범위다. RB3.2b.4의 Central product composition, session-derived browser route와 durable feedback contract는 ADR 0079에 동결됐으며 아직 구현되지 않았다. P17.6b Approval 운영, durable linked workflow·Approval transaction·lease/outbox 소비, production Authority/RBAC는 후속이다. Approval 만료·재지정 의미는 ADR 0048이 정밀화한다. P17 파일럿 진입 게이트를 통과하기 전에는 기업 실사용을 주장하지 않는다.
 
 ## 맥락
 
@@ -35,7 +35,7 @@ Question Request는 최소한 `org_id`, `requester_id`, `session_id?`, 질문 �
 
 `QuestionRequestStore.create`는 새 수명의 진입점이다. `Received`, `revision=0`, `created_at=updated_at`인 Request만 받는다. 이미 라우팅됐거나 종결된 aggregate를 최초 행으로 넣어 전이 규칙을 건너뛸 수 없다. InMemory와 SQLite는 같은 생성 검증자를 사용하며, Unit of Work가 쓰는 내부 insert도 이 검증을 우회하지 않는다.
 
-intent는 실제 분류 라벨이 있을 때만 저장한다. Routed와 Contested는 nonblank intent가 필수다. 분류 자체가 되지 않은 Unowned는 `intent=None`을 허용하되 빈 문자열을 저장하지 않는다. Router가 빈 문자열을 돌려주는 기존 경로는 Application Service 경계에서 `None`으로 정규화한다. `initial_disposition`은 최초 라우팅 결과이므로 Unowned에도 기록한다.
+intent는 실제 분류 라벨이 있을 때만 저장한다. Routed와 Contested는 nonblank intent가 필수다. 분류 자체가 되지 않은 Unowned는 `intent=None`을 허용하되 빈 문자열을 저장하지 않는다. Router가 빈 문자열을 돌려주는 기존 경로는 Application Service 경계에서 `None`으로 정규화한다. `initial_disposition`은 최초 라우팅 결과이므로 Unowned에도 기록한다. Router 전에 보수적 exact-only intake가 단독 비업무 대화로 판별한 경우만 `initial_disposition="non_actionable"`, `intent=None`을 기록한다.
 
 ### 2. 상태가 곧 수명주기다
 
@@ -46,6 +46,7 @@ Received
  ├─ ReadyToDispatch
  ├─ AwaitingConflict
  ├─ AwaitingManager
+ ├─ DeclinedRequest  # non_actionable_conversation intake 한정
  └─ FailedRequest
 
 ReadyToDispatch ── AwaitingAnswer | AwaitingApproval | AnsweredRequest | FailedRequest
@@ -56,11 +57,11 @@ AwaitingApproval ─ AnsweredRequest | DeclinedRequest | FailedRequest
                  └ AwaitingApproval  # ADR 0048 전용 새 Item 재지정 전이만 허용
 ```
 
-`AnsweredRequest | DeclinedRequest | FailedRequest`는 terminal이며 부활하지 않는다. `DeclinedRequest`는 사람이 확인한 뒤 사유를 남기고 답하지 않기로 한 명시적 종결이다. 일시 장애는 곧바로 Failed로 닫지 않고 재시도 가능한 상태에 둔다.
+`AnsweredRequest | DeclinedRequest | FailedRequest`는 terminal이며 부활하지 않는다. `DeclinedRequest`는 원칙적으로 사람이 확인한 뒤 사유를 남기고 답하지 않기로 한 명시적 종결이다. 유일한 자동 예외는 HTTP create의 current `session.read`·`question.create` Authority 검증과 durable `Received` commit 뒤 routing/dispatch Authority·Router·사람 처리 단위를 호출하지 않는 `Received → DeclinedRequest(reason_code="non_actionable_conversation")`의 exact-only 비업무 대화 intake다. 이 예외는 업무 질문의 미분류·0매칭·권한 거부·의존성 실패를 흡수하지 않는다. 일시 장애는 곧바로 Failed로 닫지 않고 재시도 가능한 상태에 둔다.
 
 모든 비종결 Request는 정확히 한 `HandlingAssignment(kind, ref, due_at)`을 가져야 한다. `kind`는 `system | runtime_ticket | conflict_case | manager_item | approval_item`이다. `Received`·`ReadyToDispatch`처럼 프로세스 장애 뒤에도 남을 수 있는 시스템 작업도 명시적 처리 단위와 SLA를 가진다. 최초 `Received`의 system ref는 `question-intake:{request_id}`로 고정해 Request별 접수 작업을 식별한다. generic handler 이름이나 호출자 override로 바꿀 수 없다. 사람의 실제 신원은 runtime ticket의 RouteTarget, ConflictCase, ManagerItem, ApprovalItem을 현재 Registry·조직 그래프와 조인해 구한다. assignment의 `ref`는 해당 상태의 ticket/case/item/draft 참조와 같아야 하며, terminal 상태에는 assignment가 없다. terminal도 아니고 처리 단위·SLA가 없는 상태는 불법이다.
 
-영속 행을 복원할 때도 도달 가능한 상태 조합을 검증한다. `AwaitingConflict`의 최초 disposition은 contested여야 한다. `AwaitingManager(public_kind="unowned")`는 unowned, `public_kind="contested"`는 contested에서만 올 수 있다. dispatched Manager 대기는 이전 실행의 RouteTarget을 보존하며 그 intent가 현재 Request intent와 충돌해서는 안 된다. 다만 Unowned로 시작해 Manager가 intent와 담당을 정한 경우처럼 최초 intent가 없던 수명은 RouteTarget의 nonblank intent를 현재 실행 기준으로 쓴다.
+영속 행을 복원할 때도 도달 가능한 상태 조합을 검증한다. `AwaitingConflict`의 최초 disposition은 contested여야 한다. `AwaitingManager(public_kind="unowned")`는 unowned, `public_kind="contested"`는 contested에서만 올 수 있다. revision 1의 최초 `DeclinedRequest`는 정확히 `non_actionable` disposition·`intent=None`·`non_actionable_conversation` 사유 조합만 허용한다. dispatched Manager 대기는 이전 실행의 RouteTarget을 보존하며 그 intent가 현재 Request intent와 충돌해서는 안 된다. 다만 Unowned로 시작해 Manager가 intent와 담당을 정한 경우처럼 최초 intent가 없던 수명은 RouteTarget의 nonblank intent를 현재 실행 기준으로 쓴다.
 
 이 방식은 “후보 Owner 여러 명이 합의하는 Contested”를 억지로 한 사람에게 귀속하지 않으면서도, 사용자 질문이 어느 처리 단위에 있고 언제 SLA를 넘기는지 Request만으로 추적하게 한다. linked entity는 P17.4~P17.9에서 Request와 같은 durable 경계에 저장해 참조 무결성을 완성한다.
 
@@ -121,6 +122,11 @@ blocking·SSE streaming·비동기 retrieve·MCP는 각자 답을 확정하지 �
 - `Failed(request_id, message)`
 
 request ID의 불투명성만 권한으로 믿지 않는다. 조회 시 저장된 requester principal과 현재 신원을 대조한다. MCP와 다른 채널도 같은 중앙 Application Service를 사용해야 하며, 독립 데모 상태를 만들지 않는다.
+
+Central browser `/ask`의 9-state safe wire projection, canonical GET=SSE `done` Answered DTO,
+session revalidation과 reconnect는 ADR 0079가 이 ADR의 사용자 결과 원칙을 product route로
+정밀화한다. 이 정밀화는 legacy/demo surface의 transport DTO를 Central product contract로 승격하지
+않는다.
 
 ### 8. 영속성 경계
 

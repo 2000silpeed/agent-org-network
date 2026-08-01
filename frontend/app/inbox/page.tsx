@@ -1,19 +1,6 @@
 import { PageHeader } from "@/components/app-shell/page-header";
-import { InboxTabs } from "@/components/inbox/inbox-tabs";
-import { LoginGate } from "@/components/session/login-gate";
+import { CentralInbox } from "@/components/inbox/inbox-tabs";
 
-export default function InboxPage() {
-  return (
-    <div className="flex flex-col">
-      <PageHeader
-        surface="Inbox"
-        persona="Owner"
-        title="처리함"
-        description="담당이 갈리는 다툼, 부재 중 백업 답변, 지식 변경으로 stale된 과거 답변을 1인칭으로 처리합니다."
-      />
-      <LoginGate surface="처리함" requiredRole="owner">
-        <InboxTabs />
-      </LoginGate>
-    </div>
-  );
+export default function InboxPage(): JSX.Element {
+  return <div className="flex min-h-full flex-col"><PageHeader surface="Inbox" persona="Card Owner · Approver" title="처리함" description="Central Session 권한으로 다툼, 백업 검토, 재평가, Approval을 안전하게 조회하고 처분합니다." /><CentralInbox /></div>;
 }

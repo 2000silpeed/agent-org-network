@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Sidebar } from "@/components/app-shell/sidebar";
 import { Topbar } from "@/components/app-shell/topbar";
-import { SessionProvider } from "@/components/session/session-context";
 import { ThemeProvider } from "@/components/app-shell/theme";
+import { CentralSessionShell } from "@/components/session/central-session-shell";
 
 // Apply the saved theme before paint (no flash). dark is the default.
 const THEME_INIT = `(function(){try{var t=localStorage.getItem('aon.theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`;
@@ -28,18 +28,16 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen bg-[var(--ds-color-canvas)] font-sans text-[var(--ds-color-ink)] antialiased">
         <ThemeProvider>
-          <SessionProvider>
-            {/* Desktop (lg+): app shell is viewport-fixed — sidebar/topbar stay
-                put, only <main> scrolls. Mobile (<lg): document scrolls as before
-                (sidebar is hidden, the Topbar is sticky), so no regression. */}
-            <div className="flex min-h-screen lg:h-screen lg:overflow-hidden">
-              <Sidebar />
-              <div className="flex min-w-0 flex-1 flex-col lg:overflow-hidden">
-                <Topbar />
-                <main className="min-w-0 flex-1 lg:overflow-y-auto">{children}</main>
+          <div className="flex min-h-screen lg:h-screen lg:overflow-hidden">
+            <Sidebar />
+            <div className="flex min-w-0 flex-1 flex-col lg:overflow-hidden">
+              <div className="flex items-center justify-end gap-ds-8 border-b border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-16 py-ds-8">
+                <CentralSessionShell />
               </div>
+              <Topbar />
+              <main className="min-w-0 flex-1 lg:overflow-y-auto">{children}</main>
             </div>
-          </SessionProvider>
+          </div>
         </ThemeProvider>
       </body>
     </html>

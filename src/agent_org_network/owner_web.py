@@ -1,35 +1,25 @@
-"""owner 로컬 검토 웹 어댑터 — 초안 보류(Pending Draft)를 owner가 눈으로 보고 처분하는 면.
+"""Card Owner 초안 검토 API 어댑터.
 
-owner 워커가 HITL on 힌트를 받아 *즉시 회신하지 않고* 보류한 초안(`WorkerLogic._pending_drafts`,
-ADR 0025 결정 4·T9.7 S2)을 owner가 로컬에서 검토·승인·수정하는 최소 로컬 웹이다. 검토 UI는
-**owner측 로컬 면**이라 중앙 토큰 0·비소유가 성립한다(ADR 0025 결정 4·5, ADR 0030 저작 UI와
-대칭 — 저작·검토 모두 owner 환경에 머문다). frontend/(Next.js·중앙 운영 면)를 쓰지 않고 중앙
-`web/*.html`처럼 빌드 없는 순수 HTML/CSS/fetch로 서빙한다(D1).
+Card Owner worker가 HITL on 힌트를 받아 *즉시 회신하지 않고* 보류한 초안
+(`WorkerLogic._pending_drafts`, ADR 0025 결정 4·T9.7 S2)을 JSON으로 조회·승인·수정한다.
 
 단일 프로세스 겸직(D2): owner 워커가 WS 클라이언트(중앙에 아웃바운드)이면서 이 로컬 HTTP 서버를
 겸직한다 — 별도 서버 프로세스를 두지 않는다. `create_owner_app`은 그 워커의 *같은* `WorkerLogic`
 인스턴스(보류 store를 든 그것)를 받아 조회·처분하고, 처분으로 나온 `SubmitAnswer`를 `submit_sink`
 콜백으로 흘려 실 배선에선 활성 WS 연결로 송신한다(테스트에선 fake sink가 관측).
 
-노출 경계: 이 면은 owner 자기 로컬(localhost)이라 별도 인증을 이번 범위에 두지 않는다 — bind는
-127.0.0.1 기본이라 외부에서 도달하지 않는다(운영 면 세션 인증은 중앙 web.py의 몫이고, 여긴 owner
-자기 PC 로컬 면이라 다른 공간). 직렬화는 순수 함수(`serialize_pending_draft`)로 분리해 라우트가
-도메인 값 객체를 그대로 흘리지 않게 한다(web.py `serialize_reply`/`serialize_case` 경계 정신).
+ADR 0073부터 이 어댑터는 JSON API만 제공한다. 직렬화는 순수 함수
+(`serialize_pending_draft`)로 분리해 라우트가 도메인 값 객체를 그대로 흘리지 않게 한다.
 """
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from agent_org_network.transport import SubmitAnswer
 from agent_org_network.worker import PendingDraft, WorkerLogic
-
-_WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
-_OWNER_DRAFTS_HTML = _WEB_DIR / "owner-drafts.html"
 
 
 def serialize_pending_draft(draft: PendingDraft) -> dict[str, Any]:
@@ -106,9 +96,5 @@ def create_owner_app(
         # 이미 store에서 제거됐다(submit_pending_draft가 처리 — 전이 ≠ 기록).
         submit_sink(submit)
         return {"ticket_id": submit.ticket_id, "submitted": True}
-
-    @app.get("/")
-    def index() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        return FileResponse(_OWNER_DRAFTS_HTML)
 
     return app

@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping
 from hashlib import sha256
 import json
 from types import MappingProxyType
+from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, cast, final
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, field_validator, model_validator
@@ -27,14 +28,23 @@ Role: TypeAlias = Literal[
 ]
 
 Action: TypeAlias = Literal[
+    "session.establish",
+    "session.read",
     "question.create",
     "question.read",
     "question.stream",
+    "feedback.create",
     "approval.list",
     "approval.read",
     "approval.decide",
     "approval.reassign",
     "approval.expire",
+    "backup_review.list",
+    "backup_review.read",
+    "backup_review.decide",
+    "reevaluation.list",
+    "reevaluation.read",
+    "reevaluation.decide",
     "conflict.open",
     "conflict.escalate",
     "conflict.list",
@@ -45,9 +55,12 @@ Action: TypeAlias = Literal[
     "supervision.read",
     "supervision.correct",
     "scorecard.read",
+    "scorecard.organization.read",
     "monitor.read",
     "audit.read",
     "org_graph.read",
+    "policy.read",
+    "policy.write",
     "session.end",
     "hitl.read",
     "hitl.write",
@@ -57,6 +70,7 @@ Action: TypeAlias = Literal[
     "card.read",
     "card.register",
     "card.transfer_owner",
+    "card.revoke",
     "user.register",
     "author.read",
     "author.write",
@@ -72,14 +86,23 @@ AUTHORITY_ROLES: frozenset[str] = frozenset(
 )
 AUTHORITY_ACTION_MANIFEST: frozenset[str] = frozenset(
     {
+        "session.establish",
+        "session.read",
         "question.create",
         "question.read",
         "question.stream",
+        "feedback.create",
         "approval.list",
         "approval.read",
         "approval.decide",
         "approval.reassign",
         "approval.expire",
+        "backup_review.list",
+        "backup_review.read",
+        "backup_review.decide",
+        "reevaluation.list",
+        "reevaluation.read",
+        "reevaluation.decide",
         "conflict.open",
         "conflict.escalate",
         "conflict.list",
@@ -90,9 +113,12 @@ AUTHORITY_ACTION_MANIFEST: frozenset[str] = frozenset(
         "supervision.read",
         "supervision.correct",
         "scorecard.read",
+        "scorecard.organization.read",
         "monitor.read",
         "audit.read",
         "org_graph.read",
+        "policy.read",
+        "policy.write",
         "session.end",
         "hitl.read",
         "hitl.write",
@@ -102,6 +128,7 @@ AUTHORITY_ACTION_MANIFEST: frozenset[str] = frozenset(
         "card.read",
         "card.register",
         "card.transfer_owner",
+        "card.revoke",
         "user.register",
         "author.read",
         "author.write",
@@ -119,10 +146,17 @@ DYNAMIC_SUBJECT_REQUIREMENTS: Mapping[Action, frozenset[Role]] = MappingProxyTyp
     {
         "question.read": frozenset({"requester"}),
         "question.stream": frozenset({"requester"}),
+        "feedback.create": frozenset({"requester"}),
         "approval.list": frozenset({"owner", "approver"}),
         "approval.read": frozenset({"owner", "approver"}),
         "approval.decide": frozenset({"owner", "approver"}),
         "approval.reassign": frozenset({"owner", "approver"}),
+        "backup_review.list": frozenset({"owner"}),
+        "backup_review.read": frozenset({"owner"}),
+        "backup_review.decide": frozenset({"owner"}),
+        "reevaluation.list": frozenset({"owner"}),
+        "reevaluation.read": frozenset({"owner"}),
+        "reevaluation.decide": frozenset({"owner"}),
         "conflict.open": frozenset({"requester"}),
         "conflict.list": frozenset({"owner"}),
         "conflict.concur": frozenset({"owner"}),
@@ -148,6 +182,11 @@ ACTION_RESOURCE_KIND_REQUIREMENTS: Mapping[Action, str] = MappingProxyType(
         "conflict.open": "question_request",
         "conflict.escalate": "conflict_case",
         "manager.act": "manager_item",
+        "policy.read": "authority_policy",
+        "policy.write": "authority_policy",
+        "card.transfer_owner": "agent_card",
+        "card.revoke": "agent_card",
+        "scorecard.organization.read": "organization_scorecard",
     }
 )
 ACTION_ALLOWED_ROLES: Mapping[Action, frozenset[Role]] = MappingProxyType(
@@ -155,6 +194,8 @@ ACTION_ALLOWED_ROLES: Mapping[Action, frozenset[Role]] = MappingProxyType(
         "conflict.open": frozenset({"requester"}),
         "conflict.escalate": frozenset({"operator"}),
         "manager.act": frozenset({"manager"}),
+        "policy.write": frozenset({"admin"}),
+        "card.revoke": frozenset({"admin"}),
     }
 )
 
@@ -404,6 +445,79 @@ class CentralAuthorizer(Protocol):
         action: Action,
         resource: ResourceRef,
     ) -> bool: ...
+
+
+BrowserSessionAction: TypeAlias = Literal["session.establish", "session.read"]
+
+
+@final
+class BrowserSessionAuthorityAllowed:
+    """A current policy granted a browser-session action."""
+
+
+@final
+class BrowserSessionAuthorityDenied:
+    """A current policy denied a browser-session action without details."""
+
+
+@final
+class BrowserSessionAuthorityUnavailable:
+    """The current Authority policy could not be safely read."""
+
+
+BrowserSessionAuthorityResult: TypeAlias = (
+    BrowserSessionAuthorityAllowed
+    | BrowserSessionAuthorityDenied
+    | BrowserSessionAuthorityUnavailable
+)
+
+
+class BrowserSessionAuthority(Protocol):
+    """Narrow, current-policy port for the browser session bounded context.
+
+    This deliberately does not expose a startup-composed snapshot.  Browser
+    session establishment and reads must observe the policy available at each
+    authorization point, including the callback transaction precommit check.
+    """
+
+    def authorize(
+        self,
+        principal: AuthenticatedPrincipal,
+        action: BrowserSessionAction,
+        resource: ResourceRef,
+    ) -> BrowserSessionAuthorityResult: ...
+
+
+@final
+class FileReloadingBrowserSessionAuthority:
+    """Load and evaluate the strict Authority file for every browser action."""
+
+    def __init__(self, policy_path: Path, *, expected_org_id: str) -> None:
+        if not policy_path.is_absolute() or not expected_org_id:
+            raise ValueError("strict browser session authority configuration required")
+        self._policy_path = policy_path
+        self._org_id = expected_org_id
+
+    def authorize(
+        self,
+        principal: AuthenticatedPrincipal,
+        action: BrowserSessionAction,
+        resource: ResourceRef,
+    ) -> BrowserSessionAuthorityResult:
+        if action not in {"session.establish", "session.read"}:
+            return BrowserSessionAuthorityDenied()
+        try:
+            snapshot = load_authority_policy_yaml(
+                self._policy_path.read_text(encoding="utf-8"), expected_org_id=self._org_id
+            )
+            result = SnapshotCentralAuthorizer(snapshot).authorize(principal, action, resource)
+        except Exception:
+            return BrowserSessionAuthorityUnavailable()
+        if type(result) is AuthorizationGrant:
+            return BrowserSessionAuthorityAllowed()
+        if type(result) is AuthorizationDenied and result.kind == "policy_unavailable":
+            return BrowserSessionAuthorityUnavailable()
+        return BrowserSessionAuthorityDenied()
 
 
 class _DuplicateYamlKeyError(ValueError):
@@ -775,7 +889,10 @@ class SnapshotCentralAuthorizer:
             if canonical_resource.kind != required_kind or canonical_resource.resource_id is None:
                 return AuthorizationDenied(kind="not_found_or_denied")
             # conflict_case는 existing open Case 실재로 동적 결박한다(owner_subject_id 불요).
-            if required_kind != "conflict_case" and canonical_resource.owner_subject_id is None:
+            if (
+                required_kind not in {"conflict_case", "authority_policy", "organization_scorecard"}
+                and canonical_resource.owner_subject_id is None
+            ):
                 return AuthorizationDenied(kind="not_found_or_denied")
         if canonical_action == "conflict.open" and not self._current_conflict_open_request_matches(
             canonical_principal, canonical_resource

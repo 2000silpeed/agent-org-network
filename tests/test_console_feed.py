@@ -365,7 +365,7 @@ def test_console_feed_route_registered() -> None:
     app = create_app(runtime=StubRuntime())
     routes = {getattr(r, "path", None) for r in app.routes}
     assert "/console/feed" in routes
-    assert "/console/view" in routes
+    assert "/console/view" not in routes
 
 
 def test_console_feed_route_requires_auth_when_enabled() -> None:
@@ -376,13 +376,12 @@ def test_console_feed_route_requires_auth_when_enabled() -> None:
     assert res.status_code == 401
 
 
-def test_console_view_route_serves_html() -> None:
+def test_console_view_HTML_라우트는_제공하지_않는다() -> None:
     app = create_app(runtime=StubRuntime())
     client = TestClient(app)
     http = cast(Any, client)
     res = cast(Response, http.get("/console/view"))
-    assert res.status_code == 200
-    assert "text/html" in res.headers["content-type"]
+    assert res.status_code == 404
 
 
 # ── 배선(질문 1건 → 피드에 3사건 순서) ──────────────────────────────────────

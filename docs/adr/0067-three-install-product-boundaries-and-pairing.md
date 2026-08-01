@@ -2,6 +2,8 @@
 
 - 상태: 채택(Accepted)
 - 날짜: 2026-07-27
+- 현재 artifact 해석: 이 ADR은 목표 trust boundary다. 현재 실행·지원 상태와 entrypoint
+  존재 여부는 ADR 0072와 `docs/support-contract.json`이 우선한다.
 - 계보: ADR 0009(페르소나별 surface), ADR 0021(verified-email OIDC 신원 매핑), ADR 0029·0030(Owner측 OKF 저작·크로스머신), ADR 0034·0064(Agent Card·Registry User 라이브 등록), ADR 0049(production bootstrap), ADR 0050(중앙 Authority/RBAC), ADR 0052(durable credential)를 잇는다.
 - 적용 범위: 제품 설치 artifact, entrypoint, 설정·비밀·데이터 소유 경계, pairing/bootstrap, 제품형 온보딩과 기존 실행 진입점의 이행.
 - 제외 범위: IdP 계정 생성·초대·JIT 프로비저닝, User edit/delete/re-parent, 다중 IdP, production 배포 완료 선언.

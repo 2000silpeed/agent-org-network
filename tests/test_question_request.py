@@ -658,6 +658,74 @@ def test_Unowned는_intent_None또는_nonblank를_허용한다(intent: str | Non
     assert request.initial_disposition == "unowned"
 
 
+def test_non_actionable_초기처분은_Received에서_Declined로만_기록한다() -> None:
+    received = _received_without_routing()
+
+    declined = received.record_initial_routing(
+        intent=None,
+        disposition="non_actionable",
+        target=DeclinedRequest(reason_code="non_actionable_conversation"),
+        clock=lambda: _T1,
+    )
+
+    assert declined.intent is None
+    assert declined.initial_disposition == "non_actionable"
+    assert declined.state == DeclinedRequest(reason_code="non_actionable_conversation")
+    assert declined.revision == 1
+
+
+@pytest.mark.parametrize(
+    ("intent", "reason_code"),
+    [("환불", "non_actionable_conversation"), (None, "manager_declined")],
+)
+def test_non_actionable_초기처분의_위조된_intent_또는_사유는_거부한다(
+    intent: str | None,
+    reason_code: str,
+) -> None:
+    payload = _received_without_routing().model_dump()
+    payload.update(
+        intent=intent,
+        initial_disposition="non_actionable",
+        state=DeclinedRequest(reason_code=reason_code).model_dump(),
+        revision=1,
+        updated_at=_T1,
+    )
+
+    with pytest.raises(ValidationError):
+        QuestionRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize("revision", [0, 2, 9])
+def test_non_actionable_초기종착_aggregate는_revision_1만_허용한다(
+    revision: int,
+) -> None:
+    payload = _received_without_routing().model_dump()
+    payload.update(
+        intent=None,
+        initial_disposition="non_actionable",
+        state=DeclinedRequest(reason_code="non_actionable_conversation").model_dump(),
+        revision=revision,
+        updated_at=_T1,
+    )
+
+    with pytest.raises(ValidationError):
+        QuestionRequest.model_validate(payload)
+
+
+def test_revision_1_최초_Declined를_Unowned_Manager거절로_위조하면_거부한다() -> None:
+    payload = _received_without_routing().model_dump()
+    payload.update(
+        intent=None,
+        initial_disposition="unowned",
+        state=DeclinedRequest(reason_code="manager_declined").model_dump(),
+        revision=1,
+        updated_at=_T1,
+    )
+
+    with pytest.raises(ValidationError):
+        QuestionRequest.model_validate(payload)
+
+
 @pytest.mark.parametrize(
     ("state", "intent", "initial_disposition"),
     [

@@ -317,11 +317,10 @@ def test_미존재_레코드_배지_조회는_404() -> None:
 # ── 페이지 라우트 + 분산 회신 경로 적재 ──────────────────────────────────
 
 
-def test_supervision_페이지가_서빙된다() -> None:
+def test_supervision_HTML_페이지는_제공하지_않는다() -> None:
     client, _, _ = _client()
     res = _get(client, "/supervision")
-    assert res.status_code == 200
-    assert "답변 감독" in res.text
+    assert res.status_code == 404
 
 
 def test_P17_질문은_legacy_WS_회신_경로를_통하지_않는다() -> None:

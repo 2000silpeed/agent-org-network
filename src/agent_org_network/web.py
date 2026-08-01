@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, assert_never, cast
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, StrictInt, ValidationError, field_validator
 
 from agent_org_network.ask_org import (
@@ -242,16 +242,6 @@ from agent_org_network.storage_select import (
 )
 from agent_org_network.token import TokenStore
 from agent_org_network.user import User
-
-_WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
-_INDEX_HTML = _WEB_DIR / "index.html"
-_INBOX_HTML = _WEB_DIR / "inbox.html"
-_MONITOR_HTML = _WEB_DIR / "monitor.html"
-_SUPERVISION_HTML = _WEB_DIR / "owner-monitor.html"
-_CONSOLE_FEED_HTML = _WEB_DIR / "console-feed.html"
-_ORG_HTML = _WEB_DIR / "org.html"
-_BUILDER_HTML = _WEB_DIR / "builder.html"
-_ADMIN_HTML = _WEB_DIR / "admin.html"
 
 # 웹챗에서 오는 익명 end-user. 채팅(`/ask`·`/`)은 운영 세션을 요구하지 않는다
 # (ADR 0009·0016 — 실 사용자 면은 운영 면과 다른 별개 공간, 익명 유지).
@@ -523,7 +513,7 @@ def serialize_monitoring_item(
 
     `current_owner`(크로스머신 재시연 결함 5-b): 그 답의 *현재 카드 owner*
     (`CorrectionService`가 정정 판정에 쓰는 것과 같은 값 — 호출부가 registry에서
-    조회해 넘긴다). no-auth 모드 owner-monitor.html이 이 값을 정정 제출 body의
+    조회해 넘긴다). no-auth 모드 클라이언트가 이 값을 정정 제출 body의
     `by_owner`에 실어 보내는 폴백 출처가 된다(auth 활성이면 서버가 세션으로 덮어써
     이 값은 무시됨 — M-1 계약 그대로 유지). 미상 카드(registry 조회 실패)면 None.
     """
@@ -1582,7 +1572,7 @@ def _own_injected_question_surface(
 
 
 @_own_injected_question_surface
-def create_app(
+def create_developer_api_app(
     runtime: AgentRuntime | None = None,
     dispatcher: RuntimeDispatcher | None = None,
     review_store: BackupReviewStore | None = None,
@@ -1613,7 +1603,7 @@ def create_app(
     operational_authorization: OperationalAuthorization | None = None,
     operational_mutation_approval: MutationApprovalProvider | None = None,
 ) -> FastAPI:
-    """웹 앱을 조립한다. 기본 런타임은 `build_demo`의 기본(진짜 Claude).
+    """JSON/SSE/WebSocket 전용 Developer API를 조립한다.
 
     결정론이 필요한 테스트는 `runtime=StubRuntime()`을 넘겨 실제 claude 호출을 막는다.
     `session_secret`(T6.5·ADR 0016): 운영 면 세션 서명 키. 주입 시 `SessionMiddleware`를
@@ -1672,7 +1662,23 @@ def create_app(
     """
     from starlette.middleware.sessions import SessionMiddleware
 
-    app = FastAPI(title="Agent Org Network — 채팅·처리함(데모)")
+    app = FastAPI(
+        title="Agent Org Network — Developer API",
+        openapi_url="/openapi.json",
+        docs_url=None,
+        redoc_url=None,
+        swagger_ui_oauth2_redirect_url=None,
+    )
+
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
+        """Developer API 프로세스가 요청을 처리할 수 있음을 보인다."""
+        return {"status": "ok"}
+
+    @app.get("/readyz")
+    def readyz() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
+        """완성된 Developer API 조립의 readiness를 보인다."""
+        return {"status": "ready"}
 
     if (
         not question_org_id.strip()
@@ -2257,10 +2263,6 @@ def create_app(
         view_answer_with_correction as _view_answer_with_correction,
     )
 
-    @app.get("/supervision")
-    def supervision_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        return FileResponse(_SUPERVISION_HTML)
-
     @app.get("/supervision/answers")
     def supervision_answers(  # pyright: ignore[reportUnusedFunction]
         request: Request, agent_id: str, needs_review: bool = False
@@ -2466,10 +2468,6 @@ def create_app(
         DuplicateUserError as _DuplicateUserError,
         UserCandidate as _UserCandidate,
     )
-
-    @app.get("/admin")
-    def admin_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        return FileResponse(_ADMIN_HTML)
 
     @app.get("/admin/cards")
     def admin_list_cards(request: Request) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
@@ -3041,14 +3039,6 @@ def create_app(
         request.session.clear()
         return {"ok": True}
 
-    @app.get("/")
-    def index() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        return FileResponse(_INDEX_HTML)
-
-    @app.get("/inbox")
-    def inbox_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        return FileResponse(_INBOX_HTML)
-
     def _request_aware_case(case_id: str) -> ConflictCase | None:
         """조립이 소유한 request-aware Case를 terminal 상태까지 조회한다."""
         store = _question_surface.conflict_store
@@ -3596,13 +3586,7 @@ def create_app(
         _authorize_operational_org(request, action="monitor.read", principal=principal)
         return [summarize_audit_record(i, r) for i, r in dedupe_audit_records(records)]
 
-    # 정적 경로(/monitor/view)를 동적(/monitor/{index})보다 *먼저* 등록한다 —
-    # 그러지 않으면 "view"가 {index}(int)에 잡혀 422가 난다(FastAPI 매칭 순서).
-    @app.get("/monitor/view")
-    def monitor_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        return FileResponse(_MONITOR_HTML)
-
-    @app.get("/monitor/{index}")
+    @app.get("/monitor/{index:int}")
     def monitor_detail(index: int, request: Request) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         """운영 모니터링 상세 — 인증 활성 시 로그인 필요(ADR 0016 결정 5)."""
         if _operational_central_mode:
@@ -3653,10 +3637,6 @@ def create_app(
         graph = serialize_org_graph(bundle.registry)
         _authorize_operational_org(request, action="org_graph.read", principal=principal)
         return graph
-
-    @app.get("/org/view")
-    def org_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        return FileResponse(_ORG_HTML)
 
     # ── 운영자 콘솔 POST 명령 (T9.2(b)·T9.3(b)·T9.5(c)) ─────────────────────
     #
@@ -3968,11 +3948,6 @@ def create_app(
             media_type="text/event-stream",
             headers=headers,
         )
-
-    @app.get("/console/view")
-    def console_feed_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        """관전 화면 서빙 — EventSource로 /console/feed를 구독하는 정적 HTML."""
-        return FileResponse(_CONSOLE_FEED_HTML)
 
     # ── T5.3: Agent 빌더(Owner 면 — 카드 구성·검증·YAML 미리보기) ────────────────
 
@@ -4863,10 +4838,6 @@ def create_app(
             ]
         }
 
-    @app.get("/builder")
-    def builder_page() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        return FileResponse(_BUILDER_HTML)
-
     # P17 surface는 다른 라우터·서비스 조립이 모두 성공한 뒤에만 소유한다.
     # 생성 후 라우터 등록이 실패해 app이 반환되지 않아도 producer·storage를
     # 즉시 회수해 shutdown callback에 닿지 못하는 수명 누수를 막는다.
@@ -5012,6 +4983,10 @@ def seed_gateway_from_disk(gateway: GitGateway, registry: Registry, okf_root: st
         )
 
 
+# 한 release 동안 legacy 호출부가 새 Developer API factory로 이어지게 한다.
+create_app = create_developer_api_app
+
+
 # OPERATOR_SESSION_SECRET env 설정 시 인증 ON(프로덕션), 미설정 시 인증 OFF(데모).
 # 프로덕션에서는 반드시 OPERATOR_SESSION_SECRET 환경변수를 설정할 것. 하드코딩 금지.
 #
@@ -5037,7 +5012,7 @@ seed_gateway_from_disk(_demo_gateway, build_demo().registry, DEMO_OKF_ROOT)
 # `ClaudeCodeRuntime`(기존 build_demo 기본·게이트·데모 행위 불변·무회귀)에 `_demo_gateway`를
 # snapshot 모드로 연결 — 답변이 시드+저작 커밋 번들을 cwd로 접지한다. `AON_PROVIDER=claude-api`면
 # owner OAuth 인프로세스 anthropic SDK 스트리밍 — `/ask/stream`에 실 토큰 델타가 흐른다(중앙 토큰 0).
-app = create_app(
+app = create_developer_api_app(
     runtime=select_runtime(DEMO_OKF_ROOT, git_gateway=_demo_gateway),
     session_secret=os.environ.get("OPERATOR_SESSION_SECRET"),
     reeval_store=_demo_reeval_store,

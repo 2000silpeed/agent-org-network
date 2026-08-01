@@ -1,404 +1,1050 @@
-# Agent Org Network — TRD v0
-
-작성일: 2026-06-20 · rev7(2026-07-02 — 근거 ADR 최신화: 세션[0024]·HITL[0025]·워커 토큰[0026]·owner OAuth 공급자 런타임[0027]·스케일 라우팅[0028]·OKF 저작[0029·0030]·SSE 스트리밍[0031]·멱등 publish·의미 dedup[0032]) · **rev8(2026-07-12 — Phase 12 완료 상태·중앙 지식 경계 정합화, Phase 16 P16.1 자동 CI 게이트 추가)** · **rev9(2026-07-12 — 기업 재감사: Question Request 중심 수명주기·모듈러 모놀리스 목표 경계·공통 Answer Finalization·production fail-closed 계약 추가, ADR 0042·0043)** · **rev10(2026-07-13 — P17.3b Request-first SSE 생산자·구독 분리와 안전한 HTTP 조회 경계, P17.3c SQLite schema capability 설계 반영, ADR 0044)** · **rev11(2026-07-13 — P17.3c SQLite Completion UoW·strict reader·atomic_v1 조립 게이트 구현 완료)** · **rev12(2026-07-13 — P17.2c-2 모든 사용자 표면 전환·공유 composition·감독 read view·presence 안전 증거 완료)** · **rev13(2026-07-13 — P17.4 request-aware Unowned Manager 처분·request-scoped Authority·active HTTP watch 구현 완료, ADR 0045)** · **rev14(2026-07-13 — P17.5 S1~S2 request-aware Case·concurrence claim·direct consensus 재개 구현, ADR 0046)** · **rev15(2026-07-13 — Phase 18 상호 검토·통제된 개선의 설계 경계와 shadow-only 승격 게이트 채택, ADR 0047)** · **rev16(2026-07-13 — P17.5 S3 Deadlock·Registry drift escalation과 request-aware Manager mediation 구현 완료, ADR 0046)** · **rev17(2026-07-13 — P17.5 S4 typed post-primary grounding·terminal failure CAS 구현 완료, ADR 0046)** · **rev18(2026-07-13 — P17.5 S5 composition·웹·UI·채널 수직 연결과 terminal HTTP 재시도 복구 구현 완료, ADR 0046)** · **rev19(2026-07-14 — P17.5 S6 reservation proof·32-way 경쟁·단계별 장애·독립 리뷰 완료, ADR 0046)** · **rev20(2026-07-14 — P17.6b Approval 운영·새 세대 재지정·초안 보존 경계 채택, ADR 0048)** · **rev21(2026-07-14 — P17.6b S1 ApprovalItem 수명주기·Store·안전 조회 구현 완료, ADR 0048)** · **rev22(2026-07-14 — P17.6b S2 승인 처분·Finalization precommit generation 증거·SQLite handoff v2 완료, ADR 0048)** · **rev23(2026-07-14 — P17.6b S3 만료·수동 재지정·unavailable 수렴과 process-local 공정 복구 구현 완료, ADR 0048)** · **rev24(2026-07-14 — P17.6b S4 Approval 사건 journal·공유 recorder·exact-terminal 보존 판정 구현 완료, ADR 0048)** · **rev25(2026-07-14 — P17.6b S5 principal-first HTTP·조건부 MCP·두 UI·전 채널 동등성 구현 완료, ADR 0048)** · **rev26(2026-07-21 — P17.14 실 사용자 프로비저닝 Depth A 구현 완료: `admit_user`·`AdminUserService.register_user`·`SqliteUserJournal`(user_journal·user→card 리플레이 순서)·`user.register` 인가·`POST/GET /admin/users`(중앙 모드 fail-closed)·admin.html 사용자 탭, ADR 0064)** · 근거: [CONTEXT.md](../CONTEXT.md), ADR 0001~0064([adr/](adr/)), [prd-v0.md](prd-v0.md)
-
-최신 개정: **rev53(2026-07-20 — Phase 18 S1c.3 fake Bound/read gate slice)**
-
-> **현재 규범 기준.** rev27과 ADR 0042·0046·0047·0048·0049가 최신 기술 계약이다. ADR 0048은 Approval 만료를 새 Item 세대 재지정으로 처리하고, 사람의 명시 Reject만 Declined로 남기며, P17.6b와 P17.9·P17.13의 내구성·삭제 경계를 분리한다. P17.6b S1~S6은 Item 세대·안전 조회, actor-free 처분의 Finalization·terminal 수렴, 수동·만료 재지정과 unavailable 종결, 본문 없는 사건 증거·exact-terminal 보존 판정, 웹·MCP·두 UI와 전 채널 의미 동등성, 경쟁·장애 게이트를 구현했다. stale open 처분은 exact direct/current/round/full lineage와 Request를 다시 확인하고, resolved Item은 저장 winner와 terminal/partial Request·completion 인과를 incoming 처분보다 먼저 검증한다. Boundary·Operations·Retention은 같은 process-local recorder를 쓰고 composition은 read-only event handle만 외부에 제공한다. ADR 0049는 demo·legacy import가 없는 readiness-only bootstrap, 설정 선검증, production-style durability·identity gate, single-use attestation, wiring seal과 exact-original lifecycle ownership을 구현 계약으로 확정했다. actual env는 실 어댑터가 없으면 `production_adapters_unavailable`로 닫히며, 주입 성공도 `composition_contract_only`일 뿐 서버 실행이나 배포 준비를 뜻하지 않는다. 이 보호는 trusted Python process의 조립·수명 규약이지 보안 sandbox가 아니다. Authority/RBAC·조직 격리는 P17.8, durable transaction·journal·outbox·lease·재시작 복구는 P17.9가 맡는다. 둘이 끝나기 전에는 production FastAPI 앱을 열지 않는다. ADR 0047의 Phase 18에는 strict SQLite reciprocal-review ledger S1a~S1b.5b, S1c.1~S1c.3가 있다. S1c.3은 immutable v7 Pending 위 additive v8 Bound/Superseded terminal, signed Bound/read attestation과 every-read target/Authority/session/profile/generation/enforcement/kill check를 trusted fake integration에 구현한다. focused 18 tests와 독립 리뷰 APPROVE는 이 fake slice 한정이다. real source mutation/network/production credential adapter와 P17 production durability는 unavailable이고 fake 결과는 production profile로 승격되지 않는다. S1c.4는 PostgreSQL/multi-instance·external service identity/secret/mTLS·durable central profile registry가 모두 준비된 뒤 별 enablement gate로만 real adapter를 연다. proposal/eval/promotion도 0이다. 아래의 과거 실행 모델 설명은 결정 이력이며 충돌하면 rev27을 따른다. 현재 코드는 기능이 많은 아키텍처 데모이지 기업 production 배포본이 아니다.
-
-> **P17.8 S0~S3 구현 상태.** strict YAML 정책 스냅샷과 `AuthenticatedPrincipal`·`ResourceRef`·sealed `AuthorizationGrant`를 만들고, 질문·Approval·Conflict·Manager application에서 action별 grant를 verify한다. 허용은 중앙 역할 permission과 저장된 현재 귀속을 함께 만족해야 한다. HTTP는 body parsing보다 먼저 principal을 확정하고, MCP는 server-side `AuthenticatedPrincipal` provider와 요청·반환 식별자 대조를 사용한다. 이 보장은 시작-불변 단일 프로세스 정책과 application 경계까지다. OIDC/JWKS, S4 운영·관리·저작 표면, S5 워커 binding, S6 production composition, P17.9 durable policy epoch·transaction·lease·outbox는 아직 없다.
-
-> **P17.8 S4/P0 구현 상태.** `OperationalApplication`은 운영 웹과 별도 운영 MCP server가 공유하는 current-resource authorization seam이다. query는 snapshot 뒤 DTO 전 sealed grant를 다시 확인하고, mutation은 대상 재조회·직전 재인가한다. MCP registry는 action map과 name·action을 함께 검증해 불일치면 factory/호출 모두 fail-closed한다. monitor/audit/org graph/session/HITL과 카드 list/get/register/transfer가 이 seam을 쓴다. `AuthoringApplication`은 raw·staged 본문을 분리한 채 structured author publish와 index 조회를 HTTP/MCP에 공통 제공한다. 중앙 mutation은 operation approval evidence와 audit sink를 필수로 하며, evidence는 action·정규화 명령 지문·현재 ResourceRef와 카드/세션 snapshot 지문을 exact 대조한다. 감사에는 evidence ID와 명령 SHA-256, allowlisted operation만 남기고 원문·비밀값은 남기지 않는다. 이 audit은 append-only 절차 증거일 뿐 mutation과 원자적이지 않고, 같은 명령의 durable one-time evidence 소비·재시작 뒤 replay 차단·durable ordering·exactly-once·다중 인스턴스 보장은 P17.9 범위다. 기존 HITL toggle은 답변 승인 설정이며 operation approval을 대신하지 않는다. credential MCP와 typed 재admission이 없는 author run/raw bundle MCP, S5/S6은 아직 없다.
-
-> **P17.9 S4.3b 구현 상태.** `sealed escalation evidence` reader는 SQLite `mode=ro`로만 Case·Request·candidate baseline·Conflict-open ingress companion·direct vote evidence를 조직 범위와 정준 reference로 validate-only한다. caller의 ordered claim은 ingress claim digest 및 baseline ordinal/Card/Owner/domain/route와 exact 일치해야 하며, current Registry snapshot digest 비교를 vote evaluation보다 먼저 수행한다. 결과는 `Pending | DivergentVotes | CandidateRegistryChanged`와 typed reference·digest·round만 포함한다. reader는 schema/write/receipt/action/Manager-root 선택/escalation side effect를 갖지 않으며, open Case의 unanimous 또는 부분 합의는 fail-closed다. durable `conflict.escalate` UoW의 action mapping·직전 재인가·HITL/receipt/audit/outbox 원자성은 S4.3c에 남는다.
-
-> **P17.9 S4.3c.0 구현 상태.** `RegistryConflictEscalationSnapshotReader`는 Conflict-open reader와 독립된 graph-aware port다. 하나의 Registry guard에서 composition-owned org scope proof, ordered immutable claim과 current Card/Owner/intent/RouteTarget/under-claim, candidate Owner들의 cycle-free manager path를 확인한다. 같은 유일 root 아래에서 최대 거리 기준의 유일 nearest common Manager만 선택하고, 공통 Manager가 없으면 유일 root fallback만 허용한다. 선택 tie, cycle/self-loop, missing relation, multiple root, scope·claim·graph drift는 fail-closed다. snapshot/verify-current는 typed reference와 digest만 다루며 DB schema/write, central action, receipt, ManagerItem transition은 제공하지 않는다.
-
-> **P17.9 운영 MCP R2a 구현 상태.** production `create_app`은 arbitrary source proof factory나 self-reported configured-org/id wrapper를 받지 않는다. actual operational source가 source-specific scoped capability를 제공하지 않는 raw legacy central composition은 `OperationalApplication`을 만들지 않아 unavailable로 수렴한다. composition gate는 central mutation/query의 source-dependent 경로보다 먼저 확인되며, POST HITL도 principal·Registry/card·body parser보다 앞에서 닫힌다. direct scoped application test는 R2b adapter의 consumer shape만 검증할 뿐 production central enablement가 아니다.
-
-> **P17.9 운영 MCP R2b S0~S1 구현 상태.** `OperationalCentralDependencies`는 exact six kind의 tenant source capability만 받는다. each capability는 concrete bound source object와 configured org를 exact 대조하고 source-side live state의 provenance/revision/row org/fault를 validate-only한다. reader/writer는 독립 source이며 raw legacy object·callback·tuple·generic snapshot과 partial/mismatched dependency는 construction에서 닫힌다. normal own revision advance에는 새 capability를 발급할 수 있지만 swap·mixed row·fault는 unavailable이다. SQLite schema, application/MCP wiring, production capability는 후속 slice다.
-
-> **P17.9 운영 MCP R2b S2.0 구현 상태.** `sqlite_operational_tenant_sources`는 legacy schema를 변경하지 않고 four-table `operational_*` namespace와 exact component manifest를 fault-atomic 설치한다. shared `schema_component_manifests`는 absent일 때만 생성하고 existing canonical catalog는 validate/reuse하므로 Completion component와 같은 DB에서 재실행 가능하다. corrupt shared catalog, owned partial/marker/DDL drift는 migration/open 모두 repair 없이 fail-closed다. strict graph payload/CAS와 source repository API는 S2.1에 남는다.
-
-> **P17.9 운영 MCP R2b S2.1~S3.1 구현 상태.** S2 repositories는 strict Registry graph payload/digest/revision CAS와 session/audit/HITL typed row decode를 제공한다. S3.0은 six tenant port의 exact public shape와 `StateCommittedAuditPending`의 비원자 경계를 sealed union으로 고정했다. S3.1은 v2 safe-audit reader/writer와 Registry·graph·session·HITL org-bound SQLite adapters를 구현한다. each call은 bound org, live schema, source state와 canonical persisted value를 revalidate하며, malformed/fault/scope drift는 unavailable이다. mutations are single-CAS semantic convergence only: a loser may replay an already identical final meaning, never retry into a different write. graph snapshot ordering is root-first then depth/card-id BINARY; independent 8-way connection tests fix one session revision/timestamp transition and tenant A/B same-ID isolation. application/MCP composition and R1 transactionally coupled receipt/audit/outbox remain unavailable.
-
-> **P17.9 운영 MCP R2b S3.2 구현 상태.** `TenantOperationalApplication`은 exact six SQLite adapter를 한 `TenantOrgId`로 조립하고 legacy operational application과 source를 공유하지 않는다. query는 live source read→DTO-derived current `ResourceRef`→central action check→re-read/re-authorize 순서이며, HITL final check는 current card owner/fingerprint를 다시 읽어 resource drift를 차단한다. tenant-only HTTP/MCP adapters are server-principal-only and project identical strict DTOs. R1 prior mutation routes/tools are a deterministic `operational_mutation_uow_unavailable` 503 before principal, body, source or mutation-port access; `StateCommittedAuditPending` is not used to enable a state-only write. PostgreSQL, production capability and receipt/audit/outbox UoW remain out of scope.
-
-> **P17.9 운영 MCP R1.0 구현 상태.** `durable_tenant_operational_mutations_v1`은 S2 tenant source와 S3.1a audit v2 parent를 validate-only로 요구하는 별 component다. file-backed SQLite source scope snapshot은 resolved file/device/inode와 schema state를 canonical fingerprint로 기록하며 memory/unnamed DB에는 발급되지 않는다. receipt parent의 `(org_id, receipt_id)` unique key와 audit/outbox child의 receipt PK·same-org composite FK, effective `PRAGMA foreign_keys=ON`이 receipt/intents의 exact 1:1을 DB 수준에서 강제한다. migration/open은 partial/manifest/DDL/FK drift를 보정하지 않는다. command state transition, authority/evidence binding, transport enablement은 아직 없다.
-
-> **P17.9 운영 MCP R1.1 구현 상태.** `SqliteTenantOperationalMutationUnitOfWork` is the only R1 state writer: it uses `BEGIN IMMEDIATE` direct SQL rather than composing public tenant adapters. The four prevalidated command types conditionally write canonical state, receipt, audit-v2 event and secret-free audit/outbox intents, then strict-read all mirrors before commit. Receipt lookup precedes stale expected-scope CAS so an original immutable command can replay, but new same-effect commands without that receipt conflict. Four actions × six injected fault points prove source-state and companion rollback; independent connections prove one fresh transfer plus seven exact replays and one winner for conflicting session ends. Authority/evidence verification and HTTP/MCP mutation activation remain outside this module.
-
-> **P17.9 운영 MCP R1.2 구현 상태.** `durable_tenant_operational_authorization_v1` adds one strict same-org authorization-evidence companion per R1 receipt. It mirrors principal/action/digest, sealed pre/post resources and fingerprint, approver/evidence IDs and canonical timestamps without raw grants or human prose. `TenantOperationalApplication` plans canonical v2 commands, requires current central authorization and exact approval evidence, then rechecks source/resource after authorization and once more immediately before entering the UoW. Replay never calls the approval port but recomputes the current post mirror and reauthorizes it. R1.0-only, capability drift, evidence/source tamper and current post drift fail closed; binding-enabled evidence insert faults roll back state and every companion. Transport is still unavailable until R1.3.
-
-> **P17.9 운영 MCP R1.3 구현 상태.** `TenantOperationalMutationTransport` is an exact composition wrapper over the R1.2 application, six tenant sources, R1 capabilities, server-side principal provider, central authorization and sealed approval port. It never invokes the R1.1 UoW directly. The default read-only factory remains mutation-unavailable; enabled HTTP/MCP factories validate the complete transport before body/principal/source access. All four commands require canonical `created_at` and use plan→approval→commit; cross-channel replay returns the immutable receipt with one approval/evidence only. Partial composition and invalid timestamp/fields map to safe unavailable outcomes. PostgreSQL, production capability, outbox consumer and multi-instance recovery remain unavailable.
-
-> **P17.9 credential R3.0 구현 상태.** `DurableCredentialDelivery` is a recovery-capable but inactive port: `recover_stage` returns `DeliveryStage(stage_key, delivery_ref) | StageMissing`, and `stage_once` returns the same typed stage binding. `durable_credential_stage_fence_v1` validates its durable-credential parents, manifest, foreign keys, exact sealed state/material matrix, lower-hex SHA-256 digests and `delivery:v1:<sha256>` refs at migration and validate-only runtime open/reconciliation. It persists no raw secret, grant, rationale or body, and does not structurally promote the legacy delivery port. Because a real credential must not be provisionally materialized before stage, v1's direct credential FK stays inactive: R3.1 introduces an immutable Credential Issue Target reservation and target-FK v2 fence without v1 migration/backfill. Claim, external stage, credential commit/release and MCP enablement remain unavailable until R3.1/R3.2.
-
-> **P17.9 credential R3.1a 구현 상태.** `durable_credential_issue_targets_v1` and `durable_credential_stage_fence_v2` are an inactive reservation capability. Migration/open/reconciliation require the exact parent, manifests, DDL, partial unique index, immutable UPDATE/DELETE triggers and row mirrors; any v1 direct-FK table/marker, drift or corrupt row is unavailable with no repair. Reservation obtains `BEGIN IMMEDIATE` before live validation and collision checks, so same semantic requests converge to the current target while actual credential and active target cannot coexist. It stores no raw secret and invokes no delivery port. Claim/recover-before-stage is R3.1b; materialization/release/MCP remain unavailable.
-
-> **P17.9 credential R3.1b 구현 상태.** `sqlite_durable_credential_issue_staging` is the only stage activation seam over the v2 target/fence. It atomically reserves target+PendingStage, durably claims before any external call, and passes the raw secret only to `DurableCredentialDelivery`. The winner calls recovery first and calls `stage_once` only for explicit `StageMissing`; a token hash/generation CAS binds the returned `DeliveryStage` to the current claimant. Claimed retries rotate ownership and recover only, persisted Staged replays return the stored reference without delivery, and before/after-CAS faults roll back to recoverable Claimed state. The lock is target-scoped for SQLite process coordination and does not serialize unrelated targets; the durable fence remains the cross-connection authority. No credential materialization, release or MCP factory wiring occurs here; those remain R3.2.
-
-> **P17.9 credential R3.2 구현 상태.** `CredentialIssueMaterializationOperations` is the sole public production commit boundary: its factory exact-checks and single-claims `CredentialIssueMaterializationVerifierCapability`, then retains the verifier privately. `commit(path, org_id, target_id, now, release)` has no verifier/proof argument. The raw SQLite verifier seam is private and deterministic tests only; capability reuse or arbitrary partial/fake objects fail before commit. Credential MCP wiring remains unavailable.
-
-> **P17.9 credential R4 구현 상태.** `sqlite_durable_credential_issue_cleanup` is a separate recovery seam over only the exact current `CleanupPending` target/fence/ref triple. It writes an immutable same-ref cleanup intent and append-only attempt before calling external abort; a success result and both `Cleaned` CAS writes commit together, while exceptions or ambiguity retain `CleanupPending` for same-ref retry. Composite foreign keys, immutable-row triggers, canonical catalog and UTC-millisecond checks make ref/history/timestamp tampering unavailable. It imports neither stage nor release/materialization paths; target-scoped coordination permits unrelated target aborts. This is SQLite at-least-once recovery, not external exactly-once or MCP activation.
-
-> **P17.9 credential R5.0 구현 상태.** `credential_mcp` has no decorated handler, legacy registry/direct-delivery import, scope-proof mint or capability claim. Both public factories discard arbitrary input and return a fresh FastMCP server with zero tools; the immutable four-entry tool/action matrix is declarative only. Activation is deferred until R5.1 immutable scope binding, R5.2 scoped issue orchestration, R5.3 committed scope projection/read, R5.4 scoped revoke, and R5.5 exact matrix composition exist. Thus no partial/fake source proof can re-open a legacy credential route.
-
-> **P17.9 credential R5.1 구현 상태.** `sqlite_durable_credential_scope_bindings` is an additive named-file capability. Its combined reservation holds `BEGIN IMMEDIATE` while inserting both v2 Issue Target and same-org scope binding; a fault rolls both back. Canonical manifest/catalog/FK/index/immutable-trigger and row validation require a trusted current `CredentialScopeSource` at open and compare every persisted credential/card/owner/resource/source revision/digest field. Check-bypass well-formed forged rows, source absence/mixed-org/drift and timestamp-only replay differences fail closed or converge to the first binding. It has no stage/materialize/release/MCP imports or backfill path.
-
-> **P17.9 credential R5.2a 구현 상태.** `_credential_issue_transition_core` owns v2 claim/recovery/persist and credential materialization/readback, but imports neither scope, authority, MCP, release nor abort. Its sealed connection-bound guards let the scoped bridge run R5.1 schema/row/source validation and current principal/grant/exact issue-evidence checks in the same SQLite transaction at claim/pre-external and materialize prepare/prewrite. A private legacy adapter preserves deterministic R3 compatibility only. Core materialize returns `CommittedCredentialDelivery` without release; scoped committed read revalidates proof and returns only the canonical persisted ref. Test-only prewrite faults are not public API. Staged failure CASes the exact ref to `CleanupPending` with credential companions zero; committed replay validation failure leaves state unchanged. Outer release and MCP remain unavailable.
-
-> **P17.9 credential R5.2 구현 상태.** `credential_issue_scoped_orchestration` exposes only a path-bound, single-claim bridge capability; it claims R5.2a operations and sealed R4 cleanup readiness without exposing core, reconciler or abort. Reservation obtains server-side idempotent issue approval then resolver-roundtrips exact action/digest/resource evidence before R5.1 atomic insert. Typed readiness calls the secret factory only for `NeedsInitialStage`; `AlreadyStaged`/`AlreadyCommitted` use no secret and `ClaimedRecovery` is unavailable. The bridge releases only after scoped canonical readback proves the same persisted ref; release/drift returns `ReleasePending`. R4 readiness privately classifies only canonical validated exact pending target/fence pairs; missing/corrupt/tampered DB is unavailable. MCP and projection/read/revoke remain unavailable.
-
-> **P17.9 credential R5.3 구현 상태.** `sqlite_durable_credential_scope_projections` is an additive immutable companion, installed only over canonical R5.1/v2 parents. Its `(org_id,target_id)` primary key and `(org_id,credential_id)` uniqueness bind Target generation, credential/Card/Owner fingerprints, source snapshot, binding/commit timestamps and a projection digest to the actual active credential, Committed Target/Fence and receipt. Materialization persists it before receipt/audit/outbox/fence finalization and re-reads it in the same transaction; companion persist/readback faults roll every write back. Open/read/release demand exact schema object sets (including no extra index/trigger), canonical rows and trusted current source; absent/tampered/drifted projection is unavailable with delivery release 0. The neutral core names only companion persist/readback hooks. Read DTO, revoke, MCP activation, repair and backfill remain unavailable.
-
-> **P17.9 credential R5.4 구현 상태.** `credential_scoped_read` provides only sealed secret-free `CredentialReadView` list/get results. It uses an independent current-reader source port, requires organization then per-current-credential `worker_credential.read` grants, and completes all source/authorization callbacks before a final canonical R5.1/R5.3 anchor/stable read; any row, source, ownership, lifecycle, catalog or authorization drift makes the entire list unavailable. `credential_scoped_revoke` is a separate single-use capability and companion ledger: its typed command and server-owned UTC-ms clock, one HITL provider acquisition, same-evidence resolver prewrite check, current source/grant and generation/revision CAS write a scalar-bound receipt with evidence-free audit/outbox atomically. Replay compares all command/principal scalars and rechecks current proof without calling HITL. Canonical manifest/catalog/FK/trigger/row validation and every write/readback fault fail closed and rollback. MCP composition remains unavailable.
-
-> **P17.9 credential R5.5 구현 상태.** `credential_mcp` retains its immutable four-entry action matrix and two input-independent zero-tool legacy factories. A separate enabled factory consumes exactly one preflighted aggregate over R5.2 issue bridge and R5.4 read/revoke capabilities only after provisional FastMCP construction, four decorator registrations and final matrix equality succeed; constructor/decorator/matrix failure and direct child-vs-aggregate races leave every capability unclaimed. Each tool takes one optional opaque request and manually strict-parses it, so FastMCP validation never reflects malformed caller values; all unavailable errors are field-free. Inputs supply no server identity, org, proof, clock, secret or delivery reference, issue/release outputs hide ref/secret, and handlers never invoke cleanup/abort. Exact four-tool registration is still only SQLite in-process composition; transport/OIDC/PostgreSQL/multi-instance remain out of scope.
-
-> **P17.8 S5 구현 상태.** `WorkerConnectionPrincipal`은 사람 `AuthenticatedPrincipal`과 다른 typed machine identity이며 raw credential 없이 owner·credential id/generation·role·process-local epoch만 가진다. full central worker seam은 authorizer·principal resolver·Registry가 모두 있어야 admission을 열고, push의 `WorkDeliveryBinding`과 socket-고정 principal을 submit·publish·sync·disconnect마다 현재 mapping·Registry owner·worker binding과 exact 비교한다. old socket이 새 epoch를 빌리거나 새 연결을 disconnect하지 못한다. 이 fence는 process-local이며 durable credential authority·ticket lease/UoW·restart·multi-instance recovery는 P17.9에 남는다.
-
-> **P17.8 S6 구현 상태.** `ProductionAuthorityCapability`은 config org·strict snapshot·exact `SnapshotCentralAuthorizer`·identity resolver·operational/worker authorizer와 binding source를 construction에서 대조하고, actual Question Surface의 Question Resolution authorizer·resolver·operational binding까지 factory seal로 확인한다. claim/revoke/close는 QSC lifecycle lock 하나로 직렬화돼 closed/unbound/mismatched/replayed composition을 reject한다. 이 gate는 trusted process의 `composition_contract_only` proof이며 real OIDC/JWKS·FastAPI server·durable policy epoch·credential authority·lease/outbox/restart/multi-instance를 제공하지 않는다.
-
-> **P17.9 S1~S4.1 구현 상태.** credential vertical slice는 legacy TokenStore와 분리돼 credential state·immutable receipt·approval snapshot·secret-free audit/outbox intent를 SQLite transaction으로 기록하며, staged delivery reference만 commit 뒤 release한다. credential MCP는 full durable capability와 exact 권한·승인·secure delivery port가 없으면 등록되지 않는다. Approval-first v1은 실행 source가 아니고, 별 `durable_approval_assignments_v2` component는 Completion parent capability를 먼저 validate한 뒤 `(request_id, attempt, approval_round)` 유일성, request-attempt별 open-current partial index, Request/supersession FK와 canonical manifest/catalog를 명시 migration으로 설치한다. v2 decision UoW는 approve·approve-with-edit·reject의 current assignment/Request·commit-time central reauth·Completion/Declined terminal·receipt·본문 없는 audit/outbox intent를 같은 SQLite transaction에 기록한다. shared connection은 typed ownership context·writer-thread token으로 보호돼 public callback·다른 thread·직접 in-transaction call이 미완료 상태를 관찰하거나 interleave할 수 없다. lifecycle UoW는 수동 재지정과 DB-time 만료 재지정·unavailable을 current ResourceRef 재인가, sealed evidence, predecessor/successor·Request CAS, receipt/audit/outbox에 하나의 transaction으로 쓴다. reconciliation은 최초 due ID snapshot만 처리하는 one-shot 경계다. S4.1의 `durable_linked_aggregates_v1`은 ConflictCase·ManagerItem·WorkTicket snapshot과 receipt·intent schema를 fault-atomic migration으로 설치한다. 모든 저장 reference는 field-specific `kind:<lowercase SHA-256>`이고 timestamp는 실제 calendar·offset round-trip을 강제한다. manifest/catalog/FK는 전역 검증, row는 조직 범위 validate-only이며 raw 본문·secret·control 또는 손상 행은 보정 없이 fail-closed한다. legacy 이관·operation activation·lease·scheduler·delivery consumer는 아직 없다.
-> **P17.9 S1~S4.2a 구현 상태.** credential vertical slice는 legacy TokenStore와 분리돼 credential state·immutable receipt·approval snapshot·secret-free audit/outbox intent를 SQLite transaction으로 기록하며, staged delivery reference만 commit 뒤 release한다. credential MCP는 full durable capability와 exact 권한·승인·secure delivery port가 없으면 등록되지 않는다. Approval-first v1은 실행 source가 아니고, 별 `durable_approval_assignments_v2` component는 Completion parent capability를 먼저 validate한 뒤 `(request_id, attempt, approval_round)` 유일성, request-attempt별 open-current partial index, Request/supersession FK와 canonical manifest/catalog를 명시 migration으로 설치한다. v2 decision UoW는 approve·approve-with-edit·reject의 current assignment/Request·commit-time central reauth·Completion/Declined terminal·receipt·본문 없는 audit/outbox intent를 같은 SQLite transaction에 기록한다. shared connection은 typed ownership context·writer-thread token으로 보호돼 public callback·다른 thread·직접 in-transaction call이 미완료 상태를 관찰하거나 interleave할 수 없다. lifecycle UoW는 수동 재지정과 DB-time 만료 재지정·unavailable을 current ResourceRef 재인가, sealed evidence, predecessor/successor·Request CAS, receipt/audit/outbox에 하나의 transaction으로 쓴다. reconciliation은 최초 due ID snapshot만 처리하는 one-shot 경계다. S4.1의 `durable_linked_aggregates_v1`은 ConflictCase·ManagerItem·WorkTicket snapshot과 receipt·intent schema를 fault-atomic migration으로 설치한다. S4.2a의 별 `durable_direct_conflict_uow_v1` capability는 Owner vote 하나를 정확히 하나의 `conflict.concur` receipt·audit/outbox·result projection에 FK/unique와 row mirror로 결박한다. candidate hash는 parent Conflict와 같아야 하며 projection은 target·cardinality를 vote 집합과 대조한다. schema/catalog/FK는 전역, row는 조직 범위 validate-only이며 raw 본문·secret·control, alias action, dangling/duplicate result는 보정 없이 fail-closed한다. 이것은 evidence schema뿐이며 Case/Request UoW·Manager escalation·ticket/wake/delivery·lease·scheduler는 아직 없다.
-> **P17.9 S1~S4.2b 구현 상태.** S4.2a의 direct Conflict evidence graph 위에서 `sqlite_durable_direct_conflict_concurrence`가 Completion shared SQLite transaction을 사용한다. current Case/Request·candidate hash·Registry Card/Owner/domain·central action을 시작과 prewrite에 재검증하고, unanimous final vote만 Case resolve와 Request `ReadyToDispatch(attempt=1)`를 receipt graph와 함께 CAS한다. replay는 resolved Case·Request revision·selected current RouteTarget·Ready trigger/handling까지 재검증하며 canonical timestamp 위반과 직접 상태 변조를 fail-closed한다. Manager escalation·ticket/wake/delivery·lease/scheduler는 아직 없다.
-
-> **P17.9 S4.3~S4.6 구현 상태(2026-07-22~24 — S4 계열 완결).** durable Conflict escalation은 `conflict.escalate` operator hard-limit·`conflict_case` resource·open-Case resolver(ADR 0050 §11)와 HITL 승인 증거 4중 결박(command·resource fingerprint·escalation cause·graph selection — ADR 0065 §1~§7), receipt-parent 5테이블 graph(§8), 세 aggregate(Case escalated·FromDeadlock ManagerItem·Request AwaitingManager)+receipt를 한 `BEGIN IMMEDIATE`로 닫는 UoW(§9 — replay는 terminal Case에서 불변 receipt가 proof), 32-way 경쟁/장애 게이트, cross-aggregate read-only reconciliation(§10 — ManagerItem.status 판별자)로 완결했다. durable Manager 처분(S4.4)은 `manager.act`(role={manager}·`manager_item` resource·state-aware resolver — ADR 0050 §12)로 FromUnowned Assign/Dismiss·FromDeadlock(별 evidence proof=escalation receipt read-only 결박·Case escalated terminal 불변 — §11)을 S4.1 command_receipts 첫 writer로 열었고, Assign digest는 command-local만(파생값 3종 제외)·target_ref는 원본 ID 그대로(재hash 금지)다. durable WorkTicket enqueue(S4.5)는 system 전이(central action 의도적 부재·route 봉인=기행사 인가 proof)로 ReadyToDispatch를 소비해 WorkTicket(pending)+AwaitingAnswer를 원자 확정하며, 모든 실패는 fail-closed로 ReadyToDispatch 잔류다(미아 없음). linked reconciliation(S4.6·§12)은 command receipt ⟺ aggregate ⟺ Request 정합을 org 전수 read-only로 증명하고 receipt 없는 partial state를 검출하며, downstream tolerance는 **resting-revision 판별자**(`revision==expected+1`이면 정확 shape·초과면 관용 — kind-only 오탐·identity-AND 미탐을 리뷰가 증명해 교정)다. 이 전부는 SQLite 단일 프로세스 경계이며 ticket lease/claim/send/timeout scheduler·outbox delivery·at-least-once recovery는 S5, PostgreSQL migration·cutover는 S6에 남는다. 정비: 검증 경로 torn-read 결함 2건 근본 수정(1호 `_validate_snapshotted`·2호 오탐 전용 scope 재비교 제거), 유사 무방비 패턴 12개 모듈 스윕은 별 정비 슬라이스로 후속.
-
-> **P17.9 S5 설계 확정(2026-07-25 — 구현 전 경계 선언·ADR 0042 §9).** S5는 S4.1 DDL을 바꾸지 않고 자기 component `durable_dispatch_delivery_v1`(lease·전달 시도·답 receipt 3테이블)만 봉인하며, S5.6 escalation은 **별 component**로 분리한다(component manifest가 생성 시점에 봉인되므로 미확정 결정을 선반영할 수 없다). S4.1과의 유일한 접점은 `durable_linked_work_tickets.status`이고 계약은 “S4.5가 유일 INSERT(`pending`)·S5가 유일 UPDATE(`pending→completed|escalated`·단조 전방·terminal·다른 컬럼 불변·대응 receipt/Request 전이와 같은 transaction)”이라 S4.1·S4.6 소스 변경이 0이다. lease는 `(ticket_id, lease_epoch, holder_ref)` 등호 fence이며 **token·tombstone을 두지 않는다**(보유자가 중앙 인스턴스 자신이라 외부 위임 대상 0). 전달은 at-least-once이고 멱등 앵커는 `(ticket_id, lease_epoch)`, 중복 흡수는 워커 `ticket_id` 멱등 계약과 중앙 status CAS·Completion receipt 두 겹이다. `durable_linked_outbox_intents`는 소비 표식이 없는 기록 mirror이므로 작업 큐가 아니며, dispatch 큐는 `status='pending'` ticket 행 자체다. 답 수신은 `worker.submit` 결박 + durable `owner_subject_id` 대조로 fence하되 **lease로 fence하지 않고**, 종착은 `Answered` 하나만 소유한다(`AwaitingApproval`은 ApprovalBoundary·`AwaitingManager`는 S5.6·**`FailedRequest`는 writer 0**). timeout 판별자는 lease 만료가 아니라 Request의 `handling.due_at`이다. S5.6이 걸려 있던 “한 Request가 실행 시도마다 사람 처분 큐에 다시 들어갈 수 있는가”는 **ADR 0066 채택(2026-07-25 사용자 확인)**으로 확정됐다 — FromDispatch Item은 S5 소유 `durable_dispatch_escalation_v1`에 `UNIQUE(request_id, attempt)`로 두고 S4.1 DDL은 그대로이며, 두 Manager Item 테이블 통합은 S6 이관 의무다. 착수 차단은 해제됐고 상세 설계만 S5.5 랜딩 뒤로 남는다.
->
-> **S5.5 랜딩·시간 안전 경계 추가(2026-07-27·ADR 0042 §9 ⑰⑱).** S5.1~S5.5가 랜딩했다(전체 6317 tests green). timeout scan은 구조적으로 write-free(모듈 내 DML/DDL 키워드 0)이고 `mode=ro` connection에서 pragma 우회까지 닫혀 있지만, **그 안전성은 스캔 모듈 안에서만 참이며 소비자로 전이되지 않는다** — 스캔 보고는 **작업 목록(index)이지 write 근거(evidence)가 아니다**. 호출자가 넘긴 `now`가 미래이면 아직 SLA 안인 시도가 후보로 나오고, S5.6이 그것을 근거로 escalate하면 ticket이 `pending`을 떠나 **아직 SLA 안이던 담당자의 유효한 답이 거부**된다(사용자 결과 손실). 따라서 escalation UoW는 `now` 인자를 두지 않고 생성자 clock 1지점만 쓰며, `BEGIN IMMEDIATE` 안에서 Request를 재조회해 **재조회한 `due_at`을 자기 시각과 다시 비교**해야 한다(TOCTOU 방어와 S5.4 늦은 답 거부의 정당성 근거를 겸한다). 아울러 `mode=ro` 게이트들은 경로 오류(`ValueError`·`RuntimeError`·`OSError`)도 typed report로 닫는다 — raw 누수는 "capability가 안 서면 fail-closed한다"는 게이트의 존재 이유를 그 입력에 대해 무효화한다.
->
-> **S5.6 랜딩·처분 경로 경계(2026-07-27·ADR 0066 §5).** FromDispatch Item은 S5 소유 `durable_dispatch_escalation_v1`(`UNIQUE(request_id, attempt)`)에 두고 S4.1 DDL은 그대로다. 처분 UoW도 **S5 소유 신 UoW**이며 S4.4를 확장하지 않는다 — S4.4가 처분 receipt를 S4.1 표에 `target_ref=manager_item_id`로 쓰는데 FromDispatch Item은 S5 표에 있어 join되지 않고 S4.6이 그것을 mismatch로 잡기 때문이고(약속한 "S4.6 무변경"과 기계적 충돌), 동시에 S4가 S5에 의존하는 계층 역전이 된다. 중앙 권한은 `manager.act` 그대로이고 새 action은 만들지 않는다(`ManagerActItemResolver` 구현만 S5 표를 읽는다). **reroute는 대상 카드를 바꾸므로 `requires_approval`·eligibility·`authority_version`을 새 대상에서 재도출한다 — 기존 route 보존은 승인 우회다.** `requires_approval`이 intent 단독이 아니라 (intent, 대상 카드) 쌍에서 나오기 때문이며, 대상을 바꾸는 기존 세 처분 경로가 이미 같은 규율을 따른다. `manager.act` 재인가는 "이 Manager가 재지정할 권한이 있는가"를 답할 뿐 "그 답이 누구의 승인 정책을 따르는가"를 답하지 않는다 — 두 질문은 별개다. 두 Manager Item 표의 통합은 S6 이관 의무로 남는다.
-
-## 1. 스택
-
-백엔드 Python 3.12 · pydantic v2 · pytest · ruff · pyright(strict). 근거: [ADR 0001](adr/0001-python-stack.md). 테스트는 `.venv`에서 실행. 프론트(웹 UI)는 walking skeleton에서 **FastAPI+uvicorn 웹 어댑터 + 빌드 없는 순수 HTML/CSS/fetch**로 확정(T3.3). 백엔드 코어와 분리 — 어댑터는 `serialize_reply`로 `Answered/Pending`만 직렬화하고 라우팅 내부값은 노출하지 않는다. **(2026-06-30 업데이트) 운영 면(Ask·Author·Inbox·Console·PRD §4)은 별 `frontend/`(Next.js 14 + Tailwind v3 + design-ontology-harness 디자인 시스템·dark)로 승격** — 정적 UI·백엔드 와이어링 후속(tasks "운영 면 프론트엔드" 절). 사용자 MCP/API 경로·`web/*.html` walking skeleton은 보존(노출 불변식 동일).
-
-## 2. 아키텍처 개요
-
-```
-웹/SSE/MCP/채널
-      │
-      ▼
-Question Resolution Application Service
-      ├─ QuestionRequestStore ── request_id·상태·revision
-      ├─ Router ── Routed / Contested / Unowned
-      ├─ Governance Case ── ConflictCase / ManagerItem / Approval
-      ├─ Runtime ── Knowledge Store의 승인 스냅샷으로 답 생성
-      └─ Answer Finalization UoW
-             ├─ AnswerRecord(request_id UNIQUE)
-             ├─ terminal audit / SessionTurn(request_id UNIQUE)
-             └─ delivery outbox ──▶ 답 / 대기 / 거절 / 실패
-
-Knowledge Publication / Question Resolution 산출물
-      │
-      └──▶ Reciprocal Review & Governed Improvement (Phase 18·미구현)
-                ├─ immutable revision → reciprocal review → human disposition
-                ├─ proposal → independent held-out evaluation
-                └─ human promotion / rollback / kill-switch → ServingTargetState CAS
-```
-
-**목표 topology.** 모든 채널은 같은 Question Resolution Application Service를 호출한다. 질문은 라우팅 전에 영속 `QuestionRequest`로 생성되고, Contested·Unowned·Approval도 같은 request 수명에서 대기한다. 사람 처분은 Case/Item만 닫는 데서 끝나지 않고 CAS 기반 Resume Claim으로 원 질문을 재개하거나 `DeclinedRequest`로 종결한다. blocking·stream·retrieve·MCP는 Answer Finalization을 공유한다.
-
-Phase 18은 이 수명주기를 바꾸지 않고 뒤쪽에 검토·개선 계보를 붙인다. 사람이 만든 revision은 AI 자문 검토를 거치고, AI·mixed revision은 사람이 binding 처분한다. AI finding과 운영 피드백은 개선 후보만 만들 수 있다. 실제 serving target state 변경은 target별 독립 평가와 권한 있는 사람의 승격·롤백·kill-switch 처분 뒤 CAS로만 일어난다. P17.8·P17.9 전에는 Fake·합성 데이터 shadow만 허용하고 Phase 18의 실제 source binding write를 하지 않는다. 두 게이트 뒤에도 P17.11·P17.12·P17.13 전에는 내구성 있는 실데이터 검토·shadow 평가까지만 허용하며 target state write는 0이다. 다섯 게이트가 모두 끝난 뒤에만 제한 canary와 사람 승격을 연다.
-
-**현재 구현 판정(2026-07-14 P17.5 S1~S6, P17.6b S0~S6, P17.7 완료).**
-
-- **구현됨:** 웹 blocking·SSE·retrieve, native Request API, MCP와 두 사용자 UI는 같은 Request-first Application·Finalization 계약으로 전환됐다. legacy `/ask*`는 URI 호환 어댑터일 뿐 `AskOrg`·legacy SessionStore·Audit·WS 실행에 질문 부수효과를 만들지 않는다. P17 AnswerRecord는 composite read view를 통해 감독·피드백·정정·scorecard에 보이고, online Owner 사전승인과 offline 자동발신 사후교정 증거도 복구됐다. request-aware Unowned는 Manager Assign/Dismiss가 같은 Request를 재개하거나 Declined로 닫고, native HTTP watch·GET·MCP가 같은 terminal을 본다. request-aware Contested는 Case 네 상태·round·concurrence claim, direct Owner consensus, Deadlock/Registry drift의 `FromDeadlock` escalation과 Manager Assign/Dismiss를 구현했다. direct와 Manager mediation 모두 request-scoped Authority·resolution evidence·sealed full-handle proof를 거쳐 같은 Request를 재개하거나 명시적으로 거절한다. reservation proof는 Store의 같은 lock에서 exact claim과 full control token/handle을 상태 변경 없이 대조하며, direct·FromUnowned·FromDeadlock의 Authority write보다 먼저 실행된다. completed-inline Answer Source는 저장 evidence·Case·request grant를 exact 검증하고 typed `GroundingKnowledgeReader`로 primary와 positive supporting만 읽는다. 필수 지식의 `Missing | Invalid`는 Runtime 없이 `GroundingTerminalFailureRecorder`가 Request를 CAS한 뒤 저장된 `Failed`를 투영한다. reader 예외는 같은 Ready revision과 retryable Interrupted를 유지한다. composition은 Request·Conflict·Manager·Registry·Authority·Completion·typed Knowledge reader·terminal recorder와 reservation-proof capability의 identity를 fail-closed로 묶고, request-aware Case/Manager HTTP 분기와 두 UI의 `current_round`·stance를 연결한다. direct consensus와 Deadlock Assign/Dismiss는 blocking·GET·SSE·MCP에서 같은 Request 결과를 보며, terminal concurrence 재시도와 seal 응답 유실은 저장된 Case·claim·full-handle proof·evidence와 exact Request/Completion 또는 허용된 grounding Failed revision으로 복구한다. S6는 full application 32-way 경쟁, 단계별 fault, 같은 generation의 다른 secret, 반환값 변조, 첫 HTTP 응답 유실, transient grounding 재시도를 독립 리뷰까지 포함해 검증했다.
-- **남은 위험:** Unowned와 Contested 처분은 demo Authority와 process-local InMemory claim/grant에 한정된다. direct/Deadlock control recovery는 같은 애플리케이션 프로세스에서만 동작하며 재시작 복구는 P17.9 범위다. Authority grant가 쓰인 뒤 Registry가 달라지면 sealed direct/mediation을 보존하고 후속 resolution evidence·Request CAS·Case/Item 전이·wake를 fail-closed한다. 이미 쓰인 grant를 철회·대체·무효화하는 정책은 아직 없다. P17.7이 demo import와 자동 fallback을 production bootstrap에서 제거했지만 실제 OIDC·Authority/RBAC·조직 격리 어댑터와 durable linked workflow는 아직 없다. 기존 `build_demo()`의 하드코딩 조직·RuleBasedClassifier·InMemory workflow, fail-open 인증, process-local Approval/Broker와 completed-inline 실행은 개발 경로에만 남아 있다. 테스트 성공은 회귀 안전망이지 production 준비 완료의 증거가 아니다.
-- **Phase 18 구현 상태:** S1a strict ledger schema/type, S1b.1 synthetic revision registration, S1b.2 reviewer lease, S1b.3 trusted signed AI advisory terminal batch, S1b.4 v2 human disposition BindingReady, S1b.5a-v4 AI/mixed assignment-scoped human terminal evidence, S1b.5b-v5 AI/mixed BindingReady companion까지 SQLite 단일 인스턴스 synthetic shadow 경계에서 구현했다. v4는 immutable reviewer assignment/run/terminal graph, all/any/quorum distinct-assignment threshold, HMAC authority·DB-time lease/reclaim fence, v4 provenance ownership/cutover를 강제한다. v5는 v4-owned AI/mixed Awaiting cycle만 source-free BindingReady로 확장하며, current-key signed AI evidence와 v4 human terminal evidence를 동일 DB-time transaction에서 재구성한다. S1b.3은 body-free evidence와 terminal run/cycle CAS를 하나의 transaction으로 쓰고, immutable companion/projection semantic replay 및 terminal 뒤 claim·reclaim·renew·stale proof 차단을 강제한다. S1b.4는 explicit v2 cycle revision/CAS, trusted HMAC registry factory, current AI evidence revalidation과 receipt/result/audit/outbox bijection을 강제하고 human provenance의 finding-free completed AI requirements만 수용한다. source binding, finding closure, `ImprovementProposal`·`EvaluationRequirementPolicy`·`EvaluationEvidence`·`ActiveArtifactState`·`DesiredArtifactState` Store, binding adapter, 승격·롤백·kill-switch 실행 경로는 구현되지 않았다. 기존 `StageReview`·`ApprovalItem`·`BackupReview`·`CorrectionEvent`·`AnswerFeedback`·`ReevalItem`을 공통 원장 구현으로 오해하지 않는다.
-- **P17.6b 구현 상태:** S1~S5는 `ApprovalItem` 세대·안전 조회, actor-free 처분과 Finalization, 만료·수동 재지정·unavailable, 본문 없는 사건·알림·보존 판정, principal-first HTTP·조건부 MCP·두 UI와 전 채널 의미 동등성을 구현했다. S6은 same/different 처분, approve 대 만료 재지정·unavailable·수동 재지정, 서로 다른 재지정 target, 중복 expiry scan·감사·알림을 32-way 실제 조립에서 검증했다. stale open snapshot의 정상 lifecycle winner는 exact direct/current/round/full lineage와 Request를 재확인한 뒤 conflict로 분류하며, 변조는 integrity로 남긴다. resolved Item은 저장 winner와 exact terminal 또는 completion이 없는 partial `AwaitingApproval` 인과를 incoming 처분보다 먼저 확인한다. 최종 게이트는 Python 4,524건, Approval 475건, 핵심 경쟁 12종×30회, 프런트 16건, Pyright·Ruff·TypeScript·ESLint·production build를 통과했고 독립 재리뷰는 P0/P1/P2 0이었다. 보장은 단일 프로세스 재시도 수렴까지다. process-local journal·dedup·cache, lifecycle 전역 `RLock`, 재시작 뒤 복구와 인스턴스 간 조정, 외부 알림의 물리적 exactly-once는 포함하지 않는다. durable workflow·journal·명령 복구는 P17.9, 물리 삭제와 legal hold는 P17.13이 맡는다.
-- **P17.7 구현 상태:** `production_bootstrap`은 정확한 필수 환경변수 9개를 부수 효과 전에 검증하고 secret-safe typed failure만 반환한다. actual env는 검증된 실 어댑터가 없어 항상 `production_adapters_unavailable`로 닫힌다. 주입 경로도 linked workflow·Approval의 durable marker와 Completion `atomic_v1`·identity, canonical composition attestation을 통과해야 한다. attestation은 exact original과 13개 dependency identity에 결박된 단일 claim이며, 발급 뒤 wiring은 영구 봉인된다. shallow/deep copy의 close와 `dataclasses.replace`는 원본 수명을 인수하지 못한다. cleanup은 composition 뒤 외부 의존성 순서로 성공한 단계만 건너뛰어 재시도한다. 집중 136건, 인접 301건, 전체 4,624건과 Pyright·Ruff를 통과했고 독립 재리뷰는 P0/P1/P2 0이었다. 이 완료는 같은 신뢰 프로세스 안의 조립 계약까지다.
-
-**production composition gate.** `production_bootstrap`은 데모·legacy 조립과 runtime selector, FastAPI를 import하지 않는다. 필수 조직·PostgreSQL DSN·OIDC·Authority policy·Provider 설정을 모두 검증하기 전에는 factory를 호출하지 않는다. 실제 환경 경로는 P17.8·P17.9 어댑터가 들어오기 전까지 typed unavailable로 실패한다. 테스트용 주입 경로의 성공도 production-style composition과 single-use attestation을 통과한 `composition_contract_only`다. module-level `app`이나 서버 포트는 만들지 않는다. 인증 비활성화, 하드코딩 사용자, InMemory 필수 workflow, StubRuntime과 로컬 CLI fallback은 개발·테스트 profile에만 남긴다. 다중 인스턴스 production에는 Postgres 공유 transaction, lease, transactional outbox, backup/restore와 관측성 게이트가 더 필요하다. (ADR 0049)
-
-**✅ 실행 모델 재전환 완료(Phase 12·ADR 0033·S0~S5·크로스머신 시연).** 대화 답변 실행을 owner 워커(ADR 0027) → 다시 **중앙 런타임**으로 옮겼다(0010→0017→0027→0033 네 번째 이동). 중앙 런타임이 *동기화된 중앙 지식 저장소*(`Knowledge Store`·§4)를 소비해 답한다(owner PC 부재해도 가용·0017 가용성 근거 부활). 워커 역할 = "답변 실행자"→"지식 공급자"(명시 지정 지식을 중앙에 계속 동기화). **"중앙 토큰 0" 불변식은 정직하게 폐기**했다(중앙 조직 API 키 1개·대체 안전장치: 키 보관·로그 미노출·태깅·ADR 0033 결정 2·아래 §10). **부분 재정의**: 0028/0030 "중앙은 목차만·본문 0"에서 라우팅 인덱스는 목차만 유지·답변 지식만 본문을 담는다(두 축). `AgentRuntime` 포트·순수 매핑 함수·`ProviderTransport` Stub 주입은 무변경(위치·소비 원천·자격증명 주체만 이동). **라우팅 계층 무변경**. **게이트 내 구현 완료(tdd-engineer·2026-07-04)**: `Knowledge Sync`(admission)·`Presence`·`KnowledgeStore`(보관 포트)+중앙 런타임 소비 전환(`resolve_knowledge_text` — 스토어 우선·디스크 폴백)·`AnswerRecord`·`CorrectionEvent`. 실 두 머신 시나리오 S1~S5도 2026-07-05 재검증했다. 이하 문단은 ADR 0027 시기의 기록이다.
-
-중앙은 지식을 *소유*하지 않고 *연결·호출·기록*만 한다(ADR 0006) — owner의 **대행자(deputy)**이지 대체자가 아니다(ADR 0017). **관리/실행 분리(ADR 0017)**: 답의 *지식 출처·책임*은 owner(거버넌스 — 정의·지식·범위·검토·소유). **대화 답변 실행 — 두 시기**: ADR 0017은 *실행*을 "중앙 `claude -p`가 owner 통제 OKF 최신 커밋 스냅샷을 cwd로 읽어 만든다"(`ClaudeCodeRuntime`)로 뒀고, **Phase 9(ADR 0027)가 대화 답변 경로를 owner OAuth 멀티-LLM 인프로세스 스트리밍으로 재정의**(owner 워커가 owner OAuth 구독 토큰으로 공급자 API[claude·codex·gemini]를 인프로세스 직접 호출·스트리밍·`claude -p` 스폰 회피·속도 — `ClaudeApiRuntime` 등 공급자별 `AgentRuntime` 어댑터). *분류기·배치 `claude -p`는 잔존*(대화 경로만 교체). **중앙은 지식의 소유자·진실 원천이 아니라 답변 시 최신을 *읽을* 뿐이고 RAG 인덱스로 안 든다·중앙 API 키 LLM RAG 회피·중앙 키/토큰 0은 0027에서도 보존·강화**(자격증명이 owner OAuth라 중앙 모델 토큰 0 — ADR 0010 유효 근거). owner 워커↔중앙 WS 전송이 0027에서 *기본 대화 경로*로 재부상(아래 분산 절·0011·0012가 0017에서 강등됐던 것을 0027이 1급으로).
-
-**분산 owner-실행 = 사설 데이터 커넥터 옵션 B로 강등(ADR 0017, 구현물 보존).** 답이 owner의 사설·실시간 데이터에 의존해 중앙이 가질 수 없을 때 한정으로, `Agent Runtime(담당 카드 구동)`이 각 Owner PC의 Claude Code이고 중앙↔owner는 owner 워커가 거는 **아웃바운드 WebSocket**으로 잇는다(중앙=작업 큐 적재→소켓 push, 워커=로컬 claude 답→회신; ADR 0011 결정 6). 논리 호출 방향(질문 중앙→owner)과 물리 연결 방향(소켓 owner→중앙)은 분리. owner PC 부재 시엔 owner가 위임한 **백업 워커**(격리 인스턴스)로 push를 폴백하고(신뢰 하향), 백업도 부재면 Manager escalation. **백업의 복귀 검토 루프(`BackupReview` — 승인·정정·무시)는 owner 거버넌스 "답 검토·정정"으로 승격·보존**(ADR 0017), 위임이 너무 오래되면(stale) 백업은 거부→escalation(ADR 0012 결정 7·9). 이 분산·작업 큐·재연결 인프라는 ADR 0017 결정 6의 *실시간 충돌 푸시 통지*(Phase 7 T7.4)로도 재활용된다. **옵션 B 진입 판단 게이트(ADR 0020)**: OKF 커밋 스냅샷으로 grounding되면 기본 경로(중앙 실행) → owner 사설·실시간 데이터 의존이면 **B-1 사설 데이터 커넥터**(데이터 접근만 노출·실행 중앙) → 중앙이 읽는 것조차 정책상 금지면 **B-2 하드 데이터 격리**(owner 환경 실행, 이때만 분산 강제 — 위 owner 워커·백업 워커가 그 실현). B-1≠B-2(사설 데이터만으로 전체 분산 점프 금지).
-
-## 3. 바운디드 컨텍스트
-
-목표 구조는 한 배포 단위 안에서 경계를 강제하는 **모듈러 모놀리스**다. 첫 production 파일럿에서 마이크로서비스로 분해하지 않는다.
-
-- **Identity & Organization** — User·조직 관계·Agent Card admission·OIDC principal·RBAC·조직 격리.
-- **Knowledge Publication** — owner 승인 원문·스냅샷·동기화·삭제·ACL·출처. 라우팅 Authority와 분리한다.
-- **Question Resolution** — Question Request·Router·WorkTicket·Resume Claim·Approval·Answer Finalization. 사용자 결과의 단일 소유자다.
-- **Governance Case** — ConflictCase·ManagerItem·처리 주체·SLA·처분. 원 Request를 참조하며 독립 사용자 종착이 아니다.
-- **Audit & Evaluation** — append-only 감사·AnswerRecord·운영 지표·골든셋. 도메인 상태를 대신하지 않는다.
-- **Reciprocal Review & Governed Improvement(Phase 18·planned)** — 산출물 revision 계보·작성 주체 교차 검토·사람 처분·개선 후보·독립 평가·승격·롤백. 기존 승인·발행 상태를 소유하지 않고 exact receipt로 연결한다.
-
-현재 `ask_org.py`와 `web.py`가 앞의 기존 책임을 한 파일과 한 조립에 함께 갖고 있다. Phase 17은 먼저 포트와 application service 경계를 추출하고, 기존 공개 API를 어댑터로 유지하면서 점진 이동한다. Phase 18의 새 문맥은 아직 디렉터리나 런타임 조립으로 구현되지 않았다. 기존 모듈(`registry · classifier · router · decision · conflict · runtime · ask_org · audit · demo · web · dispatch · transport · server · worker`)은 마이그레이션 원천이지 목표 경계가 아니다.
-
-## 4. 도메인 모델 · 포트
-
-- **QuestionRequest (ADR 0042)** — 질문 한 건의 접수부터 terminal까지를 나타내는 aggregate. 최소 필드: `request_id`·`org_id`·`requester_id`·`session_id?`·`question`·`context_snapshot?`·`intent?`·`initial_disposition?`·`state`·`revision`·`created_at`·`updated_at`. 상태는 `Received | ReadyToDispatch | AwaitingAnswer | AwaitingConflict | AwaitingManager | AwaitingApproval | AnsweredRequest | DeclinedRequest | FailedRequest` sealed sum이며 마지막 세 상태는 terminal이다. Routed·Contested의 intent는 nonblank, 분류되지 않은 Unowned의 intent는 `None`이다. 빈 문자열은 저장하지 않는다. 모든 비종결 state는 `HandlingAssignment(kind[system|runtime_ticket|conflict_case|manager_item|approval_item]·ref·due_at)` 하나를 필수로 갖고, state의 trigger/ticket/case/item/draft 참조와 `ref`가 일치한다. 최초 Received의 system ref는 `question-intake:{request_id}`로 고정하며 terminal에는 assignment가 없다. `QuestionRequestStore.create/get/compare_and_set/nonterminal`이 수명주기의 단일 저장 포트다. `create`는 `Received/revision=0/created_at=updated_at`만 허용하고 내부 UoW insert도 같은 규칙을 쓴다. InMemory 구현은 thread-safe CAS, SQLite v1은 exact-ID PK·strict hydrate·legacy schema fail-closed와 `UPDATE ... WHERE request_id=? AND revision=?` 단일 승자를 보장한다. Recovery Runner는 재시작 뒤 `Received`·`ReadyToDispatch` hook을 다시 호출하되 실제 Runtime·lease를 소유하지 않는다. hydrate 시에는 AwaitingConflict·Manager 출처 조합과 dispatched RouteTarget intent를 다시 검증한다.
-- **Request correlation compatibility (P17.2c-1a)** — `WorkTicket`·`ConflictCase`·`ManagerItem`·`AnswerRecord`·`SessionTurn`·`AuditEntry`에 legacy-compatible nullable `request_id`를 두되, 새 `for_request(...)` 생성 관문은 nonblank ID를 강제한다. `WorkTicket`은 `attempt`와 항상 함께 존재하고 Case/Item 전이는 상관키를 보존한다. SQLite `answer_records`·`session_turns`는 기존 행을 `NULL`로 두는 plain nullable `TEXT` 열만 추가하며, 추정 backfill·request당 UNIQUE/FK는 두지 않는다. 마이그레이션은 `BEGIN IMMEDIATE` 안에서 실행하고 schema v1의 main persistent trigger/view allowlist는 empty다. 이 보장은 SQLite 파일을 단일 애플리케이션이 소유하며 실행 중 out-of-band DDL·직접 SQL write가 없다는 startup/reopen capability gate이다. 확장은 검토된 exact DDL/hash allowlist를 가진 새 schema version으로만 연다. request당 종결 유일성·linked entity 영속·UoW/outbox·DB 역할 분리는 P17.3·P17.9의 책임이다.
-- **Request-first intake core (P17.2c-1b)** — `QuestionResolutionApplication.ask`는 접수 request ID와 timezone-aware 접수 시각을 각각 한 번 정한 뒤 `Received/revision 0`을 Store에 먼저 넣고 Router를 호출한다. `Routed`는 주입된 중앙 `RouteAuthority.authorize(org_id, intent, agent_id)` 포트가 발행한 nonblank `policy_version`을 `RouteTarget.authority_version`에 남긴 경우에만 `ReadyToDispatch`가 된다. `Contested`와 `Unowned`는 각각 request-aware ConflictCase/ManagerItem을 먼저 semantic create-or-get한 뒤 Request CAS를 시도한다. 조회는 org와 requester가 모두 일치할 때만 상태를 투영하고 미존재·소유권 불일치는 같은 field-free 결과로 숨긴다. 새 모듈은 AskOrg·Runtime·AnswerRecord·Session·Audit를 import하거나 호출하지 않는다. Case/Item 인메모리 보조 포트는 기존 Store Protocol을 넓히지 않고, 생성 ID·시각·상태를 제외한 request-derived payload만 비교해 재시도와 불일치를 구분한다. 동시 advance와 orphan 수렴은 다음 P17.2c-1c 경계가 맡는다. durable linked writer, production Registry/root·실 Authority adapter 검증, 채널 조립은 P17.7~P17.9에 남는다.
-- **Initial routing concurrency·composition (P17.2c-1c)** — Application 인스턴스의 `RequestLockPool`은 lock holder와 waiter를 함께 참조 계산하고 마지막 참조만 entry를 지운다. lock 안에서 Request를 다시 읽어 같은 인스턴스의 `Received`는 Router에 한 번만 들어간다. Router 전에 request별 Case/Item을 조회해 linked write 뒤 장애가 남긴 open orphan을 snapshot 그대로 CAS하고, 둘이 함께 있거나 원 질문·intent·후보·상태가 다르면 fail-closed한다. 서로 다른 인스턴스는 Router 계산이 중복될 수 있지만 request-aware writer와 Request CAS로 같은 winner만 수렴한다. 다른 winner는 `ConcurrentInitialRoutingError`, stale/same-winner 반환 전에는 winner와 linked Store의 단일·exact·open 상태를 다시 검증한다. Store의 `workflow_durability`는 `ephemeral | durable` 재시작 내구성 선언이며, production-style 생성자는 unknown·mixed·non-durable 조립을 거부한다. 파일 SQLite만 durable이고 `:memory:`·빈 임시 DB와 InMemory는 ephemeral이다. 이 marker와 post-CAS read는 같은 transaction·lease·outbox를 증명하거나 TOCTOU를 닫지 않는다. CAS winner와 linked entity의 원자 commit·orphan 정리·다중 인스턴스 lease는 P17.9 책임이다.
-- **Request-aware Unowned Manager 처분(P17.4)** — `P17ManagerDispositionApplication`은 request-aware `FromUnowned`만 받고 Request·Item·원 질문·Manager·nested intent를 exact-link한다. Dismiss는 generation-bound sealed claim 아래 같은 Request를 `DeclinedRequest(reason_code="manager_declined")`로 CAS하고 저장된 terminal을 broker에 publish한다. AssignOwner는 현재 Registry의 Agent Card·Owner User·`domains/cannot_answer/approval_when`을 검증하고, 같은 Authority 객체가 만든 request-scoped grant receipt와 `authorize_for_request` read-back version을 exact 비교한 뒤 Router 없이 같은 Request를 `ReadyToDispatch(attempt=1)`로 옮긴다. grant는 다른 Request나 org-wide routing rule을 바꾸지 않는다. action claim의 generation·control/forward handle은 abandon 뒤 ABA를 막고, `ResumeEvidence`와 resolved guard가 Request CAS·Item resolve·wake/publish 사이의 부분 실패를 같은 action으로만 수렴시킨다. Registry card·Owner User 읽기는 검증 호출별 짧은 snapshot으로 선형화하고, deadline과 Request Store `get`·CAS 중에는 Registry lock을 보유하지 않는다. CAS 전·후 재검증은 각각 새 snapshot을 사용한다. legacy Store write와 `ManagerQueueService`, global Precedent, request-aware Reroute/FromDeadlock/FromDispatch 우회는 거부한다. Question Surface는 Request·Manager Store·Authority·Completion Reader identity를 공유하고 조립 실패 때 인수한 scheduler/storage를 정리한다. native `GET /requests/{request_id}/stream?watch=true`만 Pending 뒤 terminal까지 연결을 유지하며, 기본/native 초기 요청과 legacy stream은 Pending one-shot을 보존한다. 이 보장은 단일 프로세스 InMemory claim/grant와 demo Authority 범위다. durable Manager/Authority transaction·lease·outbox는 P17.8~P17.9 책임이다.
-- **Request-aware Contested disposition(P17.5 S1~S6)** — `ConflictCase`는 request-aware 경로에서 `open | escalated | resolved | declined` 상태와 1부터 시작하는 `concurrence_round`를 가진다. `InMemoryConflictDispositionStore`는 Request별 Case 유일성, active vote와 append-only progress/history의 분리, canonical deep copy, same-Case validation callback, generation-bound token/handle을 강제한다. `P17DirectConflictDispositionApplication`은 현재 Registry·Owner·under-claim·Approval을 검증하고, 공통 `RequestRouteAuthority`의 `FromOwnerConsensusGrant` first-winner와 read-back을 확인한 뒤 `ConflictResolutionEvidence`를 Request CAS보다 먼저 저장해 같은 Request를 `ReadyToDispatch(attempt=1)`로 재개한다. Authority policy가 write 0을 보증한 reject만 round를 올리며 conflict·예외·응답 유실은 round를 바꾸지 않는다. grant 뒤 Registry drift는 sealed direct를 보존하고 evidence·Request CAS·Case 전이·wake를 0으로 둔다. divergent vote나 Registry drift는 typed cause·현재 조직 그래프·root fallback으로 request-aware `FromDeadlock` ManagerItem, Case escalation, `AwaitingManager(public_kind="contested")`를 같은 sealed claim에 결박한다. `P17DeadlockManagerDispositionApplication`은 출처 전용 generation/full-secret claim과 두 full handle의 mediation proof를 검증하고, Assign은 현재 유효한 원 후보·`FromDeadlockManagerGrant`·resolution evidence 뒤 Request를 재개하며 Dismiss는 evidence 없이 Request·Case·Item을 거절로 닫는다. direct·FromUnowned·FromDeadlock은 Authority 전에 non-mutating reservation proof로 backing claim과 full control token/handle을 exact 비교하고, composition은 이 capability가 빠진 Store를 거부한다. 같은 action 재시도만 Request CAS 뒤 부분 실패를 보수하고 다른 terminal은 거부한다. Answer Source는 resolution evidence와 저장 Case·request grant를 strict 재구성해 검증하고, primary와 positive supporting의 typed 지식을 canonical 순서로 조립한다. supporting은 Authority·Runtime·Approval·책임을 얻지 않고 sources만 넓힌다. `Missing | Invalid`는 execution 소유 terminal recorder가 저장된 `Failed`로 닫고, reader 예외는 Ready를 유지한다. composition은 위 포트와 Store·Registry·Authority·Completion을 같은 identity로 묶고 request-aware/legacy 웹 분기, 두 UI의 서버 round·stance, FromDeadlock Manager 처분, 안정된 concurrence 응답을 연결한다. 같은 terminal POST와 seal 응답 유실은 `get_request_case`·sealed claim proof·resolution evidence로 복구하며, grounding Failed는 resolved Case의 정확한 revision 3과 두 공개 error code에만 허용된다. S6는 full application 32-way 경쟁과 단계별 fault/변조를 반복해 이 순서를 검증했다. Registry 검증은 호출별 짧은 snapshot만 사용하며 장시간 바깥 lock은 잡지 않는다. 현재 control recovery는 같은 프로세스의 InMemory 상태에 한정되며 restart durability는 P17.9, grant 철회·대체·무효화는 P17.9 또는 후속 ADR 범위다.
-- **Minimum Approval boundary (P17.6a)** — `ApprovalBoundary`는 `ReadyToDispatch | AwaitingAnswer`의 Runtime 후보를 중앙 `ApprovalPolicy`로 평가한다. route가 승인을 요구하거나 후보 mode가 `draft_only`이면 `ApprovalDraft`·`ApprovalItem`을 먼저 만들고 Request를 `AwaitingApproval`로 CAS한 뒤 본문 없는 `ApprovalPending(request_id)`만 반환한다. 승인 불필요 후보에는 canonical `NoApprovalRequired.policy_version`을 실어 P17.3 Finalization으로 넘긴다. 승인·수정승인은 Request를 terminal로 바꾸지 않고 exact-linked `ApprovedCandidate`만 반환하며, 반려만 `DeclinedRequest`로 전이한다. 인증 어댑터가 만든 `ApproverPrincipal`은 Request 조직과 action 주체가 같아야 하고, 중앙 Authorizer의 policy version이 Item 요구사항과 일치해야 한다. 외부 정책·권한·Store 반환은 plain-data strict hydrate로 다시 검증하며 `awaiting_revision`·request/item/attempt/route/draft/action을 결박한다. InMemory Store는 입력·조회·history·resolve 결과를 backing state와 분리하고, 같은 Item의 resolve callback 재진입을 거부해 처분 덮어쓰기를 막는다. 이 단일 프로세스 lock과 Request CAS는 같은 처분 재시도를 수렴시키지만, ApprovalItem+Request의 durable transaction, 만료·재지정, 다중 인스턴스는 아직 보장하지 않는다(P17.6b·P17.9).
-- **Approval lifecycle·safe read(P17.6b S1·ADR 0048, 구현 완료)** — `ApprovalItem`은 `org_id`와 timezone-aware `due_at`을 필수로 가지며 `created_at`을 배정 시각으로 쓴다. Store는 `(request, attempt)` current 색인과 `(request, attempt, approval_round)` 이력을 분리하고, Item ID 조회·current·round 결과가 같은 concrete snapshot인지 처분과 Finalization 전에 다시 확인한다. 최초 생성의 semantic fingerprint는 재시도마다 달라질 수 있는 생성 ID·시각·기한을 제외하고 첫 저장 Item을 winner로 채택한다. Item 저장 뒤 Request CAS가 끊긴 재시도는 그 winner의 `created_at`·`due_at`으로 `AwaitingApproval`을 복구한다. successor 재지정은 조직·세대·부모·초안과 `due_at`을 포함한 full identity가 같을 때만 같은 결과로 수렴한다. 조직과 지정 승인자로 범위를 좁힌 Store queue는 본문 없는 요약만 반환하고, `ApprovalOperationsApplication.pending_for/detail`은 현재 Item과 Request의 조직·revision·route·attempt·ref·기한을 exact 검증한다. 다른 조직·기한·current/round snapshot 변조는 AnswerRecord·terminal audit 등 Finalization write 전에 거부한다.
-- **Approval decision operations(P17.6b S2·ADR 0048, 구현 완료)** — `ApprovalOperationsApplication.decide`는 strict actor-free intent를 인증 `ApproverPrincipal`과 결합한다. 승인·수정승인은 같은 composition의 `ApprovalBoundary.decide(expected_item=...)`, Finalization, CompletionReader exact-read, terminal publisher 순서로 수렴하고 Reject는 exact `DeclinedRequest`·revision·resolved time과 completion 부재를 확인한다. `ApprovalAssignmentGeneration`은 item/org/request/revision/attempt/route/draft/requirement/created/due/round/predecessor를 필수로 결박하며 Boundary 재조회·current/round·resolve callback, Finalization precommit, publish 전 재조회에서 같은 snapshot을 요구한다. 동일 처분과 부분 실패는 forward repair하고 다른 처분은 conflict다. 신규 SQLite handoff schema v2는 generation을 필수로 저장하며, v1 승인 receipt는 strict terminal read-only로만 복구하고 replay 권한으로 쓰지 않는다. 이 보장은 단일 프로세스 수렴이며 Approval resolve+completion durable transaction이나 restart command recovery, exactly-once delivery를 뜻하지 않는다.
-- **Approval expiry·reassignment operations(P17.6b S3·ADR 0048, 구현 완료)** — `now >= due_at`이면 open Item의 새 사람 처분을 막는다. 수동 명령은 actor 없는 target과 인증 principal을 중앙 `ApprovalReassignmentAuthorizer`의 sealed 결과에 결박하고, due scan은 주입 `ApprovalExpiryPolicy`의 `ReassignExpiredApproval | ApprovalUnavailable`만 수용한다. 전자는 같은 draft·attempt·route를 유지한 새 `ApprovalItem(approval_round+1)`을 만들고, 후자는 별 unavailable 상태·증거와 `FailedRequest(error_code="approval_unavailable")`로 수렴한다. old supersede+new create Store 결과, full generation lineage, Request revision CAS와 reread가 모두 exact해야 성공한다. `expire_due`는 성공과 typed 실패를 함께 반환하며 process-local fair queue·quarantine·strict completion cache로 poison 격리와 응답 유실 복구를 제공한다. 이 상태는 재시작·다중 인스턴스에서 공유되지 않는다.
-- **Approval event evidence·retention(P17.6b S4·ADR 0048, 구현 완료)** — `ApprovalEventJournal`은 여덟 사건을 deterministic ID와 ID·digest·policy·시각 metadata만으로 process-local append-once 기록한다. 같은 ID·같은 payload는 no-op이고 다른 payload는 integrity 오류다. expiry 재지정의 expired+reassigned와 unavailable의 expired+unavailable은 atomic batch다. `ApprovalEventRecorder`는 append 응답 유실을 read-back으로 복구하며 Boundary·Operations·Retention이 같은 인스턴스를 공유한다. composition은 쓰기 포트 대신 read-only `ApprovalEventReader`를 노출한다. `retention_status`는 active 또는 Finalization 전 resolved draft를 보존하고, exact terminal 뒤에만 주입 `ApprovalDraftRetentionPolicy`를 호출한다. eligible 사건은 terminal evidence와 retain_until을 exact-link한다. 이 단계는 eligibility만 판정하며 본문을 삭제하지 않는다.
-- **Approval channel operations(P17.6b S5·ADR 0048, 구현 완료)** — FastAPI 전용 route 경계는 body parsing 전에 세션 기반 `ApproverPrincipal`을 확정한다. 미인증 malformed·self-report·깨진 JSON은 field-free 401, 인증 뒤 잘못된 body는 field-free 422다. queue는 Item ID·Request ID·round·배정·기한만 반환하고 지정 승인자 detail만 질문·후보를 연다. MCP는 호출 가능한 approver principal provider와 operations가 함께 있을 때만 list/detail/approve/approve-with-edit/reject/reassign을 등록하며 도구 schema에 actor·org·principal이 없다. Next·정적 UI는 별 Approval 탭에서 detail을 지연 조회하고 세션·선택·load epoch가 바뀌면 이전 목록·상세·count 응답을 무시한다. blocking·canonical GET·SSE reconnect·MCP는 open·reassigned·approve·approve-with-edit·reject·`approval_unavailable`을 같은 의미로 투영한다. restart durability·lease·transactional outbox는 P17.9, 실제 삭제·암호화·legal hold·backup 삭제 증명은 P17.13 책임이다. S6 경쟁·장애 반복 전에는 P17.6b 전체 완료를 선언하지 않는다.
-- **RouteTarget / ResolutionTargetValidator** — 사람 처분이 확정한 `intent`·`agent_id`·Approval·Authority version의 불변 snapshot. 재개할 때 Router를 다시 돌리지 않는다. 현재 Registry 존재, Conflict 후보, 카드 under-claim, 중앙 AuthorityPolicy를 처분 전과 dispatch 직전에 검증한다.
-- **Answer Finalization / QuestionCompletionUnitOfWork (P17.3a·P17.3c·P17.6b S2)** — 공개 입력을 `FinalizationCandidate | ApprovedCandidate`로 제한하고, 현재 Approval policy 또는 resolved ApprovalItem의 exact snapshot을 다시 확인한다. S2부터 `ApprovedCandidate`는 필수 `ApprovalAssignmentGeneration`을 포함하고 Finalization은 commit 전에 현재 Item의 전체 immutable generation과 다시 대조한다. InMemory 구현은 QuestionRequest·AnswerRecord·terminal audit·request-correlated SessionTurn·delivery outbox를 하나의 `RLock`과 copy-on-write backing state에서 commit한다. SQLite 구현은 명시 migration으로 설치한 component manifest를 validate-only로 열고, 같은 다섯 결과와 full handoff receipt를 한 connection의 `BEGIN IMMEDIATE`로 확정한다. 신규 handoff schema v2는 assignment generation을 보존한다. generation이 없던 v1 승인 receipt는 기존 terminal strict read에만 허용하고 same replay는 conflict로 닫으며, v1 승인 receipt를 새 권한 증거로 추정 보강하지 않는다. receipt가 있는 동일 v2 후보 재시도는 planner callback을 다시 소비하지 않고 복원되며, strict reader는 canonical JSON·digest·schema version·ID·시각·mode·책임·Approval·intent 링크와 receipt 없는 v2 흔적을 fail-closed한다. 공개 Request CAS의 `AnsweredRequest` 우회, callback 재진입, 다른 후보 경쟁, 같은 Request 잔여행, record ID 충돌을 구분해 거부한다. production-style stream execution은 `requests is completion_uow is completion_reader`, `atomic_v1`, 일곱 필수 포트, durable marker를 모두 확인한다. `NoApprovalRequired.needs_correction_review`는 offline 자동발신의 단일 evidence다. Finalization 재평가와 terminal audit·책임 snapshot·AnswerRecord가 이 값을 exact-link하며, 책임 resolver는 Agent Card/Owner 귀속만 해소한다. 이 보장은 단일 애플리케이션이 SQLite 파일을 소유하는 통제 파일럿 범위다. Approval resolve와 completion의 단일 transaction, 활성 Session projection, outbox 소비·lease·다중 인스턴스는 P17.9에 남는다.
-- **Question Stream 실행·구독 경계 (P17.3b·P17.2c-2)** — `QuestionStreamExecutionService`가 저장된 Request를 읽어 Runtime 후보를 만들고 ApprovalBoundary와 공통 Finalization을 거친다. token은 commit과 CompletionReader exact-read 전까지 외부에 내보내지 않는다. `InMemoryQuestionStreamBroker`는 request별 bounded queue와 terminal gate를 두며, `done | declined | failed`는 호출자가 만든 DTO가 아니라 주입된 Request Store·Completion Reader의 exact-read 증거로만 발행한다. terminal 확정 뒤에는 늦은 구독자도 즉시 같은 결과로 봉인되고 token·pending은 더 받지 않는다. application 수명의 scheduler는 request당 한 작업과 전체 inflight 상한을 지킨다. HTTP disconnect는 subscription만 닫고 producer를 취소하지 않는다. 인증 계층이 만든 `RequesterPrincipal`만 받는 router가 `POST /requests`·재접속·canonical 조회를 제공하고, P17.2c-2에서 기본 웹의 native `/requests*`와 legacy `/ask/stream` 호환 URI 모두 이 경계에 연결됐다. 답 조회는 completion의 `answer_text·request_id·record_id·mode·sources·review_status·answered_by·agent_id`만 투영하며 조직·후보·route·정책·감사·세션·outbox는 노출하지 않는다. 이 경계는 단일 프로세스 전송 보장이다. 다중 프로세스 lease·delivery 재시도는 P17.9 범위다.
-- **Question Surface Composition (P17.2c-2·P17.6b S2~S5·P17.7)** — 한 composition이 Question Resolution Application, ApprovalBoundary/Store/Policy, `ApprovalOperationsApplication`, completed-inline AnswerSource, stream execution/scheduler/broker와 Completion UoW/Reader를 같은 dependency identity로 묶고 application shutdown에서 정리한다. Approval operations는 같은 Request/Completion 저장 객체, Approval Store·정책·Authorizer·Boundary와 stream terminal publisher identity가 모두 맞아야 한다. S3 lifecycle은 expiry policy·reassignment authorizer·item ID factory·clock을 전부 함께 주입하거나 전부 생략하는 optional capability이며, 각 객체와 terminal reader/publisher identity가 application 내부와 exact하게 같아야 한다. S4 evidence는 exact `ApprovalEvidenceConfiguration(journal, retention_policy, notifier?)`으로만 열고, composition이 만든 하나의 recorder를 Boundary·Operations·Retention에 주입한다. 세 경계의 recorder·journal·retention policy identity가 다르면 시작을 거부하며 외부에는 journal의 read-only handle만 제공한다. 조립 검증이 실패하면 인수한 scheduler와 storage를 회수한다. S5 웹은 주입 composition의 소유권을 `create_app` 진입부터 인수한다. 반환 전 어느 단계에서든 조립이 실패하면 원래 예외를 보존하면서 정리를 재시도하고, 성공한 앱은 shutdown에서 닫는다. production-style 조립은 분산 `WebSocketDispatcher` runtime, P17-native stream 부재, linked workflow·Approval의 non-durable marker와 Request/Completion atomicity·identity 불일치를 거부한다. P17.7 canonical production builder는 마지막 gate 뒤 exact original과 13개 public dependency identity를 결박한 single-use attestation을 발급하고 wiring을 영구 봉인한다. lifecycle owner token은 최초 원본만 close할 수 있게 하며 copy·deepcopy·replace의 자원 소유권 승격을 막는다. `/ask`·`/ask/stream`·`/ask/{tracking}`, `/requests*`, MCP `ask_org/get_question`과 UI는 같은 DTO·requester 소유권·canonical completion을 쓴다. `tracking`은 별도 alias table이나 bearer가 아니라 `tracking == request_id`인 URI 호환 이름이다. `atomic_v1`은 기존 일곱 callable 계약을 그대로 유지하며, 감독용 `answer_record`·`answer_records_for_agent`는 별도 read capability다. legacy와 P17 AnswerRecord를 합치는 read-only view는 동일 ID·동일 payload만 dedupe하고 충돌·부분 completion은 fail-closed한다. 별도 프로세스의 웹과 MCP가 상태를 공유하려면 같은 durable composition/저장소를 명시적으로 사용해야 한다.
-- **ArtifactRevision / DataBoundary / AuthorshipProvenance (ADR 0047·planned)** — `ArtifactRevision`은 `org_id·artifact_id·revision_id·revision_no·parent_revision_id·kind·content_ref·content_sha256·provenance·data_classification·data_boundary_snapshot_ref·data_boundary_digest·declassification_receipt_id?·request_id?·record_id?·created_at·schema_version`을 가진 불변 계보다. 본문은 복제하지 않는다. `content_ref`는 version-addressed·retention 보장 원본이어야 하고 reader가 digest를 검증한다. child boundary는 parent/current source의 최고 classification, ACL 교집합, purpose·region·retention 최제한 조건으로 계산한다. 완화는 data owner/security authority와 old/new boundary·source/redaction digest·policy·법적 근거·유효기간을 결박한 `DeclassificationReceipt`가 있는 새 revision에서만 허용한다. revision+verified boundary snapshot+optional authorized declassification receipt+optional exact `ProposalCandidateReceipt`+cycle/requirements/SLA+audit/outbox는 한 UoW다.
-  AI review·BindingPending·RevisionActivation·external ServingRevision adoption·package handoff 전 receipt와 현재 ACL/purpose를 재검증한다. source binding은 exact `SourceBoundaryEnforcementPlan`과 final `SourceBoundaryEnforcementReceipt`를 쓰며 source aggregate/ref·expected revision, protected revision/content·binding generation·boundary mode를 결박한다. static copied ACL이나 scheduler-only면 BindingPending은 write 0이다. source expiry는 target-only schedule을 가장하지 않고 `SourceBoundaryDriftActionAuthorization(SourceDenyReads | SourceUnpublish)`의 source-owned expected-revision/idempotent/fenced adapter·stable read-back UoW를 탄다. expiry 초과·continuous enforcement 누락이면 Bound write 0+invalidation이고, BindingPending 뒤 drift는 source terminal까지 settle하되 같은 낮은-boundary revision cycle을 다시 만들지 않는다.
-  serving 중에는 expiry와 ACL·purpose·classification·region·retention 강화·철회를 계속 집행한다. in-process는 매 요청 authoritative boundary를 검사한다. external은 매 read에서 `ServingIdentityAttestation = TargetServingAttestation | SourceServingAttestation`의 protected revision/content digest·activation/binding generation을 authoritative current boundary와 exact Active enforcement에 대조한다. missing·unknown·mismatch, Pending/Releasing/Archived뿐인 보호, 만료·철회 receipt는 즉시 deny한다. static ACL·webhook·scheduler·poller는 enforcement가 아니다.
-  요청 전 `BoundaryEnforcementPlan = NativeBoundaryEnforcementIntent | GatewayEnforcementIntent`, 적용 뒤 `BoundaryEnforcementReceipt = NativeBoundaryEnforcementReceipt | GatewayEnforcementReceipt`를 쓴다. `GatewayReferenceSubject = TargetGatewaySubject | SourceGatewaySubject`, `GatewayRouteReference = Pending | Active | Releasing | Archived`이고 protection scope당 Active는 partial unique로 하나다. request와 Pending, successful terminal의 Pending→Active/old Active→Releasing을 원자화한다. failed/superseded Pending은 worker fence+exact protected revision 미서빙 read-back 뒤, Active/Releasing은 replacement 또는 kill/deny 보호 뒤에만 release/archive한다. 모든 target/source non-Archived reference가 route/config 완화를 fence한다.
-  native는 revision/content·TTL/ACL·dynamic grant 또는 lease를 `NativeServingBinding(Pending)`과 한 external-version CAS로 적용하며 Pending 동안 자체 deny한다. current authorization 재검증 뒤 conditional Pending→Active와 identity/boundary mode stable read-back이 있어야 final receipt+RevisionActivation/Adoption Applied 또는 source Bound를 확정한다. bounded `ServingBoundaryLease`는 허용 classification/max lag에서만 쓰고 매 renewal이 exact same immutable boundary, current policy revision·classification eligibility·max lag·declassification expiry·issuer authorization·slot epoch/external version을 CAS한다. policy/boundary drift·DriftOpen·다른 in-flight·expiry 뒤 renewal은 0이고 기존 lease는 valid_until까지만 Active다. 이 원자성·self-deny·generation fence를 지원하지 않는 target/source는 disable한다.
-  저장 `AuthorshipProvenance`는 `parent lineage event refs ∪ current authenticated content event refs`인 불변 사건 집합이며 requested_by·approver는 내용 기여자가 아니다. `EffectiveAuthorshipProvenance`는 이 사건과 유효·미철회 resolution receipt를 ledger sequence·policy version에서 계산한 projection+digest다. `ProvenanceResolutionReceipt`는 exact org·revision·unknown event·검증 사건·issuer/role·policy·source evidence digest·idempotency key를 결박하고, 오류는 원 receipt를 가리키는 `ProvenanceResolutionRevocationReceipt`로 철회한다. 효력은 exact revision 하나다. resolution/revocation UoW는 receipt+expected effective digest CAS를 확정한다. BindingPending 전 nonterminal cycle은 Superseded+유효한 같은 revision의 새 historical cycle, BindingPending은 `GovernanceDriftObserved`+future writes 0 뒤 fenced terminal UoW의 새 historical cycle, Bound는 불변+새 historical cycle로 처리한다. 기존 revision·원 unknown·기존 child는 고치지 않는다. 이 타입과 Store는 아직 없다.
-- **ReviewCycle / ReviewRequirement / ReviewRun (ADR 0047·0054)** — 활성 cycle은 `(org_id, revision_id) WHERE active` partial unique로 하나만 둔다. effective-provenance digest, policy snapshot과 `all | any | quorum`, required count, reviewer kind, 독립성, rubric, deadline, risk를 가진 immutable requirement를 고정한다. v1은 `ReviewOpen -> AwaitingHumanDisposition`까지, v2는 monotonic `cycle_revision`과 strict legal transition을 제공한다. 저장 상태는 `ReviewOpen | AwaitingHumanDisposition | BindingReady(action: BindingAction, exact HumanDispositionReceipt) | BindingPending | Bound(outcome: BindingOutcome, exact source receipt) | Superseded`다. `BindingAction = ApproveRevision | RequestChanges | RejectRevision`, `BindingOutcome = Approved | ChangesRequested | Rejected`이며 mapping은 고정한다. S1b.4는 human provenance에서 verified finding-free AI requirements가 완료됐을 때만 authority-bound disposition UoW로 BindingReady를 쓴다. AI/mixed/unknown provenance 및 source action은 write 0이다. 세 action은 disposition UoW에서 BindingReady, 별 intent UoW에서 BindingPending, source exact action/outcome read-back 뒤 Bound로 간다. `Bound | Superseded`만 terminal이고 child 재검토는 `Bound(ChangesRequested)` 뒤 새 revision으로만 시작한다.
-  `completed_requirements`와 `waived_requirements`는 별 projection이고 waiver는 completion이 아니다. accepted run 또는 waiver issuance로 unmet=0이 되는 result/receipt transaction에서만 `ReviewOpen → AwaitingHumanDisposition`으로 CAS한다. waiver revoke/expiry가 ReviewOpen이면 projection+cycle revision만 갱신하고, AwaitingHumanDisposition·BindingReady면 Superseded+새 historical cycle을 원자화한다. BindingPending commit은 DecisionWindow authorization 선형화점이다. 그 뒤 provenance/boundary/policy/legal/waiver/exception drift는 `GovernanceDriftObserved(kind, old/new digest, time, cycle, binding_intent?)`+future writes 0으로 남긴다. fenced Bound terminal이면 유효한 same-revision 새 cycle을 만들 수 있다. BindingFailure/Superseded면 human-only `SourceReconciliationReceipt`가 같은 terminal UoW에 있을 때만 만들고, 없으면 cycle write 0+escalation한다. invalid data boundary는 receipt가 있어도 새 revision을 요구하며 Bound는 불변이다. `review_run_id·run_attempt`와 lease epoch를 분리하고 full token은 한 번만 반환해 hash만 저장하며 DB time·constant-time 비교·owner+epoch CAS·tombstone으로 stale 결과와 ABA를 막는다. 이 상태기계와 lease는 아직 없다.
-- **ReviewFinding / HumanDisposition (ADR 0047·0055)** — AI reviewer는 근거 위치와 digest가 붙은 immutable finding batch만 만든다. AI/mixed revision의 사람 review는 v3 finding-free `HumanReviewTerminalReceipt`와 independent central authorization을 먼저 기록하고, required human evidence가 충족된 뒤에만 별 disposition UoW가 BindingReady를 고려한다. `AcceptFinding | RejectFinding | DeferFinding`과 revision 전체의 `ApproveRevision | RequestChanges | RejectRevision`은 인증된 사람만 실행한다. unresolved·Defer는 승인을 막고 Defer에는 담당자·`due_at`·SLA가 필요하다. accepted finding은 `ImprovementProposal | FindingRiskAcceptance | FindingPolicyException` 중 하나와 exact-link한다. blocking finding을 proposal로 닫아도 새 candidate에서 해소될 때까지 현재 revision은 승인할 수 없다. `FindingRiskAcceptance`·`FindingPolicyException`은 issuer/role·policy·severity 권한·사유·범위·`expires_at`을 갖추고 exceptionable finding만 닫는다. DLP·tenant isolation·Authority·RBAC·secret exposure·hard safety invariant는 non-exceptionable다. AI review 우회는 policy가 `waivable`로 선언한 advisory requirement의 별 `ReviewRequirementWaiver`만 허용한다. AI·mixed 사람 binding, 사람 promoter, contributor/reviewer 독립성, DLP/data-boundary, independent eval, hard safety invariant는 non-waivable다. 세 receipt의 expiry는 binding/promotion `DecisionWindow`이고 successful promotion을 사후 변경하지 않는다. continuous-serving exception은 별 native/gateway enforcement+preauthorized expiry policy 전에는 허용하지 않으며 Declassification만 별 fail-closed expiry 계약을 따른다.
-  `ImprovementProposal` 생성 UoW는 모든 accepted-finding basis를 canonical closure ID 순서로 잠그고 finding/disposition/closure expected revision을 CAS한다. `(org_id, accepted_finding_closure_id)` unique `ProposalFindingBasisReceipt`가 closure/finding ID·revision·digest와 proposal ID·revision을 결박한다. 같은 proposal·같은 canonical basis set만 replay하고 다른 proposal이 closure 하나라도 먼저 claim했으면 전체 proposal write는 0이다. 같은 UoW에서 policy registry가 선택한 `EvaluationDatasetReservation = HoldoutReservationReceipt | NoHoldoutRequiredReceipt` 정확히 하나를 고정한다. holdout seal은 authoritative DB time·ledger sequence로 proposal보다 앞선 별 transaction이어야 하며 expected seal revision/unused와 strict prior sequence를 CAS한다. same-transaction seal·caller backdate·retry-lineage dataset/split digest 재사용은 write 0이다. no-holdout은 label-dependent metric이 없는 integrity/safety-only policy의 current authority receipt만 허용한다.
-- **Binding adapter / no dual SSOT (ADR 0047·planned)** — OKF 단계 처분은 `StageReview`, 답 발송은 `ApprovalItem`과 `ApprovalBoundary`, 사후 처분은 `BackupReview`·`ReevalItem`이 계속 소유한다. `CorrectionEvent`·`AnswerFeedback`은 append-only trigger/evidence이지 binding 승인 상태가 아니다. 공통 원장은 source 상태를 복제해 독립 `ReviewApproved`로 선언하지 않는다. 세 `BindingAction`은 exact `HumanDispositionReceipt`와 함께 BindingReady로 간다. source 호출 전 action, source aggregate·expected revision, command digest, idempotency, adapter/schema, expected receipt digest, exact `SourceBoundaryEnforcementPlan`과 source-arm drift authorization을 가진 intent+`BindingReady → BindingPending` CAS+outbox를 한 transaction으로 저장한다. gateway arm은 `SourceGatewaySubject`의 `GatewayRouteReference(Pending)`도 함께 만들고, native arm은 DB lock 밖에서 `NativeServingBinding(Pending→Active)`를 적용한다. source exact action/outcome/continuous-enforcement stable read-back 뒤에만 `SourceBoundaryEnforcementReceipt`를 포함한 `BindingReceipt`+`Bound(BindingOutcome)` CAS를 확정한다. gateway에서 source revision이 읽기/게시 상태면 Pending→Active와 old Active→Releasing을 같이 하고, Bound outcome이 non-serving/deny이거나 BindingFailure면 worker/attempt fence·stable exact protected-revision non-serving read-back 뒤에만 Pending→Releasing으로 간다. mapping mismatch는 `BindingReceiptMismatch`다.
-  source 영구 거절, repair 뒤 mismatch, source revision drift도 adapter call의 in-flight·late commit 가능성이 남아 있으면 `BindingPending`을 유지한다. worker lease fence, source expected-revision CAS·semantic idempotency, stable exact read-back으로 stale write가 0임을 확인한 뒤에만 `BindingFailureReceipt`+`BindingPending → Superseded` CAS+audit+outbox로 닫고 escalation한다. 이후 예상하지 못한 source mutation은 `LateBindingMutationObserved`로 append하고 old cycle을 Bound로 되살리지 않으며 수동 reconciliation으로 보낸다. BindingPending 뒤 governance drift는 `GovernanceDriftObserved`+future writes 0만 남긴다. exact Bound terminal이면 유효한 same-revision 새 cycle을 만들 수 있다. BindingFailure는 source-owner cleanup action·stable exact read-back·failed intent/cycle·issuer/policy·fencing을 결박한 human-only `SourceReconciliationReceipt`가 같은 UoW에 있을 때만 새 cycle을 만들고, 없으면 cycle write 0+escalation한다. 나중 receipt는 current validity·active-cycle absence를 재검증하는 별 UoW에서 연다. invalid data boundary는 receipt가 있어도 새 revision을 요구한다. promotion/package-ready는 `Bound(ChangesRequested | Rejected)`를 write 0으로 막는다. 같은 revision·review purpose의 newer/active cycle이 있으면 과거 Bound를 재사용하지 않고, current governance epoch/policy의 latest non-superseded `Bound(Approved)`만 자격 계산에 쓴다. 이 fencing을 제공하지 못하거나 semantic idempotency·인증 actor receipt·durable recovery가 부족한 현재 구현은 binding adapter로 열지 않는다.
-- **ImprovementProposal / ProposalCandidateReceipt / Evaluation (ADR 0047·planned)** — 허용 대상은 `KnowledgeChange | AnswerTemplateChange | PromptChange | ContextualPrecedentProposal | RoutingRuleProposal | EvalCaseAddition`으로 닫고 production code·Authority·RBAC·ApprovalPolicy·secret·model weights 타입은 두지 않는다. proposal 쓰기 상태는 `OpenProposal | RejectedProposal | SupersededProposal`뿐이고 `PromotedProposal`은 immutable `PromotionApplied` receipt의 read projection이다. proposal 생성은 accepted finding basis를 canonical order로 expected-revision CAS하고 `(org_id, accepted_finding_closure_id)` unique `ProposalFindingBasisReceipt`로 한 proposal에만 claim한다. same proposal/canonical basis replay만 허용하고 다른 proposal과의 충돌은 전체 write 0이다. 같은 UoW에서 policy-selected `EvaluationDatasetReservation` 정확히 하나도 고정한다. holdout-required면 별 선행 transaction의 독립 `HoldoutSealReceipt`를 `(org_id, holdout_seal_receipt_id)` unique opaque `HoldoutReservationReceipt`로 예약하고 strict prior commit sequence와 ancestor retry-lineage seal·dataset/split digest nonreuse를 강제한다. no-holdout은 label-dependent metric이 없는 integrity/safety-only policy의 current `NoHoldoutRequiredReceipt`만 허용하며 독립 evaluation을 면제하지 않는다. `ProposalCandidateReceipt`는 org·proposal ID/revision, accepted-finding closure/basis receipt IDs/digest, base/candidate content/provenance/data-boundary digest, candidate sequence, authenticated generator, generation policy/input/tool/retrieval digest, server-side opaque dataset-reservation ID/digest와 idempotency key를 결박한다. generator에는 seal·dataset/split digest를 노출하지 않는다. candidate ArtifactRevision+receipt+cycle은 expected proposal revision CAS와 transaction 1에서 함께 만들고 evaluation queue·RevisionActivation·package-ready는 exact receipt와 모든 digest를 다시 검증한다. `PromptChange | RoutingRuleProposal`은 Phase 18 안에서 영구 package-only다. `PackageAuthorizationSnapshot`의 proposal/candidate/basis/dataset/governance/review/eval/policy/ACL/schema/boundary/downstream revisions를 conditional-check하고 `ChangeControlPackageReady`+`PackageHandoffIntent(Pending)`+outbox를 한 UoW로 쓴다. fenced consumer가 handoff-before·continuous boundary·expected downstream revision을 재검증하고 stable exact acceptance/failure read-back 뒤에만 terminal receipt를 남긴다. late acceptance는 수동 reconciliation이며 production 적용이나 PromotionApplied로 표시하지 않는다.
-  immutable `EvaluationRequirementPolicy`는 필수 축, `CandidateBaselineMetric | IntegrityCheck | SafetyInvariant`, metric·threshold, runner·rubric, dataset arm·target scope와 `BaselineReference = ServingRevisionBaseline | ApprovedControlBaseline | NoPriorBaseline`을 정한다. `NoPriorBaseline`은 policy-authorized initial activation에서만 stricter absolute threshold·모든 safety invariant·shadow·제한 canary와 함께 쓴다. 필수 `None | Skipped`는 실패이고 `NotApplicable`은 policy가 선언한 축에만 유효하다. evidence는 exact candidate receipt와 candidate revision/content/provenance/boundary digest, exact dataset reservation와 baseline arm/digest, active base state, target·lane scope 또는 허용된 target-agnostic 표식, policy digest, adapter/runtime snapshot을 결박한다. Holdout evidence는 dataset/version·item/split·label seal을, NoHoldout evidence는 registry proof·reason·canonical no-holdout digest를 보존한다. holdout arm은 독립 curator·runner·grader가 역할 분리해 다루고 terminal promotion·package-ready·rejection 전에는 generator·reviewer에게 item별·aggregate 결과를 공개하지 않는다. classification·routing·answer-quality label과 nonempty criteria에는 인증된 사람 provenance가 필요하다. `EvalCaseAddition`은 provenance·schema·duplicate·leakage·split integrity를 통과하고 같은 proposal holdout에는 들어가지 않는다.
-  `GovernedEvaluationUseReceipt` unique key는 `(org_id, proposal_id)`다. 첫 enqueue는 proposal-time exact reservation·policy·scope를 다시 검증하고 expected proposal revision CAS와 같은 transaction에서 candidate만 freeze한다. same canonical payload는 replay하고 다른 candidate·reservation·policy·scope는 conflict/write 0이며 이후 같은 proposal에 새 candidate를 추가하지 못한다. logical Evaluation unique key는 `(org_id, proposal_candidate_receipt_id, evaluation_policy_digest, target_scope_digest, evaluation_dataset_reservation_digest)`이고 same canonical enqueue만 기존 aggregate를 replay하며 다른 payload는 conflict/write 0이다. `RejectedEvidence` terminal transaction은 proposal도 `RejectedProposal`로 CAS한다. 재도전은 eval failure를 사람이 검토해 새로 accept한 finding/closure, 이전 proposal과 겹치지 않는 exact closure, retry lineage에서 재사용하지 않은 policy-valid reservation을 결박한 새 proposal/candidate로만 한다. policy·scope·reservation drift도 기존 proposal을 Superseded로 닫고 새 proposal로 간다. 개발·shadow 반복 suite는 promotion evidence가 아니다. logical Evaluation과 append-only `EvaluationAttempt`를 분리한다. `EvaluationInterrupted(n)`만 expected evaluation revision, exact proposal/candidate/policy/scope/dataset reservation, previous attempt와 새 retry key를 결박한 별 `RetryEvaluation`로 같은 candidate·reservation의 `Interrupted → Queued` CAS+attempt `n+1` reservation+audit+outbox를 원자화한다. 이전 execution key는 과거 Interrupted를 replay한다.
-- **ServingTargetState / Promotion / Rollback / Kill-switch (ADR 0047·planned)** — key는 `(org_id, artifact_id, target_id, environment_or_lane)`이고 desired/in-process 값은 `ServingTargetState = Uninitialized | ServingRevision(revision_id, cause_request_id) | Quarantined(previous_serving_revision_id?, reason_code, cause_request_id) | Deactivated(previous_serving_revision_id?, reason_code, cause_request_id)`다. 외부 read projection은 별 `ObservedTargetState = RepresentableTargetState(ServingTargetState, raw digest, external version/generation) | UnrecognizedExternalState(raw digest, external version/generation, adapter/schema, reason)`다. 해석 불가능한 state를 ServingTargetState로 내리지 않으며 즉시 DriftOpen, adopt·compensation·normal operation write 0, exact raw version/generation의 Quarantine/Deactivate만 허용한다. row 부재는 canonical Uninitialized·epoch 0·digest이며 첫 operation은 create-if-absent CAS다. 각 slot은 monotonic epoch/state digest를 가진다. in-process `ActiveArtifactState`는 serving SSOT, 외부 `DesiredArtifactState`는 desired SSOT, fresh target read-back은 serving SSOT다.
-  `Uninitialized`는 row 부재·epoch 0의 최초 상태에만 유효하다. epoch>0 외부 absence는 raw absence token·external generation·read-back digest를 보존하되 actual을 `Deactivated(reason=external_absent, cause=drift_id)`로 투영한다. Uninitialized adopt/transition은 write 0이고, 재활성은 Deactivated·더 큰 epoch·exact absence token을 expected로 한 정상 Promotion conditional create만 쓴다. generation fence 미지원 target은 disable한다.
-  외부 serving 응답·operation eligibility/request·terminal 직전에는 current external version을 포함한 fresh exact read-back을 얻는다. mismatch가 current non-superseded operation이면 normal saga, known fenced/superseded late attempt면 `LateTargetMutationObserved`+Observed actual·DriftOpen 0, 어느 known attempt로도 설명되지 않으면 `TargetDriftObserved`+Observed actual CAS+`DriftOpen`을 원자화한다. DriftOpen의 external ServingRevision adoption은 direct desired write가 아니다. request UoW가 fresh actual identity·Promotion-equivalent 또는 prior-Applied/current-known-good gate·새 boundary plan/drift authorization/optional expiry와 next epoch를 검증해 `AdoptionPending`을 예약하고 gateway Pending도 만든다. DB lock 밖 enforcement 뒤 terminal UoW가 same external version/generation과 final receipt를 재검증해 Pending→Active/old Active→Releasing, desired/epoch, `TargetDriftAdopted`·`DriftResolved`를 원자화한다. `AdoptionPending`은 slot의 유일 in-flight이며 Quarantine/Deactivate만 Supersede한다. representable safe-state adoption만 한 UoW로 닫는다.
-  operation은 Promotion·Rollback·Quarantine의 `Requested → Applied | Denied | Superseded`, Deactivate의 `Requested → Applied | Denied`, 별 Compensation과 BoundaryLeaseRenewal의 `Requested → Applied | Denied | Superseded`로 닫는다. priority는 `Deactivate > Quarantine > Compensation > Promotion = Rollback > BoundaryLeaseRenewal`이고 strictly higher operation만 pending을 새 epoch에서 Supersede한다. 같은 expected epoch 혼합 경쟁은 한 winner, slot의 non-superseded in-flight/final state는 각각 하나다. compensation은 Promotion/Rollback 영구 실패에만 허용하며 prior-Applied/current-known-good 또는 safe-state gate를 우회하지 못한다. unknown/invalid boundary/epoch>0 Uninitialized는 CompensationApplied write 0이다.
-  `RevisionActivation = Promotion | Rollback`이며 둘 다 exact 새 revision의 fresh boundary plan/receipt·drift authorization·optional expiry·gateway/native lifecycle을 탄다. `PromotionAuthorizationSnapshot`은 proposal/candidate/dataset/governance/review/eval/policy/ACL/schema/boundary/baseline/target revisions를, `RollbackAuthorizationSnapshot`은 current/prior full state·known-good lineage·policy/ACL/schema/boundary·새 prior-revision plan·target revisions를 결박한다. aggregate conditional-check와 request+desired/active state/epoch CAS+outbox는 한 DecisionWindow UoW다. 외부 request는 gateway Pending 또는 native plan을 먼저 쓰고, terminal exact read-back 뒤 `ObservedTargetState`, final receipt, gateway Pending→Active/old Active→Releasing 또는 native Pending→Active와 Applied를 함께 확정한다. 과거 Rollback receipt 재사용·apply-before 뒤·stale generation Applied는 0이다. P17.8·P17.9 뒤에도 P17.11·P17.12·P17.13 전에는 target state write를 금지한다.
-- **Phase 18 포트 경계(planned)** — 조회 포트는 `ArtifactRevisionStore`·`ProvenanceResolutionStore`·`ReviewCycleStore`·`ReviewRunStore`·`ImprovementProposalStore`·`EvaluationStore`·`ArtifactStateStore`로 나누고, 쓰기는 `ReviewLedgerUnitOfWork`·`EvaluationUnitOfWork`·`TargetOperationUnitOfWork`가 아래 원자 묶음을 확정한다.
-
-    1. revision+verified boundary snapshot+optional authorized declassification receipt+optional exact `ProposalCandidateReceipt`/basis receipt IDs·digest+expected proposal revision CAS+cycle/requirements/SLA+audit/outbox
-    2. provenance resolution/revocation+expected effective digest CAS+공통 drift 처리. BindingPending 전 nonterminal이면 Superseded+유효한 같은 revision의 새 cycle, BindingPending이면 `GovernanceDriftObserved`+future writes 0, Bound면 불변+새 historical cycle+audit/outbox
-    3. review attempt/lease+claim+dispatch
-    4. fenced review result+finding batch+requirement completion/cycle CAS. accepted run으로 unmet=0이면 같은 transaction에서 `ReviewOpen → AwaitingHumanDisposition`+outbox
-    5. 사람 finding 처분+exact closure union+ImprovementProposal이면 all basis closure canonical lock/expected revision CAS+unique `(org_id, accepted_finding_closure_id)` `ProposalFindingBasisReceipt` claim+policy-selected exact `EvaluationDatasetReservation` 하나. holdout arm은 separate prior DB-sequence seal의 expected revision/unused CAS·unique opaque reservation·retry-lineage dataset digest nonreuse, no-holdout arm은 current registry authority receipt. revision `BindingAction`·exact `HumanDispositionReceipt`+`AwaitingHumanDisposition → BindingReady` CAS+audit/outbox
-    6. waiver issuance/revocation+cycle revision CAS+audit/outbox. issuance로 unmet=0이면 같은 transaction에서 Awaiting으로 전이하고, revoke/expiry는 ReviewOpen projection 갱신, Awaiting/BindingReady Superseded+새 cycle, BindingPending `GovernanceDriftObserved`+future writes 0을 적용
-    7. binding intent+exact `SourceBoundaryEnforcementPlan`+source-arm `BoundaryDriftActionAuthorization`+`BindingReady → BindingPending` CAS+outbox. gateway arm은 `SourceGatewaySubject`의 `GatewayRouteReference(Pending)`도 함께 생성
-    8. fenced source action/outcome+`SourceBoundaryEnforcementReceipt` stable read-back의 `BindingReceipt`+`BindingPending → Bound`. gateway serving arm은 Pending→Active/old Active→Releasing, native arm은 exact NativeServingBinding Pending→Active/self-deny read-back을 함께 확정한다. 또는 안전하게 영구 확정한 `BindingFailureReceipt`+`BindingPending → Superseded` CAS+audit/outbox. pending drift 뒤 Bound면 유효한 same-revision 새 cycle, BindingFailure면 exact human-only `SourceReconciliationReceipt`가 같은 UoW에 있을 때만 새 cycle, 그 외 cycle write 0+escalation. invalid data boundary는 언제나 새 revision 요구
-       gateway arm의 Bound outcome이 non-serving/deny이거나 BindingFailure면 worker/attempt fence·stable exact protected-revision non-serving read-back 뒤에만 Pending→Releasing을 해당 terminal과 함께 확정한다.
-    9. expected proposal revision CAS+proposal-time exact policy/scope/`EvaluationDatasetReservation` 재검증+`GovernedEvaluationUseReceipt` unique `(org_id, proposal_id)`+candidate freeze+logical Evaluation unique `(org_id, proposal_candidate_receipt_id, policy_digest, scope_digest, dataset_reservation_digest)`+outbox. receipt와 Evaluation 모두 same canonical replay만 허용하고 다른 payload는 conflict/write 0
-    10. evaluation attempt/lease+`Queued → Running` CAS+dispatch
-    11. fenced terminal eval `Running → Recorded | Interrupted` CAS+evidence/interrupt receipt+`RejectedEvidence`이면 `RejectedProposal` CAS+outbox
-    12. fresh expected desired·observed·external version·epoch의 외부 operation request·higher-priority supersession·compensation·lease-renewal intent. Promotion/Rollback이면 exact authorization snapshot aggregate revisions conditional-check, compensation이면 prior-Applied/current-known-good 또는 safe-state gate, renewal이면 current policy/classification/max-lag/source-boundary/issuer/expiry 검증+Desired state/boundary metadata/epoch CAS. RevisionActivation이면 fresh `BoundaryEnforcementPlan`·target drift authorization·optional expiry schedule와 gateway `GatewayRouteReference(Pending)`+outbox
-    13. apply-before·non-superseded request·continuous boundary·external version 재검증+exact `ObservedTargetState` read-back+해당 operation `*Applied` 또는 별 `CompensationApplied` terminal CAS. RevisionActivation이면 native Pending→Active/serving identity 또는 gateway route/config/health+attestation의 exact final receipt와 new Pending→Active/old Active→Releasing+operation receipt+outbox
-    14. in-process operation request+Promotion/Rollback authorization snapshot revisions conditional-check+Active state/epoch CAS+exact new revision의 `InProcessBoundaryEnforcementReceipt`·target drift authorization·optional expiry schedule+terminal receipt+outbox
-    15. exact `PackageAuthorizationSnapshot`의 proposal/candidate/basis/dataset/governance/review/eval/policy/ACL/schema/boundary/downstream revisions conditional-check+`ChangeControlPackageReady`+`PackageHandoffIntent(Pending)`+audit/outbox
-    16. fenced claim·handoff-before·continuous boundary·expected downstream revision 재검증+stable exact acceptance/failure read-back+`PackageHandoffReceipt | PackageHandoffFailureReceipt`+terminal CAS+drift/late-mutation audit+outbox
-
-  `RetryEvaluation`은 expected evaluation revision·exact proposal/candidate/policy/scope/dataset reservation·previous attempt·새 retry key를 대조해 같은 candidate·reservation의 `Interrupted → Queued` CAS+새 attempt reservation+audit+outbox를 확정하는 별 transaction이다. declassification 무효화는 `DataBoundaryInvalidationReceipt`+audit+escalation outbox를 원자화한다. BindingPending 전 cycle만 Superseded 처리하고, BindingPending은 drift+future writes 0 뒤 fenced terminal까지 기다리며, 어떤 경우에도 같은 낮은-boundary revision의 새 cycle을 만들지 않는다.
-  `HoldoutSealReceipt`는 authoritative DB time·append-only registry sequence로 proposal보다 앞선 별 transaction에 commit한다. proposal UoW는 expected seal revision/unused와 strict prior sequence를 CAS하고 same-transaction seal·caller backdate를 write 0으로 막는다. `GatewayRouteReference` cleanup은 subject별 worker fence, target/source fresh stable read-back, exact protected revision 미서빙과 replacement/kill/deny 보호를 재검증해 Releasing→Archived를 CAS한다. late mutation 가능성이 남으면 안전한 non-Archived leak을 유지한다. target/source의 모든 non-Archived reference가 route 완화를 fence한다.
-  declassification expiry나 source-boundary drift는 affected target에는 target-only normal Quarantine/Deactivate saga를, affected source에는 `SourceBoundaryDriftActionAuthorization`의 SourceDenyReads/SourceUnpublish intent+source-owned terminal receipt UoW를 연결한다. old Bound는 고치지 않고 same low-boundary revision 재개는 0이다.
-  `SourceReconciliationReceipt`가 BindingFailure 뒤 도착하면 failed intent/cycle·source-owner cleanup receipt·stable exact read-back·issuer/policy·fencing, current revision/boundary validity와 active-cycle absence를 대조해 receipt+새 historical cycle/requirements/SLA+audit/outbox를 별 transaction으로 확정한다. same canonical replay만 허용하고 다른 read-back/issuer/policy는 write 0이다.
-  외부 target mismatch는 세 갈래로 분류한다. current non-superseded operation이면 normal saga, known fenced/superseded late attempt면 `LateTargetMutationObserved`+Observed actual·DriftOpen 0, 어떤 known attempt로도 설명되지 않으면 fresh exact read-back을 `TargetDriftObserved`+`ObservedTargetState` projection CAS+`DriftOpen`과 한 transaction으로 확정한다. `UnrecognizedExternalState`는 kill-switch 외 write 0이다. ServingRevision adoption은 첫 UoW에서 exact actual/eligibility·new boundary plan·next epoch·`AdoptionPending`과 gateway Pending을 예약하고, enforcement 뒤 두 번째 UoW가 same external identity/final receipt·Pending→Active/old Active→Releasing·desired/epoch·DriftResolved를 원자화한다. safe-state adoption만 한 UoW다.
-  외부 경계는 `ArtifactContentReader`·`AiReviewRunner`·`BindingAdapter`·`TriggerEvidenceAdapter`·`EvaluationRunner`·`TargetStateAdapter`·`PackageHandoffAdapter`다. 모델·eval·binding·외부 target·package handoff 호출은 DB lock 밖이다. 잠금 순서는 `ArtifactRevision → ProvenanceResolution → ReviewCycle → ReviewRun → Finding/Disposition → HoldoutSeal/Reservation → Proposal → ProposalFindingBasis → BindingIntent/EvaluationAttempt → ServingTargetSlot → TargetDrift → TargetDriftAdoption → TargetOperation → GatewayRouteReference → ScheduledBoundaryExpiryAction → PackageHandoff → Outbox`다. 이 포트와 구현은 현재 없다.
-- **Phase 18 신뢰 경계(planned)** — 모든 aggregate key와 unique index에 `org_id`를 포함한다. content와 결과를 읽을 때마다 현재 RBAC·membership·purpose·classification을 재검증하고, finding·proposal은 원 revision 이상의 민감도와 ACL을 상속한다. restricted 자료는 승인된 내부 모델에서만 검토하고, 외부 전송 전 DLP·tenant opt-out·지역·보존 정책을 적용한다. 산출물 본문과 finding은 untrusted data로 다루며 AI reviewer의 side-effect tool·secret·임의 network 접근은 0이다. evidence span은 content digest·offset을 검증하고 UI는 결과를 escape한다.
-- **User** — 사람 노드. `id` · `manager: UserId | None`. Agent Card를 owns, 다른 User를 manages. (ADR 0005)
-- **AgentCard** — `frozen` 값 객체, 자기보고 필드만(ADR 0004): `agent_id` · `owner: UserId` · `maintainer: UserId | None` · `team` · `summary` · `domains` · `can_answer` · `cannot_answer` · `approval_when` · `collaborate_when` · `knowledge_sources` · `trust_labels` · `last_reviewed_at`. **`knowledge_sources`는 owner 환경의 OKF 번들(Open Knowledge Format — 마크다운+프론트매터 번들)을 가리키는 참조**(ADR 0013 — "출처 레이블뿐"에서 의미 재정의, 필드·스키마 무변경). 카드=라우팅 메타(중앙), OKF 번들=답변 지식(owner 환경)으로 분리 — 카드를 OKF에 흡수하지 않는다(admission·Authority 중앙 보존). 새 필드(`okf_bundle`) 안 더함 — under-claim 자기보고 보수성·하위호환(의미만 재정의).
-- **Registry** — User·Agent 등록 + admission 불변식. `register / register_user / get / has_card / replace_card / all_cards / load(dir) / validate`. **동시성(2026-07-02)**: web 엔드포인트가 `def`(비 async)라 스레드풀 병렬 실행 — `register`/`register_user`의 중복 체크→쓰기 사이를 `threading.RLock`으로 직렬화해 동시 등록 시 같은 agent_id 이중 등록을 차단한다("유효하지 않은 카드는 등록되지 않는다" 불변식의 동시성 보장·공개 시그니처 불변·`threading.Barrier` 결정론 경합 재현 테스트 `tests/test_concurrency_stores.py`). **라이브 진실 원천(ADR 0034 결정 1·Phase 12 3라운드)**: 관리 UI 등록·오너 변경이 admission 통과 즉시 라이브 mutation으로 반영(YAML은 초기 시드로 강등·`load`=시드 로더). `replace_card(card)`는 기존 agent_id의 frozen 값 교체(오너 변경 스위치·agent_id 불변·중복 register와 대칭으로 미존재면 `RegistryError`)·`has_card(agent_id)`는 라이브 존재 확인. Router가 매 route마다 `all_cards()`를 라이브로 읽어 등록·전이가 다음 라우팅에 즉시 반영(재색인 불요).
-- **AdminRegistryService (admin_registry.py·ADR 0034 결정 1·2·Phase 12 3라운드)** — 라이브 카드 등록 + 오너 변경 전이 도메인 코어. `register_card(candidate, by)`(admission 통과 즉시 라이브 반영·중복 `DuplicateCardError`·무효 `AdmissionError`·감사 `CardRegistered`) + `transfer_ownership(candidate, by)`(재-admission → 스위치[`replace_card`] → *같은 임계 구역에서* 구 owner 토큰 revoke → 구 워커 WS disconnect → `OwnershipTransfer` 감사). **우회 API 금지**: 폼→`CardCandidate` DTO를 `admit_card`(형식+참조 무결성·`validate_card_for_builder`와 같은 관문·ADR 0023 계승) 관문에 그대로 태운다("무효 카드 등록 금지" 불변식). **토큰 revoke 원자성 = owner 격리 보안 계약(결정 2)**: 스위치와 revoke를 `RLock` 한 임계 구역에 묶어 구 owner가 verify를 통과해 새 owner 카드로 회신할 window를 없앤다. `list_active`로 구 owner 토큰을 훑어 `revoke`(append-only·멱등)·구 워커 WS는 `WebSocketDispatcher.disconnect(owner_id, role)`(등급별·presence offline·in-flight 재큐·이미 열린 소켓은 revoke 후 재인증 실패로 닫힘). 감사는 `action_record`(`CardRegistered`·`OwnershipTransfer` append-only — git diff 추적을 대신). 라우트: `POST /admin/cards`(422/409/401)·`POST /admin/cards/{agent_id}/owner`(422/404/401)·`GET /admin/cards`·`GET /admin`(`web/admin.html`). 권한 경계 = `_session_identity`(인증 활성 시 미로그인 401·역할 구분은 실 SSO 시 강화·결정 4·ADR 0016/0021). 결정론 테스트 `test_admin_registry.py`·`test_admin_web.py`. **카드 durable — 저널 리플레이(ADR 0034 결정 1 "AON_DB 영속" 잔여 해소, 2026-07-05)**: Registry 자체를 SQLite화하지 않는다(YAML/하드코딩 시드 + InMemory 라이브 유지) — 대신 `sqlite_stores.SqliteRegistryJournal`(테이블 `registry_journal` — `kind`[register|transfer]·후보 필드 JSON·`by`·`at`, append-only)에 mutation을 남기고, 중앙 기동 시 `admin_registry.replay_registry_journal(journal, registry)`이 시드 완료된 `Registry` 위에 저널을 seq 순서대로 재생한다. 각 항목이 `admit_card`(admission)를 다시 경유하므로 참조 무결성이 깨진 항목(리플레이 시점엔 owner가 없어진 등)은 안전측 스킵(무효 카드 복원 금지 불변식 보존). `AdminRegistryService(journal_sink=)` 신규 seam — 등록/전이 성공 시 자동 append(`AdminAuditSink`와 별 축 — 감사는 사람이 읽는 이력, 저널은 기계가 재생하는 리플레이 원천). `storage_select.select_registry_journal()`이 `AON_DB` 미설정 시 `None`(하위호환), 설정 시 `SqliteRegistryJournal(path)`(다른 Phase 12 store와 같은 DB 파일 공유).
-- **Classifier 포트** — `classify(question) -> intent`. `RuleBasedClassifier`(v0) · `LlmClassifier`(T6.2 — `claude -p` 헤드리스, `ClassifierRunner` 주입 결정론 경계, intent 어휘 주입, 어휘 외→`""`→Unowned) · `FakeClassifier`(테스트). 구현 완료(`classifier.py` — `build_prompt`·`_parse`[정확 일치만·환각→""]·`classify`·`default_claude_classifier_runner`[Haiku·게이트 밖]).
-- **RoutingDecision** — sealed sum `Routed | Contested | Unowned`. 타입이 곧 상태. **세 변이 모두 `intent: str = ""`(ADR 0015)** — `router.route`가 classify 1회 결과를 결정에 실어 *라우팅 intent 단일 출처*(ask_org가 따로 classify 안 함, 두 분류 호출 divergence 차단). 기본값 `""`로 기존 생성처·match 무영향. 사용자向 OrgReply엔 미노출(노출 불변식).
-- **Agent Runtime 포트** — `answer(question, card) -> Answer`. `Answer(text, sources[], mode, snapshot_sha?)`. `mode: Literal["full", "draft_only", "backup"]`(신뢰 상태 — `full` owner 실시간 / `draft_only` Approval 게이트 / `backup` owner 위임 백업의 스냅샷 답·신뢰 하향, ADR 0012). `snapshot_sha: str | None`(ADR 0018 결정 4 — *이 답이 어느 OKF 커밋 스냅샷으로 만들어졌나*, 커밋 스냅샷 실행에서 실림·기본 None·working tree 직독/canned엔 없음, "이 답은 이 커밋 기준" 감사). **`backup`은 마지막 값·넷째 없음** — staleness로 fresh/stale을 쪼개지 않는다(stale 백업은 답 안 하고 거부→escalation, 결정 9). owner 검토(`BackupReview`) 후 backup→`full` 신뢰 복원(결정 7). **관리/실행 분리(ADR 0017)·대화 답변 재정의(ADR 0027)**: 답의 *지식 출처·책임*은 owner(거버넌스). 대화 답변 실행은 두 시기 — ADR 0017은 *실행*을 "중앙 `claude -p`가 owner OKF 최신 커밋 스냅샷을 cwd로 읽기"로 뒀고(중앙 API 키 LLM RAG 안 씀·ADR 0010 유효 근거 보존), **Phase 9(ADR 0027 — 0010 supersede·0017 결정 2 재정의)가 대화 답변을 owner OAuth 멀티-LLM 인프로세스 스트리밍으로 재정의** — 공급자별 `AgentRuntime` 어댑터(`ClaudeApiRuntime` 등·포트 무변경)·owner 워커가 owner OAuth 구독 토큰(API 키 아님)으로 공급자 API 인프로세스 직접 호출·스트리밍(`claude -p` 프로세스 스폰 회피·속도)·요청/응답 매핑·스트리밍 조립은 순수 함수(주입 `ProviderTransport` Stub 결정론)·한 공급자부터 증분(권장 Claude). *분류기·배치 `claude -p`는 잔존*(대화 경로만 교체·명시 구분). 중앙은 owner의 대행자(deputy)·**중앙 키/토큰 0은 0027에서도 보존·강화**(자격증명이 owner OAuth라 중앙 모델 토큰 0). 구현: `StubRuntime`(canned, 스켈레톤·테스트) → `ClaudeCodeRuntime`(`claude -p` 헤드리스, T6.1·T6.7) → **owner OAuth 공급자 어댑터(`ClaudeApiRuntime`, Phase 9 T9.4 게이트 내 shape·T9.6 실 OAuth/스트리밍 게이트 밖)**. owner 워커↔중앙 WS 전송이 0027에서 *기본 대화 경로*로 재부상(0011·0012가 0017에서 옵션 B로 강등됐던 것을 1급으로·ADR 0026 토큰 admission이 연결 검증). *분류기·`OidcProvider`·`NotificationChannel`과 같은 포트 패턴.* **OKF 지식 소비(T6.7 구현 완료, ADR 0013)**: `ClaudeCodeRuntime`이 owner의 **OKF 번들 디렉터리를 cwd로** 두고 `claude -p`를 `--allowedTools "Read,Glob,Grep"`(읽기 전용)와 함께 돌려 claude가 번들을 *읽어* 답한다. 구현: `_run_claude_headless(prompt, /, *, cwd=None, timeout=...)` — `cwd` 주어지면 그 디렉터리+도구 플래그, `cwd=None`이면 기존 `tempfile.TemporaryDirectory()` cwd·도구 없음(하위호환). 번들 경로 규약 **`okf_root/{agent_id}`**(`knowledge_sources` 레이블을 경로로 쓰지 않고 `agent_id`가 규약으로 디렉터리를 진다·`Answer.sources` 보존), `okf_root` 명시 주입(`None`이면 번들 해석 안 함 — 중앙 무지식·암묵 cwd 추정 금지). `_build_persona_prompt`에 "cwd OKF 먼저 읽고 근거로 답, 없으면 모른다고" 지시. 벡터DB·RAG 인프라 0(Claude Code가 파일 읽는 에이전트라 cwd 주입+읽기 도구면 성립, PoC 입증·실 claude 시연 재현 — 번들 있으면 "45,000원" 구체 답/없으면 공허). T6.3 분산에서 "owner별 지식 격리"가 *번들 cwd 격리*로 실체화(각 워커가 자기 owner 번들 루트 주입). `runner` 주입(`ClaudeRunner` Protocol) 결정론 경계 보존(실 OKF 소비는 eval/수동). 샘플 번들 `okf/cs_ops`·`okf/contract_ops`·`okf/finance_ops`(3 담당자 분산 데모용), 와이어링은 `demo.py` `DEMO_OKF_ROOT`·`worker.py main()`. **git 저장·빌더 커밋·커밋 스냅샷 실행(T7.2 설계·shape, ADR 0018)**: OKF 번들을 *모노repo 하위폴더 `okf/{agent_id}/`*에 git 저장(owner별 repo는 후속 옵션), **빌더 OKF 편집 면이 owner 대신 커밋**(author=owner 세션 신원·자동 커밋 본체는 *OKF 번들 마크다운*이지 카드 YAML 아님 — 카드는 admission 경계라 검증→YAML→PR 유지). 커밋·스냅샷은 **`GitGateway` 포트**(`git_gateway.py`)로 추상 — `commit_bundle`·`head_sha`·`extract_snapshot`(`git archive <sha>` 추출 cwd·working tree 직독 아님 — "이 답은 이 커밋 기준" 재현·동시 읽기 충돌 0), 실 구현 `SubprocessGitGateway`(git CLI subprocess·게이트 밖 수동·**새 의존성 0**)와 결정론 `FakeGitGateway`(in-memory·결정 SHA) 주입(`ClaudeRunner`와 같은 포트 패턴). 빌더 커밋 오케스트레이션은 web과 분리한 순수 함수 `commit_okf_bundle(req, gateway)`(`validate_card_for_builder`와 같은 경계). `okf_root` 의미 정밀화: "OKF 번들들을 담은 git repo 작업 트리 루트"(T6.7 직독과 커밋 스냅샷 실행 양립). **운영화 진행(T8.1, ADR 0018)** — 빌더 커밋 서비스(`commit_okf_bundle`)·라우트(`POST /builder/okf/commit`)는 T7.2로, 실 git `SubprocessGitGateway`(commit_bundle·head_sha·extract_snapshot)는 T8.1 a·b로(tmp repo 통합 테스트·새 의존성 0·경로 탈출 가드), OKF 에디터 UI(`web/builder.html` OKF 편집 탭)는 T8.1 d로 실체화. 중앙 최신 읽기(pull/webhook 캐시)·원격 repo는 후속(외부 결정·게이트 밖). 게이트 850 passed/pyright 0/ruff 0. **일시 장애 재시도 정책(`provider_retry.py`·2026-07-02)**: 공급자 API 일시 오류가 즉시 escalation으로 승격되던 공백을 메움 — `RetryPolicy`(frozen·max_attempts·지수 백오프) + 순수 판정 `is_retryable`(429/5xx/네트워크 일시 O·400 X — SDK import 0·status_code 속성 기반) + `run_with_retry(fn, policy, sleeper=time.sleep)`(sleep 주입 seam·테스트 fake sleeper 결정론). 401/403은 재시도 없이 `ProviderAuthError`로 즉시 승격(owner 토큰 갱신 필요 구분·원 예외 __cause__ 보존). 재시도 소진·비일시 실패는 원 예외 그대로 재던짐(기존 escalation·미아 없음 폴백 무변경). `answer_stream`은 스트림 시작(첫 청크)까지만 재시도 — 첫 델타 후 중간 실패는 재시도 금지(부분 출력 중복 방지·ErrorEvent 경로 보존).
-- **RuntimeDispatcher 포트 / WorkTicket / DispatchOutcome** — 분산 전송(T6.3, `dispatch.py`, ADR 0011). owner별 작업 큐에 적재·비동기 회신 수집. `dispatch(question, card) -> WorkTicket`(즉시 추적표) · `poll(ticket) -> DispatchOutcome` · 워커측 `claim(owner_id)`/`submit(ticket_id, answer)`. **`ask_org`의 답 획득 경로** — `ask_org`는 동기 `AgentRuntime.answer`를 직접 부르지 않고 `dispatch→poll`로 `DispatchOutcome`을 얻어 `OrgReply`로 투영(ADR 0011 결정 4). `DispatchOutcome` sealed sum: `Delivered(answer)` / `AwaitingWorker(waited)` / `EscalatedToManager(manager_id, reason)`(timeout·owner 부재 → 기존 Manager escalation 재사용. `manager_id: str|None`은 T5.2 Manager 큐가 기계 소비할 1급 식별자, `reason`은 사람용 자연어 — 둘 분리). `WorkTicket(owner_id·agent_id·question·enqueued_at·ticket_id)` — owner_id 귀속이 신원(ADR 0009)·`Answer.mode`가 Approval 연결점. 구현체: `InMemoryWorkQueueDispatcher`(in-process 큐, 결정론 테스트·슬라이스1) · `LocalRuntimeDispatcher`(동기 런타임을 즉시-Delivered로 감싸는 즉답 다리 — ask_org가 디스패처만 보게 된 뒤 in-process 데모/테스트의 즉답 보장) · 슬라이스2 네트워크 디스패처. 동기 포트 `AgentRuntime.answer`는 어댑터 `DispatchingRuntime`이 디스패처 위에 얹어 보존(레거시/비-ask_org 호환 — ask_org는 거치지 않음). 포트 패턴은 `ConflictCaseStore`·`PrecedentStore`와 동일(Protocol + 구현체). **전이 ≠ 기록** — 작업 큐는 미해소 작업의 도메인 보관소지 절차 로그 아님. (ADR 0011)
-- **Manager** — 다른 User를 `manages` 하는 User. Escalation은 사람 그래프를 타고 오른다.
-- **Manager 큐 (manager_queue.py)** — 세 escalation 출처(`Unowned`·`Deadlocked`·`EscalatedToManager`)가 하나의 `ManagerItem`로 수렴하는 보관함 + 처리(T5.2·ADR 0014). `ManagerQueueStore`(Protocol+InMemory, 색인 키 **manager_id**)·`EscalationSource`(`FromUnowned`/`FromDeadlock`/`FromDispatch` sealed sum, 출처 원형 보존)·`ManagerAction`(`AssignOwner`→Resolution+Precedent·case 종결 / `Reroute`=Transfer·판례 X / `Dismiss`)·`ManagerResolution`·`ManagerQueueService`(1인칭 by_manager 강제). `ConflictCaseStore`·`BackupReviewStore` 패턴의 *세 번째 인스턴스*(색인 키만 owner→manager_id). escalation의 큐 적재 = 미아 없음 최종 종착(root 보정 — 반드시 누군가의 큐). 전이 ≠ 기록(큐=전이 보관, escalation은 audit에 이미 남음·ADR 0011 결정 5). 운영 면 노출 OK(채팅 OrgReply 불변식과 다른 면). Approval(게이트)은 이 큐에 안 넣음 — 별 탭/행위 후속(결정 4). 멀티홉·LCA는 후순위(PRD §6).
-- **Resolution / Precedent** — 합의 결론과 append-only 기록. 라우터가 참조.
-- **ConflictCase / ConflictCaseStore 포트** — 미해소 Overlap 다툼의 저장 단위와 그 보관·조회 포트(`AuditLog`·`PrecedentStore`와 같은 패턴, `conflict.py`). `ConflictCase(intent·question·candidates[Candidate(agent_id,owner)]·status·opened_at·case_id·resolution?)`, open→resolved는 `resolve()`가 새 인스턴스. 포트 메서드 `open_case·get·open_for_owner(처리함)·open_for_intent(중복 open 방지)·mark_resolved`. 구현 `InMemoryConflictCaseStore`. **전이 ≠ 기록** — 미해소 도메인 상태 보관이지 절차 로그 아님. (ADR 0008)
-- **ConcurOnPrimary / ConsensusOutcome** — 후보 Owner의 1인칭 합의 표(`by_owner→on_agent`, 단일 축)와 합의 시도 결과 sealed sum(`Agreed`→Resolution+Precedent / `StillOpen` / `Deadlocked`). Agreed가 T4.2 핵심, Deadlocked→Manager는 T5.2로 자리만. (ADR 0008)
-- **BackupReviewItem / BackupReview / BackupReviewStore 포트** — owner 복귀 검토 루프(T6.6 설계, ADR 0012 결정 7). `ConflictCase`/`ConflictCaseStore`/`Inbox`와 *같은 처리함 패턴*(Protocol + InMemory, owner 색인, 불변 전이)의 두 번째 인스턴스 — 담는 값만 다르다(다툼·후보 vs 백업 답·검토). `BackupReviewItem(owner_id·agent_id·question·backup_answer_text·ticket_id·snapshot_at·answered_at·status[pending_review/reviewed]·review?)`, pending_review→reviewed는 `review_with()`가 새 인스턴스(`ConflictCase.resolve()` 정신). `BackupReview` sealed sum: `Approve`(승인, mode backup→full 승격) / `Correct`(정정, owner 새 답 발행·`mode=full`) / `Dismiss`(무시, 검토 완료 사실만). 1인칭(`by_owner`==`item.owner_id` 강제, ConcurOnPrimary 정신). 포트 `BackupReviewStore`: `add·get·pending_for_owner(처리함)·mark_reviewed`. **Precedent 안 만듦** — 검토는 답 옳고 그름이지 라우팅 판례 아님(담당은 이미 그 owner), 검토 기록은 audit에만. 검토 재노출은 `retrieve(tracking)` 갱신(푸시 없이 조회, ADR 0011 결정 6-5 정합). **전이 ≠ 기록** — 미검토 도메인 상태 보관이지 절차 로그 아님. (ADR 0012 결정 7)
-- **OkfChangeEvent / StalenessPropagator / ReevalItem / ReevalOutcome / ReevalStore 포트 (reeval.py · git_gateway.py)** — 지식 신선도·변경 전파(T7.3 설계·shape, ADR 0019). "정책(OKF)이 바뀌면 그 정책에 기댄 *과거 Precedent·답*을 자동 재검토/무효화 플래그"(ADR 0017 결정 3②)의 본체. **변경 이벤트**: OKF 커밋이 곧 사건 — `OkfChangeEvent(agent_id·new_sha·parent_sha[커밋 직전 HEAD·최초면 None]·changed_paths·author·committed_at[주입 clock])`, 단일 발화 지점 `commit_okf_bundle(req, gateway, propagator=None)`(옵셔널 주입·None=기존 동작 하위호환·비None이면 커밋 직후 `on_okf_committed(event)` 1회). `CommitResult`·web 응답 불변(노출 불변식). **죽은 필드**: `changed_paths`·`parent_sha`는 싣되 MVP 매칭엔 안 씀(미래 정밀화 자리 — `sources`↔`changed_paths` 교차는 타입 불일치 과소검출이라 기각). **영향 식별**(agent_id 거친 매칭·과검출 허용·놓침 0): ① Precedent 축 `PrecedentStore.find_by_primary(agent_id)`(`_by_primary` 역색인·record 시점 채움)로 그 agent를 `Resolution.primary`로 둔 판례 전부 → `flag_stale`(needs_review 표식·멱등) + ReevalItem 적재 ② Answer 축 `AuditReader.records()` 순회 — **records()는 직렬화 dict**(AuditEntry 객체 아님)라 dict 접근: `rec["decision"]["disposition"]=="routed"` and `rec["decision"]["primary"]==event.agent_id`, 답 SHA=`(rec.get("answer") or {}).get("snapshot_sha")`(`_answer_record`는 None이면 키 부재라 .get 안전), `SHA != 현 HEAD or None`이면 영향(None 답 보수 포함). MVP는 ordering 판정 포기(불투명 SHA older-than 비교 불가·`is_ancestor` 신설 안 함). 안정 식별자=audit 기록순 인덱스. **재평가**: `ReevalItem(subject[ReevalSubject sealed sum]·owner_id·agent_id·trigger_sha·flagged_at·status·review?·item_id)`, pending_review→reviewed는 `review_with()`(BackupReviewItem 동형). **`ReevalSubject` sealed sum**(*대상* 축·T8.4(a)·결정 7): `PrecedentSubject(intent)` | `AnswerSubject(audit_index: int)` — 타입이 곧 대상 판별자(이전 MVP `subject_kind`+untyped `subject_ref` 두 필드의 'sealed sum 약한 이탈'을 정밀화). 통지 멱등 키는 `subject.notification_ref()`가 타입에서 도출(`precedent:{intent}`/`answer:{audit_index}` — m1 우회 구조적 해소). dedup 가드는 `isinstance(p.subject, AnswerSubject) and p.subject.audit_index == idx`. `ReevalOutcome` sealed sum(*결과* 축·arm 확정·결정 6·대상 축과 독립): Precedent `KeepPrecedent`|`InvalidatePrecedent`(무효 의사 → **실 라우팅 제외**·T8.4(d))|`SupersedePrecedent`(새 Resolution record·삭제 없는 갱신·실 실행 후속) / Answer `AcknowledgeAnswer`|`ReAnswer`(재답변 표식·실 재실행 후속). `ReevalStore`(Protocol+`InMemoryReevalStore`): `add·get·pending_for_owner(처리함 세 번째 탭)·mark_reviewed`+append-only `history`. `ReevalService` 1인칭 강제(`by_owner==item.owner_id`). **무효화 vs 플래그(결정 6)**: stale=플래그(needs_review)이지 무효화 아님 — Router lookup이 needs_review를 *안 봐* stale 판례도 계속 라우팅(0매칭/공백 0·미아 없음). 무효화는 owner 명시(`InvalidatePrecedent`) 후만·append-only(store 삭제 X). **InvalidatePrecedent 실 라우팅 제외(T8.4(d))**: `Precedent`에 무효 3필드(`invalidated`·`invalidated_at`·`invalidated_by`·frozen·하위호환·append-only) + `PrecedentStore.invalidate(intent, by_owner, at) -> Precedent|None`(flag_stale 동형·멱등·삭제 X·`_swap` 공통 헬퍼·`needs_review`와 *독립 축*). **제외 지점=Router(안 B·안 A 기각)**: `lookup`은 순수 읽기로 두고(invalidated 판례도 그대로 반환·`find_by_primary`/`list_all`과 일관·기록 확인 테스트 회귀 0) Router가 `p.invalidated`면 판례 단축경로를 건너뛰고 분류기 폴백(0→Unowned·1→Routed·≥2→Contested 항상 종착 — 미아 없음). `needs_review` 해석과 *대칭*. **와이어링**: `ReevalService`에 옵셔널 `precedents: PrecedentStore|None`·`clock` 주입(미주입이면 기존 동작·하위호환·게이트 보존), `review`가 전이 뒤 `InvalidatePrecedent`×`PrecedentSubject` 짝일 때만 `precedents.invalidate` 호출(`ConsensusService` `Agreed`→`record` 대칭). 축 어긋난 짝(`AnswerSubject`에 InvalidatePrecedent)은 무시(에러 X·전이는 그대로라 reviewed 종착·미아 없음). `SupersedePrecedent`·`KeepPrecedent`·Answer 축 실 실행은 이번 범위 밖. `Answer`엔 새 필드 0(audit append-only — 옛 SHA=stale은 ReevalItem이 듦). **전이 ≠ 기록** — 재평가는 ReevalStore 전이·재검토 행위는 audit(호출자). 노출 불변식: stale 필드·trigger_sha는 운영 면만(처리함·모니터링), 사용자向 Answered 미노출. **DDD 정밀화(T8.4(a)·해소)**: 이전 MVP `subject_kind` 문자열 판별자+untyped `subject_ref`는 sealed sum 관용구에서 약하게 이탈했고, `ReevalSubject` sealed sum 분리로 닫혔다(위 재평가 절·ADR 0019 결정 7). **구현 완료**(tdd-engineer red→green 슬라이스 1~7 + T8.4(a) 타입 정밀화) — 실시간 push(T7.4)는 ADR 0022로 완료. web 처리함 탭·timeout escalation은 후속. 게이트 보존(818 passed/pyright 0/ruff 0). (ADR 0019)
-- **OidcProvider / OidcClaims / resolve_identity (oidc.py)** — SSO/OIDC 신원 binding(T7.1 구현 완료, ADR 0021). owner 종속(card.owner)의 *증명* 미싱피스(ADR 0017 결정 5 — 선언[card.owner]·강제[편집 스코프]·증명[신원=SSO] 셋 중 증명). ADR 0016이 신원 출처를 *세션*으로 격리한 덕에 SSO는 "세션에 박기 직전의 검증"만 *선택→증명*으로 교체한다 — `_session_identity`·운영 스코프·concur·빌더 OKF 커밋 author 전부 무변경. **`OidcProvider` 포트**(Protocol): `verify(id_token) -> OidcClaims`(서명·만료·aud 검증·실패 시 `OidcVerificationError`). 신원 검증은 비결정·외부 의존이라 `GitGateway`·`AgentRuntime`·`ClaudeRunner`와 **같은 포트 패턴** — 실 `HttpOidcProvider`(JWKS fetch·RS256 서명 검증·iss/aud/exp — **게이트 밖 수동**·새 무거운 의존성 추가는 후속 판단) + 결정론 `FakeOidcProvider`(in-memory 토큰→claims·위조/만료 거부 — 단위 테스트 주입). **공급자 중립** — 표준 OIDC claim(sub·email·email_verified·iss·aud)만 가정(Google `hd`·MS `tid` 안 씀 → 어떤 IdP에도 붙음). **`OidcClaims`**(frozen 값 객체): sub·email·email_verified·iss·aud. `exp`는 *검증의 책임*(verify가 만료 토큰을 걸러냄)이라 값 객체에 안 든다(검증 통과 신원만 표상·`Answer`가 검증 메타 안 드는 경계와 동형). 전송 DTO 아님. **신원 매핑 baseline = verified email → registry User**: `resolve_identity(claims, registry) -> user_id`(순수 함수·web 분리 경계 — `validate_card_for_builder`와 같은 결): ① email_verified 가드(미검증 거부) ② `claims.email == user.email`인 User(**User.email이 SSOT** — `User`에 `email: str | None = None` 신설·frozen·하위호환·admission 무관) ③ 0매칭/모호 거부(`OidcVerificationError`→401). email local-part==user_id(회사 규칙 종속·기각)·외부 매핑 테이블(SSOT 이중화·기각) 대신 User.email 한 곳에 신원을 모음. **인증 모드 3단**(점진 전환·하위호환): ① OFF(`session_secret` 없음) ② 무비밀번호(`session_secret`만 — ADR 0016 `/login` 보존) ③ SSO(`session_secret`+`oidc_provider` — `/login/sso` 활성·무비밀번호 `/login` 403 거부로 선택 우회 차단). `create_app`·`create_central_app`에 `oidc_provider: OidcProvider | None = None` 주입(미주입이면 기존 동작). single tenant — tenant 개념·격리·프리픽스 없음. **불변식 영향 없음** — 미아 없음·Authority 중앙(SSO는 신원 증명이지 권한 선언 아님)·전이≠기록(로그인은 세션 set)·등록 무결성(User.email은 admission 무관)·노출 불변식(인증은 접근 경계)은 그대로, owner 종속은 *강화*(선택→증명)·RBAC 아님(역할은 그래프 파생). **구현 완료(tdd-engineer red→green 슬라이스 1~3 + code-reviewer 빈 email 가드)** — `verify`·`resolve_identity`·`POST /login/sso` 구현(신규 테스트 27). 실 OIDC(JWKS·RS256·code/PKCE·redirect·refresh)는 `HttpOidcProvider`·게이트 밖 후속. 게이트 734 passed/pyright 0/ruff 0. (ADR 0021)
-- **NotificationChannel / Notification / Notifier (notify.py)** — 실시간 충돌 푸시 통지(T7.4 구현 완료, ADR 0022). 지금 owner·manager는 처리함·큐를 *조회(pull)*해야 새 일을 안다 — T7.4는 처리함/큐에 항목이 *적재되는 사건*(다툼 open·백업 답 add·재평가 add·escalation enqueue)에서 owner/manager에게 *push*를 더한다. **push는 pull을 대체하지 않고 추가한다** — 통지 채널 전체 실패해도 처리함 pull 그대로라 미아 없음(가시성 이중 보장 — 미아 없음은 push가 아니라 pull이 떠받친다). **`NotificationChannel` 포트**(Protocol): `send(notification) -> None`(fire-and-forget — 전달 결과 미반환·전송 실패는 채널 내부 재시도/미전달 자리). 실 전송은 비결정·외부 의존(Slack API·SMTP·MCP)이라 `GitGateway`·`OidcProvider`·`AgentRuntime`과 **같은 포트 패턴** — 결정론 `FakeChannel`(메모리 inbox `recipient_id→list[Notification]`·전달 로그·게이트 내 단위 테스트) + 실 어댑터(`McpChannel`은 transport 주입 실 어댑터·`SlackChannel`·`EmailChannel`은 후속 stub). **채널 중립** — 어떤 채널도 1급 아님(포트가 채널 어휘를 안 가정·recipient → 실 주소 변환은 어댑터 안에서·특정 벤더 1급 금지). **첫 실 채널 = MCP**(2026-06-24·T8.2·ADR 0022 결정 9·10 — 외부 결정 확정). **`render_mcp_notification(notification) -> str`**(`notify.py`·순수 함수): `Notification → MCP 알림 페이로드(텍스트)` 렌더 — 노출 불변식의 *게이트 내 본체*로 `mcp_server.reply_to_mcp_text`의 직접 본보기다(도메인 값에서만 투영해 내부값·사용자向 비밀이 구조적으로 안 샘·kind를 match+assert_never로 망라해 5번째 종류 누락을 pyright가 잡음·kind별 중립 안내 한 줄 + subject_ref 손잡이만). **`McpChannel`**(transport 주입 실 어댑터): `McpChannel(send_fn: Callable[[recipient_id, payload], None] | None = None)` — `send`는 ① render_mcp_notification으로 페이로드 렌더(게이트 내) ② 주입 transport(`send_fn`)로 실 전송(게이트 밖). Fake send_fn → 게이트 내(렌더+호출 인자 검증), 실 MCP transport → 게이트 밖(recipient_id → MCP 세션/엔드포인트 변환은 transport 안에서·채널 중립·mcp-runtime-engineer), send_fn 미주입 → NotImplementedError(결정된 실 채널이라 transport만 주면 돎·`GitGateway`↔`FakeGitGateway`·`ClaudeRunner` 주입과 동형). fire-and-forget MVP 확정(결정 10② — 동기 send·실패는 `Notifier`가 삼킴·McpChannel은 안 삼킴 계층 분리·추가 인프라 0). **`SlackChannel`·`EmailChannel` = 후속 stub**("결정됨 2026-06-24: MCP 먼저·이 채널은 *후속 자리*"·NotImplementedError 유지·실 구현 0). **`Notification`**(frozen 값 객체): `recipient_id`(owner/manager User.id)·`kind`(**NotificationKind** = `Literal["conflict_opened","backup_review_added","reeval_flagged","manager_escalated"]`)·`subject_ref`(case_id/item_id/intent — 멱등 키 일부)·`created_at`(주입 clock 결정론). **`kind`는 Literal이지 sealed sum 아님** — 네 종류가 필드 구조 동일·분기 없는 라벨이라(`ReevalItem.subject_kind`와 같은 판단), sealed sum은 *처분*(`ReevalOutcome`·`ManagerAction`)에 둔다. **`Notifier`**(통지 서비스): 발화 지점이 `notify(notification)`만 부르고 Notifier가 구독 맵(`recipient_id → channel`)으로 채널을 찾아 `send`. **구독 = 주입 맵**(MVP는 별 `SubscriptionStore` 없이 정적 매핑 — 전이 없는 데이터라 store 불요·동적 구독은 후속 승격). **미구독 recipient skip**(처리함 pull 그대로 — 미아 없음). **멱등**: 같은 `(recipient_id, kind, subject_ref)`는 중복 발송 안 함(`StalenessPropagator` needs_review 가드·`ManagerQueueStore.get_by_case` 중복 방지와 동형). **분산 인프라(ADR 0011·0012)는 코드 재사용 아니라 *패턴*(멱등 `ticket_id`·at-least-once 정신)만** — 통지는 fire-and-forget push라 작업 디스패치(round-trip·claim/submit·큐 상태기계)와 *다른 도메인*이라 `WebSocketDispatcher` 직접 재사용은 과결합(`reeval.py`가 BackupReview 패턴 *복제*한 정신). **발화 지점**(결정 4): 각 적재 지점에 `notifier: Notifier | None = None` 옵셔널 주입 — None이면 기존 동작(하위호환·게이트 보존), 비None이면 적재 직후 `notify` 1회(`commit_okf_bundle(..., propagator=None)`과 동형). **단일 발화 추상 = 인터페이스 하나(`Notifier.notify`)이지 함수 하나가 아니다** — 발화 맥락 제각각이라 전역 이벤트 버스는 과추상·포트 호출 모양만 통일. store는 순수 보관(**전이 ≠ 기록 ≠ 통지** — 통지는 적재 *뒤*의 외부 부작용·전달 로그는 audit과 별 축). **노출 불변식**: 운영 면(owner/manager) 신호라 운영 내부값 OK이되 **실 사용자 채팅엔 통지 0**(OrgReply는 통지 모름)·식별자만 들고 MCP 본문 렌더는 `render_mcp_notification` 순수 함수가 kind별 중립 안내 + subject_ref 손잡이만 냄(사용자向 비밀 누설 차단 — 게이트 내 양방향 검증). **불변식 영향 없음** — 미아 없음(pull이 떠받침)·Authority 중앙(통지는 알림이지 권한 아님)·전이≠기록(전달 로그는 audit과 별 축)·노출 불변식·등록 무결성. **구현 완료(tdd-engineer red→green 슬라이스 1~3 + code-reviewer M1 빈 owner_id 가드)** — `FakeChannel.send`·`Notifier.notify`·발화(`AskOrg._push_conflict_notification`·`StalenessPropagator._push_reeval_notification`) 구현(notifier 미주입이면 기존 동작·하위호환). **발화 지점 4개 전부 구현**(ConflictCase·Reeval·Manager·BackupReview — 같은 `Notifier.notify`)·m1 subject_ref 축 네임스페이스(`precedent:`/`answer:`)로 멱등 충돌 닫힘. 실 어댑터·실 비동기 전달·동적 구독은 게이트 밖 후속. 게이트 768 passed/pyright 0/ruff 0. (ADR 0022)
-- **Audit log 포트(`AuditLog` 쓰기 / `AuditReader` 읽기)** — `AuditLog.record(entry)`로 한 줄씩 append-only JSONL(`JsonlAuditLog`)·테스트용 `InMemoryAuditLog`. `AuditEntry`는 `RoutingDecision` 원형 + `DispatchOutcome` 원형(디스패치 결말, Routed만 채움; `answer`는 거기서 유도하는 파생 접근자)을 안아 내부값(confidence·candidates·escalated_to·primary·escalation의 manager_id·reason)까지 기록(OrgReply가 감춘 것). timestamp는 주입 clock으로 결정론. 전이가 아니라 기록. (ADR 0011 결정 5) **읽기 포트 `AuditReader`(T5.1, 모니터링 면)** — `records() -> list[dict]`(요약 목록 원천, 비면 빈 리스트)·`record_at(index) -> dict | None`(상세 원천, 범위 밖 None). `AuditLog`(쓰기)와 **인터페이스 분리**(ISP — 쓰는 주체 ask_org와 읽는 주체 모니터링이 다름; `PrecedentStore`의 record+lookup 단일 포트와 갈리는 지점). 두 구현체가 둘 다 구현. 반환은 **직렬화 레코드(dict, `as_record` 모양)**이지 `AuditEntry`가 아니다(JSONL 역직렬화 손실 — 기록된 줄이 모니터링 단위, 두 구현체 균일 dict). 주소는 **인덱스**(append-only라 안정 — uuid `entry_id`는 결정론·주입 부담으로 MVP 과함). *순수 읽기* — 새 전이·기록 0(전이 ≠ 기록 정합).
-- **처분 행위 기록 확장(`action_record`/`record_action` — 2026-07-02)** — 전이 ≠ 기록의 *기록 절반*을 처리함 처분에도 완결. 설계(ADR 0012 결정 7·0019)는 "검토/재평가 *행위*의 절차 기록은 audit·기록 주체는 호출자"였으나 web 라우트가 읽기만 하고 행위를 안 남기던 공백을 메움. `audit.action_record(timestamp, action, subject_id, by, detail?)`(순수 함수)가 기존 레코드 모양과 어울리는 dict(`decision`/`answer`/`dispatch`/`tracking` 전부 None·행위 고유 정보는 최상위 `action` 키)를 만들고, `AuditLog.record_action(record)`(두 구현체 모두)가 append-only로 남긴다. 기록 주체는 호출자(web 처분 라우트 — `POST /backup-reviews/{item_id}`→`backup_review.{type}`·`POST /reeval/{item_id}/review`→`reeval.{kind}`, service 성공 *후*에만·4xx는 행위 미발생이라 기록 없음). `DemoBundle.audit`(reader와 같은 인스턴스의 쓰기 손잡이)로 라우트가 접근. 기존 소비자(`summarize_audit_record`·`dedupe_audit_records`·`ReevalSubject.audit_index` 안정성) 무회귀 — append-only라 기존 인덱스 불변·새 레코드 종류는 안전 통과(테스트 단언). 서비스 계층(`record_review` 등)은 여전히 audit을 안 만진다(기록은 호출자 책임 — 기존 계약 보존).
-- **SessionStore / Session / SessionTurn / assemble_context (session.py)** — 상태 세션(Phase 9 설계·shape, ADR 0024). 중앙이 *사용자 단위*로 세션·맥락·수명 관리(무상태 1회성 위에 세션 층·라우팅 도메인 무변경). **`SessionStore` 포트**(`BackupReviewStore`·`ConflictCaseStore`·`ReevalStore` 패턴 N번째·새 메커니즘 0): `open_or_get(user_id)`(암묵 시작/활성 세션 반환)·`get(session_id)`·`append_turn(session_id, turn)`·`end(session_id)`(운영자 종료·맥락 비움)·`active_for_user(user_id)`. 색인 user_id+session_id. 구현 `InMemorySessionStore` → 후속 `SqliteSessionStore`(durable·T9.8·tmp-file 통합·DB 없으면 skip·스키마 확정 대기). **`Session`**(frozen): `session_id·user_id·status[Literal["active","ended"] — sealed sum 아님·분기 없는 라벨]·transcript[tuple[SessionTurn,...]·종료 시 빈 튜플]·started_at·last_active_at[주입 clock]`. **`SessionTurn`**(frozen): `question·answer_text·answered_by[agent_id]·at` — *그 사용자 발화+그 답*만(다른 owner 맥락·다른 사용자 미혼입·owner 격리). **수명**: 암묵 시작(첫 메시지)·운영자 종료(콘솔)·유휴 타임아웃(`last_active_at` 임계·주입 clock·**권장 30분·확정 대기**·슬라이딩). **`assemble_context(session, current_question) -> str|messages`**(순수 함수·`serialize_reply`·`render_mcp_notification`과 같은 투영 경계): 라우팅된 담당에 주는 맥락=*그 사용자 발화 스레드만*(다른 에이전트/owner 답 미공유·종료 세션은 빈 맥락·적대 추적). `AskOrg.handle`에 *옵셔널* 맥락 주입(미주입이면 기존 무상태·하위호환·`notifier=None`·`propagator=None` 동형), 맥락은 Agent Runtime 프롬프트에만·라우팅 판정은 현재 질문으로(맥락이 라우팅 안 흔듦). **불변식**: 전이≠기록(세션 전이는 도메인·트랜스크립트 적재는 별 축·audit 무변경)·미아 없음(세션이 종착 안 바꿈)·Authority 중앙·owner 격리·노출 불변식. (ADR 0024) **동시성(2026-07-02)**: `InMemorySessionStore`의 `_active`/`_active_by_user`/`_ended` 공유 dict 접근 전부를 `threading.RLock`으로 직렬화 — `open_or_get`의 idle 체크→`_auto_end`→생성, `append_turn`의 get→update 사이 TOCTOU 경합 차단(스레드풀 병렬 실행 대응·공개 시그니처 불변·경합 재현 테스트 `tests/test_concurrency_stores.py`). **SQLite durable(T9.8·2026-07-02)**: `sqlite_stores.SqliteSessionStore`(stdlib sqlite3·`sessions`+`session_turns` 테이블·tz-aware ISO8601 왕복·재오픈 durable·InMemory 동치성 테스트) — 스키마는 frozen 값 객체에서 도출해 모듈 docstring에 확정(별도 ADR 불요·Postgres는 후속 연기). **앱 배선**: `storage_select.py` env 시임 — `AON_DB` 설정 시 create_app/create_central_app 기본이 durable(디스패처·콘솔 같은 인스턴스 공유·워커 실 토큰 검증 자연 활성), 미설정 InMemory/stub 하위호환·명시 주입 최우선.
-- **TokenStore / AdmissionToken (token.py 또는 transport.py 확장)** — 워커 admission 토큰(Phase 9 설계·shape, ADR 0026 — ADR 0011 결정 6-5·0012 결정 5 예고된 자리 채움). 콘솔에서 발급·승인·revoke·`--token` 연결 검증(`_authenticate` stub 실 교체). **`TokenStore` 포트**(`BackupReviewStore`·`SessionStore` 패턴 N번째): `issue(owner_id, role, *, now) -> AdmissionToken`(평문 raw_token 1회 반환·해시만 보관·중앙 발급=Authority 중앙)·`verify(raw_token, *, now) -> AdmissionToken|None`(미만료[주입 clock]·미revoke·해시 일치)·`revoke(token_id)`(append-only)·`list_active()`. 구현 `InMemoryTokenStore` → 후속 `SqliteTokenStore`(durable·T9.8·스키마 확정 대기). **`AdmissionToken`**(frozen): `token_id·owner_id[귀속]·role[WorkerRole primary/backup]·token_hash·issued_at·expires_at·revoked[append-only 표식·삭제 X·`Precedent.invalidated` 정신]·revoked_at`. **`_authenticate` 실 교체**(`transport.py:522` stub → `TokenStore.verify`): 빈 owner_id·토큰 없음·만료/revoke/위조 거부 + 토큰 owner_id·role이 `RegisterWorker` 선언과 일치해야 admission(미인증 `SubmitAnswer` 차단). **불변식**: 등록 무결성(유효하지 않은 토큰 거부·카드 admission과 같은 결)·owner 격리(토큰 owner 귀속이 회신 출처 강제·가장 차단)·Authority 중앙(중앙 발급·자기보고 아님)·미아 없음(인증 거부는 그 워커만·작업은 큐 timeout→escalation). **운영 면 세션 인증(ADR 0016)과 다른 축**(웹 면 신원 vs 전송 채널 admission). **토큰 형식=불투명 랜덤+만료+해시+revoke(권장·확정 대기)**·워커-owner SSO 연계(확정 대기). (ADR 0026·0011·0012·0009) **구현 완결(2026-07-02)**: ① `_authenticate` 실 교체 완료(T9.5b) — `WebSocketDispatcher(token_store=)` 옵셔널 주입·`frame.token` None 가드·verify(만료/revoke/위조)·토큰 owner_id/role ↔ `RegisterWorker` 선언 일치 검증·미주입은 기존 stub 하위호환. ② SQLite durable `SqliteTokenStore`(T9.8·`tokens` 테이블·해시만 저장·revoke는 UPDATE 표식). ③ `revoke(token_id, *, now=None)` 옵셔널 seam으로 3구현 통일(issue/verify 대칭).
-- **HITL 런타임 토글 (ask_org.py 확장·hitl_to_mode 순수 함수)** — LLM 초안→owner 검토·전송 토글(Phase 9, ADR 0025 — *새 기계 아님·기존 draft_only/Approval 재사용*). `hitl_on → mode="draft_only"`(owner 검토)·`off → "full"`(자동)이 정확히 기존 두 `Answer.mode`. **에이전트별(agent_id) + 콘솔 런타임 토글**(운영자가 콘솔 POST로 런타임 on/off)·기본값은 카드 `approval_when` 시드(under-claim 자기보고[ADR 0004]가 기본값). 매핑 순수 함수 `hitl_to_mode(hitl_on)` + `_apply_approval_gate` 확장(`requires_approval` OR HITL 토글이 draft_only 강제·OR 결합·mode 우선순위 보존[backup 안 덮음·full→draft_only만 격상]). **안전 방향 단조성**: 카드 좁힌 보수 신호(approval_when)는 운영자가 못 풂(완화 차단)·운영자는 조일 수만(상향 허용). 토글 상태는 in-memory 토글 맵(`agent_id → bool`·런타임 set·답 생성 read·durable 불요·영속 요구 시 store 승격 후속). **불변식**: 노출 불변식(`mode`는 원래 노출하는 신뢰 상태값)·Authority 중앙(토글은 신뢰 게이트지 권한 선언 아님)·전이≠기록. (ADR 0025)
-- **✅ 중앙 답변 + 지식 동기화 도메인 (Phase 12·ADR 0033·S0~S5 구현·크로스머신 시연 완료)** — 실행 모델 전환의 값 객체·포트. 전부 `SessionStore`·`ReevalStore`·`TokenStore`·`BackupReviewStore`의 **포트(Protocol)+InMemory/Fake+주입 결정론** 패턴 N번째(새 메커니즘 최소화). `KnowledgeStore`·`Knowledge Sync`·`Presence`·`AnswerRecord`·`CorrectionEvent`와 중앙 런타임 배선이 구현됐고, 실 두 머신 시나리오 S1~S5를 2026-07-05 재검증했다. 실조직 배포의 IdP·시크릿 관리·Confluence/메일 어댑터는 별도 게이트 밖 작업이다.
-  - **`KnowledgeStore` / `KnowledgeBundleContent` / `KnowledgeDoc`** — 중앙이 답변에 소비하는 동기화된 owner 지식 *본문* 보관(ADR 0033 결정 1·3). `PublishedIndexStore`(목차·라우팅 축) 옆의 *답변 축*(본문). 포트: `put(content)`(더 새 `version`만 수용·`agent_id` 미등록 거부)·`get(agent_id)`·`is_stale(agent_id, now, threshold_s)`. `KnowledgeBundleContent`(frozen): `agent_id·documents[tuple[KnowledgeDoc]]·version·synced_at`. `KnowledgeDoc`(frozen): `path·body`(admission·민감 필터 통과분). `AgentRuntime`의 `read_okf_bundle` 입력이 디스크→`KnowledgeStore`로 이동(매핑 함수·포트 무변경). stale 임계 기본 30분(`AON_KNOWLEDGE_STALE_SECONDS` 설정값·낡음=신뢰 하향이지 라우팅 배제 아님·미아 없음). **전이≠기록**(순수 보관·audit 아님). **"중앙 본문 0" 부분 재정의**(0028/0030 — 답변 지식만 본문·라우팅 인덱스는 목차 유지). **구현됨(tdd-engineer·2026-07-04)**: `knowledge_store.py`(`KnowledgeStore`+`InMemoryKnowledgeStore`+`accept_and_store_knowledge_sync` S3↔S1 조합)·`provider_runtime.py`의 `resolve_knowledge_text`(스토어 우선·디스크 폴백 전환 지점)+`ProviderApiRuntime.knowledge_store` 선택 주입(`AgentRuntime` 포트·`Answer` 계약 무변경, `knowledge_store` 미주입 시 회귀 0). **SQLite durable(2026-07-05)**: `sqlite_stores.SqliteKnowledgeStore`(`knowledge_bundles` 테이블·agent_id PRIMARY KEY) — `put`은 순수 보관(전이 아님)이라 최신 version만 수용하는 upsert가 정당(감사 대상 아님). `storage_select.select_knowledge_store`가 `AON_DB` env로 선택(미설정 InMemory 하위호환).
-  - **`KnowledgeSync` admission (`KnowledgeSyncSpec` / `filter_sensitive` / `admit_knowledge`)** — 워커→중앙 본문 동기화 수용 관문(ADR 0033 결정 3). `KnowledgeSyncSpec`(frozen·owner 명시 지정 경계 `agent_id·paths` — 지정분만 동기화). `filter_sensitive(body) -> SensitivityVerdict`(순수·주민번호·API키·비밀번호 패턴·`Clean | Blocked(patterns)` sealed sum). `admit_knowledge(content, card, spec) -> AdmissionResult`(순수·지정 경계+민감 필터+권한 대조 재사용·`Admitted | Rejected` sealed sum). **이중 방어**(패턴 필터+지정 책임)·**Authority 중앙**(0028 over-claim 필터 재사용·자기보고 못 넓힘)·등록 무결성.
-  - **`Presence` / `PresenceTracker`** — 담당자 연결 상태 1급(ADR 0033 결정 5). `Presence`(frozen): `agent_id·status[Literal["online","offline"]]·since`. `PresenceTracker`(`HitlToggleMap` 정신 in-memory): `observe_connect/observe_disconnect(agent_id, at)`·`status(agent_id)`(미관측=offline). WS `_connections`(0011·0012)에서 도출(실 연결→프레즌스 게이트 밖). HITL 순수 함수 `presence_to_hitl(status) -> bool`의 입력(online→검토). 끊김 즉시 오프라인(grace 0·`AON_PRESENCE_GRACE_SECONDS` 설정값).
-  - **`AnswerRecord` / `CorrectionEvent` + `AnswerRecordStore` / `CorrectionStore`** — 답변 감사 단위 + 정정 이벤트(ADR 0033 결정 4·`BackupReview` 일반화). `AnswerRecord`(frozen): `record_id·question·answer_text·answered_by·agent_id·mode·session_id?·answered_at`(담당자 모니터링 원천 `for_agent`). `CorrectionEvent`(frozen·append-only): `event_id·record_id[참조만·원 레코드 불변]·corrected_text·by_owner·rationale·corrected_at`. `CorrectionStore.append/for_record`. **전이≠기록**(정정=새 이벤트·원 답 불변·감사 추적 보존·`CorrectBackup`·`action_record` 정신). `for_record`가 원 답+정정 이력 투영→답변 페이지 정정 배지(풀 방식). 정정→판례/지식 갱신=reeval 재사용(`ReevalStore`·`ReevalOutcome`·0019). 질문자 통지=`Notification` recipient 확장 자리이되 MVP는 세션 기반 페이지 표시(push 게이트 밖·0022 멱등). **정정 권한 판정 = 현재 카드 owner 기준(ADR 0034 결정 3·Phase 12 3라운드)**: `CorrectionService.submit_correction`이 `by_owner != record.answered_by`(과거 답변자 동등)에서 **`owner_of(record.agent_id) != by_owner`**(현재 카드 owner·레지스트리 조회 `owner_of` 콜백 주입·`create_app`이 `bundle.registry.get(agent_id).owner` 배선)로 판정을 옮긴다 — 오너 변경 후 새 owner가 과거 답 정정 가능·구 owner 거부. 과거 `answered_by`는 불변(전이≠기록)·`by_owner`엔 실제 정정자(새 owner) 기록·`owner_of` 미주입이면 `answered_by` 동등 폴백(하위호환)·카드 폐기(None)면 정정 불가. **SQLite durable(2026-07-05)**: `sqlite_stores.SqliteAnswerRecordStore`(`answer_records` 테이블)·`SqliteCorrectionStore`(`correction_events` 테이블·`seq` AUTOINCREMENT로 append 순서 보존)가 `InMemoryAnswerRecordStore`/`InMemoryCorrectionStore`와 동작 동치. `storage_select.select_answer_record_store`/`select_correction_store`가 `AON_DB` env로 선택(미설정 InMemory 하위호환).
-  - **`AnswerFeedback` + `FeedbackStore` (답변 피드백 — 계획 §10·tdd-engineer·2026-07-05 구현 완료)** — 질문자가 받은 답에 남기는 좋음/싫음 신호, **정정의 트리거**(정정 자체 아님). `FeedbackVerdict`(`Literal["good","bad"]`). `AnswerFeedback`(frozen): `record_id·verdict·comment[선택]·submitted_by[쿠키 uid 또는 mcp_guest]·submitted_at`. `FeedbackStore`(Protocol `upsert`/`latest_for_record`/`for_record`)+`InMemoryFeedbackStore`. **멱등 — "최신 우선(upsert), 단 이력은 보존"**: 키 `(record_id, submitted_by)` — 같은 질문자 재제출은 최신 verdict/comment로 덮되(`latest_for_record`) 이력은 전량 보존(`for_record`, 전이≠기록). **"싫음"→검토 필요 조인**: `needs_correction_review`가 `AnswerRecord` frozen 필드라 되쓸 수 없어, `monitoring_for_owner(..., feedback_store=None)`가 조인해 판정을 **두 축 OR**(레코드 표식 OR 최신 bad 피드백)로 확장 — 조인은 코어 안에서만(판정 SSOT 단일화). **하위호환**: `feedback_store=None`이면 `feedback=None`·기존 판정 100% 보존. 웹 `POST /answer/{record_id}/feedback`(세션 불요·`/ask`와 같은 익명 쿠키 재사용 — 미존재 404·verdict enum pydantic 422·미배선 503, 응답은 접수 확인만 — 노출 불변식). `serialize_monitoring_item`에 `feedback` 블록(감독 면은 상세 노출 — 원래 계약). `storage_select.select_feedback_store()`가 항상 `InMemoryFeedbackStore()`(**SQLite durable은 다음 라운드 잔여**). UI: `owner-monitor.html` 피드백 배지+코멘트, `index.html` 좋아요/싫어요 버튼(record_id 있는 답변에만). **게이트 밖 잔여**: MCP `record_id` 노출+`submit_feedback` 도구(계획 §10.4)·실 푸시 통지. (계획 §10)
-  - **`HitlPolicy` (프레즌스 결합)** — 새 타입 최소·`HitlToggleMap`·`resolve_mode`·`seed_from_card`(0025) 재사용에 프레즌스 입력만 결합(ADR 0033 결정 5). `hitl_on = HitlToggleMap.is_on(agent_id) OR presence_to_hitl(presence)` → `resolve_mode`. **under-claim 단조성 보존**(카드 approval_when이 조인 건 프레즌스로 못 풂)·노출 불변식(mode)·Authority 중앙(신뢰 게이트지 권한 아님). HITL 토글 진실은 여전히 중앙(0025 결정 5·프레즌스는 입력).
-  - **불변식(전체)**: 미아 없음(실행 위치 이동이 종착 무변경·오프라인 owner도 중앙 답→가용성 강화)·유효하지 않은 카드/본문 미반영(admission 본문 확장)·Authority 중앙(동기화 자기보고 못 넓힘)·전이≠기록(정정=새 이벤트·저장소=순수 보관). **~~중앙 토큰 0~~ 폐기**(중앙 조직 API 키 1개·대체 안전장치·아래 §10). (ADR 0033·0027·0028·0012·0019·0022·0025)
-  - **실 전송/런타임 배선 1라운드(mcp-runtime-engineer·2026-07-04·게이트 내 결정론+loopback)** — 위 도메인 코어를 실 전송·런타임에 배선. **(A) 프레즌스**: `WebSocketDispatcher(presence_tracker=)` 주입·`register`→`observe_connect`·전 등급 `disconnect`→`observe_disconnect`(backup 잔존 시 online 유지)·`_resolve_hitl_hint`가 `presence_to_hitl`을 OR 결합(온라인=사전 검토 상향·단조성 `resolve_mode` 보존). **(B) 지식 동기화**: `WorkerFrame` union에 `SyncKnowledge`·`server.recv_loop`가 `dispatcher.accept_knowledge_sync_frame`→`KnowledgeSyncAck` 회신(**M3 계약 — `store.put` 직접 호출 0·`accept_and_store_knowledge_sync` 경유**). spec 전달 = 프레임 content 경로에서 도출(`_spec_from_content`·워커 자기 제한이지 권한 확장 아님·실 게이트는 워커-소유자 스코핑). worker `knowledge_sync_frames`(지정 경계 `AON_KNOWLEDGE_PATHS` 파일 읽기·본문 해시 version 멱등)·시작 1회+`AON_KNOWLEDGE_SYNC_INTERVAL_SECONDS` 주기 재송신. **(C) 중앙 답변**: `create_central_app`이 `InMemoryKnowledgeStore` 하나를 디스패처(put)·`select_runtime(knowledge_store=)`(소비) 양쪽에 물림. **중앙 조직 키**: `provider_transport_anthropic.load_central_org_key()`가 `AON_PROVIDER_KEY`→`ANTHROPIC_API_KEY` env만 로딩(로그 미노출)·비용 태깅=`ProviderRequest.agent_id`→SDK `metadata.user_id`. 미주입 경로 전부 하위호환(회귀 0). 실 크로스머신 시연·담당자 모니터링 UI·정정 배지는 다음 라운드.
-  - **실 전송/런타임 배선 4라운드 — 분산 오프라인 폴백 조합 지점(mcp-runtime-engineer·2026-07-05·게이트 내 결정론+loopback)** — 1라운드 (C)에서 만든 중앙 런타임(`select_runtime(knowledge_store=)`)이 `build_demo`의 "dispatcher 주입 시 runtime 무시" 때문에 분산 배선에서 버려지던 구멍을 닫는다. **폴백 형태 = `WebSocketDispatcher(fallback_runtime=)`** — `dispatch`가 `_push_pending` 뒤에도 ticket이 `queued`(담당 워커 미연결·backup 거부)면 중앙이 `fallback_runtime.answer`로 답을 대신 생성해 `_queue.submit`(→ poll이 Delivered). 상위 `AskOrg`의 기존 Delivered 경로(Answered·Approval 게이트·`_record_answer`의 presence 기반 `needs_correction_review`·감사)에 *합류*(별도 축 0·`AgentRuntime` 포트·`Answer` 계약 무변경). 워커 연결 시엔 push 성공(claimed)이라 폴백 조기 반환(회귀 0). 폴백 답도 같은 큐 도메인 submit이라 멱등·단조 종착·미아 없음 보존·노출 불변식(폴백 답은 담당·승인·출처만 실린 일반 Answered — "미연결·폴백" 내부값 미노출). 배선: `dispatch.py`(`status_of` 조회 접근자)·`transport.py`(`fallback_runtime` seam·`_maybe_answer_with_fallback`)·`server.py`(`create_central_app`이 `_central_runtime`을 폴백원으로 주입). 미주입이면 폴백 없음(하위호환·미연결이면 dispatched 그대로). 이로써 "담당자 PC 꺼져도 답변"이 인프로세스뿐 아니라 **분산에서도 성립**.
-
-- **✅ 담당자 스코어카드 도메인 (Phase 13·ADR 0035·SC0~SC3 구현 완료)** — Phase 12 감독 루프 위에 얹는 **읽기 파생 관찰 지표**. 새 쓰기 없음(SC2 `Presence Log`만 append-only 신설). 라우팅·실행 무변경. Goodhart 방지 정책이 코어(ADR 0035).
-  - **`OwnerScorecard` + 계산 순수 함수 (SC1·게이트 내·domain-architect shape)** — 담당자별 4축 지표의 frozen 값 객체 + 기존 스토어를 주입 조인하는 순수 함수. `serialize_org_graph`·`monitoring_for_owner` 경계(순수 파생·web 분리·새 전이/기록 0).
-    - **값 객체(frozen pydantic·4축 코드 분리)**: `OwnerScorecard(owner_id: str · window: ScorecardWindow · quality: QualityMetric · supervision: SupervisionMetric · availability: AvailabilityMetric · freshness: FreshnessMetric · weak_identity_note: bool = True)`. 각 축은 별 frozen 값 객체 — **정정 축(가점)과 품질 축(bad)이 타입 단위로 분리**(ADR 0035 결정 1을 타입으로 강제).
-      - `QualityMetric`: `total_answers: int`(분모) · `bad_feedback_answers: int`(분자 — 최신 verdict가 bad인 답 수) · `bad_feedback_rate: float`(분자/분모·분모 0이면 0.0). *정정률 미포함*(품질 벌점은 bad에서만).
-      - `SupervisionMetric`: `needs_review_total: int`(분모 — 검토 필요 항목) · `corrected_count: int`(분자 — 정정된 항목·**가점 축**) · `handled_rate: float`(정정된/검토필요·외부 결정 D "정정=처리 근사") · `median_handle_seconds: float | None`(`corrected_at - answered_at` 중앙값·정정 0이면 None). 정정은 여기서만 카운트되고 어디서도 벌점화되지 않음.
-      - `AvailabilityMetric`: `online_ratio: float | None`(기간 온라인 구간 적분/기간 길이·미관측 owner면 None=판정 불가) · `presend_review_count: int`(사전 검토[draft_only] 응답 수·근사). **타임아웃 티켓 수 필드 없음**(ADR 0035 결정 4·C 실확인 — 대기 후 만료는 감사 미기록·v1 제외·억지 수집 금지).
-      - `FreshnessMetric`: `total_cards: int` · `stale_cards: int`(`Knowledge Store.is_stale(now, threshold)` True인 카드) · `stale_ratio: float` · `oldest_synced_elapsed_seconds: float | None`(가장 오래된 `synced_at` 경과·본문 없는 카드는 stale 취급).
-      - `ScorecardWindow`: `since: datetime · until: datetime`(rolling 30일 기본·`AON_SCORECARD_WINDOW_DAYS` 설정값·주입 `now`).
-    - **계산 함수 시그니처(순수·주입·web IO 0)**: `compute_owner_scorecard(*, owner_id: str, cards: list[AgentCard], answer_store: AnswerRecordStore, feedback_store: FeedbackStore, correction_store: CorrectionStore, knowledge_store: KnowledgeStore, presence_log: PresenceLogStore | None = None, window: ScorecardWindow, now: datetime) -> OwnerScorecard`. **스코핑 두 단위**: 품질·감독·신선도는 owner가 owns한 카드들(`cards` — 호출자가 `Registry.all_cards`에서 `c.owner == owner_id` 필터해 주입) 각 agent_id 축을 `for_agent`로 훑어 합산·가용성은 **owner_id 직접**(프레즌스는 owner PC 연결). `presence_log=None`이면 `availability.online_ratio=None`(SC2 전 하위호환·프레즌스 축 미포함). window 필터는 `answered_at`·`corrected_at`을 `[since, until)`로 스코핑. 신선도 축은 window와 무관한 `now` 기준 스냅샷(`is_stale`·경과 초 — 과거 window의 stale율은 의미가 약함·리뷰 N-1로 문구 정정 2026-07-05).
-    - **자기 추세(ADR 0035 결정 2)**: 추세는 이 함수를 **두 기간(현재·직전)으로 독립 호출**해 델타를 내는 *호출 조립*이지 함수 안 절대 비교 아님 — `scorecard_trend(current: OwnerScorecard, previous: OwnerScorecard) -> ScorecardTrend`(축별 델타만·오너 간 순위 로직 부재). 절대 등수·랭킹 함수 없음(순위표 금지를 코드 부재로 강제).
-    - **검증(SC1 핵심 단언)**: Fake 스토어에 알려진 답/피드백/정정 심어 각 분자/분모 결정론. **Goodhart 단언**: 정정만 많고 bad 0인 담당자 → `quality.bad_feedback_rate==0` AND `supervision.corrected_count` 높음(정정이 품질 벌점으로 새지 않음을 타입·값으로 고정). 두 기간 독립 계산 확인.
-  - **`PresenceEvent` + `PresenceLogStore` (SC2·최소 수집 장치 1건·게이트 내 / 실 WS 배선 밖)** — 프레즌스 connect/disconnect를 **append-only 이력**으로 남긴다(현재 `Presence` 상태 그릇과 구분되는 *온라인 비율 계산 원천*). **전용 스토어 채택**(감사 로그와 별 축 — 감사는 사람 읽는 절차 이력·이력은 계산 원천·`SqliteRegistryJournal`이 감사와 별 축인 정신·`action_record`에 얹으면 계산이 전체 감사 로그를 훑어야 함).
-    - **값 객체·포트**: `PresenceStatus`(기존 `Literal["online","offline"]` 재사용) · `PresenceEvent(BaseModel, frozen=True)`: `owner_id: str · status: PresenceStatus · at: datetime`. `PresenceLogStore(Protocol)`: `append(event: PresenceEvent) -> None`(append-only) · `for_owner(owner_id: str) -> list[PresenceEvent]`(시간순). `InMemoryPresenceLogStore` 구현. **키는 owner_id**(프레즌스가 owner PC 연결 상태 — 필드명이 owner_id로 정직·`Presence`는 필드명 agent_id이나 값 owner_id인 부채를 SC2 신설 타입에선 안 물려받음).
-    - **온라인 비율 순수 함수**: `online_ratio(events: list[PresenceEvent], *, since: datetime, until: datetime) -> float | None` — connect/disconnect 시퀀스를 `[since, until)` 구간 적분해 온라인 시간/기간 길이. **경계 처리**: 미해제 열린 구간(마지막 online 이후 disconnect 없으면 until까지 온라인) · since 이전 마지막 상태를 초기 상태로 채택 · 재연결(online→online 중복은 멱등) · **미관측 owner(events 빈·since 이전 상태 불명)면 None**(0%와 구분 — 판정 불가). 주입 clock·Fake 이력으로 결정론.
-    - **배선 지시(구현은 tdd·실 배선은 mcp-runtime-engineer)**: `transport.py`의 `observe_connect`(§957)·`observe_disconnect`(§987)가 현재 상태 갱신에 더해 `presence_log.append(PresenceEvent(owner_id, status, at))`도 호출(상태 그릇 갱신과 이력 append 둘 다·전이≠기록이되 여기선 두 역할). `WebSocketDispatcher(presence_log=None)` 옵셔널 주입(미주입 하위호환). **실 WS 연결→이력 배선·크로스머신은 게이트 밖**(mcp-runtime-engineer).
-  - **불변식(스코어카드 전체)**: 전이≠기록(SC1·SC3 순수 읽기·새 전이/기록 0·SC2 이력만 append-only 신설·상태 그릇과 분리)·노출 불변식(운영/owner 면 내부값 노출 OK·질문자 채팅 표면 무유출)·Authority 중앙(지표는 관찰이지 담당 재선언 아님)·미아 없음(사후 관찰·라우팅/발신 무차단)·**Goodhart 방지(고유 불변식)**(정정률=감독 축·품질 벌점=bad 축 코드 분리·SC1 테스트 고정). (ADR 0035·0033)
-
-## 5. 진입점 · 전송
-
-- **MCP 서버 `ask_org(question, user)`** — 사용자 클라이언트가 붙는 1급 진입점. Router 호출 → `Routed`면 `RuntimeDispatcher.dispatch→poll`로 답 수집 → `DispatchOutcome`을 `OrgReply`로 투영(`Delivered`→`Answered`, `AwaitingWorker`·`EscalatedToManager`→`Pending(kind="dispatched")`). 동기 `AgentRuntime.answer` 직접 호출 아님 — escalation/미회신을 Answer로 위장하지 않고 Pending으로 표면화(ADR 0011 결정 4). in-process 즉답은 `LocalRuntimeDispatcher`가 흡수. (ADR 0006·0011) **구현(T3.2, `mcp_server.py`)**: 공식 `mcp` SDK(FastMCP)로 단일 도구 `ask_org(question: str) -> str` 노출 — 도구 본문은 `ask.handle(question, User(id=user_id))` 후 `reply_to_mcp_text(reply)`로 텍스트 투영(비즈니스 로직 0·표현층). **ADR 0006**: 일반 MCP 클라이언트엔 신뢰 표식이 *텍스트로* 노출(내용 보존) → Answered는 답 본문+담당·mode·출처, Pending은 kind별 중립 안내(+dispatched면 불투명 tracking). 노출 불변식: `OrgReply`에서만 투영해 내부값 구조적 미노출(web `serialize_reply`와 같은 경계, 형식만 텍스트·structured 채널도 동일 보장). 신원 `user_id`는 서버 설정값이지 도구 파라미터 아님(가장 불가 — ADR 0009 연결점·실 인증 T6.5). 결정론: 순수 투영 + FastMCP in-memory `call_tool`(StubRuntime), 실 stdio 기동(`main`/`scripts/run_mcp.sh`)은 수동 시연. 의존성 `mcp>=1.28.0` 추가.
-- **웹 백엔드 API** — 같은 코어를 채팅·운영·빌더·처리함·큐 화면에 제공. 채팅 `POST /ask`·`GET /`(`serialize_reply`, 내부값 미노출, **익명 — 운영 세션 불요**). 운영 모니터링(T5.1) `GET /monitor`(요약 목록 JSON — `bundle.audit_reader.records()`→`summarize_audit_record`)·`GET /monitor/{index}`(상세 — 레코드 dict 전체, 범위 밖 404)·`GET /monitor/view`(HTML, 데이터 경로와 충돌 피해 분리·정적 경로를 `{index}`보다 먼저 등록) — 감사 로그를 *순수 읽기*로 투영(새 전이·기록 0). 운영 면이라 내부값 노출 OK(채팅 OrgReply 불변식과 다른 면).
-- **Org 그래프 · 에이전트 빌더(T5.3, 운영 면)** — PRD §4 두 면(운영자 "전체 그림"·Owner "자기 에이전트를 깎고")의 실체화. **새 도메인 상태·전이 0**(그래프=레지스트리 읽기 파생, 빌더=검증·YAML 출력). ① **Org 그래프**: `GET /org/graph`(데이터 JSON — `serialize_org_graph(bundle.registry)`로 Registry를 `{nodes, edges}`로 순수 파생: 노드 User(`type:"user"`,id,manager?)+Agent Card(`type:"card"`,agent_id,owner,team,domains,maintainer?), 엣지 `owns`/`manages`/`maintains`[maintainer 있을 때만] — CONTEXT Graph model·ADR 0005)·`GET /org/view`(HTML, 정적 SVG viz·force-layout 라이브러리 금지). 인증은 모니터링과 동일(인증 활성 시 로그인 필요, 세분 역할 없이 인증만 — ADR 0016 결정 5). ② **에이전트 빌더**: `POST /builder/validate`(카드 필드 JSON `BuilderValidateRequest` → `validate_card_for_builder`가 `AgentCard.model_validate`[필수·타입]+admission 참조 무결성[owner 실재, `Registry.validate` 정신] → 통과면 `{ok:True, yaml:"registry/agents/{agent_id}.yaml 텍스트"}`(PyYAML safe_dump)·실패면 `{ok:False, errors:[...]}`)·`GET /builder`(HTML 폼). **편집 채널 = git/PR**(라이브 레지스트리 mutation 안 함 — CONTEXT Maintainer "편집 권한·이력은 git/PR이 강제·기록", YAML은 Owner가 복사→커밋할 출력). **Owner 스코프(ADR 0016)**: 인증 활성 시 세션 신원 ≠ 카드 `owner`면 403(자기 카드만), 미로그인 401. 직렬화·검증은 web과 분리한 순수 함수(`serialize_reply`·`summarize_audit_record`와 같은 경계)라 결정론 테스트(TestClient+세션). HTML viz·폼은 수동 시연. 실 파일 쓰기·git 조작·카드 버저닝·드래그 편집은 범위 밖.
-- **운영 면 인증 분리(T6.5, ADR 0009·0016)** — 운영 엔드포인트(처리함·Manager 큐·모니터링·Org 그래프·빌더 — T5.3 합류)는 *세션 신원*을 요구한다. Org 그래프(`/org/*`)는 모니터링과 같이 *인증만*(세분 역할 없이), 빌더(`/builder/validate`)는 Owner 스코프(세션 신원 ≠ 카드 owner면 403 — concur·act과 같은 1인칭 결). `POST /login`(body `user_id`, **Registry 실재 User여야** — 없으면 401)이 무비밀번호 서명 쿠키 세션을 set, `POST /logout`이 클리어(starlette `SessionMiddleware`·`itsdangerous` 서명, `session_secret`는 env/주입·커밋 금지·테스트 고정 키). **신원 출처 = 세션**(path/body 아님 — 위조 차단): 자기 면 조회는 path param 제거 — `GET /inbox/cases`·`GET /inbox/backup-reviews`·`GET /inbox/reeval`(처리함 세 번째 탭 — 재평가·ADR 0019, 둘째 탭 `backup-reviews` 미러·세션 owner로)·`GET /manager/queue`(세션 owner/manager로, 옛 `/inbox/{owner_id}`·`/manager/{manager_id}` 대체). 1인칭 처분 `POST /cases/{case_id}/concur`·`POST /backup-reviews/{item_id}`·`POST /reeval/{item_id}/review`(재평가 처분 — body `{kind, new_primary?, rationale?}`·`kind`→ReevalOutcome 5-arm[keep/invalidate/supersede(new_primary 필수)·acknowledge/reanswer]·둘째 탭 미러)·`POST /manager/items/{item_id}/act`는 body의 `by_owner`/`by_manager`를 *받지 않고* 세션 신원으로 채운다(`case_id`·`item_id`는 대상 지목이라 path/body 유지). reeval 라우트는 `create_app(reeval_store, reeval_service)`·`create_central_app`(`seed_demo_reeval_items`로 cs_lead 처리함에 시드)이 배선한다(`serialize_reeval_item`이 subject에서 question·reason 파생·audit_reader로 Answer 축 question 보강). **스코프 = 자기 것만**(ADR 0009 기준 2): 세션 신원이 그 대상의 owner/manager가 아니면 도메인 1인칭 ValueError를 **403**으로 매핑. 실패 코드: 미로그인 401·스코프 위반 403·대상 미존재 404·입력 형식 400. **역할은 그래프 파생**(별 RBAC DB 0 — owns면 Owner면·자기 manager 큐면 Manager면, 모니터링은 인증만). 채팅·처리함은 한 `DemoBundle`(공유 store)을 봐 합의 성립이 곧 채팅 자동 라우팅에 반영(T4.2 — 운영 면 신원만 세션화, 공유 백엔드 무변경). 결정론: `session_secret` 고정 주입+`TestClient` 쿠키 유지로 로그인→접근 라운드. **SSO(T7.1·ADR 0021 — 구현 완료)**: 무비밀번호의 *신원 선택*을 IdP가 *증명*한 신원으로 교체 — `POST /login/sso`(body `{id_token}` — `SsoLoginRequest`)가 `oidc_provider.verify(id_token)`→`OidcClaims`→`resolve_identity(claims, registry)`→user_id를 *기존 세션 키*(`_SESSION_USER_KEY`)에 박는다(이후 `_session_identity`·스코프·빌더 OKF author 무변경 — ADR 0016이 출처를 세션으로 격리한 덕). 인증 모드 3단: OFF(`session_secret` 없음)·무비밀번호(`session_secret`만 — `/login` 살아 있음)·SSO(`session_secret`+`oidc_provider` — `/login/sso` 활성·무비밀번호 `/login`은 403 거부로 선택 우회 차단·`oidc_provider` 미주입이면 `/login/sso`는 404). `create_app`·`create_central_app`에 `oidc_provider` 주입. 검증 실패(`OidcVerificationError`)·매핑 실패는 401. 결정론은 `FakeOidcProvider` 주입. **`HttpOidcProvider` id_token 검증 코어 실 구현(T8.3·2026-07-02)**: 표준 OIDC 제네릭(issuer·audience·jwks_url 주입·IdP 무가정) — PyJWT RS256(`oidc` 선택 extra·지연 import·미설치 SystemExit)·exp/nbf 주입 clock 결정론·JWKS TTL 캐시+kid 미스 1회 재fetch·`jwks_fetcher` seam(테스트 fixture·네트워크 0). code/PKCE·redirect·refresh·실 IdP 연동은 사내 IdP 결정 후(게이트 밖). **비번 해시·세분 RBAC·CSRF·rate limit·다중 IdP·세션 만료 정책은 여전히 범위 밖**(single tenant·신원 증명 한 점). (ADR 0016·0021)
-- **운영 콘솔 — SSE 피드 + POST 명령 (Phase 9 설계·shape, ADR 0024·0026·T9.2)** — 운영자가 질문 인입·라우팅 결정·답 전송·워커 연결/해제를 *실시간으로 보고*(SSE 피드) 세션 종료·HITL 토글·토큰 발급·워커 승인/취소를 *명령*(POST). 채팅·owner 클라이언트(T9.7)와 *다른 면*. ADR 0022가 Open Question으로 남긴 "운영 면 브라우저 실시간 push(SSE/WS)"를 닫는다(통지 도메인과 별 축 — 콘솔 SSE는 운영자 관전·통지는 처리함 적재 알림). 합의=**SSE + POST**(WS 아님). **SSE 이벤트 직렬화는 순수 함수**(도메인 사건[질문 인입·`RoutingDecision`·답 전송·워커 연결/해제]→SSE 페이로드·`serialize_reply`·`render_mcp_notification` 정신·노출 불변식 게이트 내 본체). **POST 명령은 얇은 어댑터**(각 명령이 도메인 서비스 호출 — `SessionStore.end`·HITL 토글[ADR 0025]·`TokenStore`[ADR 0026]·워커 승인). 운영자 인증은 ADR 0016 운영 세션 재사용(인증된 운영자만). 운영 면이라 내부값 노출 OK(채팅 OrgReply 불변식과 다른 면). 콘솔 앱 배포 맥락(같은 프로세스 라우트 vs 별 앱)은 결정 대기. 실 SSE 브라우저 푸시·콘솔 화면 조작은 게이트 밖 수동(`TestClient`로 명령 라우트 회귀는 게이트 내). **불변식**: Authority 중앙·전이≠기록·노출 불변식(운영 면 내부값 OK·사용자 채팅엔 통지 0). (ADR 0024·0026·Phase 9 T9.2) **POST 명령 구현 완료(T9.2b·T9.3b·T9.5c·2026-07-02)**: web.py 콘솔 라우트 6개 — `POST /console/sessions/{id}/end`(`SessionStore.end`)·`GET|POST /console/hitl/{agent_id}`(`HitlToggleMap` — `AskOrg(hitl_toggles=)` 옵셔널 주입으로 `_apply_approval_gate`가 `resolve_mode` 소비·토글 변경이 다음 답 mode[on=draft_only/off=full]에 반영·미주입 기존 동작 보존)·`GET|POST /console/tokens`+`POST /console/tokens/{id}/revoke`(`TokenStore` — 평문 raw token은 발급 응답 1회만·목록은 해시/평문 미노출). 인증은 `/monitor` 결(활성 시 `_session_identity` 401). `create_central_app(token_store=)`이 같은 인스턴스를 디스패처·콘솔 양쪽에 물려 콘솔 발급 토큰으로 워커 register 관통(미주입 None은 기존 stub 관행 보존). 실 SSE 브라우저 푸시·콘솔 화면은 게이트 밖 잔여(T9.2c). **(c) SSE 관전 피드 구현 완료(2026-07-02)**: `ConsoleFeed` 허브(구독자별 큐·drop-oldest 백프레셔·발행자 무블록)·`AskOrg`/`WebSocketDispatcher` 옵셔널 emit 훅(예외 흡수 — 관전이 본 흐름 못 깸)·`GET /console/feed`(SSE·keep-alive)·`/console/view` 관전 화면. 실 uvicorn+curl 구독 시연으로 질문→라우팅 결정 이벤트 실시간 수신 확인 — T9.2 전 슬라이스 완결.
-- **상태 세션 진입점 — `AskOrg`/세션 층 와이어링 (Phase 9 설계·shape, ADR 0024·T9.1)** — 각 사용자 메시지(채팅 `POST /ask`·MCP `ask_org`)가 세션을 통과해 기존 `AskOrg.handle`(Router·dispatcher)로 라우팅되고 결과 턴을 트랜스크립트에 적재: `session = store.open_or_get(user_id)` → `context = assemble_context(session, question)` → `reply = ask.handle(question, user, context=...)` → `store.append_turn(session_id, turn)`. **기존 라우팅·노출 불변식·미아 없음 회귀 0이 1순위**(세션 층은 감싸기지 라우팅 변경 아님). 채팅 사용자 신원(`Session.user_id` 출처)=**익명 세션 쿠키 vs 기존 SSO**(결정 대기·권장 익명 쿠키 — 채팅은 ADR 0016 결정 6상 이미 익명). (ADR 0024)
-- **분산 전송 — Phase 9(ADR 0027)에서 *기본 대화 경로*로 재부상.** ADR 0017이 "사설 데이터 옵션 B"로 강등했던 분산 WS 전송(owner 워커↔중앙 아웃바운드 WS·작업 큐)이 Phase 9에서 **기본 대화 경로로 다시 1급**이 된다 — owner 워커가 owner OAuth 멀티-LLM 공급자 어댑터(`ClaudeApiRuntime`·§4·ADR 0027)를 쥐고 답을 만들어 중앙에 회신하는 경로가 *기본*이다. ADR 0011 결정 6(WS 채널)·실패 모드·ADR 0012 등급(primary/backup)·**ADR 0026 워커 admission 토큰**(`_authenticate` 실 교체)이 그 재부상한 1급 경로를 떠받친다. 아래 "옵션 B 강등" 서술은 *0027 이전 기록*이자 사설 데이터 케이스(B-1/B-2)엔 여전히 유효. *(이하 0027 이전 기록.)* **분산 전송 (사설 데이터 커넥터 옵션 B — ADR 0017로 기본 경로에서 강등, 구현물 보존)** — 이 분산 경로는 답이 owner의 사설·실시간 데이터에 의존해 중앙이 가질 수 없을 때 한정으로, 중앙이 각 Owner의 Claude Code를 호출하는 방식(ADR 0010). *스켈레톤은 in-process stub, T6.1 임시는 중앙 단일 `claude -p` 1회성.* 분산(T6.3)은 **owner 워커의 역방향 아웃바운드 연결 + 중앙 작업 큐**(ADR 0011) — owner PC는 서버를 노출하지 않고(NAT/방화벽·고정 IP 없음·상시 가동 X), owner PC의 **Owner Worker**가 중앙에 아웃바운드로 연결(폴링 또는 WS/SSE)해 작업을 가져가 로컬 claude(T6.1 `ClaudeCodeRuntime` 재사용)로 답하고 회신한다. 중앙은 질문을 **owner별 작업 큐(Work Queue)**에 적재하고 회신을 비동기 수집 → 답변 주체가 그 owner 환경(owner별 지식 격리 성립). 논리적 호출 방향(질문 중앙→owner)과 물리적 연결 방향(소켓은 owner→중앙)을 분리. 포트 **`RuntimeDispatcher`**(`dispatch(question,card)->WorkTicket` · `poll(ticket)->DispatchOutcome` · 워커측 `claim`/`submit`, `dispatch.py`) + `InMemoryWorkQueueDispatcher`(결정론 stub)·`LocalRuntimeDispatcher`(즉답 다리). **ask_org는 디스패처를 직접 본다**(슬라이스2 진입 전 확정, ADR 0011 결정 4) — `dispatch→poll`로 `DispatchOutcome`을 얻어 `OrgReply`로 투영(`Delivered`→`Answered`(mode 보존), `AwaitingWorker`·`EscalatedToManager`→`Pending(kind="dispatched")`). escalation/미회신을 동기 Answer로 위장하지 않는다. in-process 데모/테스트는 동기 런타임을 `LocalRuntimeDispatcher`로 감싸 즉답(항상 Delivered)을 받는다. 동기 포트 `AgentRuntime.answer`는 보존하되 어댑터 `DispatchingRuntime`(디스패처→블로킹 poll)은 *비-ask_org 호환 경로*로 남는다(ask_org는 거치지 않음). owner 부재·timeout → `DispatchOutcome.EscalatedToManager`(`manager_id` 1급 = T5.2 Manager 큐 기계 소비, `reason` 사람용)로 기존 Manager escalation 재사용(미아·합의 실패와 같은 처분, 실제 Manager 큐는 T5.2). 신원(워커가 진짜 owner인지, ADR 0009)·Approval 게이트(`Answer.mode` 보존)는 *연결점만* — 실 인증은 T6.5. 실제 네트워크 전송·다른 PC 도달·연결 유지는 in-process 슬라이스 다음의 네트워크 슬라이스로 분리. **T9.7 게이트 내 완결(2026-07-02)**: ① 프레임 맥락 전파 — `WorkTicket.context`·`TicketFrame.context` 옵셔널 와이어 진화(ADR 0027 결정 13·구wire→신파서 안전·신wire→구파서 거부라 롤아웃 워커-선행)·분산 경로 멀티턴 맥락이 `handle_push_work`→`runtime.answer(context=)`까지 도달. ② HITL 워커측 초안 보류(ADR 0025 결정 4·5) — `TicketFrame.hitl` 힌트(토글 진실은 중앙 `HitlToggleMap`·디스패처가 dispatch 시점 계산)·on이면 워커가 `PendingDraft` 보류 후 `submit_pending_draft`(승인/수정)로 회신·워커 TTL 없음(중앙 큐 timeout 단일 종착·미아 없음). ③ owner 로컬 검토 웹 UI(S4·2026-07-02) — `owner_web.create_owner_app(logic, submit_sink)`(owner측 로컬 면·127.0.0.1·`web/owner-drafts.html` 정적 검토 화면·승인/수정 전송)·`run_worker(outbound=)` 겸직(`AON_OWNER_UI_PORT` opt-in·uvicorn daemon 스레드+큐 flush·미설정 무변경). **S5 실 end-to-end 시연 성공(2026-07-02)** — 실 프로세스·실 WS·실 LLM로 콘솔 토큰 발급→`--token` 등록(SQLite 검증)→HITL 보류→검토면 수정 전송→중앙 회수(수정본)→재시작 durable·재연결→revoke 재등록 거부까지 전 사슬 실증(tasks T9.7 S5 기록). HITL 토글은 인메모리 런타임 상태(재시작 리셋 — durable화는 운영 관측 후). 잔여: T9.2(c) 콘솔 실시간 관전 화면(SSE 피드 라우트·후속)·물리 2대 크로스머신.
-- **스케일 라우팅 stage-1 매처(ADR 0028 §7·T10.5(a)·2026-07-02)** — `KnowledgeIndexMatcher` 포트 뒤 두 어댑터: `ConceptOverlapMatcher`(토큰 오버랩·한국어 조사 정규화·기본)와 **`EmbeddingAnnMatcher`(embedder, tau=0.85)**(ADR 0032 `Embedder`/`FastEmbedEmbedder` 재사용·새 의존성 0·브루트포스 cosine[70~수백 규모·ANN 라이브러리 후속]·(agent_id, generated_at) 인덱스 임베딩 캐시). 선택은 `select_matcher()`(`AON_MATCHER` env — 미설정/`overlap` 기본 무변경·`embedding`/`fastembed` opt-in·지연 import·미설치 SystemExit) + `AON_EMBED_MODEL`(임베딩 모델 opt-in — e5-large는 top-1 54.2%·미아 16.7%·S11). **모델별 정책 맵 `_EMBED_POLICY_BY_MODEL`이 τ·stage-1.5 δ·stage-2 margin의 단일 원천**(모델 변경 시 세 값이 같이 따라감). **채택 근거 = 10-에이전트 실 자료 실측**(docs/scale-eval-2026-07-02.md — overlap top-1 20.8%·오라우팅 15.3%·실패 모드 3종 → embedding 매처 순수 top-1 67.7%·오라우팅 1.4%). **stage-1.5 clear-winner(margin) 룰(ADR 0028 §16·2026-07-02)**: `TwoStageRouter(stage1_clear_winner_margin: float|None=None)` — ≥2 후보에서 precedent 단축 뒤·assessor 앞, top1−top2 절대 margin ≥ δ면 top-1 단독 Routed(None=off·기존 동작 100%·stage-2 `clear_winner_margin`[confidence용]과 별개 필드). 실측 확정: embedding δ=0.03(contested 45.8→41.7%·easy top-1 72.4%·오라우팅 1.4% 무악화)·overlap 비채택(가드 통과 δ 없음). `recommended_stage1_margin()`이 `AON_MATCHER` 연동 단일 원천. **stage-2 `EmbeddingConfidenceAssessor`(ADR 0028 §17·2026-07-02)**: 후보 카드 okf_root 개념 body 전문 접지 cosine → confidence(목차가 안 갈리는 그레이 쌍도 body 근거 법령은 배타적 — 실물 검증). margin=0.02·min_confidence=0.75 실측 확정 — contested 41.7→34.7%·ambiguous top-1 27.8→44.4%·overall 50.0%·오라우팅 1.4% 무악화. demo index 모드에서 embedding 매처와 임베더 공유 자동 장착(overlap 기본 무변경)·예외 흡수→Contested 폴백(미아 없음). **(b) `LlmConfidenceAssessor`(§17-b·2026-07-02)**: 구현·`AON_ASSESSOR` 시임(auto 기본=임베딩 배선 보존) 존재하나 실측상 **기본 미채택** — 가드 안 기준선 미달·가드 밖 오라우팅 5.6%(사람-합의 라벨 확신 라우팅)·후보당 ~17s. **(c) 하이브리드 리랭크 채택(§17-c·2026-07-02)**: `TwoStageRouter(secondary_assessor=LLM, secondary_clear_winner_margin=0.6)` 계단식 — 1차(embedding) 미해소 잔여에만 2차 발동·`AssessorChain`·`AON_ASSESSOR=hybrid` opt-in(기본 auto 무지연·잔여 문항 ~38s 동기 지연이라 비동기화 후속). 실측: top-1 54.2%·오라우팅 1.4% 무악화·contested 30.6%(스케일 트랙 최종 — 시작점 20.8%/15.3%에서 5단 사슬). 크로스머신은 §15 FetchDocument 확장 후속.
-- **전송 채널 = WebSocket (슬라이스2b, ADR 0011 결정 6).** 결정 1이 "폴링 또는 WS/SSE"로 열어둔 채널을 **WebSocket**으로 확정 — 실시간 비전(답 토큰 스트리밍·양방향·단일 영속 연결) 기준, long-poll은 그 위층 스트리밍을 못 줘 기각. 연결 방향은 그대로(owner 워커가 중앙에 아웃바운드 WS, 중앙은 `@app.websocket`로 받기만). **WS는 새 큐 도메인이 아니라 `InMemoryWorkQueueDispatcher`를 *합성해 재사용*하는 전송층**(`WebSocketDispatcher`, `transport.py`) — 큐 상태기계·단조 종착·timeout escalation은 합성한 큐가 소유하고(미아 없음·idempotency 1차 보증) WS는 claim/submit을 *전송*으로 중계. `RuntimeDispatcher` 포트 무변경(claim=pull은 "중앙 핸들러가 워커 대신 claim해 `PushWork`로 push"로 의미 보존) → 기존 in-process 구현·143 passed 그대로. **전송 프레임(Transport Frame)**: 워커→중앙 `RegisterWorker`/`SubmitAnswer`/`Heartbeat`/`Ack`, 중앙→워커 `Welcome`/`AuthError`/`PushWork`/`Ping`(pydantic DTO, `type` 판별 봉투). **실패 모드(본체, owner PC 간헐 연결)**: 끊김 시 in-flight `claimed`→`queued` re-queue(`release_claims`, 단조성 보존), 중복 전달은 `ticket_id` 멱등(answered 재submit 무시), heartbeat 생존 판정, 워커 인증 거부 hook(ADR 0009→T6.5). **사용자↔중앙 답 회수 = 조회(pull)로 한정**(푸시 범위 밖): 기존 `poll`을 `AskOrg.retrieve(tracking)` → web `GET /ask/{tracking}`로 재노출, `Pending(dispatched)`에 *불투명 추적 토큰*(`tracking`)을 더해 그것으로 조회(노출 불변식 정밀화 — 추적 ID 1개 OK, 조직 내부 구조 금지). **구현(2b-i)**: 서버(`AskOrg._tracking`)가 `tracking→WorkTicket`을 보관하고 토큰은 `ticket_id`와 분리된 별도 `uuid4().hex`(ticket_id조차 미노출 — 6-5의 "서버가 ticket 보관" 대안). 중앙 WS 핸들러는 `server.py`(`create_worker_app` + `@app.websocket("/worker")`)로 web과 분리. **테스트 경계**: 중앙 WS 핸들러·프로토콜·idempotency·재연결 상태기계·인증 hook는 `TestClient` WebSocket(Fake 워커)로 *결정론*(2b-i 완료, 188 passed), 실 워커 프로세스·실 `claude`·실 네트워크는 *수동 데모*(2b-ii). 구현은 2b-i(중앙 WS+프로토콜, 결정론)·2b-ii(워커 프로세스+실 claude, 수동)로 쪼갠다.
-- **가용성 폴백 = owner 위임 백업 워커 (T6.6, ADR 0012 · ADR 0017로 옵션 B 하위 케이스 강등).** *기본 가용성은 중앙 실행(24/7·owner OKF 최신 읽기)이 푼다 — 백업은 owner PC 실행이 필요한 옵션 B 한정.* 단 **백업의 복귀 검토 루프(`BackupReview` — 승인·정정·무시)는 owner 거버넌스 "답 검토·정정"으로 승격·보존**(ADR 0017). owner PC 워커 부재 시 곧장 Manager escalation하던 2단을 3단으로 — owner PC 워커(`primary`) → (부재) **owner 위임 백업 워커**(`backup`) → (백업도 부재/실패) Manager escalation. 미아 없음 유지(반드시 Manager에서 종착, 백업은 *종착 전 자동 회복 1단*이지 새 종착이 아님). 백업은 **중앙 공용 LLM이 아니라 owner가 명시적으로 위임한 자기 데이터·신원의 격리 인스턴스** — 논리적으로 *여전히 owner가 답한다*(ADR 0010 보강, 중앙 무지식 유지). **새 워커 추상 없음** — `WorkerLogic` 재사용(`worker.py` 무변경), 차이(중앙 호스팅 격리·위임 스냅샷)는 주입 인자로 흡수. **본체 = 디스패처 확장**: `WebSocketDispatcher._connections`를 owner당 등급별(`owner_id → {WorkerRole → send}`, `WorkerRole=Literal["primary","backup"]`)로 확장하고 `_push_pending`의 *연결 선택만* 우선순위로(primary→backup→큐 대기→timeout escalation) — claim/submit/큐 도메인·`RuntimeDispatcher` 포트 무변경. `RegisterWorker`에 `role` 추가(워커가 등급 선언). 백업 연결 답은 `submit` 시 `Answer.mode="backup"` 강제 하향(백업이란 사실은 *연결 등급*이 진실). 위임 표현 = `DelegationSnapshot`(owner_id·agent_ids·snapshot_at — 위임 메타만, 실 지식 본체는 owner별 격리 저장소·백업 인스턴스만 owner 키로; AgentCard 자기보고 아님 — Authority 중앙·opt-in 1급). 신뢰: 백업이면 `mode=backup` 일률 하향. warm(상시 연결) 택일. **4축 보강(결정 7~10, 설계·shape):** ① **owner 복귀 검토 루프** — `mode=backup` 답은 owner 미검토라 영영 미검토면 책임이 명목에 그친다. ConflictCase/Inbox 패턴 재사용한 `BackupReviewItem`+`BackupReviewStore`(Owner 처리함 두 번째 면)에 보관하고, owner 복귀 시 `BackupReview`(Approve|Correct|Dismiss) 1인칭 처분. 검토는 사후 *전이*(audit 사후 줄, Precedent 안 만듦), 정정·승격은 `retrieve(tracking)` 갱신으로 재노출(backup→full 신뢰 복원, 노출 불변식 유지). ② **timeout 예산 분배** — 단일 timeout을 t1(primary 대기)+t2(backup 대기) 2단으로. primary 미연결은 즉시 백업(결정 1 유지), primary 무응답은 t1 후 claim 해제(`release_claims` 재사용)→backup 전환(중복 답은 `ticket_id` 멱등 흡수·MVP 순차). 주입 clock 결정론. ③ **동기화·staleness** — 동기화 트리거 owner 수동+주기+변경 이벤트(정책, 실 파이프라인 후속). staleness 정책: `snapshot_at` 임계 초과면 백업 *거부*→escalation("모르면 안전하게 넘긴다" — 오래된 데이터로 답하느니 사람). 그래서 mode는 `backup` 하나(답 나가는 백업은 다 fresh — fresh/stale을 mode로 안 쪼갬). ④ **cold start** — warm이 MVP(결정 2 유지), cold는 디스패처 *기동 요청 hook*(`wake_backup: Callable[[str],None]|None` 주입, `manager_of` 정신)만 연결점. cold "기동 대기"는 기존 큐 대기(`AwaitingWorker`)가 표현(새 상태 0), 기동 실패는 기존 timeout escalation 흡수, `mode=backup`은 warm/cold 동일. **실 구현(데이터 동기화·격리 인스턴스 배치·암호화·키 관리·검토 UI·기동 오케스트레이션)은 사용자 합의 후 후속 슬라이스** — 이번은 설계·shape·연결점만(워커 인증 ADR 0009→T6.5에 등급 검증 합류).
-
-## 6. 라우팅 알고리즘 v0 (규칙 기반)
-
-1. `classify(question) -> intent` — **router.route가 분류 단일 지점**(ADR 0015). 이 intent를 아래 모든 분기가 내는 `RoutingDecision`에 `intent`로 싣는다(라우팅 단일 출처). ask_org는 자기 classify 안 함 → `decision.intent`를 읽음(divergence 차단·LLM 호출 1회).
-2. 일치 Precedent 있으면 적용(이때 만드는 `Routed`도 intent를 싣는다)
-3. `candidates = intent ∈ domains 이고 cannot_answer 아닌 카드`
-4. 0 → `Unowned(루트 User, intent)` / 1 → `Routed(intent)` / ≥2 → 중앙 Authority tie-break, 못 풀면 `Contested(intent)` — candidates를 매칭한 그 intent와 결정에 실리는 intent가 *같은 지역변수*라 ConflictCase가 올바른 intent로 열린다.
-5. `Routed`면 `approval_when`·`collaborate_when`을 **intent 기준**(결정론, 비결정 회피)으로 평가해 부착(`Router._attach_gates`, T2.5) — primary의 `approval_when`에 intent가 들면 `requires_approval=True`, `collaborate_when`에 들면 *그 intent를 domains에 가진 다른 카드*를 `collaborators`로(primary 제외, agent_id 지목 아님 — domains 매칭 재사용). 두 필드는 under-claim 자기보고(ADR 0004). 그 뒤 Agent Runtime 호출(디스패처 경유).
-6. 모든 절차를 audit log에 기록(`AuditEntry.intent`는 `decision.intent`에서 옴 — ADR 0015, 기록 intent가 라우팅이 본 intent와 항상 같음)
-
-**Approval→mode 강제 + 노출 경계(T2.5)**: `Routed.requires_approval`이면 답이 `mode="draft_only"`로 사용자에 표시된다 — *라우팅 결정*이 강제하고(워커 자기보고 아님, ADR 0012 mode 강제 패턴) 강제 자리는 `AskOrg._apply_approval_gate`(즉답 Delivered 경로). mode 우선순위: `backup`은 draft_only로 덮지 않음(더 강한 하향), `full`→`draft_only`만 격상. `collaborators`는 사용자向 `Answered`에 **싣지 않는다**(노출 불변식: 담당·승인·출처만 — audit엔 `Routed.collaborators` 원형 보관). 실 승인 행위(draft→full)는 Manager 큐와 별 탭/행위로 후속(Approval은 게이트라 escalation 수렴과 도메인 분리 — ADR 0014 결정 4). 분산 회신(retrieve) 경로 Approval 강제는 후속(tracking이 requires_approval 미보관 — 자리 선결).
-
-**escalation → Manager 큐 수렴(T5.2, ADR 0014)**: 라우팅·디스패치·합의의 세 종착 처분(`Unowned`(미아)·`EscalatedToManager`(owner 부재/timeout)·`Deadlocked`(합의 교착))이 하나의 `ManagerItem`로 수렴해 `ManagerQueueStore`에 적재된다 — 색인 키 `manager_id`(owner의 `manages` 상위, 미아는 root). 적재자(미아·디스패치는 `ask_org` 핸들 분기, 교착은 합의 처리 경로)가 사람 그래프(`Registry.get_user(owner).manager`)를 한 단계 올라 manager_id를 정하고 None이면 root 보정(미아 없음 — 반드시 누군가의 큐). Manager가 `ManagerAction`(`AssignOwner`→Resolution+Precedent 학습·교착이면 ConflictCase 종결 / `Reroute`=Transfer / `Dismiss`)으로 처리 → resolved 전이. 적재=전이(큐 보관), escalation 기록은 audit이 이미 담당(ADR 0011 결정 5 — 전이 ≠ 기록). 멀티홉·LCA는 후순위(PRD §6).
-
-## 7. 테스트 전략 (ADR 0003)
-
-- **단위(결정론)** — `FakeClassifier`·`StubRuntime` 주입, 코어 로직. 매 커밋.
-- **eval(통계)** — 사람이 정답과 기대 기준을 확정한 큐레이션 골든셋의 정확도/통과율 임계값. 분류기·런타임 변경 시·야간, 회귀 게이트. Precedent·Answer·Feedback·Correction은 큐레이션 후보일 뿐 자동 라벨이 아니다(ADR 0041·0047).
-- **CI(자동 품질 게이트·Phase 16 P16.1)** — GitHub의 모든 PR과 `main` push에서 백엔드(Python 3.12·`uv.lock`·`ruff`·strict `pyright`·전체 결정론 `pytest`)와 프론트엔드(Node·pnpm lock·`lint`·production build)를 병렬 실행한다. 액션은 immutable commit SHA로 고정하고 권한은 `contents: read`만 허용한다. 실 LLM·IdP·Confluence·메일·시크릿은 넣지 않는다. branch protection에서 두 job을 required check로 지정하는 일은 저장소 운영 설정이라 게이트 밖이다.
-- **Phase 18 도메인 게이트(planned)** — `FakeReviewer`·`FakeEvaluator`·가짜 binding/target adapter로 revision·cycle·finding·proposal·target state CAS 구조를 결정론적으로 검증한다. 같은 active cycle, provenance resolution, Promotion/Rollback/Quarantine/Deactivate의 혼합 32-way 경쟁, stale lease·target epoch, policy supersede, receipt 불일치, org 격리, 단계별 write-then-fail 복구를 포함한다. 실 AI reviewer·grader 품질은 단위 테스트에 박지 않는다.
-- **승격 eval(planned)** — target별 immutable Evaluation Requirement Policy가 필수 축·비적용 축·검사 종류·runner/rubric·holdout·scope를 먼저 고정한다. 필수 `None | Skipped`는 실패고 `NotApplicable`은 policy만 선언한다. holdout이 필요한 target은 proposal 생성 전에 독립 curator가 version/split을 seal하고 generator·reviewer의 item-level 접근과 결정 전 item 결과 공개를 막는다. candidate/baseline metric은 같은 runner·환경에서 비교한다. policy에 classification·routing·answer-quality가 포함되면 해당 기대 라벨과 nonempty answer criteria 전체에 인증된 사람 `label_provenance`가 있어야 한다. EvalCaseAddition은 provenance·schema·duplicate·leakage·split integrity를 검사하고 같은 proposal의 case를 holdout에 쓰지 않는다. 안전·권한·질문 종결 불변식 회귀는 모두 fail-closed한다. 현재 30문항은 routing label의 인증 receipt가 없고 답변 기대 기준도 0건이며 `LlmGrader`도 미구현이라 coherence 자산일 뿐 승격 근거가 아니다. P17.8·P17.9 뒤에도 P17.11·P17.12·P17.13 전에는 shadow 판정만 허용한다.
-
-**골든셋 데이터(T6.4) ↔ eval 러너(T6.2) 분리**: 골든셋 *데이터*(샘플 카드 5장 + 샘플 질문 30개)는 분류기 무관한 자산이라 T6.4가 만들고, 정확도 임계값·LLM 연동을 소비하는 *러너*는 T6.2(`LlmClassifier`)가 만든다. T6.4의 자체 게이트는 **결정론**이다(LLM eval 아님) — 샘플 질문의 `expected_intent`를 `FakeClassifier`에 주입해 Router를 돌려 `expected_disposition`(+`expected_primary`/`expected_candidates`) 일치를 검증하면, 카드와 라벨이 *서로 모순 없음*(coherence)을 LLM 없이 박는다.
-
-**eval 러너 shape(T6.2·ADR 0041, `eval.py`)**: `run_eval(samples, classifier, router, threshold, runtime=None, grader=None) -> EvalReport`. ① **분류 정확도** `classification_accuracy`, ② **라우팅 정확도** `routing_accuracy`, ③ 기대 답변과 runtime·grader가 모두 있는 routed sample의 **답변 품질 정확도** `answer_quality_accuracy`를 따로 집계한다. `EvalReport`는 세 정확도와 `total·answer_graded·threshold·passed`를 낸다. 답변 채점 대상이 0건이면 `answer_graded=0`, `answer_quality_accuracy=None`이고 현재 일반 eval은 그 축을 통과 판정에서 뺀다. Phase 18 승격은 이 `None`을 통과로 인정하지 않는다. **한 예제 틀림이 아니라 집계 비율 vs 임계**가 일반 eval을 가르며, hard invariant는 별도로 무회귀다. 러너 구조는 `FakeClassifier`·`StubRuntime`·`FakeGrader`로 결정론 검증하고 실 `LlmClassifier`·`LlmGrader` 측정은 수동·야간 게이트 밖에서 한다. CLI는 분류·라우팅 경로가 구현됐고, `LlmGrader`는 아직 `NotImplementedError`다.
-
-**샘플 질문 엔트리(`samples/questions.jsonl`, 한 줄 = 한 JSON)**:
-
-| 필드 | 필수/선택 | 의미 | disposition별 |
-|------|-----------|------|---------------|
-| `question` | 필수 | 자연어 업무 질문 | 전부 |
-| `expected_intent` | 필수 | 분류기 타깃 라벨(카드 `domains` 어휘) | 전부 |
-| `expected_disposition` | 필수 | `routed`/`contested`/`unowned` | 전부 |
-| `expected_primary` | routed면 필수 | 담당 `agent_id` | routed만 의미 |
-| `expected_candidates` | contested면 필수 | 후보 `agent_id` 집합(≥2) | contested만 의미 |
-| `expected_approval` | 선택(기본 false) | Approval 게이트 기대 | routed 부속 |
-| `expected_collaborators` | 선택(기본 []) | 끌어들일 협업 `agent_id` 집합 | routed 부속 |
-| `answer_expectation` | 선택 | 사람이 확정한 답변 기준·match·curation provenance | routed 답변 품질 축 |
-| `note` | 필수 | 사람용 근거(왜 이 처분인가) | 전부 |
-
-unowned는 `expected_primary`·`expected_candidates`를 비운다(0 매칭). `answer_expectation`이 없으면 답변 품질을 채점하지 않는다. 현재 30개 시드에는 이 필드가 한 건도 없고, routing label에는 별 `label_provenance`가 없으며 `CurationProvenance.curated_by`도 인증 receipt가 아닌 문자열이다. 따라서 이 데이터는 분류·라우팅 coherence용 자산일 뿐 Phase 18 holdout이 아니다. 로더는 JSONL→typed 엔트리 읽기만 하며 영속 상태를 만들지 않는다.
-
-**`expected_collaborators`는 정적 30개 시드에선 비운다(라우터 구조)**: collaboration은 *단일 primary Routed인데 그 intent를 가진 다른 카드도 존재*해야 부착되는데(§6 5단계·`Router._collaborators_for`), 그 intent가 2장 domains에 있으면 후보 ≥2라 **Contested**(Routed 아님)가 된다. full route collaboration은 **Precedent가 그 intent를 단일 primary로 먼저 고정**(판례 경로)해야 살아나므로, Precedent 0인 정적 골든셋에선 collaboration intent가 contested로 처분된다. `expected_collaborators` 필드는 스키마에 두되(Precedent 누적 후·T6.2 eval에서 의미) T6.4 시드엔 채우지 않는다. 정적으로 시연되는 부속은 **approval**(단일 domain intent)과 **cannot_answer**(후보 차감)뿐. (`cannot_answer` 후보 차감은 T6.4가 `router.py`에 구현했다 — TRD §6 step 3 정렬. hr_ops가 급여이체를 domains+cannot_answer *양쪽*에 둬 차감→0매칭→Unowned로 처분한다. 차감 전엔 hr_ops로 Routed돼 틀렸고, 골든셋 coherence 테스트가 이 수정을 red→green 구동했다.)
-
-## 8. 프론트 면 (5)
-
-실 사용자 채팅 · 에이전트 빌더(T5.3) · Owner 처리함(후보 합의 1인칭) · Manager 큐 · 운영 모니터링(로그·상세 = T5.1) · Org 그래프(T5.3). 모두 같은 백엔드 공유 — 단 **페르소나별 분리된 공간**이라 접근 주체는 인증으로 분리(최종 필수). **T6.5(ADR 0009·0016)가 그 분리를 실체화**: 운영 면은 무비밀번호 세션 신원(`POST /login`)을 요구하고 채팅은 익명(다른 공간), 신원이 세션에서 와 가장 불가(path/body 아님), Owner는 자기 처리함만(스코프 위반 403). 처리함의 owner 선택 드롭다운(인증 전 시연 장치, ADR 0009)은 *제거*되고 로그인 폼 + 세션 신원 읽기전용 표시로 대체. 모니터링은 감사 로그를 `AuditReader`로 *순수 읽기* 투영(T5.1 — `GET /monitor` 요약·`GET /monitor/{index}` 상세, 운영 면이라 내부값 노출·**인증 필요**). **Org 그래프(T5.3)**는 Registry를 *순수 파생*해 User·Agent Card 2노드 그래프로 투영(`GET /org/graph`·`GET /org/view`, 모니터링과 같이 인증만·새 전이/기록 0). **에이전트 빌더(T5.3)**는 카드를 폼으로 구성→admission 검증→YAML 미리보기(`POST /builder/validate`·`GET /builder`) — 편집 채널은 git/PR이라 라이브 레지스트리 쓰기 없음(YAML은 Owner가 복사→커밋), Owner 스코프(세션 신원 ≠ owner면 403).
-
-## 9. 디렉터리
+# Agent Org Network TRD v0
+
+- 상태: 실제 실행 기준선
+- 기준일: 2026-07-30
+- 제품 요구: [`prd-v0.md`](prd-v0.md)
+- 실행 지원 SSOT: [`support-contract.json`](support-contract.json)
+- 실행 작업: [`tasks-v0.md`](tasks-v0.md)
+- Windows/Docker 없는 기본 실행: [ADR 0082](adr/0082-windows-without-docker-runtime-baseline.md)
+
+## 1. 설계 원칙
+
+1. 지원 상태는 코드의 존재가 아니라 사용자가 실행할 수 있는 artifact와 검증된 조건으로
+   판정한다.
+2. `Central Server`는 목표 제품에만 쓰는 이름이다. 현재 Next와 `web:app`은
+   Browser Frontend + Developer API reference이며 `server:central_app`은 Legacy Fixture다.
+3. `Agent Card`는 능력과 under-claim을 설명하고, Authority는 중앙 정책만 선언한다.
+4. Question Request 전이와 audit/outbox 기록을 분리한다.
+5. 원문·전체 초안·Owner Runtime 비밀은 `Card Owner` 경계에 남긴다.
+6. production 의존성이 없으면 자동 fallback하지 않고 unavailable로 닫는다.
+
+지원 상태 vocabulary는 다음 다섯 값으로 고정합니다.
+
+- `runnable_developer_reference`
+- `runnable_legacy_fixture`
+- `installable_dependent_client`
+- `tested_component_factory`
+- `product_target_not_available`
+
+## 2. 현재 실행 가능한 조립
+
+### 2.1 Developer Reference
+
+| artifact | 상태 | 실행 |
+|---|---|---|
+| Developer API | `runnable_developer_reference` | `uv run uvicorn agent_org_network.web:app --host 127.0.0.1 --port 8011` |
+| Browser Frontend | `runnable_developer_reference` | Next build 뒤 `AON_FRONTEND_MODE=development AON_BACKEND_URL=http://127.0.0.1:8011 pnpm start` |
+
+`web:app`은 질문, blocking/retrieve/SSE와 운영 API를 조립하지만 HTML을 제공하지
+않습니다. Browser Frontend는 Next standalone 서버가 소유합니다. 두 artifact는 개발
+Registry/설정을 쓰는 reference이며 실제 조직 Authority나 production Central Server를
+뜻하지 않습니다.
+
+### 2.2 Legacy Fixture
+
+| 표면 | 상태 | 진입점 |
+|---|---|---|
+| legacy 중앙 수동 시연 | `runnable_legacy_fixture` | `server:central_app`, `scripts/run_central.sh 8000 127.0.0.1` |
+| legacy Owner Worker 수동 시연 | `runnable_legacy_fixture` | `scripts/run_worker.sh cs_lead primary 8000 127.0.0.1` |
+| 인프로세스 MCP | `runnable_legacy_fixture` | `mcp_server`, `scripts/run_mcp.sh` |
+
+`server:central_app`은 legacy WebSocket dispatcher와 개발 웹을 함께 조립합니다.
+`mcp_server`는 중앙 코드를 인프로세스로 호출하는 개발 fixture입니다. 두 경로 모두 아래의
+목표 3-install 배포 경계나 thin remote Question User MCP를 증명하지 않습니다.
+Owner Worker는 Owner ID가 필수이며 기본 Runtime을 쓸 때 로컬 `claude` 로그인이
+필요합니다. 선택 Runtime은 해당 provider extra와 credential을 별도로 요구합니다.
+
+### 2.3 Installable Dependent Client
+
+| 항목 | 값 |
+|---|---|
+| 상태 | `installable_dependent_client` |
+| 패키지 script | `aon-mcp = agent_org_network.question_user_mcp:main` |
+| subcommand | `pair`, `serve-stdio` |
+| tool manifest | `ask_org`, `get_question` |
+| 외부 조건 | 실제 OIDC, HTTPS question gateway, OS keychain, Registry User/Authority |
+
+`aon-mcp`는 패키지에 존재하고 로컬 help/stdio 진입점이 실행됩니다. 그러나 필요한
+production gateway는 이 저장소의 runnable server로 제공되지 않으므로 독립 제품이나
+end-to-end 지원 경로가 아닙니다.
+
+## 3. 현재 Question Request 구조
 
 ```text
-src/agent_org_network/
-  user.py  agent_card.py  registry.py          # 등록 창구
-  classifier.py  decision.py  router.py        # 라우팅 코어
-  conflict.py                                  # 판례 + legacy/request-aware 다툼 Case 상태·Store
-  request_route_authority.py                   # request-scoped grant 출처·first-winner Authority 계약(P17.4 facade 포함)
-  p17_conflict_disposition.py                  # concurrence/deadlock claim Store·direct consensus·escalation·terminal retry(P17.5 S1~S6)
-  p17_deadlock_manager_disposition.py          # FromDeadlock Manager Assign/Dismiss·full-handle mediation(P17.5 S3)
-  question_answer_source.py                    # completed-inline Routed/Unowned/Contested Answer Source·resolution evidence 검증(P17.5 S4)
-  grounding.py  knowledge_store.py             # typed grounding 조립·Knowledge Store reader(P17.5 S4)
-  grounding_terminal_failure.py                # required grounding Missing/Invalid의 Request Failed CAS(P17.5 S4)
-  question_surface_composition.py              # Request/Conflict/Manager/Registry/Authority/Completion/grounding identity gate(P17.5 S5)
-  demo_question_surfaces.py                    # 단일 프로세스 demo Authority·Question Surface 수직 조립(P17.2c-2~P17.5 S5)
-  # Phase 18 예정(미구현)
-  artifact_revision.py                         # ArtifactRevision·AuthorshipProvenance·content reference
-  reciprocal_review.py                         # ReviewCycle·Requirement·Run·Finding·사람 처분
-  governed_improvement.py                      # Proposal·EvaluationPolicy/Evidence·ServingTargetState·target operation
-  review_adapters.py                           # 기존 StageReview·Approval·Correction·Feedback·Reeval exact-receipt adapter
-  manager_queue.py                             # Manager 큐 — escalation 수렴(ManagerItem·EscalationSource[FromUnowned|FromDeadlock|FromDispatch]·ManagerAction[AssignOwner|Reroute|Dismiss]·ManagerResolution·ManagerQueueStore·ManagerQueueService — ConflictCase/BackupReview 패턴 재사용, 색인 키 manager_id, T5.2·ADR 0014)
-  runtime.py  ask_org.py  audit.py             # 런타임·핸들러·감사(AuditLog 쓰기 + AuditReader 읽기 포트[T5.1 모니터링]·두 구현체가 둘 다 구현)
-  dispatch.py                                  # 분산 전송 포트·타입(RuntimeDispatcher·WorkTicket·DispatchOutcome·InMemoryWorkQueueDispatcher·release_claims, T6.3·ADR 0011). T6.6 보강 자리(설계): t1/t2 timeout 예산·wake_backup hook·staleness 거부(ADR 0012 결정 8~10)
-  # (T6.6 후속) review.py 또는 dispatch.py    # owner 복귀 검토 루프(BackupReviewItem·BackupReview[Approve|Correct|Dismiss]·BackupReviewStore — ConflictCase/Inbox 패턴 재사용, ADR 0012 결정 7). 위치는 구현 단계 판단
-  transport.py                                 # WebSocket 전송층(Transport Frame DTO·WebSocketDispatcher=큐 도메인 합성·프레임↔도메인 변환, T6.3 슬라이스2b·ADR 0011 결정 6)
-  server.py                                    # 중앙 WS 핸들러(create_worker_app·@app.websocket("/worker") 워커 연결 수신 + create_central_app/central_app: web+워커WS를 한 dispatcher로, 검토 store·service·위임 스냅샷 와이어링, 수동 시연 진입점, T6.3 슬라이스2b·T6.6 슬라이스 iv)
-  worker.py                                    # owner 워커 프로세스(WorkerLogic=프레임 핸들링 결정론 코어 + role primary|backup + run_worker=실 아웃바운드 WS·재연결 + main CLI --role, T6.3 슬라이스2b·T6.6 슬라이스 iv·ADR 0011 결정 6·ADR 0012)
-  review.py                                    # owner 복귀 검토 루프(BackupReviewItem·BackupReview·BackupReviewStore·BackupReviewService, T6.6 슬라이스 iii·ADR 0012 결정 7)
-  git_gateway.py                               # OKF 번들 git 저장·빌더 커밋·커밋 스냅샷(OkfFile·CommitRequest·CommitResult·GitGateway 포트[commit_bundle·head_sha·extract_snapshot]·FakeGitGateway·SubprocessGitGateway·commit_okf_bundle + OkfChangeEvent[변경 이벤트, T7.3], T7.2 설계·shape·ADR 0018)
-  reeval.py                                    # 지식 신선도·변경 전파(OkfChangeEvent는 git_gateway·StalenessPropagator·ReevalSubject[PrecedentSubject/AnswerSubject sealed sum·대상 축·T8.4(a)]·ReevalItem·ReevalOutcome[Keep/Invalidate/Supersede Precedent·Acknowledge/ReAnswer·결과 축]·ReevalStore·ReevalService[InvalidatePrecedent×PrecedentSubject→precedents.invalidate 실 제외·T8.4(d)] — ConflictCase/BackupReview 처리함 패턴 N번째, T7.3·ADR 0019)
-  oidc.py                                      # SSO/OIDC 신원 binding(OidcProvider 포트[verify]·OidcClaims frozen·OidcVerificationError·FakeOidcProvider[결정론]·HttpOidcProvider[게이트 밖]·resolve_identity[verified email→User.email 매핑 순수 함수] — GitGateway/AgentRuntime 같은 포트 패턴·공급자 중립, T7.1 구현 완료·ADR 0021)
-  notify.py                                    # 실시간 충돌 푸시 통지(NotificationChannel 포트[send fire-and-forget]·Notification frozen[kind=Literal]·NotificationKind·FakeChannel[결정론 메모리 inbox]·render_mcp_notification[Notification→MCP 페이로드 렌더 순수 함수·노출 불변식 게이트 내·match+assert_never 망라]·McpChannel[transport 주입 실 어댑터·send_fn None이면 NotImplementedError·렌더는 게이트 내/전송은 게이트 밖]·SlackChannel/EmailChannel[후속 stub·NotImplementedError]·Notifier[구독 주입 맵·멱등] — 채널 중립·첫 실 채널=MCP·push는 pull을 추가하지 대체 안 함·발화는 적재 지점 notifier 옵셔널 주입, T7.4 구현 완료·T8.2 갱신·ADR 0022)
-  demo.py  web.py                              # 데모 조립(cards_for_owner·demo_delegations 포함) + 웹 어댑터(POST /ask·GET /ask/{tracking} 회수·검토 탭 라우트·GET /monitor 모니터링·GET /org/graph+serialize_org_graph Org 그래프·POST /builder/validate+validate_card_for_builder 빌더 — T5.3, 직렬화/검증은 순수 함수로 web과 분리). **OKF 저작면(owner측·ADR 0030 결정 2·T11.7d 실 `LlmAuthor` 배선 2026-07-01)**: `POST /author/run`(raw 문서→`TextIngestor`→`run_authoring_pipeline(author)`→`admit_okf` over-claim 필터→staged 개념+dropped·**transient·중앙 store 0**)·`POST /author/publish`(승인 개념→`commit_okf_bundle`[owner git·`_git_gateway` 재사용]+`build_index_from_admitted`로 **목차(KnowledgeIndex) 도출**→`accept_published_index`로 `published_index_store`에 **목차만** publish·본문은 격리 임시 디렉터리에만·중앙 미도달). owner 스코프(세션≠card.owner→403·미로그인 401·`/builder/okf/commit` 패턴). 프로덕션 author=실 `LlmAuthor`(T11.7c·owner OAuth 인프로세스 anthropic SDK·`claude-sonnet-5`·`_make_default_author` 지연 생성·**가짜 0**) — `create_app` 미주입 기본이 실 추출·결정론 테스트만 `create_app(author=FakeAuthor)` 주입(`_build_demo_author` 프로덕션 제거→테스트 헬퍼). 실 owner OAuth(`ant`)+실 LLM(`claude-sonnet-5`) `/author/run` 수동 시연 성공(2026-07-01·6개념·16.6초). `split(sources, allowed_domains)`이 카드 권한 domain을 힌트로 받아 domain 라벨을 권한과 정렬(강제 아님·over-claim 보존)·`parse_*` 코드펜스 방어(`_strip_code_fence`). 인프로세스 full e2e(저작→publish→라우팅→답변) 관통 성공(2026-07-01·`AON_ROUTER=index`·`AON_PROVIDER=claude-api`): 익명 "환불은 어떻게 받을 수 있나요?"→`TwoStageRouter` cs_ops 라우팅→`ClaudeApiRuntime`(`claude-sonnet-5`) OKF 접지 실 답변. verify로 3결함 수정 — `ConceptOverlapMatcher` 한국어 조사 정규화·seed core_question 상호참조 제거·답변 기본모델 retired→`claude-sonnet-5`. **reeval 인덱스-수용 훅 실 WS 배선 완료(2026-07-01·T11.7e E1)**: `WebSocketDispatcher`가 `propagator`(실 `StalenessPropagator`)를 주입받아 `accept_index`(실 `/worker` WS 수신 경로)에서 `accept_published_index`로 전달 — 이전엔 이 경로가 항상 `propagator=None`이라 reeval 발화가 조용히 0이었다. **Precedent 축 배선 완결(2026-07-01·T11.7e minor-1)**: E1 직후 code-reviewer가 배선 무력화를 실증 — `create_central_app`이 propagator에 물리던 `precedents`가 `build_demo`의 실 판례 저장소와 별개인 빈 새 통(`InMemoryPrecedentStore()`)이라 `find_by_primary`가 영원히 빈 결과였고 `owner_of` 미배선으로 Precedent ReevalItem의 `owner_id`가 빈 문자열이었다. `bind_published_index`와 대칭인 사후 주입 seam `WebSocketDispatcher.bind_propagator(propagator)`를 신설 — `create_central_app`은 dispatcher를 propagator 없이 만들고, `create_app`(`web.py`)이 `build_demo` 완료 *후*(실 precedents 존재 시점) `bundle.precedents`·`bundle.audit_reader`(`create_app`이 넘긴 `audit_log`와 같은 인스턴스)·`bundle.registry.get(agent_id).owner` 기반 `owner_of`로 실 propagator를 구성해 `dispatcher.bind_propagator`로 배선한다(`dispatcher`가 `WebSocketDispatcher`이고 `reeval_store` 주입 시에만 — 미주입 조합은 하위호환·발화 0). **커밋-후 재-publish sink 실패 흡수(T11.7e E2)**: `ReindexOnCommitListener.on_okf_committed`가 `publish_sink` 예외를 흡수+`logging.warning`(재시도 큐 없음·재연결 백스톱이 회수 위임 — 커밋은 이미 디스크 확정). 재연결 백스톱 = `run_worker` register 직후 `publish_frames` 전량 재송신+중앙 `generated_at` 멱등이 중복 흡수. **게이트 밖 크로스 프로세스 관통 완료(T11.7e E3~E5·2026-07-01·단일 머신 WS 루프백·프로덕션 코드 0 변경=기존 조립만·`ANTHROPIC_API_KEY` UNSET)**: 인프로세스 store 공유를 넘어 **별도 프로세스 실 소켓 왕복**으로 전 사슬 실증. **E3(실 WS publish)** — `SubprocessGitGateway` owner_okf 실 커밋(격리 git repo·프로젝트 저장소 오염 0·실 SHA `ca04dae`→`b7e4985`·개념 `loyalty-points`)→`run_worker` 실 WS `PublishIndex`→중앙 `/worker` accept→`published_index_store` put→라우팅 전환(publish 전 `unowned`[0매칭→root escalation·미아 없음]→후 `dispatched`[cs_ops Routed]). 재인덱싱은 `publish_frames` 디스크 재도출이지 `reindex_incrementally` 아님(ADR 0030 S3 정정). **E4(양축 reeval)** — 실 커밋·실 publish가 중앙 reeval 훅 양축 실 WS 발화·owner 세션 `/inbox/reeval` 실 적재(Answer 축 `subject_kind=answer`·`owner_id=cs_lead` + Precedent 축 실 합의→`precedents.record`→cs_ops 재publish로 stale·`subject_ref=보상`·`owner_id=cs_lead`로 `bind_propagator` 사후 주입 `owner_of` 배선 실증). **E5(실 LLM end-to-end)** — 실 `LlmAuthor`(claude-sonnet-5·owner OAuth) 교환정책 312자→4개념→over-claim 필터 '교환' 3 drop·'환불' 1 수용(**권한 중앙 강제 불변식 실증**)→실 커밋(`df1ffc3`→`026d243`)→실 WS→`/ask` 워커 실 `ClaudeApiRuntime` 답변(canned 아님·`answered_by`=cs_ops·`sources`)→reeval 양축. **중앙 토큰 0 3각도**: 와이어 본문 0·`Concept` 스키마 body 부재·`server.py` anthropic SDK 미import(LLM은 owner 워커 OAuth in-process). **과대주장 금지**: 단일 머신 루프백은 실 소켓·실 직렬화까지 실증하나 물리 2대 네트워크 지연 특성은 미측정·register 인증은 자리만(`_authenticate` `bool(owner_id)`·실 토큰 검증 후속). **중앙 비소유 가드(코드 보장)**: 중앙 store에 들어가는 객체는 `Concept`(body 필드 *타입상 없음* — concept_id·title·core_question·domain만)로 된 `KnowledgeIndex`뿐·raw/초안/LLM 토큰 0.
-  mcp_server.py                                # 중앙 MCP 서버 진입점(reply_to_mcp_text 투영·create_mcp_server FastMCP 도구 ask_org·main stdio, T3.2·ADR 0006). 공식 mcp SDK·표현층 어댑터(web.py와 같은 경계)
-web/index.html  web/inbox.html(담당 합의·백업 검토 탭)  web/monitor.html(모니터링)  web/org.html(Org 그래프 viz, T5.3)  web/builder.html(에이전트 빌더 — 카드 구성 탭 T5.3 + OKF 번들 편집 탭 T8.1d)   logs/audit.jsonl   tests/
-okf/<agent_id>/*.md                          # owner OKF 번들(T6.7·ADR 0013) — 마크다운+YAML 프론트매터·type 자유·index.md 권장. 규약 경로 okf_root/{agent_id}(레이블 아닌 agent_id가 경로를 진다). 워커 ClaudeCodeRuntime이 cwd로 소비(--allowedTools "Read,Glob,Grep"). 데모는 repo okf/지만 의미상 owner 환경. 현재: okf/cs_ops/ · okf/contract_ops/
-registry/users.yaml · registry/agents/*.yaml   # 샘플 유저·카드 — T1.3에서 유저 4명·카드 3장. T6.4가 유저 +2(hr_lead·it_lead)·카드 +2(hr_ops·it_ops) → 유저 6명·카드 5장(PRD §8 "카드 5개 코드 수정 없이 YAML 추가"). demo._USERS·_CARDS도 동기화(데모와 골든셋이 같은 카드 셋을 봐야 함)
-samples/questions.jsonl                          # T6.4 — 사람 큐레이션 질문 30개(현재 answer_expectation 0건). 분류·라우팅 coherence 자산
-golden.py                                        # SampleQuestion·AnswerExpectation·CurationProvenance typed 로더. 현재 provenance는 nonblank 문자열이라 인증 receipt 아님
-eval.py                                          # 골든셋 eval 러너(분류·라우팅·선택적 답변 품질). Fake/Substring grader는 구현, LlmGrader는 미구현
-classifier.py                                    # Classifier 포트 + RuleBasedClassifier·FakeClassifier·LlmClassifier(T6.2 claude -p 헤드리스·ClassifierRunner 주입·어휘 외→""·default_claude_classifier_runner 게이트 밖)
-# 예정: routing_rules.yaml
+Question User input
+  → Question Request 생성
+  → exact-only non-actionable intake
+       └─ 일치: Declined(non_actionable_conversation)
+  → Router
+       ├─ Routed → Runtime → Approval boundary → Answer Finalization
+       ├─ Contested → Owner 합의 / Manager 처분 → 같은 Request 재개
+       └─ Unowned → root User / Manager 처분 → 같은 Request 재개 또는 Declined
 ```
 
-## 10. 핵심 불변식
+핵심 application은 저장된 Question Request와 RouteTarget을 기준으로 진행합니다.
+blocking, retrieve, SSE, MCP projection은 같은 terminal 의미를 사용해야 합니다.
+승인 전 candidate token은 최종 답이 아니며, Answer Finalization commit 뒤의 canonical
+결과만 사용자 답으로 간주합니다.
 
-**핵심 불변식(ADR 0042로 강화):**
-- 어떤 질문도 미아로 남지 않는다. 0 매칭이면 루트 Manager에게 보내는 데서 끝나지 않고, 모든 질문은 영속 `request_id`와 조회 가능한 비종결 상태 또는 `Answered | Declined | Failed` terminal 결과를 가진다.
-- 유효하지 않은 카드는 등록되지 않는다.
-- 권한(Authority)은 중앙만 선언한다. 합의·Manager 처분·재디스패치도 현재 Registry와 중앙 AuthorityPolicy를 다시 검증한다.
-- 전이 ≠ 기록 — 전이는 도메인, 기록은 감사 로그.
-- 책임자가 확정되기 전에는 최종 AnswerRecord를 만들지 않는다.
-- 한 `request_id`에는 최종 AnswerRecord·terminal audit·SessionTurn이 각각 최대 한 건이다.
-- 모든 채널은 같은 Answer Finalization을 거쳐 최종 mode·record_id·감사 결과가 같다.
-- 사용자에게 가는 답에는 항상 담당·신뢰 상태(승인/초안/출처)가 붙고, 대기·거절·실패에도 request_id가 붙는다.
-- provenance를 검증할 수 없는 Artifact Revision은 승격 대상이 아니다. 사람의 소폭 편집이나 승인으로 AI 기원을 지우지 않는다.
-- 사람이 만든 revision은 AI 자문 batch 또는 정책이 허용한 유효 `ReviewRequirementWaiver`가 있어야 사람 처분 단계로 간다. waiver를 AI 검토 완료로 기록하지 않는다. AI·mixed revision은 인증된 사람 binding receipt 없이는 발행·승격 write가 0이다.
-- AI finding·운영 피드백·Correction·Reeval은 개선 trigger나 후보만 만들 수 있다. Authority·RBAC·ApprovalPolicy·production code·secret·model weights를 자동으로 바꾸지 않는다.
-- 기존 `StageReview`는 OKF 단계 처분, `ApprovalItem`·`ApprovalBoundary`는 답 발송, `BackupReview`·`ReevalItem`은 각 사후 처분의 단일 진실 원천이다. `CorrectionEvent`·`AnswerFeedback`은 append-only trigger/evidence이며 binding 승인 상태가 아니다. 공통 원장은 어느 source 상태도 복제하지 않고 exact adapter receipt만 기록한다.
-- 승격은 target별 독립 평가와 별도 사람 promotion review 뒤 serving target state CAS로만 일어난다. 롤백과 kill-switch는 승격 이력을 지우지 않는다.
-- Phase 18의 key와 unique index는 org-scoped다. finding·proposal은 원 revision 이상의 민감도와 ACL을 물려받고, 조직이나 권한이 다른 조회는 같은 `NotFoundOrDenied`로 숨긴다.
+`Non-actionable Conversational Intake`는 Router 이전의 좁은 결정론 규칙입니다. NFKC,
+casefold, 공백 정규화 뒤 전체 입력 allowlist만 비교합니다. 접두사·부분 문자열·LLM 의미
+판정은 사용하지 않으므로 업무 질문과 실제 no-match의 escalation을 보존합니다.
 
-**"중앙 토큰 0" — 폐기(Phase 12·ADR 0033·2026-07-04).** ADR 0010·0017·0027이 보존·강화해 온 "중앙 모델 토큰 0"은 Phase 12(중앙 답변)에서 **정직하게 폐기**된다 — 중앙이 답하면 자격증명이 중앙으로 갈 수밖에 없다. **중앙 조직 API 키 1개**로 중앙 과금(담당자별 비용은 태깅/로그·ADR 0033 결정 2). 대체 안전장치: 키 보관(env/시크릿 매니저만·와이어·저장소·코드 미포함)·로그 미노출(audit·통지·트랜스크립트에 키 원문 0·식별자만)·비용 태깅(`agent_id`·`answered_by`). 이는 4대 불변식이 *아니었던* 0027의 강화된 부수 속성이라 폐기가 4대를 흔들지 않는다(가용성·운영 단순 > 순수성의 정직한 트레이드오프).
+## 4. 테스트된 구성요소 팩토리
 
-## 2026-07-27 P17.9 S5 durable WebSocket·교차 정합
+다음 코드는 `tested_component_factory`입니다.
 
-- **Durable Owner Worker WebSocket 전송(S5.8)** — production 전용 조립은 durable pending WorkTicket을 `DurableDispatchRunner`가 claim한 뒤 `DispatchFrame → PushWork(TicketFrame)`으로 실제 연결에 보낸다. legacy InMemory Work Queue는 이 경로의 권위가 아니며 `SubmitAnswer`는 durable ticket·AwaitingAnswer Request를 exact-read해 `DurableAnswerIngestionUnitOfWork`로 직접 들어간다. 연결 인증은 legacy `AdmissionToken`을 승격하지 않고 canonical `durable_credentials`의 저장 generation·active/revoked/expiry·secret hash와 strict `WorkerBinding`, current Owner/Card를 연결·전송·답 수신마다 대조한다. process-local delivery cache나 lease epoch로 느린 답을 거부하지 않는다. named SQLite의 별 중앙/워커 프로세스 수동 시연은 실제 소켓·직렬화·S5.4 종결을 증명하지만 결정론 게이트, 물리 2대, scheduler 운영, PostgreSQL 다중 인스턴스를 증명하지 않는다.
-- **Durable Dispatch 교차 정합 게이트(S5.7 arm)** — read-only reconciliation은 answer receipt⟺completed WorkTicket, escalation Item⟺escalated WorkTicket, Item 상태⟺처분 receipt와 Request resting revision을 한 deferred snapshot에서 양방향 검사한다. terminal ticket에 잔여 leased lease가 있는 것은 정상이며 `leased ⇒ pending`을 요구하지 않는다. SQLite의 `BEGIN IMMEDIATE`가 직렬화하는 32-way·restart·multi-instance 경쟁은 PostgreSQL S6로 이월한다.
+| 모듈 | 팩토리/경계 | 현재 의미 |
+|---|---|---|
+| `production_onboarding_web.py` | `create_production_onboarding_app` | 주입된 capability로 온보딩 계약 검증 |
+| `central_owner_pairing_web.py` | `create_production_central_authoring_pairing_app` | 중앙 저작·pairing route 조립 계약 |
+| `central_question_gateway.py` | `CentralQuestionGatewayRoutes`, `create_https_question_gateway` | thin client용 gateway 경계 |
+| `owner_authoring_web.py` | `create_owner_authoring_app` | production wiring이 완성될 때까지 의도적으로 unavailable |
+| `a2a_remote_runtime.py`, `a2a_sdk_adapter.py` | strict A2A 1.0 `HTTP+JSON` outbound runtime와 공식 SDK adapter | owner-local tested component; `aon-owner` artifact 아님 |
+| production User/Card/Authoring/Index 모듈 | SQLite UoW와 sealed DTO | durable 구성요소의 결정론 증거 |
 
-## 2026-07-27 P17.15 O1 production Registry User·OIDC
+팩토리는 테스트가 의존성을 명시적으로 주입해 fail-closed 동작과 불변식을 검증하는
+단위입니다. 모듈 수준 `app`, console script, 배포 설정, migration/doctor가 없으므로
+production server로 분류하지 않습니다.
 
-- **Production Registry User component** — `production_registry_users_v1`은 canonical User/email/manager와 shared registry revision, command receipt, safe audit/outbox를 한 SQLite transaction으로 쓴다. email 원문은 User row에만 저장하고 companions는 digest/ref만 저장한다. runtime은 canonical DDL·column·FK·index·trigger catalog를 exact validate하며 partial/legacy schema를 repair하지 않는다.
-- **Production OIDC Identity Session** — authorization-code+PKCE transaction은 state·nonce·browser binding·TTL·single-use를 검증하고 provider verifier가 signature·issuer·audience·expiry·email_verified를 확인한 뒤 전역 유일 Registry User를 찾는다. server-side row와 cookie에는 opaque session ID와 digest/fingerprint만 남으며 code/token/`sub`/claims/email/issuer 원문은 저장하지 않는다. 매 요청 current User fingerprint·revision·provider/org를 재검증한다. production onboarding route는 이 component·principal resolver·transaction-current central authorizer가 모두 있을 때만 열린다.
+## 5. Browser Frontend와 BFF 경계
 
-## 2026-07-27 P17.15 O2 production Agent Card
+```text
+Browser
+  → HTTPS reverse proxy / managed TLS
+    → Next standalone server
+      ├─ pages and assets
+      ├─ allowlisted /api/* BFF
+      ├─ /healthz
+      └─ /readyz
+        → private Developer API(JSON/SSE/WS)
+```
 
-`production_agent_card_v1`은 O1 User component의 shared registry revision과 Owner/Maintainer FK를 같은 transaction에서 사용한다. full canonical Agent Card JSON은 card row에만 저장하고 command receipt·audit·outbox는 digest/ref와 authorization epoch/policy/evidence/resource fingerprint만 가진다. replay는 모든 companion과 current authorization snapshot을 exact 대조한다. Agent Card ID는 org-scoped이고 두 조직의 같은 ID는 서로 독립이다. production route는 strict raw body로 server-derived field와 권한 자기보고 extra를 거부하며, current User가 Owner이거나 별 exact delegation이 있는 경우에만 `card.register` UoW를 호출한다.
+- Next는 지원되는 유일 browser server입니다.
+- `AON_FRONTEND_MODE=development|production`을 명시합니다.
+- development만 loopback HTTP backend 기본값을 허용합니다.
+- production은 `AON_BACKEND_URL`과 HTTPS `AON_PUBLIC_ORIGIN`을 필수로 검증합니다.
+- BFF는 method/path/header/body-size allowlist를 사용하고 임의 upstream,
+  `x-forwarded-*`, caller supplied host를 전달하지 않습니다.
+- `/healthz`는 Next liveness, `/readyz`는 runtime config와 Developer API readiness입니다.
+- Central mode에는 `/owner-api/*`가 없습니다. raw source/full draft/Owner credential은
+  Card Owner Installation 경계에 남습니다.
+- FastAPI의 기존 `web/*.html` browser runtime은 retire합니다. supervision, scorecard, audit
+  detail, token/session control, owner transfer를 포함한 아홉 legacy 화면 기능은 Central Next
+  또는 Owner-local Next에 이관해야 하며 HTML fallback을 열지 않습니다.
+- HTML별 destination과 success/error/authority/API contract는
+  `docs/frontend-runtime-parity.md`에서 추적합니다.
 
-## 2026-07-30 P17.15 O6 thin Question User MCP
+Next standalone 또는 선택적 Docker packaging이 실행된다는 사실은 실제 SSO, production Central Server,
+Card Owner 또는 3-install 완성을 뜻하지 않습니다.
 
-`question_user_mcp.py`는 HTTPS remote client, PKCE loopback/keychain credential, exact `{ask_org, get_question}` MCP manifest만 가진다. bearer 검증·current Registry User 해석·Question Request owner lookup·central Authority create/read-own check와 FastAPI routes는 central-only `central_question_gateway.py`에 격리한다. `CentralQuestionGatewayRoutes`는 표준 production Central Server app에 주입·mount되어 같은 중앙 Registry DB/Authority/application을 사용한다. artifact AST negative gate는 client가 central gateway/Authority/Registry/OIDC/question application/FastAPI를 import하지 않음을, remote flow test는 paired bearer가 gateway에서 server-derived principal로만 실행됨을 고정한다.
-## 3-install 기술 경계와 온보딩 계약 (ADR 0067)
+Windows native 실행은 PowerShell `.ps1` scripts와 Node standalone을 사용하며 Docker daemon,
+WSL, Git Bash를 요구하지 않습니다. Dockerfile과 Docker smoke는 선택적 packaging 증거이고
+Windows Fast/Contract gate의 prerequisite가 아닙니다.
 
-배포 artifact는 공통 frozen contract/codec을 제외하고 `agent-org-central`, `agent-org-owner`, `agent-org-mcp-client`로 분리한다. entrypoint는 각각 `aon-central serve|migrate|bootstrap-admin|reconcile`, `aon-owner pair|workspace serve|worker|doctor|unpair`, `aon-mcp pair|serve-stdio|doctor|unpair`다. production artifact는 route/tool/module allowlist와 forbidden-surface negative gate를 통과해야 한다.
+## 6. Product Target: 3-install
 
-중앙 mutation command는 서버 principal의 org scope, stable idempotency key, canonical digest와 expected revision을 사용하고 receipt·safe audit·outbox intent를 한 UoW에 둔다. User/Card는 기존 admission/service/journal을 재사용해 production UoW로 승격한다. 별 identity-binding table은 없으며 OIDC verified email을 current Registry에서 매번 exact resolve한다.
+3-install은 현재 `product_target_not_available`이지만, ADR 0075가 구현할 P0 composition,
+protocol, port와 parity acceptance를 고정합니다. 구현 전에는 이 section의 command를 현재
+지원 명령으로 읽지 않습니다.
 
-저작은 durable `AuthoringRun(Extracting | AwaitingOwnerReview | Reviewed | Publishing | Published)` control aggregate로 단계화한다. 중앙 schema는 run/Card/Owner/stage/revision, typed digest/count/timestamp만 허용하고 raw·draft body·provider token은 Card Owner 설치의 local durable repository가 소유한다. O4 review는 exact revision 1의 singleton `bundle`만 받고 source/draft digest가 해당 run의 source-set/admitted bundle과 정확히 같을 때 current Owner·중앙 `author.publish` authorization으로 CAS한다. `Edited`는 본문/patch 전송 없이 기록되며 수정본은 새 run으로 다시 admission해야 한다. O5a Publish Claim은 exact `Reviewed(2, Approved)`와 O4 receipt/audit/outbox anchor를 transaction-current `author.publish` grant로 재검증해 `Publishing(3)`으로 원자 예약할 뿐, git·local draft·index acceptance·`Published`를 실행하지 않는다. 후속 publish saga는 `(org, agent_id, run_id, review_revision=2)` semantic key로 exact reviewed revision만 git commit과 KnowledgeIndex publish로 보내며 dual-write 장애를 reconcile한다.
+RB3.8의 설치 artifact는 한 source repository를 쓰더라도 `agent-org-central`, `agent-org-owner`,
+`agent-org-mcp-client`의 **독립 install bundle/image**여야 한다. 하나의 monolithic wheel에
+`aon-central`·`aon-owner`·`aon-mcp` entrypoint만 함께 들어 있는 것은 개발 단계의 component
+delivery일 뿐 3-install acceptance가 아니다. 각 bundle/image는 자기 module/tool/route allowlist와
+다른 installation의 forbidden surface 부재를 설치 후 검사해야 한다. 이 요구는 ADR 0067 결정 1의
+production artifact 해석을 local-reference RB3.8에도 적용한 것이다.
 
-O5c는 `SqlitePublishedIndexAcceptance`가 `KnowledgeIndex` 목차 payload와 immutable acceptance receipt를 소유하고, AuthoringRun은 metadata-only receipt를 소비한다. `AcceptPublishedIndexCommand`·command/receipt digest·durable receipt schema는 O5b `OwnerPublishCommitted.commit_sha`와 `committed_tree_index_digest`를 payload digest·semantic key에 함께 결박한다. payload/receipt/latest event와 `Publishing(3) → Published(4)` control transition·terminal receipt/audit/outbox는 한 SQLite transaction으로 확정한다. O5c 최초 acceptance는 current Owner/Card/`author.publish`를 재검증하며 historical receipt만으로 terminalize하는 예외는 O5d로 유보한다. O5d는 historical graph/CAS보다 앞서 acceptance table column·PK/UNIQUE/FK, immutable trigger 및 Published binding trigger의 canonical catalog를 validate-only로 대조하고 drift면 unavailable·write 0이다. (ADR 0069)
+```text
+┌────────────────────┐       HTTPS/OIDC       ┌────────────────────┐
+│ Question User MCP  │ ─────────────────────→ │   Central Server   │
+│ own questions only │                        │ Registry/Authority │
+└────────────────────┘                        │ workflow/index     │
+                                              └─────────┬──────────┘
+                                                        │ paired commands,
+                                                        │ receipt/read-back
+                                              ┌─────────▼──────────┐
+                                              │     Card Owner     │
+                                              │ raw/draft/runtime  │
+                                              │ review/publish     │
+                                              └────────────────────┘
+```
 
-pairing은 OIDC principal → TTL/single-use/audience/org pairing intent → device public key → generation-scoped durable credential 순서다. Owner credential은 Owner/Card/device에, MCP credential은 own-question scope에만 결박한다. raw credential은 저장하지 않는다. 재-pair는 generation을 올리고 Card transfer는 old Owner binding을 즉시 무효화한다.
+### Central Server 목표 경계
 
-기존 `run_central`은 `aon-central` 경고 wrapper, `run_worker`는 paired profile 기반 `aon-owner worker`, in-process `mcp_server`는 중앙 gateway/test fixture로 이행한다. 질문 사용자 MCP는 embedded AskOrg가 아닌 authenticated remote thin client다. 검증 불가능한 legacy token과 env `user_id`는 자동 승격하지 않는다.
+- Registry User, Agent Card, 조직 graph와 중앙 Authority
+- OIDC callback/session, durable Question/Approval/Conflict/Manager workflow
+- 승인된 지식 인덱스, AnswerRecord, safe audit/outbox
+- 본문 없는 AuthoringRun control metadata와 digest
+- Central Next(public browser/BFF, local reference `127.0.0.1:3000`)와 Central API(private
+  JSON/SSE/WS, local reference `127.0.0.1:8010`)는 한 Central Installation의 별 process다.
+  Central API composition은 demo/fixture/fallback을 import하지 않고, Central Next는 고정된
+  private API origin만 BFF upstream으로 쓴다.
+
+### RB3.1a Central Question Intake 계약
+
+RB3.1의 최소 수직 slice는 `CentralQuestionIntakeApplication`으로 durable `Received`만
+create/read-own 한다. 기존 `QuestionResolutionApplication`은 initial routing과 durable
+Conflict/Manager 의존성을 함께 요구하므로 여기서 사용하지 않는다. application은 기존
+`QuestionRequest.receive`, `SqliteQuestionRequestStore`, `CentralAuthorizer`, request-id factory,
+주입 clock만 조립한다. 새 domain state나 routing/answer/onboarding/pairing 기능은 범위 밖이다.
+
+Central profile은 `org_id`, `oidc_provider_id`, `oidc_issuer`, `oidc_audience`, `oidc_jwks_url`,
+`authority_snapshot_path`, `database_path`, `data_directory`, `bind_host`, `port`를 exact하게
+가진다. local reference는 `127.0.0.1:8010`만 bind한다. OIDC 검증 → Registry User binding →
+current Authority 순서가 POST/GET 모두의 유일한 principal/authorization 근거다.
+
+route allowlist는 `GET /healthz`, `GET /readyz`, `POST /v1/questions`,
+`GET /v1/questions/{request_id}` 네 개다. POST는 `{ "question": string }`만 받고 `201`, GET은
+`200`과 `ReceivedQuestionProjection(request_id, state="received", created_at)`을 반환한다.
+이는 existing `RequestPending`/`RequestNotFound`가 아니라 전용 최소 projection이다. 전자는
+아직 없는 routing/terminal lifecycle을 wire contract로 약속하기 때문이다. unknown/other-owner/
+denied GET은 모두 `404 question_not_found`; unauthenticated는 `401 oidc_unauthenticated`, Registry
+User/current Authority 부재 또는 create denial은 `403 question_forbidden`, invalid input은
+`422 invalid_question_request`, duplicate request id는 `409 question_request_conflict`, dependency
+failure 또는 not-ready는 `503 central_intake_unavailable`이며 error body는 `{ "error": code }`다.
+
+migration은 Question Request schema capability를 먼저 완료하고 Central schema marker를 마지막에
+쓴다(marker-last). marker만 있고 table/index capability 또는 configured org의 Registry bootstrap/
+Authority snapshot이 없으면 `/readyz`는 `503 central_intake_unavailable`이다. completion schema/UoW,
+routing, durable Conflict/Manager store가 아직 없으므로 `Received` 뒤 전이와 terminal 결과는 이
+slice가 제공하거나 주장하지 않는다. 이 slice의 구현·테스트가 있어도 support status는
+`product_target_not_available`로 유지한다.
+
+### RB3.2a Bootstrap Admin admission 계약
+
+`aon-central bootstrap-admin --profile CENTRAL_PROFILE --attestation BOOTSTRAP_ADMIN_ATTESTATION`은
+Central CLI의 non-browser one-time command다. `--profile`과 `--attestation` 외 CLI user, email,
+OIDC subject, role, manager, token, secret argument는 허용하지 않는다. attestation exact field는
+`schema_version`, `attestation_id`, `org_id`, `registry_user_id`, `oidc_provider_id`,
+`oidc_issuer_digest`, `oidc_audience_digest`, `oidc_subject_digest`, `verified_email_digest`,
+`device_authorization_ref`, `idempotency_key`, `expected_registry_revision=0`,
+`authority_policy_digest`다. raw claim/email/token/device code/user code/client secret은 profile,
+normal stdout/stderr, receipt/audit/outbox, HTTP response, support log에 쓰지 않는다.
+
+`BootstrapOidcDeviceAuthorizer` port의 production adapter는 profile의
+`bootstrap_oidc_device_authorization_url`, `bootstrap_oidc_device_client_id`,
+`bootstrap_oidc_scope`로 device authorization grant를 수행한 뒤 `OidcProvider.verify`의 identity를
+attestation digest와 exact match한다. fake adapter는 deterministic gate injection만 위한 것이다.
+interactive URI/user code는 normal stdout/stderr가 아닌 invoking process의 `/dev/tty`에만 one-time
+표시하며 non-TTY와 verifier/dependency failure는 fail-close한다. verified email은 existing
+`ProductionRegistryUserCommand`을 만들 때 memory에서만 사용되고 Registry User internal durable
+record 외에 egress하지 않는다.
+
+`BootstrapAdminRegistrationAuthorizer`는 transaction에서 current Authority snapshot의
+`user.register`, attestation/config/digest match, Registry revision `0` 또는 exact command replay를
+검증하고 existing `SqliteProductionRegistryUsers.register`를 호출한다. 별
+`central_bootstrap_admin_seals` schema는 immutable seal digest/reference만 기록한다. Registry
+commit과 seal write 사이 crash는 same attestation replay가 existing receipt/audit/outbox를
+read-back해 seal을 완성한다. Central marker/bootstrap schema capability가 없으면 `Unmigrated`,
+seal이 없으면 `BootstrapPending`, matching immutable seal+receipt/audit/outbox가 있으면
+`BootstrapSealed`다. unexpected unsealed mutation, drift, corrupt evidence는 fail-close한다.
+
+stable CLI exit는 success/replay `0`, replay conflict/sealed-other `75`, attestation or Authority
+denial `77`, configuration `78`, unavailable/fault/not-ready `69`다. same command concurrent calls는
+one Registry User/receipt/audit/outbox/seal로 수렴한다. Central Next/Owner-local Next는 호출하지
+않으며 browser route, session, JIT/invitation, extra User onboarding, Agent Card admission,
+routing/answer는 이 command의 범위 밖이다. Central Next SSO 추가 User onboarding은 RB3.2b다.
+
+### RB3.2b.1 Central Next packaging·process 계약
+
+RB3.2b.1은 이미 있는 `frontend/`의 Central Next packaging/process component를 구현한 첫
+slice다. source/installed artifact discovery, fixed child configuration과 lifecycle까지
+검증됐지만 frontend의 일반 지원 수준과 전체 Central artifact를 승격하지 않는다. `web:app`,
+legacy fixture, demo identity와 Developer API upstream을 import하거나 fallback으로 쓰지 않는다.
+Owner-local Next는 별도의 미래 `owner-frontend/` artifact다.
+
+구현 command는 정확히 `aon-central web serve --profile CENTRAL_PROFILE`이다. `--profile`은 existing
+strict Central profile loader로 읽고, Central API origin은 `http://127.0.0.1:8010`, Next bind는
+`127.0.0.1:3000`으로만 유도한다. profile에는 browser public HTTPS origin을 위한 exact
+`central_public_origin`을 추가할 수 있지만 backend host/port 또는 arbitrary upstream field는 추가하지
+않는다. caller `AON_BACKEND_URL`, `HOST`, `PORT`, proxy URL과 command option은 Central BFF upstream을
+변경할 수 없다. CLI는 child에 검증·생성한 `AON_FRONTEND_MODE=central-local-reference`,
+`AON_PUBLIC_ORIGIN`, `AON_BACKEND_URL=http://127.0.0.1:8010`, `HOSTNAME=127.0.0.1`, `PORT=3000`만
+전달하고 caller environment를 정책 입력으로 재사용하지 않는다.
+
+`web serve`는 Central API를 함께 기동하지 않는 별 parent/child process다. bind 전 profile,
+`central_public_origin`, standalone artifact layout/manifest, Node executable과 child configuration을
+모두 validate한다. source checkout에서는 이미 build된 `frontend/.next/standalone/server.js`만 허용하고,
+installed package에서는 배포물에 포함된 같은 standalone artifact만 허용한다. command가 `pnpm build`,
+`npx`, package download 또는 network fetch를 실행해 누락 artifact를 복구하지 않는다. child가
+unexpectedly 종료하면 parent는 그 exit status를 반환한다. SIGINT/SIGTERM에는 child terminate, bounded
+wait, 필요 시 kill을 수행해 orphan를 남기지 않고 signal/exit를 전파한다. API availability는 child
+`/readyz`가 검사하되 artifact/process validation을 늦추는 기동 의존성으로 바꾸지 않는다.
+
+이 slice의 Contract acceptance는 source/installed artifact discovery, fixed environment, literal
+bind, parent/child lifecycle, caller-upstream override 거부와 fixture/Owner/raw/draft/credential/A2A
+import·route·BFF allowlist 0을 검증한다. Central browser OIDC, extra Registry User onboarding,
+Question lifecycle과 legacy route는 후속 RB3.2b slice다. 구현과 review가 끝나도 support status는
+`product_target_not_available`로 유지한다.
+
+완료 evidence는 Fast 486 Python + frontend 37, Contract 163, scoped Pyright/Ruff와 prebuilt
+wheel을 새 environment에 설치한 뒤 bundled artifact validation 및 Node `/healthz` smoke다.
+Full Gate는 RB3.8에서 한 번 실행한다.
+
+### RB3.2b.2 Central browser OIDC/session 계약
+
+RB3.2b.2는 ADR 0077의 Central API bounded context를 구현한다. Central Next는 전용 handler의
+`POST /api/auth/login/start`, `GET /api/auth/callback`, `GET /api/auth/session`, `POST /api/auth/logout`
+네 BFF route만 제공한다. 이는 fixed Central API의
+`POST /v1/browser-auth/login/start`, `GET /v1/browser-auth/callback`, `GET /v1/browser-auth/session`,
+`POST /v1/browser-auth/logout`에 각각 일대일 대응한다. generic `/api/[...path]`, Developer API,
+Owner API 또는 OIDC issuer/token endpoint는 browser auth route가 아니다.
+
+strict Central profile은 기존 OIDC verifier field와 `central_public_origin`에 더해
+`browser_oidc_authorization_url`, `browser_oidc_token_url`, `browser_oidc_client_id`, exact string
+`browser_oidc_scope`를 요구한다. browser redirect URI는 caller/profile override 없이 exact
+`central_public_origin + "/api/auth/callback"`으로 유도한다. authorization URL과 token URL은 HTTPS,
+client는 public PKCE client이고 client-secret field는 없다.
+
+구현 상태(2026-07-31): B store foundation과 C code flow·atomic establish까지 완료했다. Central schema marker v4,
+digest-only transaction/session, bounded process-memory verifier vault, fixed redirect와 strict
+browser OIDC profile four field가 들어갔다. session establishment store는 shared SQLite
+connection을 `RLock`으로 직렬화하고 `BEGIN IMMEDIATE` 안에서 transaction/Registry readback,
+마지막 current-Authority callback, session insert와 transaction consume을 한 commit으로 수행한다.
+vault after-reserve fault는 raw verifier를 즉시 제거·zeroize한다. affected 82, Contract 172,
+scoped Pyright/Ruff 및 독립 review를 통과했다. C는 별 public-client exchange와
+`FileReloadingBrowserSessionAuthority`, exact start/callback API를 조립한다. token POST redirect
+follow 0·bounded response·redacted status 분류, start streaming body bound, standard IdP error의
+one-way transaction cancel, durable TTL-cookie 정합, Uvicorn access log off와 composed
+start→callback→session 1건을 검증했다(affected 16, Contract 175, scoped Pyright/Ruff).
+D는 OIDC exchange와 독립된 browser-session capability로 current/logout을 조립했다. current는
+same-DB Registry binding과 매 요청 policy reload `session.read`를 확인하고, logout은 exact
+Origin/Fetch Metadata와 session-bound CSRF를 검증한 뒤 policy·Registry·IdP 상태와 무관하게
+same-session local cleanup만 수행한다. Registry/policy drift·corruption, concurrent end,
+clock rollback과 다른 session 보존을 포함해 affected 78, Contract 177, scoped Pyright/Ruff 및
+독립 review를 통과했다. E는 Next dedicated auth handler 네 개, native login form/session/logout
+UI, fixed loopback·route별 header allowlist·manual redirect·multiple Set-Cookie·bounded response를
+구현했다. compiled standalone↔mock Central 관통과 legacy/demo/Owner/raw artifact negative scan을
+포함해 Fast 486 Python + frontend 44, Contract 179 및 독립 review를 통과했다. 이로써
+RB3.2b.2 A–E는 완료했지만 actual IdP/TLS browser Manual Acceptance와 support 승격·Full Gate는
+RB3.7/8에 남아 있다.
+
+`BrowserOidcTransaction`과 `BrowserSession` durable schema/repository/application DTO는
+`transaction_digest`와 `session_digest`만 identifier로 가진다. `BrowserSessionPrincipal`도 digest
+principal ID와 existing Registry User binding으로만 current identity를 전달한다. raw handle은 protected
+cookie wire에만, code/token/claim은 OIDC exchange adapter process memory에만, PKCE verifier는
+`BrowserPkceVerifierVault` process memory에만 있고 DB, port result,
+audit/outbox, receipt, JSON, log에 없다. cookie는 `__Host-aon-central-oidc-tx`,
+`__Host-aon-central-session`, `__Host-aon-central-csrf`로 Secure/Path=/no-Domain이며 session/transaction은
+HttpOnly+Lax, CSRF cookie는 Strict다.
+
+RB3.2b.2는 encrypted/stateless cookie codec, data-directory key file, caller environment secret 또는
+key generation/rotation을 만들지 않는다. tx/session cookie에는 각각 256-bit random opaque handle만
+있고 server는 digest lookup만 한다. raw PKCE verifier는 transaction digest로 index한
+`BrowserPkceVerifierVault`의 API-process-local memory에만 둔다. vault는 1,024 pending entry와
+transaction TTL 이하의 lifetime으로 bound하며 start capacity failure는 durable transaction write 전
+`503`으로 닫는다. API restart/eviction/fault 뒤 callback은 verifier를 복구하지 않고 session/Registry/
+audit/outbox write 0, tx cookie expiry, `503 browser_session_unavailable`으로 수렴한다. unconsumed
+transaction row는 TTL expiry만 기다리며 browser는 새 login을 시작한다. encrypted cookie/key lifecycle과
+multi-instance handoff는 P1이고 `aon-central migrate|doctor|api serve|web serve`가 key를 생성하거나
+fallback하지 않는다.
+
+callback은 transaction state/nonce/expiry/one-time consumption과 issuer/audience/signature/expiry/
+email_verified OIDC proof를 검증한 뒤 existing Registry User만 resolve한다. first `session.establish`
+Authority check보다 앞선 session write는 없고, Central transaction 안에서 Registry binding,
+transaction state와 Authority epoch/action을 read-back하여 mutation 직전에 다시 authorize한다.
+`session.read`는 every request current Registry binding과 Authority를 확인한다. `session.end`는
+Origin/Fetch Metadata/session-CSRF을 요구하지만 current policy revoke/unavailable에도 자기 session
+삭제와 cookie expiry만 수렴시키는 monotonic cleanup이다. remote global revoke/IdP logout은 범위 밖이다.
+
+deterministic Contract는 profile/redirect, PKCE state/nonce/replay/expiry/API restart-vault loss,
+no-JIT Registry denial,
+establish pre-write/precommit revoke, per-read Authority, CSRF/origin/Fetch Metadata, logout cleanup,
+four-route BFF/cookie relay, localStorage/raw-secret non-egress를 다룬다. real IdP+TLS browser redirect와
+`__Host-` cookie는 RB3.7/8 Manual Acceptance다. 이 slice는 support status와 Full Gate를 승격하지 않는다.
+
+### RB3.2b.3 session-derived Registry admission 계약
+
+ADR 0078이 RB3.2b.3의 설계를 동결한다. Central Next는 auth BFF와 분리된 exact 다섯 handler
+`GET /api/onboarding/status`, `GET|POST /api/admin/users`, `GET|POST /api/admin/agent-cards`만
+제공하고, fixed private Central API의 동일 method/path `/onboarding/status`, `/admin/users`,
+`/admin/agent-cards`로만 relay한다. generic `/api/[...path]` 또는 Owner/raw/draft/A2A fallback은
+없다. `GET`은 session cookie-only이고 `status`는 current `session.read`, users는 current
+`user.register`, cards는 current `card.register` Authority를 매 요청 재검증한다. `POST`는 exact
+Origin, same-origin/cors/empty Fetch Metadata, session cookie, readable CSRF cookie와
+`X-AON-CSRF`, bounded `Idempotency-Key`, JSON만 허용한다. actor/org/role/permission/session은
+body/header/query의 입력이 아니며 unknown field/header/path는 fail-close한다.
+
+`POST /admin/users` input은 exact object `{expected_revision, user_id, email, manager}`이고
+`manager`만 null을 허용한다. `POST /admin/agent-cards` input은 exact object
+`{expected_revision, agent_id, owner, team, summary, domains, maintainer, can_answer, cannot_answer,
+approval_when, collaborate_when, knowledge_sources, trust_labels}`이며 `maintainer`만 null을
+허용하고 `last_reviewed_at`은 Central clock이 정한다. list/status/result는 raw cookie/session,
+OIDC claim, policy/evidence digest, receipt/audit/outbox internals 또는 Owner raw/OKF 본문을
+포함하지 않는 safe projection만 반환한다. 정상 result는 current shared Registry revision과
+`replayed`만 함께 돌려준다. HTTP error body는 `{ "error": code }`이고 `401
+browser_session_unauthenticated`, `403 browser_session_forbidden|browser_csrf_forbidden|
+registry_registration_forbidden`, `409 registry_revision_conflict|registry_registration_conflict`,
+`422 invalid_registration_request`, `503 registry_registration_unavailable`로 원인을 안전하게
+분류한다.
+
+`GET /onboarding/status`의 exact top-level key는 `revision`, `card_capability`, `steps`, `cards`,
+`card_owner_installation`이다. `users`는 포함하지 않으며 전체 User 목록은 current `user.register`를
+요구하는 `GET /admin/users`에서만 읽는다. `steps`는 아래 순서와 shape를 바꾸지 않는다.
+
+```json
+[
+  {"kind":"user","label":"Registry User","state":"complete"},
+  {"kind":"card","label":"Agent Card","state":"complete|current|locked"},
+  {"kind":"card_owner_installation","label":"Card Owner Installation","state":"current|locked"}
+]
+```
+
+유효한 browser session 자체가 existing Registry User binding이므로 `user`는 항상 `complete`다.
+`card`는 current User가 소유한 Card가 있으면 `complete`, 없고 capability가 `available`이면
+`current`, capability가 `unavailable`이면 `locked`다. 세 번째 step은 소유 Card가 있을 때만
+`current`, 아니면 `locked`이며 RB3.2b.3은 pairing/설치를 증명하지 않으므로 `complete`를 만들지
+않는다. `cards`는 current User가 **owner**인 Card의 exact secret-free
+`{agent_id, owner, team, summary}` 배열만 포함하고 maintainer-only 또는 다른 User의 Card는 넣지
+않는다. `card_capability`는 `available|unavailable`, `card_owner_installation`은 exact
+`{"artifact":"agent-org-owner","href":"/onboarding#card-owner-installation"}`이다. `href`는
+Central Next 안의 고정 relative 안내 anchor이고 Owner endpoint, profile, pairing token 또는
+credential URL이 아니다.
+
+Central marker는 v4에서 v5로 승격하되 marker-last를 유지한다. 먼저 existing Registry User
+canonical schema와 Agent Card canonical four table capability를 모두 migrate/read-back하고 그 뒤
+marker를 쓴다. User와 Card는 하나의 `production_registry_revisions` sequence를 공유하므로 User
+register가 N→N+1이면 뒤이은 Card register는 N+1→N+2만 허용한다. receipt replay/CAS/UoW/audit/outbox
+는 각 existing store를 재사용한다. composition의 immutable global read-only registration authorizer는
+계속 read/session/OIDC resolution에만 쓰고, request-scoped
+`Session-Derived Registry Registration Application`만 transaction-current authorizer를 가진 scoped
+store를 만든다. 그 authorizer는 `BEGIN IMMEDIATE` transaction 안에서 session digest의 active/expiry,
+existing Registry binding/fingerprint/revision, reload한 current Authority `user.register` 또는
+`card.register`를 `current()`과 `verify_precommit()` 양쪽에서 re-read한다. drift·revoke·unavailable은
+write 0으로 닫는다.
+
+RB3.2b.3-B는 이를 Central marker v5와 함께 구현했다. Agent Card four-table migration은 canonical
+catalog가 이미 정확할 때만 restart-safe이며 partial/legacy/tampered catalog를 repair하지 않는다.
+scoped factory는 raw cookie를 받지 않고 validated session digest만 닫아 둔 User/Card stores를 만들며,
+Authority resource는 User 등록의 `(user,new_user_id)` 또는 Card 등록의
+`(agent_card,agent_id,owner_subject_id)`다. immutable receipt/audit/outbox evidence는 raw session
+material을 포함하지 않고, Card replay는 original companion 정합 및 current/precommit reauthorization을
+모두 실행하므로 reload된 허용 policy가 과거 receipt digest와 달라도 replay를 막지 않는다. HTTP route,
+DTO와 BFF는 이 seam 위의 C–E 범위다.
+
+RB3.2b.3-C는 private Central에 `GET|POST /admin/users`, `GET /onboarding/status`만 추가했다.
+request envelope은 query/self-claim/Origin/Fetch/session/CSRF/idempotency/body 순으로 fail-close하며,
+POST는 active session과 current `user.register`를 body 전에 확인하고 UoW 안에서 다시 current/precommit
+검증한다. `GET /admin/users`는 same SQLite read transaction 안에서 current `user.register`와 safe
+projection을 읽고, status는 `session.read`와 같은 방식으로 safe Card Owner Installation handoff만
+반환한다. 아직 Card route를 mount하지 않았으므로 status의 `card_capability`는 `unavailable`, `cards`는
+빈 배열, card/installation step은 `locked`다. User receipt replay도 current/precommit authorization을
+생략하지 않아 policy/session drift는 write 0으로 닫는다.
+
+Session row missing, ended 또는 expiry는 preflight와 transaction `current()`/`verify_precommit()` 모두에서
+typed unauthenticated로 보존되어 `401 browser_session_unauthenticated`가 된다. Registry binding/Authority
+deny는 `403`, policy/schema/dependency failure는 `503`으로 분리된다. 이 typed result는 Card authorizer
+foundation에도 그대로 전파된다. POST envelope은 self-claim/Origin/Fetch까지만 먼저 확인하고 Content-Type,
+Content-Length, streamed 64KiB body와 exact JSON DTO는 active session→CSRF→idempotency→current
+`user.register` 뒤 검사하므로 세션 없는 malformed body는 401, invalid Origin은 403이다.
+
+RB3.2b.3-D는 private Central에 `GET|POST /admin/agent-cards`를 추가했다. GET은 cookie-only
+envelope 뒤 same SQLite transaction에서 current `card.register` Authority와 canonical Card catalog를
+검증하고 full safe Agent Card array만 반환한다. POST는 C의 fail-close precedence를 그대로 따르며
+session-derived principal/org와 exact `(agent_card, agent_id, owner_subject_id=owner)` ResourceRef만
+사용한다. owner self는 별 action이 아니고, delegation도 body role이 아니라 current `card.register`
+grant만이 근거다. Central clock이 `last_reviewed_at`을 설정하며 invalid DTO/admission/unknown owner or
+maintainer는 `422 invalid_registration_request`, duplicate/key/semantic conflict는 409, policy/schema/
+session capability failure는 503으로 분리한다. `GET /onboarding/status`는 `session.read`와 canonical
+Card capability를 same transaction에서 검증해 `available`, current User가 owner인 exact Card summary와
+User→Card→Card Owner Installation states를 반환한다; 다른 owner, maintainer-only Card, full Card와
+knowledge body는 반환하지 않는다.
+
+User와 Card의 replay 의미는 하나다. 같은 org·session-derived actor·`Idempotency-Key`와 canonical
+command digest가 exact match할 때만 original safe result와 `replayed=true`를 반환하며 새 revision,
+receipt, audit, outbox를 만들지 않는다. replay도 새 command와 똑같이 active session, Registry binding,
+current action Authority를 transaction 안에서 재검증한다. 다른 digest/key reuse는 conflict, revoked/
+unavailable session·Authority는 replay 여부와 관계없이 deny/unavailable이다. 따라서 stale
+`expected_revision`은 semantic replay를 막는 우회 근거가 아니고, 새 command에는 shared revision CAS가
+계속 적용된다.
+
+`card.register`는 static central action이다. 현재 policy가 이를 허용한 actor는 existing Registry
+User를 Card Owner로 지정할 수 있고 actor=self도 같은 규칙이다. manager 관계·client self-claim은
+delegation 근거가 아니며, transfer/revoke/scorecard는 RB3.2b.6이다. `/onboarding`은 current
+session의 User→Card→Card Owner Installation handoff만 투영하고 knowledge upload/OKF는 Owner-local
+boundary에 남긴다. `/admin`은 ongoing register-only User/Card list/form이다. real IdP/TLS,
+support 승격과 Full Gate는 이 slice 밖이다.
+
+RB3.2b.3-E는 auth BFF와 별도인 Next exact admission handler 다섯 개를 구현했다. Browser
+`GET /api/onboarding/status`, `GET|POST /api/admin/users`, `GET|POST /api/admin/agent-cards`는
+고정 `http://127.0.0.1:8010`의 동일 private path에만 manual redirect/no-store로 relay한다.
+generic BFF는 admission path를 계속 거부한다. GET upstream에는 Cookie만, POST upstream에는
+Cookie·exact Origin/Fetch/CSRF·Idempotency-Key·Content-Type만 전달한다. caller Host는 fixed
+upstream을 바꾸지 않으며 Node가 만드는 transport header도 upstream으로 전달하지 않는다.
+Next 14가 route handler 전에 `x-forwarded-*`를 자동 합성하므로 standalone server entrypoint가
+raw HTTP headers를 먼저 검사한다. caller가 보낸 `forwarded`, 모든 `x-forwarded-*` 또는 internal
+provenance marker는 제거하고 caller-claimed marker를 붙여 BFF가 backend reach 0으로 닫는다. clean
+marker 뒤 Next가 합성한 transport fact만 BFF가 허용한다. 값이 URL·Host·loopback과 exact match여도
+caller provenance를 대신하지 않으며, unknown 일반 browser header는 upstream allowlist 밖에 남되
+그 자체로 reject하지 않는다. standalone manifest와 runtime validation은 mutable `.next/cache/**`를
+release file에서 제외하므로 image/cache write 뒤 restart preflight가 artifact tamper로 닫히지 않는다.
+request 64KiB/response 1MiB bound와 safe 502 body를 적용했다. client는 readable CSRF cookie를
+하나의 bounded opaque value로 strict parse하고, duplicate/malformed/decode failure 및 crypto
+request-key 부재에서 fetch 전 fail-close한다. `/onboarding`은 실제 guided surface이고 `/admin`은
+동일 component/API client의 independent register-only surface다. Owner raw/OKF body, pairing
+credential, local identity/demo/passwordless는 이 bundle에 없다. compiled standalone↔mock Central
+five-route integration과 route/query/header/method negative backend-reach-0를 검증했다.
+
+### RB3.2b.4 Central browser Question lifecycle 계약
+
+ADR 0079가 다음 구현의 contract를 동결한다. Central Next는 generic `/api/[...path]` 또는 legacy
+`/api/ask*`를 `/ask`의 product path로 쓰지 않고 dedicated handler의 exact
+`POST /api/questions`, `GET /api/questions/{request_id}/stream`, `GET /api/questions/{request_id}`,
+`POST /api/questions/{request_id}/feedback`의 exact 네 browser method/path만 제공한다. 각각 fixed private Central
+`POST /v1/questions`, `GET /v1/questions/{request_id}/stream`, `GET /v1/questions/{request_id}`,
+`POST /v1/questions/{request_id}/feedback`의 same-semantic upstream 하나만 가진다.
+
+RB3.2b.4-D는 이 네 dedicated route를 구현했다. standalone raw-header provenance guard가 clean으로
+분류한 transport fact 외 caller `Forwarded`/`x-forwarded-*`/internal marker와 identity self-claim은
+upstream 도달 전에 닫고, BFF는 session cookie와 route별 browser proof만 fixed loopback Central로
+전달한다. write DTO는 exact key/UTF-8/lone-surrogate/64KiB를, finite Central response는 allowlisted
+status·safe DTO/1MiB를 재검증하며 Set-Cookie·임의 header/body를 relay하지 않는다. SSE 200만 raw
+ReadableStream으로 no-cache/no-transform 전달하고 browser abort/timeout은 safe unavailable로 닫는다.
+generic `[...path]`는 Question path를 절대 fallback하지 않는다. independent review 전까지 support
+status를 올리지 않는다.
+
+RB3.2b.4-E의 Central Next `/ask`는 session 확인 뒤 exact create response의 `request_id` 하나로
+EventSource를 열고, sealed pending/terminal event를 strict decoder로만 투영한다. `done`은 display
+payload가 아니라 같은 request ID의 canonical GET으로 다시 읽어 `AnsweredProjection`을 확정한다.
+native EventSource의 bounded `Last-Event-ID` reconnect는 유지하고 retryable interruption/transport
+fault는 GET으로 수렴하며, deny/mismatch는 fail-close한다. feedback은 Answered에만 표시하고 comment
+original whitespace를 보존한 4096 UTF-8 bytes client validation과 per-answer idempotency key를 쓴다.
+
+모든 route는 digest-only Browser Session Principal → existing Registry User/org binding → current
+`session.read`와 `question.create|read|feedback.create` Authority 순으로 확인한다. POST는 0078의 exact
+Origin/Fetch Metadata/CSRF/64KiB/idempotency/provenance fail-close를 그대로 적용한다. GET은
+body/query 없이 cookie만, stream은 bounded decimal `Last-Event-ID`와 `Accept: text/event-stream`만
+추가 허용한다. create와 feedback DTO, own-read hiding, error body/code, BFF response/header bounds는
+ADR 0079의 exact contract이고 owner/org/role/session self-claim, request Host upstream selection,
+anonymous feedback, raw/full source, Owner credential, A2A proxy/inbound는 0이다.
+
+Central marker v6 lifecycle component의 B1은 HTTP create의 current `session.read`/`question.create` 확인과
+`Received` create receipt commit만 수행하고 original Received receipt를 반환한다. 별 recovery coordinator가
+그 commit 뒤에만 Router를 시작한다. Non-actionable Conversational Intake는 그
+commit 뒤 exact single greeting만 revision 1 `Declined(non_actionable_conversation)`로 만들며
+routing/dispatch Authority·Router·ConflictCase·ManagerItem·Agent Runtime call 0이다. 업무 0-match는
+`Unowned`에서 멈추지 않고 **Received create와 별도인 Router disposition transaction**이 root
+User/Manager `ManagerItem`과 `AwaitingManager` durable assignment를 함께 만든다. B1 Routed는
+`ReadyToDispatch`까지만 만들며 WorkTicket은 ADR 0042의 별 ReadyToDispatch→AwaitingAnswer UoW에서만
+만든다. ConflictCase/Approval/Answer Finalization/feedback은 B2/B3에 남고, demo/fixture Owner Runtime
+answer와 실제 Card Owner submit은 RB3.5/RB3.7에 남긴다.
+
+B1의 `Unowned.escalated_to`는 Router 자기보고가 아니라 `BEGIN IMMEDIATE` 뒤 같은 SQLite UoW에서
+same-org Production Registry graph로 해석한 정확히 하나의 root User/last-resort Manager와 일치해야 한다.
+create receipt·ManagerItem은
+Question Request와 foreign-key 및 reverse binding을 매번 검증하고, owned SQLite catalog의 trigger set은
+empty exact set이다. 모든 `awaiting_manager` Request에는 same-org ManagerItem이 정확히 하나여야 하고 state
+`item_id`와 정확히 결박된다; 삭제·extra·cross-org·mismatch는 reopen/compose readiness에서 fail-close한다.
+public initial-transition UoW는 unlinked Manager/Conflict, 둘의 동시 출력, ticket 없는 AwaitingAnswer를
+거부한다. 재시작 시에도 Manager binding을 다시 검증한다. 다른 store instance가 initial
+disposition CAS에서 지면 current committed winner를 재조회해 수렴하며, orphan/row/tamper/resolver failure는
+Received를 고치지 않고 fail-close한다. B2-A는 valid v6 B1 snapshot을 migration input으로만 받아
+marker-last Central v7 catalog로 승격한다. v7의 Contested는 immutable candidate snapshot `ConflictCase`와
+`AwaitingConflict`를 same UoW로 만들고, frozen `ReadyToDispatch`는 pending WorkTicket/create receipt와
+`AwaitingAnswer`를 same UoW로 만든다. Owner delivery는 committed WorkTicket을 읽는 post-commit injected
+seam만 가진다. `ticket_id`는 재전달에도 변하지 않는 delivery identity이고, `BEGIN IMMEDIATE` claim은
+`pending|expired leased → leased(worker_id, lease_until, delivery_attempt)`를 atomic으로 바꾼 뒤에만 port를
+호출한다. 성공은 같은 claim의 CAS로 exact `delivery:{ticket_id}:{delivery_attempt}` acknowledgement receipt를
+`delivered`로 기록한다. timeout/exception/ack fault는 active lease를 남긴다. 따라서 lease 만료 전에는 call
+0이고, 만료 뒤 다른 worker/restart가 **같은** ticket을 중복 재전달할 수 있는 at-least-once 계약이며
+exactly-once를 주장하지 않는다. claim/ack와 ticket/request reverse binding, FK, owned-catalog/trigger set
+drift는 startup와 claim/ack 모두 fail-close한다.
+
+B2-B1은 v7 delivery catalog를 forward migration input으로 받아 marker-last Central v8에 typed
+`OwnerAnswerIngest` receipt·immutable candidate digest·safe ingest audit와 AnswerRecord 또는 open ApprovalItem
+aggregate를 더한다. Ingest는 browser/A2A HTTP payload가 아니라 ticket/request expected revision/attempt/route와
+delivery subject를 가진 internal command다. 한 `BEGIN IMMEDIATE` UoW는 current AwaitingAnswer/pending ticket,
+lease delivery subject, current Card owner/revision 및 `answer.ingest` Authority를 re-read한다. current policy가
+no-approval이면 ticket complete/lease release, receipt/audit, AnswerRecord, AnsweredRequest CAS를 atomic으로
+commit하고 canonical `AnsweredProjection(mode=full|backup, review_status=not_required)`은 committed record만
+읽는다. approval-required면 AnswerRecord 없이 동일 UoW에 complete/release, immutable candidate/policy/binding
+snapshot, open ApprovalItem, AwaitingApproval CAS를 쓴다. replay는 current reauthorization 뒤 frozen
+candidate/policy/binding/authority exact match만 write 0으로 반환하고 drift/tamper는 fail-close한다.
+
+B2-B2는 valid v8 Approval catalog만 migration input으로 받아 marker-last Central v12로 승격한다.
+v8→v12은 positional tuple append를 쓰지 않고 ApprovalItem의 명시 열 매핑으로 `created_at`을 보존하고
+revision=1만 추가한다. ApprovalItem은 `open|approved|rejected`와 monotonic revision을 가지며, resolved
+item마다 one-to-one immutable receipt와 receipt-ID foreign-key audit가 반드시 하나씩 존재한다. receipt/audit는
+actor의 session-bound principal, exact `approval.decide` ResourceRef/Authority policy version·digest와 canonical
+`authority_proof_digest`, 두 expected
+revision, decision payload digest와 edit 원문, frozen candidate/policy/binding, resolved item과 terminal Request
+revision, exact record ID를 함께 보존한다. 이 evidence는 resolved item과 terminal AnswerRecord 또는
+`approval_rejected` Declined/audit를 양방향 검증하므로 FK만 유효한 바꿔치기도 reopen과 replay에서 fail-close한다.
+`authority_proof_digest`는 identity session, actor/org, action, exact request/item ResourceRef, Authority policy
+version/digest를 lowercase SHA-256으로 봉인하고 receipt/audit에 동일하게 보존한다. historical receipt의 session/policy
+proof는 과거 처분 무결성용이며 replay의 로그인 세션과 같을 필요는 없다.
+대신 같은 actor Registry User가 새 current Browser Session으로 exact resource의 현재 `approval.decide`를
+다시 얻고 precommit에도 유지해야 한다. Browser Session·Registry User·policy는 모두 같은 disposition UoW
+connection에서 canonical catalog/fingerprint/currentness 검증과 policy file reload를 거친다.
+
+SSE의 sealed event는 `accepted|token|pending|done|declined|failed|interrupted`이며 every payload의
+request ID는 path와 exact match한다. every emission/reconnect는 current Browser Session과
+`question.read` Authority를 재검증하고 revoke/deny는 retryable=false, unavailable은 retryable=true의
+body-free `interrupted` 후 close한다. disconnect는 execution을 취소하지 않고 stream-local decimal
+cursor로 reconnect한 뒤 durable projection을 재구성한다; token은 volatile이라 replay하지 않고 terminal/
+pending은 canonical GET으로 수렴한다. `Received`, `ReadyToDispatch`, `AwaitingAnswer`,
+`AwaitingApproval`, `AwaitingConflict`, 세 `AwaitingManager.public_kind`, terminal 세 상태의 exact
+`type/state/kind/retryable` mapping 및 GET=`done` canonical `AnsweredProjection`은 ADR 0079 표를
+사용한다. feedback은 `(org, requester, feedback.create, path request_id, Idempotency-Key, canonical payload
+digest)` identity의 requester-bound append-only `QuestionFeedbackEvidence`/immutable `FeedbackRecord`와
+idempotent receipt다. current same-org session/`session.read`/`feedback.create`, own `AnsweredRequest`,
+finalized AnswerRecord path binding을 fresh/replay 모두 재검증하며, identical replay는 write 0, same key의
+other path/payload는 conflict다. `comment`는 `""` 허용·최대 4096 UTF-8 bytes의 JSON string이고 digest는
+leading/trailing을 보존한 original UTF-8 bytes를 쓴다; trim/normalization/새 문자 규칙은 없다.
+Central v12→v13은 feedback evidence table·immutable update/delete trigger를 marker-last로 추가하며 기존
+v12 lifecycle evidence를 보존한다. Central v13→v14은 audit에 org binding을 명시적으로 보강한다.
+따라서 B3 hardening 뒤 current Central installation marker는 v14이며 component migration failure는 marker를
+v13에 남긴 채 audit/catalog을 rollback한다.
+FeedbackRecord·receipt·safe audit은 one transaction으로 append할 뿐
+Request, AnswerRecord, Card, Authority나 routing score를 바꾸지 않고 GET/SSE `AnsweredProjection`에 feedback을
+넣지 않는다. pending/Declined/Failed/foreign/hidden record, FK/catalog tamper와 dependency failure는
+body-free deny/unavailable이며 BFF/UI와 cross-install answer는 후속 slice다.
+
+#### RB3.2b.4-B2 sealed disposition·finalization shape
+
+ADR 0079 §5a가 B2의 composition contract다. `Received` recovery의 `Routed`는 current central
+route Authority·canonical Card/Registry binding precommit 재검증 뒤 `ReadyToDispatch`만, `Contested`는
+request-unique immutable `ConflictCase`와 `AwaitingConflict`를 같은 transaction으로 만든다.
+`Unowned`는 같은 transaction의 RootManagerResolver가 same-org single root User와 current
+`manager.act` grant를 증명하고 Router `escalated_to`와 exact match할 때만 ManagerItem과 Request를
+atomic으로 만든다. WorkTicket은 이미 authorized frozen route를 소비하는 별
+`ReadyToDispatch → AwaitingAnswer` UoW이며 external send를 같은 transaction에 넣지 않는다.
+
+pending ticket의 answer는 browser/anonymous DTO가 아닌 typed `OwnerAnswerIngest`로만 Central에 들어와
+ticket·request revision/state/route/attempt·durable owner fence·binding proof를 재검증한다. current
+ApprovalPolicy가 required면 one UoW가 candidate digest/policy decision·digest/binding version의 ingest
+receipt, pending ticket completion, lease release, immutable candidate draft/evidence, ApprovalItem 및
+`AwaitingAnswer → AwaitingApproval` CAS를 함께 commit한다. reject는 이미 terminal ticket을 전제로
+ApprovalItem과 Request만 `approval_rejected` Declined로 닫는다. not-required면 FinalizationCandidate와
+atomic AnswerRecord/terminal Request/audit/SessionTurn/outbox로 간다. replay는 current delivery
+session/Authority·Request·Owner/Card/WorkTicket binding을 다시 확인하고 frozen candidate/policy/binding
+exact match일 때만 immutable internal result로 수렴한다; policy drift는 typed conflict, binding/Authority
+drift는 fail-close이며 새 state를 만들지 않는다. requester terminal projection은 별 own-read
+reauthorization만 사용한다. raw delivery/A2A failure는 Failed로 위장하지 않는다. `AnsweredProjection`
+mode=`full|backup`, review_status=`not_required|approved`은 GET과 SSE `done`에 동일하다. Owner
+delivery/A2A actual transport는 commit 뒤 injected seam이며 actual paired Owner/A2A adapter는 RB3.3–5에
+남는다.
+
+`AwaitingApproval` 처분 writer는 B2 `ApprovalDispositionApplication` 하나다. typed command는 current
+Registry User session/identity, same org/request, current `approval.decide`, frozen candidate/policy/
+binding version, expected ApprovalItem+QuestionRequest revision을 첫 처분 UoW의 open pre-state CAS로
+one transaction에서 재검증한다. append-only disposition receipt는 request/item/actor/revisions/decision
+payload digest/idempotency key에 결박한다. approve/edit는 ApprovalItem resolve+receipt+Answer
+Finalization(AnswerRecord/Answered/audit), reject는 resolve+receipt+`approval_rejected` Declined+audit을
+atomic으로 쓴다. ticket은 earlier ingest에서 이미 terminal이며 여기서 변경 0이다. replay는 먼저 receipt를
+찾고 current reauth 뒤 receipt-bound resolved ApprovalItem revision/state와 exact terminal successor
+(Request/AnswerRecord 또는 Declined/audit IDs·digests·decision)를 read해 immutable prior result만 write 0으로
+돌려준다. 첫 성공 뒤 terminal revision/state는 정상 replay evidence이며, receipt와 다른 successor/decision/
+candidate/policy/binding/actor 또는 receipt-bound terminal row missing/tamper만 conflict다; deny/unavailable은
+fail-close write 0이다. RB3.2b.5는 이 writer를 우회하지 않는 UI/API만 추가한다.
+
+### RB3.2b.5 Central browser Inbox metadata/control 계약
+
+ADR 0080이 `/inbox`를 동결한다. Central Next와 private Central API는 generic fallback 없이 exact
+`/api|/v1/inbox/{conflicts,backup-reviews,reevaluations,approvals}` list/detail 및 corresponding
+`concurrences|dispositions|reassignments` POST route만 둔다. GET은 cookie-only, POST는 RB3.2b.4와 같은
+Origin/Fetch Metadata/CSRF/Idempotency-Key/provenance guard와 finite DTO/size/error re-projection을 쓴다.
+same-org hidden/denied/superseded resource는 `404 not_found_or_denied`로 숨기며 caller actor/card/owner/org
+self-claim, upstream selection, raw/full evidence relay는 0이다.
+
+E1 transport 구현은 13개 private `/v1/inbox/**` route와 동일한 13개 dedicated Next
+`/api/inbox/**` route를 배선한다. private API는 opaque Browser Session에서 principal만 도출하고,
+기존 Conflict/Approval/Review 애플리케이션이 transaction 안에서 `session.read`, named action
+Authority와 current Registry/Card binding을 재검증하도록 한다. Next는 fixed loopback 외 upstream을
+선택할 수 없고 exact request 64KiB/response 1MiB, UTF-8/lone-surrogate, safe success/error
+projection을 적용한다. 공개 `next-standalone-clean` 문자열만으로 forwarding provenance를
+신뢰하지 않으며, pre-Next raw-header wrapper가 caller forwarding/marker/proof를 제거·분류한 뒤
+추가하는 process-secret companion proof가 일치할 때만 Next synthesized transport header를
+허용한다. generic BFF는 `/inbox`를 계속 거부한다. UI/접근성/legacy action parity는
+E2이며 E1은 E parent 또는 raw evidence completion을 뜻하지 않는다.
+
+E2 UI 구현은 Central Session exact projection이 확인된 뒤 네 목록을 병렬로 읽고, 선택된 항목의
+detail만 lazy load한다. tab/session/detail 전환은 AbortController와 monotonic epoch로 stale response를
+버린다. action form은 각 payload 동안 stable idempotency key를 재사용하고 중복 submit을 막으며
+DTO의 Case/Request/round 또는 Item/Request revision만 expected 값으로 보낸다. 401은 session state를
+중지하고, 404는 stale detail을 숨긴 뒤 목록을 다시 읽으며, 409/503은 form local state를 유지한 채
+선택 detail과 네 목록을 canonical GET으로 재조회한다. UI/client decoder는 exact safe projection만
+받고 actor/org/owner self-claim, generic route, raw/full evidence link/body를 만들지 않는다.
+독립 review와 compiled standalone 실제 브라우저 확인 전에는 E2 `[~]`, E parent `[ ]`다.
+
+ConflictCase는 v15 request-unique `open|resolved|escalated` aggregate와 immutable candidate snapshot,
+round/revision, participant Concurrence receipt/audit로 durable해진다. one-vote-per-distinct-Card-Owner sealed
+reducer는 expected Case+Request revision, current Card/Owner/Authority binding을 re-read해 partial=
+`still_open`, unanimous target=`agreed→ReadyToDispatch` 또는 valid route rejection=`route_rejected→Declined`,
+full divergent=`deadlocked→AwaitingManager`만 만든다. deadlock은 current Registry graph nearest common Manager
+(없으면 canonical root User)의 current `manager.act` proof, ManagerItem/Case/Request/receipt reverse binding을
+같은 UoW에 써 orphan을 금지한다. WorkTicket과 direct Owner/API/Runtime call은 0이고 ADR 0065 escalated Case는 불변이다.
+
+B 구현은 v14 `central_question_conflict_cases`를 삭제·재해석하지 않고 request/case unique FK로 결박한
+v15 companion aggregate를 explicit-column marker-last migration한다. candidate snapshot에는 current
+Card revision/digest, Owner User, concept/coverage digest만 저장하고 candidate별
+`ConflictEvidenceGrant`는 grant/card revision/concept/expiry/single-use/status metadata만 둔다. concurrence,
+receipt, audit, deadlock Manager link는 immutable trigger와 정·역방향 reconciliation으로 검증한다.
+`ConflictInboxApplication`과 `ConflictConcurrenceApplication`은 HTTP와 분리된 typed seam이며 production
+composition은 same-connection Browser Session/Registry fingerprint, production Card row, reload된 Authority
+policy와 Registry Manager graph를 읽는 `FileReloadingConflictAuthority`를 배선한다. Central installation
+marker는 모든 v15 component read-back 뒤 15로 기록했다. B operational evidence는 19종 source manifest
+writer/catalog matrix와 focused gate를 통과했으며 independent review와 support 승격은 별도 게이트다. v14 backfill은 각
+legacy 후보가 current canonical production Card의 exact org/Card/Owner/revision/digest로 해석될 때만
+snapshot을 만들며 missing/transfer/revoke/catalog drift에는 synthetic fallback 없이 transaction 전체를
+rollback한다. list/detail 역시 매 read에서 frozen 후보 전체의 같은 binding을 재검증해 old Owner에게
+stale row를 숨긴다. terminal concurrence의 마지막 precommit은 receipt/audit/deadlock link와 fault hook
+뒤 selected route Card+route Authority를 다시 확인하거나 nearest-common Manager/root와 `manager.act`를
+다시 풀어 최초 결과와 exact 일치해야 commit한다. deadlock catalog reconciliation은 link뿐 아니라 실제
+ManagerItem의 org/request/item/manager 및 `AwaitingManager(contested)` Request state까지 양방향으로 묶는다.
+Browser Session 부재·종료·만료·Registry fingerprint drift는 typed unauthenticated, policy/Registry/Card
+dependency failure는 unavailable, foreign/Authority denial은 hidden not-found다.
+
+Approval은 existing B2-B2 `ApprovalDispositionApplication`의 projection/adaptor뿐이다. approve/edit/reject는
+그 writer를 우회하지 않으며, reassign은 separate `approval.reassign` UoW가 current target approver Card/
+Owner binding과 sealed authorizer를 확인한 후 old supersede + immutable open successor +
+AwaitingApproval revision CAS + receipt/audit만 쓴다. WorkTicket과 terminal outcome은 재지정에서 변하지 않는다.
+Approval list/detail은 current open Item과 exact `AwaitingApproval(item_id)` Request를 한 read snapshot에서
+검증하고 Item DTO에 current `request_revision`을 반환한다. UI는 이를 disposition/reassign의
+`expected_request_revision`으로 그대로 쓰며 다른 projection에서 추론하지 않는다.
+
+C 구현의 v16 physical contract는 `central_question_approval_items`의 기존 payload와 disposition
+receipt/audit를 보존하면서 request/ticket 다세대 cardinality와 `superseded` 상태를 허용하고,
+`central_inbox_approval_assignments`에 round/predecessor/current designated approver User/Card/revision/
+digest/assigned/due를 둔다. initial assignment는 v16 marker가 있으면 Owner answer ingest와 같은
+transaction에 생성한다. 재지정은 old Item→reassignment receipt/audit→successor Item→Request의 정·역방향
+결박을 exact catalog/FK/immutable trigger/reconciliation로 검증하며 orphan·extra·tamper를 readiness
+failure로 닫는다. exact v15 base table이 lifecycle forward repair에서 다시 생긴 경우에만 payload를
+explicit-column copy해 v16으로 원자 복구하고, 그 외 catalog drift에는 fail-close한다.
+
+`ApprovalInboxApplication`의 list는 `(org,approval_inbox,subject)`에 `session.read+approval.list`,
+detail은 `(org,approval_item,item_id)`에 `session.read+approval.read`를 요구하고 현재 지정자 이외에는
+row 존재를 숨긴다. summary에는 Item/request ID와 같은 snapshot의 current AwaitingApproval
+`request_revision`, round/Item revision/assigned/due/state만, lazy detail에는
+question/candidate text와 digest/policy/binding/assigned User/Card만 추가하며 raw source/full draft는
+노출하지 않는다. list/detail 모두 current index Item↔exact `AwaitingApproval(item_id)` reverse binding을
+같은 read snapshot에서 검증하며 predecessor/candidate/별 Question GET으로 revision을 추론하지 않는다.
+두 read는 pre-open readiness 결과를 권한·무결성 증거로 쓰지 않는다. file을
+`mode=rw` query-only로 연 뒤 `BEGIN`한 같은 SQLite snapshot에서 parent lifecycle catalog와 모든
+reverse link, v16 Approval catalog/FK/lineage를 먼저 검증하고 그 snapshot에서만 Authority와 projection을
+수행한다. 따라서 readiness 뒤 read 전 catalog/lineage tamper도 DTO 없이 unavailable이다.
+`ApprovalDispositionInboxApplication`은 typed command를 기존 writer로만 변환하고,
+`InboxBoundApprovalDispositionAuthority`가 writer UoW 안에서 current assignment를 재확인한다.
+`ApprovalReassignmentApplication`은 fresh/replay/precommit마다 actor session, exact Item resource,
+current old assignment, target Card/Owner와 policy proof를 재검증한다. 동일 actor/no-op, changed key/payload,
+stale revision, revoked/transferred binding은 hidden/conflict/unavailable로 write 0이며 terminal disposition
+경쟁과 재지정 경쟁은 Item/Request CAS로 단 하나만 commit한다. production composition은
+`FileReloadingApprovalInboxAuthority`와 SQLite production Registry/Card/Browser Session만 사용하고
+legacy approval operation, demo/web/A2A/Owner Runtime은 호출하지 않는다. Central marker는 모든 v16
+component read-back 뒤 16으로 기록한다.
+
+v17 migration은 marker-last 전 valid v14–v16 catalog의 every eligible terminal `mode=backup` AnswerRecord와
+every bad FeedbackRecord를 canonical source receipt/audit/Request binding으로 scan해 deterministic source-kind/
+org/source-ID/receipt-digest outbox ID의 exact one pending intent로 backfill한다. missing/tampered/ambiguous
+source는 rollback/fail-close로 marker를 v16에 남기며 noneligible source는 intent 0이다. 이후 v17 BackupReview는 every terminal `mode=backup` AnswerRecord writer(no-approval ingest와 matching approval
+finalization)가 same transaction에 source-ID unique outbox intent를 append해 만들고, Reevaluation은 immutable
+bad FeedbackRecord writer가 같은 transaction에 feedback-ID unique intent를 append해 만든다. source replay는
+matching intent를 exact re-read하며 missing/different intent는 integrity unavailable이다. projector는
+claim/lease/expiry retry 뒤 aggregate+producer receipt+delivered marker를 atomic하게 쓰며 startup catalog
+reconciliation 뒤에만 재개한다. duplicate, orphan, tamper는 unavailable로 닫는다. backup correct는 immutable
+mode=full superseding correction record라 새 backup intent 0이고, reevaluation request_reanswer는 immutable
+follow-up만 append한다. feedback의 append-only B3 invariant와 AnswerRecord/Request/Authority/routing score
+무변경을 유지한다.
+
+구현된 D1 foundation은 `central_inbox_review.py`의 v17 component marker, immutable outbox/aggregate/
+projection receipt schema, source-bound append/verify 함수, lease projector와 startup recovery로 구성한다.
+`central_question_lifecycle.py`의 no-approval/approval finalization 및 bad-feedback writer만 실제 producer로
+연결하며 source와 intent는 동일 SQLite UoW에서 commit된다. `central_composition.py`는 모든 component
+read-back 뒤 central marker 17을 기록하고 startup에서 reconciliation 후 recovery를 drain한다.
+metadata list/detail은 같은 query-only transaction snapshot에서 lifecycle/approval/review catalog와
+current Card/Owner/Authority binding을 검증한다. D1에는 disposition, correction/reanswer command,
+BFF route와 UI를 포함하지 않는다.
+
+승인된 D1 v17 catalog는 불변 입력으로 유지한다. D2는 marker v18 forward migration으로 one-to-one
+BackupReview/Reevaluation head, immutable disposition receipt/audit, `AnswerCorrectionRecord`,
+`ReanswerRequested` companion을 추가한다. review head만 open revision 1→reviewed revision 2 CAS를 허용하며
+source aggregate는 v17 원형을 유지한다. approve/dismiss/acknowledge는 receipt/audit와 head만 쓰고,
+correct/request_reanswer는 각각 immutable correction/follow-up을 같은 UoW에 append한다. correct 뒤 canonical
+`AnsweredProjection`은 original AnswerRecord를 변경하지 않고 superseding full correction을 읽는다.
+모든 fresh/replay/precommit은 current Browser Session, Registry User, source Card Owner binding과
+`session.read`+exact decide Authority를 같은 transaction에서 재검증한다. v17→v18 fault는 exact v17로
+rollback하며 fresh install도 v17 producer shape를 commit한 뒤 v18까지 전진한다.
+
+B=v15 Conflict, C=v16 Approval projection/reassignment, D1=v17 BackupReview/Reevaluation deterministic backfill+
+producers, D2=v18 dispositions/correction/reanswer, E=BFF/UI/review의 finite slices이며 각각 deterministic Fast + Contract Gate만 실행한다. marker-last
+forward migration, backfill fault/retry, explicit-column copy, exact catalog/FK/reverse-link/receipt reconciliation은 ADR 0080을 따른다.
+Full Gate와 Owner-local raw/full evidence open/release completion 주장은 RB3.5 전까지 금지다.
+
+### RB3.2b.6 Central control-plane 계약
+
+ADR 0081이 current v18 catalog를 세 번의 marker-last migration으로 확장한다. B의 v18→v19는
+exact `AuditRecord`, typed `OperationalEvent`, source-bound outbox intent, per-org monotonic cursor와
+count retention을 추가한다. 모든 domain source writer는 transition+safe audit+event intent를 같은
+SQLite transaction에 쓰고 projector만 cursor를 할당한다. `(org,cursor|event_id|intent_id)` unique,
+lease/restart exact replay와 catalog/reverse reconciliation을 요구한다. 기본 retention은 org별 최근
+10,000건(`operational_event_retention_count` 1,000..1,000,000)이며 too-old/gap은 SSE 또는 HTTP
+typed `resync_required`로 canonical read 뒤 reconnect하게 한다. raw body/URI/credential/session/claim은
+audit/event 어디에도 저장하지 않는다.
+v19의 pre-v20 Authority provenance는 current strict YAML snapshot과 source grant의 digest가 일치할 때만
+`yaml:<digest>` revision, epoch 1, same digest로 canonicalize한다. org 기반 digest, epoch 0, 호출부 hardcode는
+금지하며 mismatch는 source UoW 전체 write 0이다. actual source receipt timestamp/Authority companion이 없는
+v18 history는 1970 또는 command-attempt로 합성하지 않고 migration unavailable이다.
+
+C의 v19→v20은 `central_policy_revision.py` foundation을 기준으로 strict validated immutable
+`PolicyRevision`과 `ActivePolicyPointer`를 추가한다. 현재 구현은 component marker 20, YAML
+bootstrap, Central composition marker-last cutover, approval-port 결박, monotonic epoch CAS와
+idempotent receipt와 SQLite approval-port를 제공하고 composition runtime Authority provider는 DB
+active revision만 읽는다. Central private policy GET/revision POST와 Next 전용 BFF도 연결했으며
+bootstrap companion receipt/audit/outbox와 approval precommit 재조회까지 durable UoW로 닫았다.
+configured YAML은 exclusive startup에서 epoch 1로 한 번 bootstrap하고 marker v20 뒤에는 import
+input일 뿐 poll/reload/fallback하지 않는다. activate와 rollback은
+`expected_epoch+expected_digest+Idempotency-Key`로 current pointer를 `BEGIN IMMEDIATE` CAS하고,
+import는 같은 route의 sealed third command로 document object만 받으며 rollback은 historical document를
+새 epoch revision으로 복제한다. 세 command body는
+`approval:{evidence_id,evidence_digest}`를 필수로 포함하고 별 approval header는 없다. evidence는
+canonical command digest와 pre-write active pointer fingerprint에 결박되며 write 직전/precommit에
+current unexpired/unrevoked/unconsumed same-org/actor/action/resource binding을 재검증한다.
+foundation receipt에는 safe evidence ID/digest만 남긴다. durable approval evidence는 SQLite port가
+검증하고 policy audit+outbox는 successful apply와 한 commit으로 기록한다. bootstrap companion과
+approval precommit 재조회도 동일한 marker-last/transaction 경계에서 검증한다.
+evidence/pointer drift는 foundation에서 write 0이므로 ABA와 file/DB split-brain을 막는다.
+runtime Authority read는 DB active pointer만 사용한다.
+
+D의 v20→v21은 `CardOwnerAssignment` generation을 backfill한다. transfer는 old active assignment를
+CAS revoke하고 generation+1 successor와 next Agent Card/Registry revision을 한 UoW에 쓰며, revoke는
+successor 없이 닫되 required owner 값을 마지막 recorded Owner로 유지한다. routing, Answer ingest,
+Inbox, authoring과 owner-scoped Central action은 current active generation/Card revision+digest가
+exact match할 때만 진행한다. transaction은 Owner API/Worker/WebSocket/credential service를 호출하지
+않으며 physical credential/pairing invalidation은 RB3.5다. graph는 safe User/Card와
+`owns|manages|maintains`만, organization scorecard는 당시 assignment generation에 귀속한 ADR 0035
+four axes만 stable Owner ID 순서로 투영하고 rank/grade를 만들지 않는다.
+현재 v21 foundation은 production Card/Registry catalog를 먼저 검증하고 assignment/graph/scorecard를
+읽지만, immutable registration receipt를 깨뜨리지 않는 same-UoW Card/Registry mutation port가
+주입되지 않으면 transfer/revoke를 503으로 fail-closed한다. 따라서 이 foundation만으로 v21
+production cutover나 Owner API success를 주장하지 않으며, mutation port와 source audit/outbox를
+연결하는 별도 D/E slice가 필요하다.
+
+E는 schema marker 없이 다음 exact nine BFF→fixed private `/v1` pairs만 배선한다:
+`GET /api/console/feed`, `GET /api/console/audit`,
+`GET /api/console/audit/{audit_id}`, `GET /api/console/org`,
+`GET /api/admin/policy`, `POST /api/admin/policy/revisions`,
+`POST /api/admin/agent-cards/{card_id}/owner-transfers`,
+`POST /api/admin/agent-cards/{card_id}/revocations`, `GET /api/admin/scorecard`.
+각 route는 session-derived Registry User와 DB current `session.read` 뒤
+`monitor.read`, `audit.read`, `org_graph.read`, `policy.read`, `policy.write`,
+`card.transfer_owner`, `card.revoke`, `scorecard.organization.read`의 exact ResourceRef를 확인한다.
+GET은 cookie-only와 exact query,
+POST는 Content-Type/Origin/Fetch/CSRF/Idempotency-Key, 64KiB strict DTO와 operational approval
+evidence를 요구한다. policy evidence ID/digest는 sealed JSON body의 `approval`에만 있고 header에는 없으며,
+expected revisions를 요구한다. errors는 401/403/body-free hidden 404/409/422/503 safe DTO로
+재투영하고 generic proxy·Owner API·raw evidence relay는 없다. B–E는 deterministic Fast+Contract만
+실행하며 Full Gate와 RB3.5 completion을 주장하지 않는다. Next `/console/org`는 graph의 safe
+metadata만 렌더링하고 401/403/404/503을 명시한다. `/admin`은 기존 admission console을 유지한
+채 PolicyRevision/scorecard를 read-only로 표시하며, ownership capability가 없는 동안 transfer/revoke
+호출을 만들지 않는다. 이 UI 연결은 same-UoW mutation seam이나 independent review 완료를 뜻하지 않는다.
+
+### RB3.2b 이후 parity 의존성
+
+Central browser OIDC/session → session-derived User/Card admission → durable Central Question
+lifecycle → Central inbox metadata/control → Central console/admin은 RB3.2b의 순서다. Central
+`/inbox`는 `ConflictEvidenceGrant` metadata까지만 독립적으로 완료할 수 있다. source Owner의
+raw/full evidence open/release는 Owner workspace와 paired binding을 필요로 하므로 RB3.5에서
+완료한다. 이 이전에는 Central raw relay route/BFF 또는 “evidence parity complete” 주장이 없다.
+
+Owner 쪽 순서는 Owner paired workspace/API foundation(RB3.3a) → versioned Central owner-scoped
+control API(RB3.3b) → Owner-local Next(RB3.4) → re-pair/transfer/revoke/publish receipt와 evidence
+release completion(RB3.5)으로 고정한다. 따라서 RB3.4가 요구하는 self-supervision API를 RB3.5에
+처음 만드는 의존성 역전은 허용하지 않는다. RB3.2b.4의 UI/API 상태 전이는 product root의 demo
+Owner Runtime으로 완료하지 않으며 실제 Owner answer submit은 RB3.5/RB3.7 cross-install evidence로
+닫는다.
+
+### Card Owner 목표 경계
+
+- 원문, 추출물, 전체 초안, 로컬 Git/index workspace
+- Owner Runtime과 provider/source credential
+- 선택 A2A Remote Runtime의 encrypted local profile, pinned HTTPS endpoint, Remote A2A Agent
+  Card digest와 OOB credential reference. A2A 호출은 owner→remote outbound only다.
+- 초안 검토·수정·거절 및 exact reviewed revision 공개 요청
+- 선택적 Owner Worker
+- Owner-local Next(`127.0.0.1:3001`)와 Owner API(loopback `127.0.0.1:8012`)는 별 process다.
+  Owner API는 local encrypted workspace/keychain profile만 조립하고 Central Browser의 BFF가
+  호출할 수 없다. self-supervision은 versioned Central owner-scoped control API를 통해
+  every-read/every-write reauthorization한다. 현재 composition은 explicit read-only
+  `OwnerPairingReadiness` seam이 active binding을 확인할 때만 paired/ready를 인정하며,
+  profile의 pairing reference나 metadata-only workspace만으로 ready를 반환하지 않는다.
+
+Remote A2A Agent Card는 remote 통신 설정용 untrusted metadata다. Central Authority, Registry
+Agent Card admission, Knowledge Index 또는 Answer source evidence로 승격하지 않는다. Central
+Server는 A2A inbound endpoint, discovery registry, automatic registration, federation proxy를
+제공하지 않는다.
+
+### Question User MCP 목표 경계
+
+- OIDC/PKCE pairing과 OS keychain credential
+- `ask_org`, `get_question`
+- 자기 Question Request의 생성·조회만 허용
+
+목표 경계의 상세 결정은
+[ADR 0067](adr/0067-three-install-product-boundaries-and-pairing.md)을 따릅니다.
+다만 ADR 0067의 artifact/entrypoint 이름은 목표 설계이며 현재 패키지 manifest가 아닙니다.
+이 해석은 [ADR 0072](adr/0072-runtime-baseline-and-support-levels.md)가 명시합니다.
+P0의 exact artifact command, direct protocol, raw evidence route와 forbidden flow는
+[ADR 0075](adr/0075-installable-three-artifact-and-feature-preserving-next-migration.md)를
+따릅니다.
+
+## 7. 현재 packaging gap
+
+현재 `pyproject.toml`에는 `aon-mcp`, `aon-central`, `aon-owner` console script가 있습니다.
+뒤의 두 명령은 RB3의 fail-closed 단계별 진입점입니다. Central은 RB3.1a의 durable
+`Received` 접수·본인 조회, RB3.2a bootstrap과 RB3.2b.1 Central Next packaging/process
+component까지 조립됐고 Owner는 health/readiness skeleton 단계입니다.
+
+이 단일 개발 wheel의 세 entrypoint는 **세 설치 artifact가 아니다**. RB3.8에서는 Central bundle/image,
+Owner bundle/image, Question User MCP bundle/image를 각각 clean install하고, shared frozen contract만
+공유하며 서로의 private module, frontend payload, route/tool, secret/data directory가 포함되지 않음을
+검사한다. 구현된 RB3.2b.1의 Central standalone wheel payload는 이 최종 artifact 분리 acceptance를
+충족하거나 support status를 승격하지 않는다.
+
+존재하지 않는 현재 기능:
+
+- 최초 bootstrap과 Received 이후 Registry·Authority·Question lifecycle을 모두 조립한
+  runnable Central API
+- pairing·workspace·authoring·worker를 조립한 runnable Owner API
+- 세 설치물의 배포 artifact/image
+- 실제 IdP/TLS/keychain을 이용한 end-to-end 환경
+
+따라서 앞으로 entrypoint capability를 추가할 때는 코드만 추가하지 않고
+[`support-contract.json`](support-contract.json), README, PRD, TRD, TASK와 acceptance
+evidence를 같은 변경에서 갱신해야 합니다.
+
+### P0 target file shape (구현 전 설계)
+
+```text
+src/agent_org_network/central_composition.py   # only durable Central dependencies
+src/agent_org_network/central_api.py           # Central API ASGI root
+src/agent_org_network/central_cli.py           # aon-central command root
+frontend/                                      # Central Next artifact (or explicit central rename)
+
+src/agent_org_network/owner_composition.py     # paired local workspace/keychain/runtime
+src/agent_org_network/owner_api.py             # loopback Owner API ASGI root
+src/agent_org_network/owner_cli.py             # aon-owner command root
+owner-frontend/                                # independent Owner-local Next artifact
+```
+
+`server.py`, `web.py`, `worker.py`, `mcp_server.py`, demo seed와 Fake port는 test fixture 또는
+Developer Reference에 남고 product root에 재사용하지 않는다. shared domain value object와
+port만 두 installation이 함께 import할 수 있다.
+
+## 8. 데이터·신뢰 경계
+
+### 신원
+
+- production 목표에서는 검증된 OIDC issuer/audience/signature/expiry/email_verified만
+  신원 증거입니다.
+- body/header/CLI의 org, User ID, role, permission 자기보고는 거부합니다.
+- 현재 demo의 익명/개발 세션은 production identity로 승격하지 않습니다.
+
+### Authority
+
+- 권한은 중앙 정책에서만 나옵니다. marker v20 이전 구현은 validated `routing_rules.yaml`/
+  production snapshot을, marker v20 이후 runtime은 DB active `PolicyRevision`만 사용합니다.
+  YAML은 이후 bootstrap/import input이며 reload/fallback source가 아닙니다.
+- current principal, org, action, resource와 policy epoch를 mutation 직전에 재검증합니다.
+- `Agent Card`의 문구를 권한으로 해석하지 않습니다.
+
+### 저장
+
+- InMemory는 결정론 단위 테스트와 demo용입니다.
+- named SQLite 구현은 단일 프로세스 durable component evidence가 될 수 있지만 그 자체로
+  PostgreSQL, multi-instance, backup/restore 또는 production readiness는 아닙니다.
+- receipt, audit, outbox, domain state는 서로 다른 의미를 가지며 exact link를 검증합니다.
+
+### 비밀과 본문
+
+- token, authorization code, verifier, provider credential은 로그·audit·outbox에 넣지 않습니다.
+- A2A OOB credential은 Card Owner의 secret store에만 두며 profile에는 opaque reference만
+  둔다. Remote A2A Agent Card·질문·중앙 control evidence·audit/outbox에 credential 원문을
+  넣지 않는다.
+- 원문과 전체 draft는 Card Owner가 소유합니다.
+- 중앙에는 필요한 digest/control evidence와 승인된 공개 산출물만 둡니다.
+
+### A2A Remote Runtime
+
+`a2a_remote_runtime.py`는 `AgentRuntime`을 구현하고, `a2a_sdk_adapter.py`는 공식
+`a2a-sdk==1.1.1`을 narrow `A2AInvocationPort` 뒤에만 둔다. SDK에는
+`follow_redirects=False`, `trust_env=False`, TLS verification과 response/time limit을
+강제한 `httpx.AsyncClient`를 사용한다. 현재 Contract Gate는 exact MockTransport만 감싸며
+SDK의 0.3 compatibility는 선택하지 않는다.
+
+후속 paired Owner profile loader는 active Owner Installation binding의 org, owner, Agent Card
+ID/revision/digest와 local profile을 exact 비교해야 한다. endpoint는 profile로 직접 고정하고,
+connect 직전 DNS 결과의
+loopback/private/link-local/multicast/unspecified/reserved 주소를 거부한다. Remote A2A Agent
+Card는 same-origin fixed card path에서 읽어 canonical digest와 selected `1.0`
+`protocolBinding="HTTP+JSON"` interface가
+profile과 정확히 맞을 때만 수용한다. redirect, card endpoint drift, protocol downgrade와
+unexpected authentication scheme은 fail-closed다.
+
+기본 실제-network transport는 검증한 DNS 주소와 실제 dial/TLS SNI를 결박할 구현이 없으므로
+fail-closed unavailable이다. 결정론 Contract Gate의 `for_test` seam은 exact MockTransport만
+받아 공식 SDK codec/client 경로를 검증하며, 실제 HTTPS egress는 DNS-pinning transport와
+Manual Acceptance가 생기기 전까지 지원하지 않는다.
+
+SDK adapter의 sealed outcome은 `A2ACompletedText | A2ARemoteRejected |
+A2ARemoteUnavailable | A2AProtocolViolation`이다. completed text-only만 `Answer(text,
+sources=(), mode="full")`로 투영한다. failure는 typed `A2ARemoteRuntimeFailure`가 되고
+`WorkerLogic`은 `AnswerReady | AwaitingOwnerReview | RuntimeFailed` 중 `RuntimeFailed`로
+처리한다. 수신 루프는 이를 redacted log로 기록하고 살아 있으며 SubmitAnswer를 보내지 않는다.
+ticket의 release/timeout/escalation은 기존 dispatcher가 단일 진실로 유지한다.
+
+## 9. 검증 전략
+
+### Fast Gate — 모든 로컬 변경과 PR
+
+목표 시간은 90초 이내입니다. 핵심 Question Request·보안·지원 계약, frontend unit,
+TypeScript와 lint를 실행합니다. 2026-07-30 실측은 5.09초입니다.
+
+```bash
+scripts/verify-fast.sh
+```
+
+### Contract Gate — API/frontend/infra 변경
+
+목표 시간은 3분 이내입니다. API-only negative route, BFF allowlist, runtime config,
+standalone/Docker와 지원 계약을 검증합니다. 2026-07-30 실측은 1.24초입니다.
+
+```bash
+scripts/verify-contract.sh
+```
+
+A2A Remote Runtime Contract Gate는 official SDK client가 test-only exact MockTransport를
+감싼 secured HTTP client로 strict v1 `HTTP+JSON` REST card fetch와 completed text-only
+요청을 수행하는지 확인한다.
+Fast Gate는
+profile/value object, card digest/interface, no-redirect/SSRF/OOB secret leakage, sealed
+WorkerLogic failure mapping을 결정론적으로 검증한다.
+
+### Full Gate — main/nightly/release/manual
+
+전체 pytest, Pyright, Ruff, frontend production build를 보존합니다.
+
+```bash
+scripts/verify-full.sh
+```
+
+Scale Gate는 기존 `scale` marker를 명시 실행하며, 실제 TLS/IdP/keychain/3-process는
+Manual Acceptance입니다.
+
+지원 계약 테스트는 다음 drift를 막습니다.
+
+- package script가 문서보다 늘거나 줄어드는 변경
+- demo/legacy entrypoint의 소실
+- `aon-central`/`aon-owner`를 구현 없이 현재 지원으로 표현하는 변경
+- root 문서가 지원 계약과 상태 표기를 잃는 변경
+- Browser Frontend standalone 실행을 production Central Server 완성으로 잘못 승격하는 변경
+- FastAPI HTML route 또는 Central `/owner-api`를 다시 여는 변경
+
+### gate 밖 수동 검증
+
+실제 3-install acceptance는 실제 IdP, HTTPS, OS keychain, 별 프로세스, 실제 Owner
+workspace/Runtime을 사용한 관통 시연으로만 인정합니다. PostgreSQL, migration,
+backup/restore, multi-instance, revoke/re-pair와 운영 관측성도 별 증거가 필요합니다.
+A2A Remote Runtime의 수동 증거는 실제 HTTPS A2A 1.0 service와 OOB credential/keychain, pinned card
+digest, failure 후 dispatcher escalation을 별 프로세스에서 관통한다. 이 증거 전에는 production
+또는 product support claim을 올리지 않는다.

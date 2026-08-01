@@ -1,439 +1,174 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import Image from "next/image";
-import { Send, UserRound, Network, AlertCircle, Loader2 } from "lucide-react";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { AlertCircle, CheckCircle2, Loader2, Send } from "lucide-react";
 import { PageHeader } from "@/components/app-shell/page-header";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { Tag } from "@/components/ui/tag";
-import { RoutingTrace } from "@/components/ask/routing-trace";
-import { SourceCard } from "@/components/ask/source-card";
-import type { RoutingStep, SourceCard as SourceCardData } from "@/lib/mock-data";
 import {
-  streamAsk,
-  getRequest,
-  modeMeta,
-  reviewStatusLabel,
-  pendingTraceLabel,
-  pendingUserMessage,
-  AskError,
-  type AnswerMode,
-  type AskDone,
-  type ReviewStatus,
+  QuestionClientError,
+  createQuestion,
+  lifecycleMessage,
+  retrieveQuestion,
+  subscribeQuestion,
+  submitFeedback,
+  type AnsweredProjection,
+  type FeedbackInput,
+  type QuestionProjection,
+  type QuestionStreamEvent,
 } from "@/lib/ask-api";
 
-type UserTurn = { id: string; role: "user"; text: string };
+type SessionState = "loading" | "authenticated" | "anonymous" | "unavailable";
+type Display = { requestId: string; question: string; projection?: QuestionProjection; progressText?: string; error?: string; feedbackSent?: boolean };
 
-type OrgTurn = {
-  id: string;
-  role: "org";
-  requestId?: string;
-  recordId?: string;
-  // answered
-  text?: string;
-  owner?: string;
-  agentId?: string;
-  mode?: AnswerMode;
-  reviewStatus?: ReviewStatus;
-  sources?: SourceCardData[];
-  // pending / error
-  trace?: RoutingStep[];
-  pendingMessage?: string;
-  error?: string;
-  // transient
-  loading?: boolean;
-};
-
-type Turn = UserTurn | OrgTurn;
-
-let seq = 0;
-const nextId = () => `t${Date.now()}-${seq++}`;
-
-// Backend `sources` is a flat string[] (e.g. "위키/환불정책"). The source-card
-// shows which OKF concept grounds the answer; map each path onto the card shape
-// using only what the backend exposes (the source label + the answering owner).
-function toSourceCards(
-  sources: string[],
-  owner: string,
-  ownerDomain: string
-): SourceCardData[] {
-  return sources.map((s, i) => {
-    const slash = s.indexOf("/");
-    const leaf = slash >= 0 ? s.slice(slash + 1) : s;
-    return {
-      id: `src-${i}`,
-      conceptId: s,
-      title: leaf || s,
-      owner,
-      domain: ownerDomain,
-      updatedAt: "출처",
-    };
-  });
+function newKey(): string {
+  return `${Date.now().toString(36)}-${crypto.getRandomValues(new Uint32Array(2)).join("")}`;
 }
 
-export default function AskPage() {
+function authenticatedSession(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  return Object.keys(raw).length === 4 && raw.authenticated === true && typeof raw.registry_user_ref === "string" && raw.registry_user_ref.length > 0 && typeof raw.expires_at === "string" && Array.isArray(raw.actions) && raw.actions.length === 1 && raw.actions[0] === "session.read";
+}
+
+export default function AskPage(): JSX.Element {
+  const [session, setSession] = useState<SessionState>("loading");
   const [draft, setDraft] = useState("");
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [busy, setBusy] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [display, setDisplay] = useState<Display | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const stopRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [turns]);
+    let active = true;
+    void fetch("/api/auth/session", { credentials: "same-origin", cache: "no-store" }).then(async (response) => {
+      if (!active) return;
+      if (response.status === 401) { setSession("anonymous"); return; }
+      if (!response.ok || !authenticatedSession(await response.json())) { setSession("unavailable"); return; }
+      setSession("authenticated");
+    }).catch(() => { if (active) setSession("unavailable"); });
+    return () => { active = false; stopRef.current?.(); };
+  }, []);
 
-  function patchTurn(id: string, fn: (t: OrgTurn) => void) {
-    setTurns((prev) =>
-      prev.map((t) => {
-        if (t.id !== id || t.role !== "org") return t;
-        const copy = { ...t };
-        fn(copy);
-        return copy;
-      })
-    );
+  function patch(requestId: string, update: (current: Display) => Display): void {
+    setDisplay((current) => current?.requestId === requestId ? update(current) : current);
   }
 
-  async function submit(question: string) {
-    const q = question.trim();
-    if (!q || busy) return;
-    setBusy(true);
-
-    const orgId = nextId();
-    setTurns((prev) => [
-      ...prev,
-      { id: nextId(), role: "user", text: q },
-      {
-        id: orgId,
-        role: "org",
-        loading: true,
-        trace: [{ id: "tr1", label: "담당 찾는 중", state: "active" }],
-      },
-    ]);
-
+  async function converge(requestId: string): Promise<void> {
     try {
-      let completed: AskDone | undefined;
-      await streamAsk(q, {
-        onAccepted: (event) => {
-          patchTurn(orgId, (t) => {
-            t.requestId = event.request_id;
-            t.trace = [
-              { id: "tr1", label: "질문 접수됨", state: "done" },
-              { id: "tr2", label: "담당 확인 중", state: "active" },
-            ];
-          });
-        },
-        onToken: (event) => {
-          patchTurn(orgId, (t) => {
-            t.loading = false;
-            t.text = (t.text ?? "") + event.text;
-          });
-        },
-        onDone: (event) => {
-          completed = event;
-          patchTurn(orgId, (t) => {
-            t.requestId = event.request_id;
-            t.recordId = event.record_id;
-            t.loading = true;
-            t.mode = event.mode;
-            t.reviewStatus = event.review_status;
-            t.trace = [
-              { id: "tr1", label: "질문 접수됨", state: "done" },
-              { id: "tr2", label: "답변 확정됨", state: "done" },
-              { id: "tr3", label: "확정된 답 불러오는 중", state: "active" },
-            ];
-          });
-        },
-        onPending: (event) => {
-          patchTurn(orgId, (t) => {
-            t.requestId = event.request_id;
-            t.loading = false;
-            t.text = undefined;
-            t.pendingMessage = pendingUserMessage(event);
-            t.trace = [
-              { id: "tr1", label: "질문 접수됨", state: "done" },
-              { id: "tr2", label: pendingTraceLabel(event.kind), state: "done" },
-            ];
-          });
-        },
-        onDeclined: (event) => {
-          patchTurn(orgId, (t) => {
-            t.requestId = event.request_id;
-            t.loading = false;
-            t.text = undefined;
-            t.error = "질문 처리가 거절되었습니다.";
-            t.trace = undefined;
-          });
-        },
-        onFailed: (event) => {
-          patchTurn(orgId, (t) => {
-            t.requestId = event.request_id;
-            t.loading = false;
-            t.text = undefined;
-            t.error = "질문을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
-            t.trace = undefined;
-          });
-        },
-        onInterrupted: (event) => {
-          patchTurn(orgId, (t) => {
-            t.requestId = event.request_id;
-            t.loading = false;
-            t.text = undefined;
-            t.error = event.retryable
-              ? "처리가 잠시 중단되었습니다. 같은 요청 ID로 다시 확인해 주세요."
-              : "처리를 이어갈 수 없습니다. 새 질문으로 다시 시도해 주세요.";
-            t.trace = undefined;
-          });
-        },
-      });
-
-      const done = completed;
-      if (done) {
-        const canonical = await getRequest(done.request_id);
-        if (
-          canonical?.type !== "answered" ||
-          canonical.record_id !== done.record_id ||
-          canonical.mode !== done.mode ||
-          canonical.review_status !== done.review_status ||
-          canonical.answered_by.owner !== done.answered_by ||
-          canonical.answered_by.agent_id !== done.agent_id ||
-          canonical.sources.length !== done.sources.length ||
-          canonical.sources.some((source, index) => source !== done.sources[index])
-        ) {
-          throw new AskError("확정된 답변을 안전하게 불러오지 못했습니다.");
-        }
-        patchTurn(orgId, (t) => {
-          t.requestId = canonical.request_id;
-          t.recordId = canonical.record_id;
-          t.loading = false;
-          t.text = canonical.text;
-          t.owner = canonical.answered_by.owner;
-          t.agentId = canonical.answered_by.agent_id;
-          t.mode = canonical.mode;
-          t.reviewStatus = canonical.review_status;
-          t.sources = toSourceCards(
-            canonical.sources,
-            canonical.answered_by.owner,
-            canonical.answered_by.agent_id
-          );
-          t.trace = [
-            { id: "tr1", label: "질문 접수됨", state: "done" },
-            { id: "tr2", label: "답변 확정됨", state: "done" },
-            { id: "tr3", label: "확정된 답 확인 완료", state: "done" },
-          ];
-        });
-      }
-    } catch (err) {
-      const msg =
-        err instanceof AskError ? err.message : "알 수 없는 오류가 발생했습니다.";
-      patchTurn(orgId, (t) => {
-        t.loading = false;
-        t.error = msg;
-        t.trace = undefined;
-      });
-    } finally {
-      setBusy(false);
+      const projection = await retrieveQuestion(requestId);
+      patch(requestId, (current) => ({ ...current, projection, progressText: undefined, error: undefined }));
+      if (projection.type !== "pending") stopRef.current?.();
+    } catch (error) {
+      const message = error instanceof QuestionClientError ? error.message : "질문 상태를 안전하게 확인하지 못했습니다.";
+      patch(requestId, (current) => ({ ...current, error: message, progressText: undefined }));
     }
   }
 
+  function observe(requestId: string): void {
+    stopRef.current?.();
+    stopRef.current = subscribeQuestion(requestId, {
+      onEvent: (event: QuestionStreamEvent) => {
+        if (event.type === "accepted") return;
+        if (event.type === "token") {
+          patch(requestId, (current) => ({ ...current, progressText: `${current.progressText ?? ""}${event.text}` }));
+          return;
+        }
+        if (event.type === "pending") {
+          patch(requestId, (current) => ({ ...current, projection: event.event, progressText: undefined, error: undefined }));
+          return;
+        }
+        if (event.type === "interrupted") {
+          patch(requestId, (current) => ({ ...current, progressText: lifecycleMessage(event), error: event.retryable ? undefined : lifecycleMessage(event) }));
+          void converge(requestId);
+          return;
+        }
+        // done is only a notification: all terminal content is re-read from GET.
+        void converge(requestId);
+      },
+      onReconnect: () => patch(requestId, (current) => ({ ...current, progressText: "연결을 다시 확인하고 있습니다. 질문 처리는 계속됩니다." })),
+      onFault: (error) => {
+        patch(requestId, (current) => ({ ...current, error: error.message, progressText: undefined }));
+        if (error.retryable) void converge(requestId);
+      },
+    });
+  }
+
+  async function ask(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (submitting || !draft.trim()) return;
+    setSubmitting(true);
+    try {
+      const received = await createQuestion(draft, newKey());
+      const question = draft;
+      setDraft("");
+      setDisplay({ requestId: received.request_id, question, progressText: "질문을 접수했습니다. 담당을 찾고 있습니다." });
+      observe(received.request_id);
+    } catch (error) {
+      const message = error instanceof QuestionClientError ? error.message : "질문을 접수하지 못했습니다.";
+      setDisplay({ requestId: "", question: draft, error: message });
+    } finally { setSubmitting(false); }
+  }
+
   return (
-    <div className="flex h-full min-h-[calc(100vh-0px)] flex-col lg:min-h-0">
-      <PageHeader
-        surface="Ask"
-        persona="사용자"
-        title="질문하기"
-        description="질문을 보내면 조직이 담당을 찾아 답합니다. 답변에는 담당·신뢰 상태·출처가 함께 표시됩니다."
-      />
-
-      <div
-        ref={scrollRef}
-        className="ds-scrollbar-thin flex-1 overflow-y-auto px-ds-16 py-ds-16 md:px-ds-24"
-      >
-        <div aria-label="대화" className="mx-auto flex max-w-3xl flex-col gap-ds-16">
-          {turns.length === 0 && (
-            <div className="mx-auto mt-ds-24 flex max-w-md flex-col items-center text-center">
-              <Image
-                src="/brand/empty-ask.png"
-                alt=""
-                width={420}
-                height={238}
-                priority
-                className="ds-img-dark mb-ds-16 w-full max-w-[360px] opacity-90"
-              />
-              <Image
-                src="/brand/empty-ask-light.png"
-                alt=""
-                width={420}
-                height={238}
-                priority
-                className="ds-img-light mb-ds-16 w-full max-w-[360px]"
-              />
-              <p className="text-sm text-[var(--ds-color-ink-subtle)]">
-                조직에 궁금한 것을 물어보세요. 질문은 담당을 찾아 흘러갑니다. 예:
-                &ldquo;환불 규정 어떻게 돼?&rdquo;, &ldquo;계약 검토 어떻게 받아?&rdquo;
-              </p>
-            </div>
-          )}
-
-          {turns.map((turn) =>
-            turn.role === "user" ? (
-              <div key={turn.id} className="flex justify-end">
-                <div className="flex max-w-[85%] items-start gap-ds-8">
-                  <div className="rounded-lg rounded-tr-sm bg-[var(--ds-color-surface-tint)] px-ds-16 py-ds-12 text-sm text-[var(--ds-color-ink)]">
-                    {turn.text}
-                  </div>
-                  <span className="mt-[2px] flex h-7 w-7 shrink-0 items-center justify-center rounded-pill bg-[var(--ds-color-surface-muted)]">
-                    <UserRound
-                      aria-hidden
-                      className="h-4 w-4 text-[var(--ds-color-ink-muted)]"
-                    />
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div key={turn.id} className="flex justify-start">
-                <div className="flex max-w-[92%] items-start gap-ds-8">
-                  <span className="mt-[2px] flex h-7 w-7 shrink-0 items-center justify-center rounded-pill bg-[var(--ds-color-surface-tint)]">
-                    <Network
-                      aria-hidden
-                      className="h-4 w-4 text-[var(--ds-color-primary)]"
-                    />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    {turn.trace && (
-                      <div className="mb-ds-8">
-                        <RoutingTrace steps={turn.trace} />
-                      </div>
-                    )}
-
-                    {/* error bubble — real network/4xx/5xx state, not a mock */}
-                    {turn.error ? (
-                      <>
-                        <div
-                          role="alert"
-                          className="flex items-start gap-ds-8 rounded-lg rounded-tl-sm border border-[color-mix(in_srgb,var(--ds-color-danger)_40%,transparent)] bg-[color-mix(in_srgb,var(--ds-color-danger)_8%,transparent)] px-ds-16 py-ds-12 text-sm text-[var(--ds-color-ink)]"
-                        >
-                          <AlertCircle
-                            aria-hidden
-                            className="mt-[2px] h-4 w-4 shrink-0 text-[var(--ds-color-danger)]"
-                          />
-                          <span>{turn.error}</span>
-                        </div>
-                        {turn.requestId && (
-                          <div className="mt-ds-8 flex flex-wrap items-center gap-ds-8">
-                            <Tag tone="neutral">요청 {turn.requestId}</Tag>
-                          </div>
-                        )}
-                      </>
-                    ) : turn.loading && !turn.text ? (
-                      <div className="inline-flex items-center gap-ds-8 rounded-lg rounded-tl-sm border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-16 py-ds-12 text-sm text-[var(--ds-color-ink-muted)]">
-                        <Loader2
-                          aria-hidden
-                          className="h-4 w-4 shrink-0 animate-ds-spin text-[var(--ds-color-info)]"
-                        />
-                        <span>
-                          {turn.pendingMessage ?? "조직이 답을 준비하고 있어요…"}
-                        </span>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="whitespace-pre-wrap rounded-lg rounded-tl-sm border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-16 py-ds-12 text-sm leading-normal text-[var(--ds-color-ink)]">
-                          {turn.text ?? turn.pendingMessage}
-                        </div>
-
-                        {/* Request ID와 확정된 책임·신뢰 표식만 표시한다. */}
-                        {(turn.requestId || turn.owner || turn.mode || turn.reviewStatus) && (
-                          <div className="mt-ds-8 flex flex-wrap items-center gap-ds-8">
-                            {turn.requestId && (
-                              <Tag tone="neutral">요청 {turn.requestId}</Tag>
-                            )}
-                            {turn.owner && (
-                              <Tag tone="info">
-                                담당 {turn.owner}
-                                {turn.agentId && (
-                                  <span className="text-[var(--ds-color-ink-subtle)]">
-                                    · {turn.agentId}
-                                  </span>
-                                )}
-                              </Tag>
-                            )}
-                            {turn.mode && (
-                              <StatusBadge
-                                tone={modeMeta[turn.mode].tone}
-                                label={modeMeta[turn.mode].label}
-                              />
-                            )}
-                            {turn.reviewStatus && (
-                              <Tag tone="success">
-                                {reviewStatusLabel[turn.reviewStatus]}
-                              </Tag>
-                            )}
-                          </div>
-                        )}
-
-                        {turn.sources && turn.sources.length > 0 && (
-                          <div className="mt-ds-8 flex flex-col gap-ds-8">
-                            <p className="text-xs font-medium text-[var(--ds-color-ink-subtle)]">
-                              출처
-                            </p>
-                            {turn.sources.map((s) => (
-                              <SourceCard key={s.id} source={s} />
-                            ))}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )
-          )}
-        </div>
-      </div>
-
-      {/* chat-input */}
-      <div className="border-t border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-16 py-ds-12 md:px-ds-24">
-        <form
-          className="mx-auto flex max-w-3xl items-end gap-ds-8"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const q = draft;
-            setDraft("");
-            void submit(q);
-          }}
-        >
-          <label htmlFor="ask-input" className="sr-only">
-            질문 입력
-          </label>
-          <textarea
-            id="ask-input"
-            rows={1}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                const q = draft;
-                setDraft("");
-                void submit(q);
-              }
-            }}
-            placeholder="조직에 질문을 입력하세요"
-            className="ds-scrollbar-thin max-h-32 min-h-[44px] min-w-0 flex-1 resize-none rounded-md border border-[var(--ds-color-border)] bg-[var(--ds-color-canvas)] px-ds-12 py-ds-8 text-sm text-[var(--ds-color-ink)] placeholder:text-[var(--ds-color-ink-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ds-color-primary)]"
-          />
-          <Button
-            type="submit"
-            size="icon"
-            aria-label="질문 보내기"
-            loading={busy}
-            disabled={busy || draft.trim().length === 0}
-          >
-            {!busy && <Send aria-hidden className="h-4 w-4" />}
-          </Button>
-        </form>
-        <p className="mx-auto mt-ds-8 max-w-3xl text-xs text-[var(--ds-color-ink-subtle)]">
-          실 라우팅으로 동작합니다. 라우팅 내부(점수·후보)는 사용자에게 표시되지 않습니다.
-        </p>
+    <div className="flex min-h-full flex-col">
+      <PageHeader surface="Ask" persona="Question User" title="질문하기" description="조직 SSO 세션으로 질문을 접수하고, 안전한 수명주기 상태와 확정 답변을 확인합니다." />
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-ds-16 px-ds-16 py-ds-16 md:px-ds-24">
+        <div aria-live="polite" aria-atomic="true" className="sr-only">{display?.error ?? display?.progressText ?? ""}</div>
+        {session === "loading" && <Status message="조직 SSO 세션을 확인하고 있습니다." />}
+        {session === "anonymous" && <LoginRequired />}
+        {session === "unavailable" && <ErrorState message="SSO 세션을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요." />}
+        {session === "authenticated" && (
+          <>
+            {display ? <QuestionResult display={display} onFeedback={(input, key) => submitRequesterFeedback(display, input, key, setDisplay)} /> : <Status message="질문을 보내면 담당을 찾는 과정을 안전한 상태로 알려드립니다." />}
+            <form className="mt-auto flex flex-col gap-ds-8 border-t border-[var(--ds-color-border)] pt-ds-16" onSubmit={(event) => void ask(event)}>
+              <label htmlFor="question" className="text-sm font-medium text-[var(--ds-color-ink)]">질문</label>
+              <textarea id="question" name="question" required rows={3} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="조직에 질문을 입력하세요" className="ds-scrollbar-thin min-h-24 resize-y rounded-md border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-12 py-ds-8 text-sm text-[var(--ds-color-ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ds-color-primary)]" aria-describedby="question-help" />
+              <p id="question-help" className="text-xs text-[var(--ds-color-ink-subtle)]">Enter가 아닌 제출 버튼으로 보냅니다. 접수 실패 시 입력한 질문은 그대로 남습니다.</p>
+              <div className="flex justify-end"><Button type="submit" disabled={submitting || !draft.trim()} loading={submitting}><Send aria-hidden className="mr-ds-4 h-4 w-4" />질문 보내기</Button></div>
+            </form>
+          </>
+        )}
       </div>
     </div>
   );
 }
+
+function QuestionResult({ display, onFeedback }: { display: Display; onFeedback: (input: FeedbackInput, key: string) => Promise<void> }): JSX.Element {
+  const answered = display.projection?.type === "answered" ? display.projection : null;
+  return <section aria-label="질문 결과" className="flex flex-col gap-ds-12">
+    <div className="self-end rounded-lg bg-[var(--ds-color-surface-tint)] px-ds-16 py-ds-12 text-sm text-[var(--ds-color-ink)]">{display.question}</div>
+    <article className="rounded-lg border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] p-ds-16">
+      {display.error ? <ErrorState message={display.error} /> : answered ? <Answered answer={answered} /> : <Pending display={display} />}
+      {display.requestId && <Tag tone="neutral">요청 {display.requestId}</Tag>}
+    </article>
+    {answered && <Feedback key={answered.record_id} answer={answered} submitted={display.feedbackSent === true} onSubmit={onFeedback} />}
+  </section>;
+}
+
+function Pending({ display }: { display: Display }): JSX.Element {
+  const message = display.projection ? lifecycleMessage(display.projection) : display.progressText ?? "질문 상태를 확인하고 있습니다.";
+  return <div className="flex items-start gap-ds-8"><Loader2 aria-hidden className="mt-0.5 h-4 w-4 shrink-0 animate-ds-spin text-[var(--ds-color-info)]" /><p className="text-sm text-[var(--ds-color-ink-muted)]">{message}</p></div>;
+}
+
+function Answered({ answer }: { answer: AnsweredProjection }): JSX.Element {
+  return <div className="flex flex-col gap-ds-12"><div className="flex items-center gap-ds-8 text-sm font-medium text-[var(--ds-color-success)]"><CheckCircle2 aria-hidden className="h-4 w-4" />답변 확정</div><p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--ds-color-ink)]">{answer.text}</p><div className="flex flex-wrap gap-ds-8 text-xs text-[var(--ds-color-ink-subtle)]"><Tag tone="info">담당 {answer.answered_by.owner} · {answer.answered_by.agent_id}</Tag><Tag tone="neutral">{answer.mode === "full" ? "전체 답변" : "백업 답변"}</Tag><Tag tone="success">{answer.review_status === "approved" ? "검토 완료" : "별도 검토 불필요"}</Tag></div>{answer.sources.length > 0 && <div><p className="mb-ds-4 text-xs font-medium text-[var(--ds-color-ink-subtle)]">출처</p><ul className="flex flex-col gap-ds-4">{answer.sources.map((source) => <li key={source} className="text-xs text-[var(--ds-color-ink-muted)]">{source}</li>)}</ul></div>}</div>;
+}
+
+function Feedback({ answer, submitted, onSubmit }: { answer: AnsweredProjection; submitted: boolean; onSubmit: (input: FeedbackInput, key: string) => Promise<void> }): JSX.Element {
+  const [verdict, setVerdict] = useState<"good" | "bad">("good");
+  const [comment, setComment] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const keyRef = useRef(newKey());
+  async function send(event: FormEvent<HTMLFormElement>): Promise<void> { event.preventDefault(); if (pending || submitted) return; setPending(true); setError(""); try { await onSubmit({ record_id: answer.record_id, verdict, comment }, keyRef.current); } catch (reason) { setError(reason instanceof QuestionClientError ? reason.message : "피드백을 보내지 못했습니다."); } finally { setPending(false); } }
+  return <form onSubmit={(event) => void send(event)} className="rounded-lg border border-[var(--ds-color-border)] bg-[var(--ds-color-surface-muted)] p-ds-16"><fieldset disabled={submitted || pending}><legend className="mb-ds-8 text-sm font-medium text-[var(--ds-color-ink)]">이 답변이 도움이 되었나요?</legend><div className="flex gap-ds-8"><Button type="button" variant={verdict === "good" ? "primary" : "secondary"} onClick={() => setVerdict("good")}>도움됨</Button><Button type="button" variant={verdict === "bad" ? "primary" : "secondary"} onClick={() => setVerdict("bad")}>아쉬움</Button></div><label htmlFor={`feedback-${answer.record_id}`} className="mt-ds-12 block text-xs text-[var(--ds-color-ink-muted)]">의견 (선택)</label><textarea id={`feedback-${answer.record_id}`} value={comment} onChange={(event) => setComment(event.target.value)} rows={3} className="mt-ds-4 w-full rounded-md border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] px-ds-8 py-ds-8 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ds-color-primary)]" /><div className="mt-ds-8 flex justify-end"><Button type="submit" loading={pending}>피드백 보내기</Button></div></fieldset>{submitted && <p role="status" className="mt-ds-8 text-sm text-[var(--ds-color-success)]">피드백을 기록했습니다.</p>}{error && <p role="alert" className="mt-ds-8 text-sm text-[var(--ds-color-danger)]">{error}</p>}</form>;
+}
+
+async function submitRequesterFeedback(display: Display, input: FeedbackInput, key: string, setDisplay: (update: (current: Display | null) => Display | null) => void): Promise<void> {
+  await submitFeedback(display.requestId, input, key);
+  setDisplay((current) => current?.requestId === display.requestId ? { ...current, feedbackSent: true } : current);
+}
+
+function Status({ message }: { message: string }): JSX.Element { return <div className="rounded-lg border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] p-ds-16 text-sm text-[var(--ds-color-ink-muted)]">{message}</div>; }
+function ErrorState({ message }: { message: string }): JSX.Element { return <div role="alert" className="flex gap-ds-8 rounded-lg border border-[color-mix(in_srgb,var(--ds-color-danger)_40%,transparent)] bg-[color-mix(in_srgb,var(--ds-color-danger)_8%,transparent)] p-ds-16 text-sm text-[var(--ds-color-ink)]"><AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-[var(--ds-color-danger)]" />{message}</div>; }
+function LoginRequired(): JSX.Element { return <div className="rounded-lg border border-[var(--ds-color-border)] bg-[var(--ds-color-surface)] p-ds-16"><p className="mb-ds-8 text-sm text-[var(--ds-color-ink-muted)]">질문을 보내려면 조직 SSO 로그인이 필요합니다.</p><form method="post" action="/api/auth/login/start"><Button type="submit">조직 SSO 로그인</Button></form></div>; }

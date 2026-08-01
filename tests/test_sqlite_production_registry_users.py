@@ -5,6 +5,10 @@ from collections.abc import Callable
 
 import pytest
 
+import agent_org_network.sqlite_production_registry_users as registry_store_module
+from agent_org_network.central_operational_evidence import (
+    migrate_central_operational_evidence_schema,
+)
 from agent_org_network.sqlite_production_registry_users import (
     CurrentUserRegistrationAuthorization,
     ProductionRegistryUserCommand,
@@ -67,6 +71,71 @@ class _Authorizer:
 def _store(path: Path, **kwargs: object) -> SqliteProductionRegistryUsers:
     SqliteProductionRegistryUsers.migrate(path)
     return SqliteProductionRegistryUsers(path, authorize=_Authorizer(kwargs.pop("authorize", _allow)), **kwargs)  # type: ignore[arg-type]
+
+
+def _v19_store(path: Path) -> SqliteProductionRegistryUsers:
+    SqliteProductionRegistryUsers.migrate(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE aon_installation_schema"
+            "(name TEXT PRIMARY KEY,version INTEGER NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO aon_installation_schema VALUES ('central-installation',18)"
+        )
+    migrate_central_operational_evidence_schema(path)
+    return SqliteProductionRegistryUsers(path, authorize=_Authorizer())
+
+
+def test_v19_registry_registration은_canonical_pair를_replay_write0한다(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "registry.db"
+    store = _v19_store(path)
+    store.register(_command())
+    replay = store.register(_command())
+    assert replay.replayed is True
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT policy_revision_id,policy_epoch,policy_digest "
+            "FROM central_operational_audit_records"
+        ).fetchone() == (f"yaml:{'b' * 64}", 1, "b" * 64)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM central_operational_event_intents"
+        ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("failure", ("append", "catalog_missing", "catalog_drift"))
+def test_v19_registry_evidence_failure는_source와_evidence를_모두_rollback한다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    path = tmp_path / f"{failure}.db"
+    store = _v19_store(path)
+    if failure == "append":
+        def fail_append(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("append fault")
+
+        monkeypatch.setattr(
+            registry_store_module,
+            "append_committed_source_evidence_if_v19",
+            fail_append,
+        )
+    else:
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                "DROP TABLE central_operational_retention_receipts"
+                if failure == "catalog_missing"
+                else "DROP INDEX central_operational_audit_org_time"
+            )
+
+    with pytest.raises(Exception):
+        store.register(_command())
+
+    assert store.revision("acme") == 0
+    assert store.users("acme") == ()
+    assert store.counts("acme") == {
+        "receipts": 0, "audit": 0, "outbox": 0
+    }
 
 
 def test_register는_revision_user_receipt_audit_outbox를_원자적으로_쓴다(

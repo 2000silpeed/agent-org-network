@@ -7,7 +7,6 @@ and Authority checks live here, at the Central Server boundary.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -20,71 +19,15 @@ from agent_org_network.central_authority import (
     CentralAuthorizer,
     ResourceRef,
 )
+from agent_org_network.central_oidc_principal import (
+    CurrentRegistryOidcPrincipalResolver,
+    QuestionGatewayUnavailable,
+)
 from agent_org_network.oidc import OidcClaims, OidcProvider
 from agent_org_network.question_resolution import AskQuestion, QuestionAuthorizationDeniedError
 from agent_org_network.question_stream_execution import QuestionStreamRequestNotFoundError
-from agent_org_network.sqlite_production_registry_users import SqliteProductionRegistryUsers
-
-
-class QuestionGatewayUnavailable(RuntimeError):
-    """The Central Server cannot safely compose the Question Gateway."""
-
-
 class CurrentOidcPrincipalResolver(Protocol):
     def resolve(self, claims: OidcClaims) -> AuthenticatedPrincipal: ...
-
-
-class CurrentRegistryOidcPrincipalResolver:
-    """Resolve verified claims to the current central Registry User."""
-
-    def __init__(
-        self,
-        registry: SqliteProductionRegistryUsers,
-        *,
-        org_id: str,
-        provider_id: str,
-        issuer: str,
-        audience: str,
-    ) -> None:
-        if (
-            type(registry) is not SqliteProductionRegistryUsers
-            or not org_id
-            or not provider_id
-            or not issuer
-            or not audience
-        ):
-            raise QuestionGatewayUnavailable()
-        self._registry = registry
-        self._org, self._provider, self._issuer, self._audience = (
-            org_id,
-            provider_id,
-            issuer,
-            audience,
-        )
-
-    def resolve(self, claims: OidcClaims) -> AuthenticatedPrincipal:
-        if (
-            type(claims) is not OidcClaims
-            or not claims.email_verified
-            or claims.iss != self._issuer
-            or claims.aud != self._audience
-        ):
-            raise QuestionGatewayUnavailable()
-        try:
-            user = self._registry.user_by_global_email(claims.email)
-        except Exception as error:
-            raise QuestionGatewayUnavailable() from error
-        if user is None or user.org_id != self._org:
-            raise QuestionGatewayUnavailable()
-        session = hashlib.sha256(
-            f"{claims.iss}\x00{claims.sub}\x00{claims.aud}".encode()
-        ).hexdigest()
-        return AuthenticatedPrincipal(
-            org_id=user.org_id,
-            subject_id=user.user_id,
-            identity_provider=self._provider,
-            identity_session_id=session,
-        )
 
 
 class QuestionGatewayApplication(Protocol):

@@ -2,10 +2,15 @@
   "name": "agent-org-frontend",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.18.0",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "build": "next build && node scripts/assemble-standalone.mjs",
+    "start": "node scripts/start-standalone.mjs",
     "lint": "next lint",
     "test": "node --test lib/*.test.mjs"
   },

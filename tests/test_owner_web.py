@@ -230,15 +230,13 @@ def test_미존재_submit은_404_이고_sink_무발화():
     assert sink.received == []
 
 
-# ── GET / (정적 HTML) ───────────────────────────────────────────────────────
+# ── API-only 경계 ────────────────────────────────────────────────────────────
 
 
-def test_루트는_검토_HTML을_서빙한다():
+def test_루트_HTML은_제공하지_않는다():
     client = _app(_logic(), _FakeSink())
     res = _get(client, "/")
-    assert res.status_code == 200
-    assert "text/html" in res.headers["content-type"]
-    assert "초안 검토" in res.text
+    assert res.status_code == 404
 
 
 # ── run_worker 겸직 배선 무회귀(import·시그니처 수준·게이트 밖 실행 아님) ──────

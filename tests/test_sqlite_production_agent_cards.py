@@ -5,6 +5,10 @@ import sqlite3
 import pytest
 from pydantic import ValidationError
 
+import agent_org_network.sqlite_production_agent_cards as card_store_module
+from agent_org_network.central_operational_evidence import (
+    migrate_central_operational_evidence_schema,
+)
 from agent_org_network.sqlite_production_agent_cards import (
     CurrentCardRegistrationAuthorization,
     ProductionAgentCardCommand,
@@ -92,6 +96,143 @@ def _database(path: Path, *, org_id: str = "acme") -> SqliteProductionAgentCards
     )
     SqliteProductionAgentCards.migrate(path)
     return SqliteProductionAgentCards(path, authorize=_CardAuthorizer())
+
+
+def _enable_v19(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE aon_installation_schema"
+            "(name TEXT PRIMARY KEY,version INTEGER NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO aon_installation_schema VALUES ('central-installation',18)"
+        )
+    migrate_central_operational_evidence_schema(path)
+
+
+def _v19_database(path: Path) -> SqliteProductionAgentCards:
+    SqliteProductionRegistryUsers.migrate(path)
+    _enable_v19(path)
+    users = SqliteProductionRegistryUsers(path, authorize=_UserAuthorizer())
+    users.register(
+        ProductionRegistryUserCommand(
+            org_id="acme",
+            principal_id="root",
+            idempotency_key="user-acme",
+            expected_revision=0,
+            user_id="root",
+            email="root@acme.example",
+        )
+    )
+    SqliteProductionAgentCards.migrate(path)
+    return SqliteProductionAgentCards(path, authorize=_CardAuthorizer())
+
+
+def test_v19_card_registration_appends_canonical_evidence_and_replay_is_write_zero(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "registry.db"
+    store = _v19_database(path)
+
+    result = store.register(_command())
+    replay = store.register(_command())
+
+    assert result.replayed is False
+    assert replay.replayed is True
+    with sqlite3.connect(path) as connection:
+        authorities = connection.execute(
+            "SELECT policy_revision_id,policy_epoch,policy_digest "
+            "FROM central_operational_audit_records ORDER BY receipt_id"
+        ).fetchall()
+        assert (f"yaml:{'d' * 64}", 1, "d" * 64) in authorities
+        assert connection.execute(
+            "SELECT COUNT(*) FROM central_operational_audit_records"
+        ).fetchone() == (2,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM central_operational_event_intents"
+        ).fetchone() == (2,)
+
+
+@pytest.mark.parametrize("failure", ("append", "catalog_missing", "catalog_drift"))
+def test_v19_card_evidence_failure_rolls_back_source_and_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    path = tmp_path / f"{failure}.db"
+    store = _v19_database(path)
+    if failure == "append":
+        def fail_append(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("append fault")
+
+        monkeypatch.setattr(
+            card_store_module,
+            "append_committed_source_evidence_if_v19",
+            fail_append,
+        )
+    else:
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                "DROP TABLE central_operational_retention_receipts"
+                if failure == "catalog_missing"
+                else "DROP INDEX central_operational_audit_org_time"
+            )
+
+    with pytest.raises(Exception):
+        store.register(_command())
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT revision FROM production_registry_revisions WHERE org_id='acme'"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM production_agent_cards"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM production_agent_card_command_receipts"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM production_agent_card_audit"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM production_agent_card_outbox"
+        ).fetchone() == (0,)
+
+
+def test_canonical_catalog_migration_is_restart_safe_and_fault_atomic(tmp_path: Path) -> None:
+    path = tmp_path / "registry.db"
+    SqliteProductionRegistryUsers.migrate(path)
+
+    def crash(point: str) -> None:
+        if point == "mid-DDL":
+            raise RuntimeError("injected")
+
+    with pytest.raises(RuntimeError):
+        SqliteProductionAgentCards.migrate(path, fault_injector=crash)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='production_agent_cards'"
+        ).fetchone() is None
+
+    SqliteProductionAgentCards.migrate(path)
+    SqliteProductionAgentCards.migrate(path)
+    assert SqliteProductionAgentCards(path, authorize=_CardAuthorizer()).cards("acme") == ()
+
+
+@pytest.mark.parametrize(
+    "ddl",
+    (
+        "CREATE TABLE production_agent_cards (broken TEXT)",
+        "CREATE TABLE production_agent_card_shadow (secret TEXT)",
+    ),
+)
+def test_migration_never_repairs_partial_or_extra_card_catalog(tmp_path: Path, ddl: str) -> None:
+    path = tmp_path / "registry.db"
+    SqliteProductionRegistryUsers.migrate(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(ddl)
+    before = path.read_bytes()
+    with pytest.raises(ProductionAgentCardUnavailable):
+        SqliteProductionAgentCards.migrate(path)
+    assert path.read_bytes() == before
 
 
 def test_register는_O2a_revision과_card_receipt_audit_outbox를_같이_commit한다(

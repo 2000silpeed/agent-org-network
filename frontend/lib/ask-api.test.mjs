@@ -1,235 +1,133 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { Buffer } from "node:buffer";
 import ts from "typescript";
 
 const source = await readFile(new URL("./ask-api.ts", import.meta.url), "utf8");
+const askPage = await readFile(new URL("../app/ask/page.tsx", import.meta.url), "utf8");
 const transpiled = ts.transpileModule(source, {
-  compilerOptions: {
-    module: ts.ModuleKind.ESNext,
-    target: ts.ScriptTarget.ES2022,
-  },
-  fileName: "ask-api.ts",
-  reportDiagnostics: true,
+  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  fileName: "ask-api.ts", reportDiagnostics: true,
 });
 assert.deepEqual(transpiled.diagnostics ?? [], []);
+const question = await import(`data:text/javascript;base64,${Buffer.from(transpiled.outputText).toString("base64")}`);
 
-const {
-  AskError,
-  getRequest,
-  parseAskSseFrame,
-  parseOrgReply,
-  parseRequestResult,
-  streamAsk,
-} = await import(`data:text/javascript;base64,${Buffer.from(transpiled.outputText).toString("base64")}`);
-
-const answeredLegacy = {
-  type: "answered",
-  request_id: "request-1",
-  record_id: "record-1",
-  text: "환불 답변",
-  answered_by: { owner: "owner-1", agent_id: "refund-card" },
-  mode: "full",
-  sources: ["refund-policy.md"],
-  review_status: "not_required",
+const answered = {
+  type: "answered", state: "answered", retryable: false, request_id: "q_01", record_id: "a_01",
+  text: "환불은 결제 수단으로 처리됩니다.", answered_by: { owner: "registry-user", agent_id: "refund-card" },
+  mode: "full", sources: ["published/refund"], review_status: "approved",
+};
+const pending = {
+  type: "pending", state: "awaiting_approval", kind: "routed", retryable: false,
+  request_id: "q_01", message: "답변을 검토하고 있습니다.",
 };
 
-const answeredNative = {
-  answer_text: "환불 답변",
-  request_id: "request-1",
-  record_id: "record-1",
-  mode: "full",
-  sources: ["refund-policy.md"],
-  review_status: "not_required",
-  answered_by: "owner-1",
-  agent_id: "refund-card",
-};
-
-function sse(event, data) {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+function event(type, data, id = "1") {
+  return { type, data: JSON.stringify(data), lastEventId: id };
 }
 
-function streamResponse(body, requestId = "request-1") {
-  let cancelled = false;
-  const stream = new ReadableStream({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode(body));
-    },
-    cancel() {
-      cancelled = true;
-    },
-  });
-  return {
-    response: new Response(stream, { headers: { "X-Request-ID": requestId } }),
-    stream,
-    wasCancelled: () => cancelled,
-  };
-}
-
-async function withFetch(response, run) {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => response;
-  try {
-    await run();
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-}
-
-test("legacy Pending은 tracking exact alias만 받고 공개 결과에서는 버린다", () => {
-  const pending = {
-    type: "pending",
-    request_id: "request-1",
-    kind: "dispatched",
-    state: "awaiting_answer",
-    retryable: true,
-    message: "처리 중",
-    tracking: "request-1",
-  };
-
-  assert.deepEqual(parseOrgReply(pending), {
-    type: "pending",
-    request_id: "request-1",
-    kind: "dispatched",
-    state: "awaiting_answer",
-    retryable: true,
-    message: "처리 중",
-  });
-  assert.equal(parseOrgReply({ ...pending, tracking: "bearer-token" }), null);
-  assert.deepEqual(parseOrgReply(answeredLegacy), answeredLegacy);
+test("sealed DTO decoder는 exact lifecycle projection만 받고 caller 또는 내부 필드를 닫는다", () => {
+  assert.deepEqual(question.decodeQuestionProjection(answered), answered);
+  assert.deepEqual(question.decodeQuestionProjection(pending), pending);
+  for (const invalid of [
+    { ...answered, owner: "forged" },
+    { ...answered, sources: ["published/refund", ""] },
+    { ...pending, state: "awaiting_answer", retryable: false },
+    { ...pending, route: "internal" },
+    { ...answered, mode: "draft_only" },
+  ]) assert.equal(question.decodeQuestionProjection(invalid), null);
 });
 
-test("native lookup은 legacy type·tracking·text를 거부하고 안전한 결과로 정규화한다", () => {
-  assert.deepEqual(parseRequestResult(answeredNative), answeredLegacy);
-  for (const field of ["type", "tracking", "text"]) {
-    assert.equal(parseRequestResult({ ...answeredNative, [field]: "legacy" }), null);
-  }
-  assert.equal(parseRequestResult({ ...answeredNative, candidates: [] }), null);
-});
-
-test("P17 SSE parser는 공개 이벤트만 읽고 내부 필드를 거부한다", () => {
-  const request_id = "request-1";
-  const events = [
-    sse("accepted", { request_id }),
-    sse("token", { request_id, text: "답" }),
-    sse("pending", {
-      request_id,
-      kind: "routed",
-      state: "awaiting_answer",
-      retryable: true,
-      message: "처리 중",
-    }),
-    sse("done", {
-      request_id,
-      record_id: "record-1",
-      mode: "full",
-      sources: ["refund-policy.md"],
-      review_status: "not_required",
-      answered_by: "owner-1",
-      agent_id: "refund-card",
-    }),
-    sse("declined", { request_id, reason_code: "declined", message: "거절" }),
-    sse("failed", { request_id, error_code: "failed", message: "실패" }),
-    sse("interrupted", { request_id, retryable: true, message: "중단" }),
-  ];
-
-  assert.deepEqual(
-    events.map((frame) => parseAskSseFrame(frame)?.type),
-    ["accepted", "token", "pending", "done", "declined", "failed", "interrupted"]
-  );
-  assert.equal(
-    parseAskSseFrame(sse("accepted", { request_id, policy: "internal" })),
-    null
-  );
-  assert.equal(parseAskSseFrame(sse("meta", { request_id })), null);
-});
-
-test("stream은 모든 request_id를 묶고 종착 뒤 reader를 취소·해제한다", async () => {
-  const body =
-    sse("accepted", { request_id: "request-1" }) +
-    sse("done", {
-      request_id: "request-1",
-      record_id: "record-1",
-      mode: "full",
-      sources: [],
-      review_status: "not_required",
-      answered_by: "owner-1",
-      agent_id: "refund-card",
-    });
-  const fixture = streamResponse(body);
+test("create와 feedback은 CSRF·idempotency를 보내고 UTF-8 4096 bytes 및 공백을 보존한다", async () => {
   const seen = [];
-
-  await withFetch(fixture.response, async () => {
-    await streamAsk("환불은 언제 되나요?", {
-      onAccepted: (event) => seen.push(event.request_id),
-      onDone: (event) => seen.push(event.record_id),
-    });
-  });
-
-  assert.deepEqual(seen, ["request-1", "record-1"]);
-  assert.equal(fixture.wasCancelled(), true);
-  assert.equal(fixture.stream.locked, false);
-});
-
-test("stream ID 불일치·종착 뒤 추가 프레임은 거부하고 reader를 정리한다", async () => {
-  const cases = [
-    sse("accepted", { request_id: "request-1" }) +
-      sse("token", { request_id: "request-2", text: "누수" }),
-    sse("accepted", { request_id: "request-1" }) +
-      sse("failed", { request_id: "request-1", error_code: "failed", message: "실패" }) +
-      sse("token", { request_id: "request-1", text: "늦은 데이터" }),
-  ];
-
-  for (const body of cases) {
-    const fixture = streamResponse(body);
-    await withFetch(fixture.response, async () => {
-      await assert.rejects(streamAsk("질문", {}), AskError);
-    });
-    assert.equal(fixture.wasCancelled(), true);
-    assert.equal(fixture.stream.locked, false);
-  }
-});
-
-test("handler 예외에도 reader를 정리한다", async () => {
-  const fixture = streamResponse(sse("accepted", { request_id: "request-1" }));
-  await withFetch(fixture.response, async () => {
-    await assert.rejects(
-      streamAsk("질문", {
-        onAccepted: () => {
-          throw new Error("handler failed");
-        },
-      }),
-      /handler failed/
-    );
-  });
-  assert.equal(fixture.wasCancelled(), true);
-  assert.equal(fixture.stream.locked, false);
-});
-
-test("canonical GET은 native URI와 header·body request_id를 함께 검증한다", async () => {
-  let requested = "";
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input) => {
-    requested = String(input);
-    return new Response(JSON.stringify(answeredNative), {
-      headers: { "content-type": "application/json", "X-Request-ID": "request-1" },
-    });
+  const original = globalThis.fetch;
+  globalThis.document = { cookie: "__Host-aon-central-csrf=csrf-value" };
+  globalThis.fetch = async (path, init) => {
+    seen.push([path, init]);
+    if (String(path) === "/api/questions") return new Response(JSON.stringify({ request_id: "q_01", state: "received", created_at: "2026-07-31T00:00:00Z", replayed: false }), { status: 201 });
+    return new Response(JSON.stringify({ request_id: "q_01", record_id: "a_01", feedback_id: "f_01", verdict: "good", submitted_at: "2026-07-31T00:00:01Z", replayed: false }), { status: 201 });
   };
   try {
-    const result = await getRequest("request-1");
-    assert.equal(requested, "/api/requests/request-1");
-    assert.deepEqual(result, answeredLegacy);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    await question.createQuestion("  원문 보존  ", "create-key");
+    await question.submitFeedback("q_01", { record_id: "a_01", verdict: "good", comment: "  고마워요  " }, "feedback-key");
+    assert.equal(seen[0][0], "/api/questions");
+    assert.equal(seen[0][1].headers["X-AON-CSRF"], "csrf-value");
+    assert.equal(seen[0][1].headers["Idempotency-Key"], "create-key");
+    assert.equal(seen[0][1].body, JSON.stringify({ question: "  원문 보존  " }));
+    assert.equal(seen[1][0], "/api/questions/q_01/feedback");
+    assert.equal(seen[1][1].body, JSON.stringify({ record_id: "a_01", verdict: "good", comment: "  고마워요  " }));
+    await assert.rejects(question.submitFeedback("q_01", { record_id: "a_01", verdict: "good", comment: "가".repeat(1366) }, "too-large"), /4096/);
+  } finally { globalThis.fetch = original; }
+});
 
-  await withFetch(
-    new Response(JSON.stringify(answeredNative), {
-      headers: { "content-type": "application/json", "X-Request-ID": "request-other" },
-    }),
-    async () => {
-      await assert.rejects(getRequest("request-1"), /요청 ID가 다른 응답/);
-    }
-  );
+test("stream event decoder는 event/request/cursor mismatch를 fail-close하고 done은 canonical GET으로만 확정한다", () => {
+  assert.deepEqual(question.decodeQuestionStreamEvent(event("pending", pending), "q_01"), { type: "pending", event: pending, cursor: "1" });
+  assert.deepEqual(question.decodeQuestionStreamEvent(event("done", answered, "18"), "q_01"), { type: "done", event: answered, cursor: "18" });
+  assert.equal(question.decodeQuestionStreamEvent(event("done", { ...answered, request_id: "q_other" }), "q_01"), null);
+  assert.equal(question.decodeQuestionStreamEvent(event("token", { request_id: "q_01", text: "draft" }, "0"), "q_01"), null);
+  assert.equal(question.decodeQuestionStreamEvent(event("unknown", { request_id: "q_01" }), "q_01"), null);
+});
+
+test("canonical GET은 exact request id와 sealed projection을 확인한다", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async (path) => {
+    assert.equal(path, "/api/questions/q_01");
+    return new Response(JSON.stringify(answered));
+  };
+  try { assert.deepEqual(await question.retrieveQuestion("q_01"), answered); }
+  finally { globalThis.fetch = original; }
+});
+
+test("상태 machine은 pending 완료를 주장하지 않고 body-free interruption의 retryability를 구분한다", () => {
+  assert.equal(question.lifecycleMessage(pending), "답변을 검토하고 있습니다. 아직 확정되지 않았습니다.");
+  assert.equal(question.lifecycleMessage({ type: "interrupted", request_id: "q_01", retryable: false }), "현재 권한으로 질문 상태를 계속 확인할 수 없습니다.");
+  assert.equal(question.lifecycleMessage(answered), "답변이 확정되었습니다.");
+});
+
+test("exact EventSource는 body-free interrupted를 path에 결박하고 retryable/nonretryable close를 구분한다", () => {
+  const listeners = new Map();
+  let closed = 0;
+  const seen = [];
+  const stop = question.subscribeQuestion("q_01", {
+    onEvent: (value) => seen.push(value.type),
+    onFault: (value) => seen.push(value.retryable ? "retry" : "stop"),
+  }, (url) => {
+    assert.equal(url, "/api/questions/q_01/stream");
+    return { addEventListener: (name, callback) => listeners.set(name, callback), close: () => { closed += 1; } };
+  });
+  listeners.get("interrupted")(event("interrupted", { request_id: "q_01", retryable: true }, "9"));
+  assert.equal(closed, 0);
+  listeners.get("done")(event("done", answered, "10"));
+  assert.deepEqual(seen, ["interrupted", "done"]);
+  assert.equal(closed, 1);
+  stop();
+  assert.equal(closed, 1);
+
+  let deniedClosed = 0;
+  const deniedListeners = new Map();
+  question.subscribeQuestion("q_01", { onEvent: (value) => seen.push(value.type), onFault: () => seen.push("fault") }, () => ({ addEventListener: (name, callback) => deniedListeners.set(name, callback), close: () => { deniedClosed += 1; } }));
+  deniedListeners.get("interrupted")(event("interrupted", { request_id: "q_01", retryable: false }, "11"));
+  assert.equal(deniedClosed, 1);
+  assert.equal(question.decodeQuestionStreamEvent(event("interrupted", { request_id: "q_01", retryable: true, message: "leak" }, "12"), "q_01"), null);
+  assert.equal(question.decodeQuestionStreamEvent(event("interrupted", { request_id: "q_other", retryable: true }, "12"), "q_01"), null);
+
+  let reconnects = 0;
+  let boundedCloses = 0;
+  let errorListener;
+  question.subscribeQuestion("q_01", { onEvent: () => {}, onFault: () => { reconnects += 100; }, onReconnect: () => { reconnects += 1; } }, () => ({ addEventListener: () => {}, close: () => { boundedCloses += 1; }, set onerror(value) { errorListener = value; } }));
+  for (let index = 0; index < 5; index += 1) errorListener(new Event("error"));
+  assert.equal(reconnects, 104);
+  assert.equal(boundedCloses, 1);
+});
+
+test("Next 질문 화면은 Central Session gate와 전용 Question lifecycle만 사용한다", () => {
+  assert.match(askPage, /fetch\("\/api\/auth\/session"/);
+  assert.match(askPage, /createQuestion\(/);
+  assert.match(askPage, /subscribeQuestion\(/);
+  assert.match(askPage, /retrieveQuestion\(/);
+  assert.match(askPage, /submitFeedback\(/);
+  assert.match(askPage, /event\.retryable \? undefined : lifecycleMessage\(event\)/);
+  assert.match(askPage, /void converge\(requestId\)/);
+  assert.doesNotMatch(askPage, /\/api\/ask|\/api\/requests|streamAsk|postAsk/);
 });

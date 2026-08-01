@@ -212,6 +212,59 @@ def test_Unowned_intent_None은_SQLite재시작뒤에도_None이고_빈문자열
     reopened.close()
 
 
+def test_non_actionable_초기_declined는_SQLite재시작뒤에도_정확히_복원된다(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "non-actionable.db"
+    writer = SqliteQuestionRequestStore(db_path)
+    received = _request("요청-non-actionable")
+    writer.create(received)
+    declined = received.record_initial_routing(
+        intent=None,
+        disposition="non_actionable",
+        target=DeclinedRequest(reason_code="non_actionable_conversation"),
+        clock=lambda: _T1,
+    )
+    assert writer.compare_and_set(received.request_id, 0, received, declined)
+    writer.close()
+
+    reader = SqliteQuestionRequestStore(db_path)
+    assert reader.get(received.request_id) == declined
+    assert reader.nonterminal() == []
+    reader.close()
+
+
+def test_SQLite재시작은_revision_1_Unowned_Manager_Declined_위조행을_fail_closed한다(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "forged-initial-declined.db"
+    writer = SqliteQuestionRequestStore(db_path)
+    received = _request("요청-forged-initial-declined")
+    writer.create(received)
+    writer.close()
+
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        "UPDATE question_requests SET intent = NULL, initial_disposition = ?, "
+        "state_kind = ?, state_json = ?, revision = ?, updated_at = ? WHERE request_id = ?",
+        (
+            "unowned",
+            "declined",
+            json.dumps(DeclinedRequest(reason_code="manager_declined").model_dump(mode="json")),
+            1,
+            _T1.isoformat(),
+            received.request_id,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    reader = SqliteQuestionRequestStore(db_path)
+    with pytest.raises(CorruptQuestionRequestError, match="도메인 계약"):
+        reader.get(received.request_id)
+    reader.close()
+
+
 @pytest.mark.parametrize("state_kind", _ALL_STATE_KINDS)
 def test_아홉상태와_한글_optional_timezone이_재시작뒤_그대로_왕복한다(
     tmp_path: Path,

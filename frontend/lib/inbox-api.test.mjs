@@ -5,307 +5,83 @@ import test from "node:test";
 import ts from "typescript";
 
 const source = await readFile(new URL("./inbox-api.ts", import.meta.url), "utf8");
-const transpiled = ts.transpileModule(source, {
-  compilerOptions: {
-    module: ts.ModuleKind.ESNext,
-    target: ts.ScriptTarget.ES2022,
-  },
-  fileName: "inbox-api.ts",
-  reportDiagnostics: true,
+const ui = await readFile(new URL("../components/inbox/inbox-tabs.tsx", import.meta.url), "utf8");
+const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }, fileName: "inbox-api.ts", reportDiagnostics: true });
+assert.deepEqual(compiled.diagnostics ?? [], []);
+const inbox = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputText).toString("base64")}`);
+
+const sha = "a".repeat(64);
+const conflict = { case_id: "case-1", request_id: "request-1", request_revision: 2, state: "open", round: 1, revision: 1, candidate_card_ids: ["card-1"], opened_at: "2026-07-31T00:00:00Z" };
+const backup = { review_id: "review-1", request_id: "request-1", source_answer_record_id: "answer-1", revision: 1, state: "open", created_at: "2026-07-31T00:00:00Z" };
+const reevaluation = { reevaluation_id: "reeval-1", request_id: "request-1", feedback_id: "feedback-1", source_answer_record_id: "answer-1", revision: 1, state: "open", created_at: "2026-07-31T00:00:00Z" };
+const approval = { approval_item_id: "approval-1", request_id: "request-1", request_revision: 2, approval_round: 1, revision: 1, assigned_at: "2026-07-31T00:00:00Z", due_at: "2026-08-01T00:00:00Z", state: "open" };
+
+test("네 목록 decoder는 exact metadata만 받고 raw/internal 필드를 닫는다", () => {
+  assert.deepEqual(inbox.decodeConflictList({ items: [conflict] }), [conflict]);
+  assert.deepEqual(inbox.decodeBackupList({ items: [backup] }), [backup]);
+  assert.deepEqual(inbox.decodeReevaluationList({ items: [reevaluation] }), [reevaluation]);
+  assert.deepEqual(inbox.decodeApprovalList({ items: [approval] }), [approval]);
+  assert.equal(inbox.decodeConflictList({ items: [{ ...conflict, raw_evidence: "leak" }] }), null);
+  assert.equal(inbox.decodeApprovalList({ items: [{ ...approval, owner: "forged" }] }), null);
+  assert.equal(inbox.decodeApprovalList({ items: [{ ...approval, request_revision: 0 }] }), null);
 });
-assert.deepEqual(transpiled.diagnostics ?? [], []);
 
-const {
-  getApprovalDetail,
-  getInboxApprovals,
-  postApprovalDecision,
-  postApprovalReassignment,
-  postConcur,
-} = await import(
-  `data:text/javascript;base64,${Buffer.from(transpiled.outputText).toString("base64")}`
-);
+test("lazy detail decoder는 safe text와 metadata-only evidence grant만 exact 허용한다", () => {
+  const detail = { ...conflict, expected_case_revision: 1, expected_request_revision: 2, expected_round: 1, question: "질문", candidates: [{ card_id: "card-1", card_revision: 1, card_digest: sha, owner_user_id: "user-1", concept_ref: "concept-1", coverage_digest: sha }], own_concurrence: null, evidence_grants: [{ grant_id: "grant-1", candidate_card_id: "card-1", candidate_card_revision: 1, concept_ref: "concept-1", expires_at: "2026-08-01T00:00:00Z", single_use: true, status: "available" }] };
+  assert.deepEqual(inbox.decodeConflictDetail(detail), detail);
+  assert.equal(inbox.decodeConflictDetail({ ...detail, source_uri: "file:///secret" }), null);
+  assert.equal(inbox.decodeConflictDetail({ ...detail, evidence_grants: [{ ...detail.evidence_grants[0], content: "raw" }] }), null);
+});
 
-test("postConcur는 서버 current round와 stance를 exact body로 전송한다", async () => {
-  const originalFetch = globalThis.fetch;
-  let requestUrl = "";
-  let requestInit;
-  globalThis.fetch = async (input, init) => {
-    requestUrl = String(input);
-    requestInit = init;
-    return new Response(
-      JSON.stringify({
-        type: "still_open",
-        request_id: "request-1",
-        case_id: "case-1",
-        current_round: 3,
-        pending_owners: ["finance_lead"],
-      }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
-  };
-  try {
-    await postConcur("case-1", "cs_ops", 3, "keep_as_complement", "근거");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+async function withFetch(handler, run) { const original = globalThis.fetch; globalThis.fetch = handler; globalThis.document = { cookie: "__Host-aon-central-csrf=csrf-value" }; try { await run(); } finally { globalThis.fetch = original; } }
 
-  assert.equal(requestUrl, "/api/cases/case-1/concur");
-  assert.equal(requestInit?.method, "POST");
-  assert.deepEqual(JSON.parse(String(requestInit?.body)), {
-    on_agent: "cs_ops",
-    rationale: "근거",
-    expected_round: 3,
-    stance: "keep_as_complement",
+test("list/detail은 dedicated 13-route 중 해당 exact URI와 AbortSignal만 사용한다", async () => {
+  const seen = [];
+  await withFetch(async (url, init) => { seen.push([String(url), init]); return new Response(JSON.stringify({ items: [] })); }, async () => {
+    const controller = new AbortController();
+    await inbox.listConflicts(controller.signal); await inbox.listBackupReviews(controller.signal); await inbox.listReevaluations(controller.signal); await inbox.listApprovals(controller.signal);
   });
+  assert.deepEqual(seen.map(([url]) => url), ["/api/inbox/conflicts", "/api/inbox/backup-reviews", "/api/inbox/reevaluations", "/api/inbox/approvals"]);
+  assert.ok(seen.every(([, init]) => init.credentials === "same-origin" && init.cache === "no-store"));
 });
 
-test("두 UI는 받은 current_round를 그대로 보내고 로컬 증가시키지 않는다", async () => {
-  const staticUi = await readFile(
-    new URL("../../web/inbox.html", import.meta.url),
-    "utf8",
-  );
-  const nextUi = await readFile(
-    new URL("../components/inbox/inbox-tabs.tsx", import.meta.url),
-    "utf8",
-  );
-
-  for (const ui of [staticUi, nextUi]) {
-    assert.match(ui, /current_round/);
-    assert.match(ui, /keep_as_complement/);
-    assert.doesNotMatch(ui, /current_round\s*\+\s*1/);
-  }
-});
-
-test("두 UI는 keep_as_complement를 내 후보의 보조 지식 유지로 설명한다", async () => {
-  const staticUi = await readFile(
-    new URL("../../web/inbox.html", import.meta.url),
-    "utf8",
-  );
-  const nextUi = await readFile(
-    new URL("../components/inbox/inbox-tabs.tsx", import.meta.url),
-    "utf8",
-  );
-  const expected = "내 후보가 primary가 아니면 내 후보 지식을 보조 근거로 유지";
-
-  for (const ui of [staticUi, nextUi]) {
-    assert.match(ui, new RegExp(expected));
-    assert.doesNotMatch(ui, /선택한 후보의 지식을 보조 근거로 유지/);
-  }
-});
-
-test("Approval API는 Next proxy의 queue와 detail 경로를 구분한다", async () => {
-  const originalFetch = globalThis.fetch;
-  const urls = [];
-  globalThis.fetch = async (input) => {
-    urls.push(String(input));
-    return new Response(JSON.stringify([]), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  };
-  try {
-    await getInboxApprovals();
-    await getApprovalDetail("approval/한글");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  assert.deepEqual(urls, [
-    "/api/inbox/approvals",
-    "/api/inbox/approvals/approval%2F%ED%95%9C%EA%B8%80",
-  ]);
-});
-
-test("Approval 처분은 kind별 exact body만 보내고 actor나 org를 싣지 않는다", async () => {
-  const originalFetch = globalThis.fetch;
+test("모든 action은 CSRF·replay key·expected revision과 actor-free exact body를 보낸다", async () => {
   const requests = [];
-  globalThis.fetch = async (input, init) => {
-    requests.push({ url: String(input), init });
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
+  await withFetch(async (url, init) => { requests.push([String(url), init]); return new Response(JSON.stringify({ receipt_id: "receipt-1", review_id: "review-1", revision: 2, state: "reviewed", correction_record_id: null, replayed: false })); }, async () => {
+    await inbox.disposeBackup("review-1", { kind: "approve", rationale: "  확인  ", expected_revision: 1 }, "key-1");
+  });
+  assert.equal(requests[0][0], "/api/inbox/backup-reviews/review-1/dispositions");
+  assert.equal(requests[0][1].headers["X-AON-CSRF"], "csrf-value");
+  assert.equal(requests[0][1].headers["Idempotency-Key"], "key-1");
+  assert.equal(requests[0][1].body, JSON.stringify({ kind: "approve", rationale: "  확인  ", expected_revision: 1 }));
+  for (const claim of ["actor", "actor_id", "org_id", "owner", "owner_id"]) assert.equal(claim in JSON.parse(requests[0][1].body), false);
+});
+
+test("required 원문은 whitespace를 보존하되 empty/lone surrogate/64KiB overflow를 client에서 거부한다", async () => {
+  await assert.rejects(inbox.disposeReevaluation("reeval-1", { kind: "acknowledge", rationale: "", expected_revision: 1 }, "key-1"), /필수/);
+  await assert.rejects(inbox.disposeBackup("review-1", { kind: "correct", corrected_text: "\ud800", rationale: "ok", expected_revision: 1 }, "key-1"), /형식/);
+  await assert.rejects(inbox.disposeBackup("review-1", { kind: "correct", corrected_text: "가".repeat(22000), rationale: "ok", expected_revision: 1 }, "key-1"), /65536/);
+});
+
+test("401/404/409/503은 session stop·hiding·canonical reload를 위한 typed error다", async () => {
+  for (const [status, code] of [[401, "session_unavailable"], [404, "not_found_or_denied"], [409, "stale_or_conflict"], [503, "unavailable"]]) {
+    await withFetch(async () => new Response(JSON.stringify({ code, message: "safe" }), { status }), async () => {
+      await assert.rejects(inbox.listConflicts(), (error) => error.status === status && error.code === code && error.reload === (status === 409 || status === 503));
     });
-  };
-  try {
-    await postApprovalDecision("approval-1", { kind: "approve" });
-    await postApprovalDecision("approval-1", {
-      kind: "approve_with_edit",
-      edited_text: "수정 답변",
-    });
-    await postApprovalDecision("approval-1", {
-      kind: "reject",
-      reason_code: "unsupported",
-    });
-    await postApprovalReassignment("approval-1", "next-owner");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  assert.deepEqual(
-    requests.map(({ url, init }) => ({
-      url,
-      method: init?.method,
-      body: JSON.parse(String(init?.body)),
-    })),
-    [
-      {
-        url: "/api/inbox/approvals/approval-1/decide",
-        method: "POST",
-        body: { kind: "approve" },
-      },
-      {
-        url: "/api/inbox/approvals/approval-1/decide",
-        method: "POST",
-        body: { kind: "approve_with_edit", edited_text: "수정 답변" },
-      },
-      {
-        url: "/api/inbox/approvals/approval-1/decide",
-        method: "POST",
-        body: { kind: "reject", reason_code: "unsupported" },
-      },
-      {
-        url: "/api/inbox/approvals/approval-1/reassign",
-        method: "POST",
-        body: { approver_id: "next-owner" },
-      },
-    ],
-  );
-  for (const request of requests) {
-    const body = JSON.parse(String(request.init?.body));
-    assert.equal("actor_id" in body, false);
-    assert.equal("org_id" in body, false);
-    assert.equal("principal" in body, false);
   }
 });
 
-test("두 처리함은 네 번째 Approval 탭과 lazy detail·필수 입력 계약을 가진다", async () => {
-  const staticUi = await readFile(
-    new URL("../../web/inbox.html", import.meta.url),
-    "utf8",
-  );
-  const nextUi = await readFile(
-    new URL("../components/inbox/inbox-tabs.tsx", import.meta.url),
-    "utf8",
-  );
-
-  for (const ui of [staticUi, nextUi]) {
-    assert.match(ui, /Approval/);
-    assert.match(ui, /inbox\/approvals|getInboxApprovals/);
-    assert.match(ui, /approve_with_edit/);
-    assert.match(ui, /reason_code/);
-    assert.match(ui, /approver_id|approverId/);
-    assert.match(ui, /role=["']tabpanel["']/);
-    assert.doesNotMatch(ui, /actor_id\s*:/);
-    assert.doesNotMatch(ui, /org_id\s*:/);
-  }
-  assert.match(staticUi, /textContent/);
-  assert.match(nextUi, /getApprovalDetail/);
+test("load epoch helper는 마지막 tab/session/detail 응답만 허용한다", () => {
+  assert.equal(inbox.isCurrentLoad(4, 4, false), true);
+  assert.equal(inbox.isCurrentLoad(3, 4, false), false);
+  assert.equal(inbox.isCurrentLoad(4, 4, true), false);
 });
 
-test("Approval 상세는 마지막 선택 요청만 적용하고 이전 상세를 처분 대상으로 남기지 않는다", async () => {
-  const staticUi = await readFile(
-    new URL("../../web/inbox.html", import.meta.url),
-    "utf8",
-  );
-  const nextUi = await readFile(
-    new URL("../components/inbox/inbox-tabs.tsx", import.meta.url),
-    "utf8",
-  );
-
-  const nextDetail = nextUi.slice(
-    nextUi.indexOf("async function openDetail"),
-    nextUi.indexOf("async function act", nextUi.indexOf("async function openDetail")),
-  );
-  assert.match(nextUi, /detailRequestEpoch/);
-  assert.match(nextDetail, /\+\+detailRequestEpoch\.current/);
-  assert.ok(
-    nextDetail.indexOf("detailRequest !== detailRequestEpoch.current") <
-      nextDetail.indexOf("setDetail(loaded)"),
-  );
-
-  const staticDetailStart = staticUi.indexOf('openBtn.addEventListener("click"');
-  const staticDetail = staticUi.slice(
-    staticDetailStart,
-    staticUi.indexOf("return wrap", staticDetailStart),
-  );
-  assert.match(staticUi, /approvalDetailRequest/);
-  assert.match(staticUi, /activeApprovalDetailClose/);
-  assert.ok(
-    staticDetail.indexOf("detailRequest !== approvalDetailRequest") <
-      staticDetail.indexOf('detailBox.appendChild(el("div", "question"'),
-  );
-});
-
-test("세션 또는 load epoch 변경은 Approval 상태를 비우고 이전 응답을 봉인한다", async () => {
-  const staticUi = await readFile(
-    new URL("../../web/inbox.html", import.meta.url),
-    "utf8",
-  );
-  const nextUi = await readFile(
-    new URL("../components/inbox/inbox-tabs.tsx", import.meta.url),
-    "utf8",
-  );
-
-  const nextRefresh = nextUi.slice(
-    nextUi.indexOf("const refresh = useCallback"),
-    nextUi.indexOf("useEffect", nextUi.indexOf("const refresh = useCallback")),
-  );
-  assert.match(nextUi, /refreshEpoch/);
-  assert.ok(
-    nextRefresh.indexOf("refreshRequest !== refreshEpoch.current") <
-      nextRefresh.indexOf("setApprovals(ap)"),
-  );
-  assert.match(nextUi, /setApprovals\(\[\]\)/);
-  assert.match(
-    nextUi,
-    /const visibleApprovals = approvalSession === userId \? approvals : \[\]/,
-  );
-  assert.match(nextUi, /approvals=\{visibleApprovals\}/);
-  assert.match(nextUi, /key=\{userId/);
-
-  const staticLoad = staticUi.slice(
-    staticUi.indexOf("async function loadApprovals"),
-    staticUi.indexOf("async function loadReviews"),
-  );
-  assert.match(staticUi, /approvalLoadEpoch/);
-  assert.match(staticUi, /beginApprovalLoadGeneration/);
-  assert.ok(
-    staticLoad.indexOf("generation !== approvalLoadEpoch") <
-      staticLoad.indexOf("approvalCountEl.textContent"),
-  );
-  for (const functionName of ["showLogin", "showIdentity"]) {
-    const start = staticUi.indexOf(`function ${functionName}`);
-    const end = staticUi.indexOf("\n    }", start);
-    assert.match(staticUi.slice(start, end), /beginApprovalLoadGeneration\(\)/);
-  }
-});
-
-test("정적 UI의 새 세션과 load 세대는 Approval 카드와 count를 즉시 0으로 만든다", async () => {
-  const staticUi = await readFile(
-    new URL("../../web/inbox.html", import.meta.url),
-    "utf8",
-  );
-  const generationStart = staticUi.indexOf("function beginApprovalLoadGeneration");
-  const generation = staticUi.slice(
-    generationStart,
-    staticUi.indexOf("// ── 탭 전환", generationStart),
-  );
-
-  assert.match(generation, /approvalsEl\.textContent = ""/);
-  assert.match(generation, /approvalCountEl\.textContent = "0"/);
-  assert.match(generation, /approvalCountEl\.classList\.add\("zero"\)/);
-  assert.ok(
-    generation.indexOf('approvalCountEl.textContent = "0"') <
-      generation.indexOf("return approvalLoadEpoch"),
-  );
-
-  const loadStart = staticUi.indexOf("async function loadApprovals");
-  const loadApprovals = staticUi.slice(
-    loadStart,
-    staticUi.indexOf("async function loadReviews", loadStart),
-  );
-  assert.ok(
-    loadApprovals.indexOf("generation !== approvalLoadEpoch") <
-      loadApprovals.indexOf("approvalCountEl.textContent = String(items.length)"),
-  );
+test("UI는 네 접근 가능한 탭·Home/End·lazy detail·session unavailable·중복 방지를 갖는다", () => {
+  assert.match(ui, /role="tablist"/); assert.match(ui, /role="tabpanel"/); assert.match(ui, /ArrowLeft|ArrowRight/); assert.match(ui, /Home/); assert.match(ui, /End/);
+  const tablistStart = ui.indexOf('<div role="tablist"'); const tablist = ui.slice(tablistStart, ui.indexOf("</div>", tablistStart));
+  assert.doesNotMatch(tablist, /<Button/);
+  assert.match(ui, /\/api\/auth\/session/); assert.match(ui, /AbortController/); assert.match(ui, /loadEpoch/); assert.match(ui, /detailEpoch/); assert.match(ui, /aria-live/); assert.match(ui, /busyAction/);
+  assert.match(ui, /reloadSelected/); assert.match(ui, /reason\.status === 404/);
+  assert.doesNotMatch(ui, /fetchCaseDocument|\/api\/cases|\/api\/reeval|demo|DEMO_IDENTITIES|raw_evidence/);
 });

@@ -32,6 +32,7 @@ from agent_org_network.manager_queue import (
 )
 from agent_org_network.question_request import (
     AnsweredRequest,
+    DeclinedRequest,
     FailedRequest,
     InMemoryQuestionRequestStore,
     ReadyToDispatch,
@@ -46,6 +47,7 @@ from agent_org_network.question_resolution import (
     QuestionAuthorizationUnavailableError,
     QuestionResolutionApplication,
     RequestAnswered,
+    RequestDeclined,
     RequestFailed,
     RequestNotFound,
     RequestPending,
@@ -536,6 +538,75 @@ def test_ask_persists_received_before_router_then_records_authorized_route() -> 
         ("org-1", "received", NOW),
         ("org-1", "ready_to_dispatch", NOW),
     ]
+
+
+@pytest.mark.parametrize("question", ["안녕", "  안녕하세요  ", "HELLO"])
+def test_exact_non_actionable_conversation은_초기_declined로만_종결한다(
+    question: str,
+) -> None:
+    class _ForbiddenConflictReadStore(InMemoryConflictCaseStore):
+        def get_by_request(self, request_id: str) -> ConflictCase | None:
+            raise AssertionError(f"non_actionable intake가 ConflictCase를 조회했습니다: {request_id}")
+
+    class _ForbiddenManagerReadStore(InMemoryManagerQueueStore):
+        def get_by_request(self, request_id: str) -> ManagerItem | None:
+            raise AssertionError(f"non_actionable intake가 ManagerItem을 조회했습니다: {request_id}")
+
+    router = _Router(Unowned(escalated_to="root-user"))
+    app, requests, _, _, authority, deadlines = _application(
+        router=router,
+        conflicts=_ForbiddenConflictReadStore(),
+        managers=_ForbiddenManagerReadStore(),
+    )
+
+    outcome = app.ask(_command(question))
+
+    assert outcome == RequestDeclined(
+        request_id="req-1",
+        reason_code="non_actionable_conversation",
+        message="안녕하세요. 조직 업무나 지식에 관한 질문을 입력해 주세요.",
+    )
+    stored = requests.get("req-1")
+    assert stored is not None
+    assert stored.intent is None
+    assert stored.initial_disposition == "non_actionable"
+    assert stored.revision == 1
+    assert stored.state == DeclinedRequest(reason_code="non_actionable_conversation")
+    assert router.questions == []
+    assert authority.calls == []
+    assert deadlines.calls == [("org-1", "received", NOW)]
+    assert app.advance("req-1", expected_revision=0) == outcome
+
+
+def test_greeting에_실제_업무질문이_포함되면_정확일치_intake_종결을_우회한다() -> None:
+    router = _Router(Unowned(escalated_to="root-user"))
+    app, requests, _, managers, authority, _ = _application(router=router)
+
+    outcome = app.ask(_command("안녕하세요, 환불 규정은 어떻게 되나요?"))
+
+    assert isinstance(outcome, RequestPending)
+    assert outcome.state == "awaiting_manager"
+    stored = requests.get("req-1")
+    assert stored is not None
+    assert stored.initial_disposition == "unowned"
+    assert router.questions == ["안녕하세요, 환불 규정은 어떻게 되나요?"]
+    assert authority.calls == []
+    assert managers.get_by_request("req-1") is not None
+
+
+def test_실제_no_match는_non_actionable이_아닌_Unowned로_계속_에스컬레이션한다() -> None:
+    router = _Router(Unowned(escalated_to="root-user"))
+    app, requests, _, managers, _, _ = _application(router=router)
+
+    outcome = app.ask(_command("사내 주차 등록은 어디서 하나요?"))
+
+    assert isinstance(outcome, RequestPending)
+    assert outcome.state == "awaiting_manager"
+    stored = requests.get("req-1")
+    assert stored is not None
+    assert stored.initial_disposition == "unowned"
+    assert router.questions == ["사내 주차 등록은 어디서 하나요?"]
+    assert managers.get_by_request("req-1") is not None
 
 
 def test_contested_creates_canonical_request_scoped_case_before_request_cas() -> None:

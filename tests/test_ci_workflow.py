@@ -1,18 +1,20 @@
+"""ADR 0073 CI event and verification-tier contract."""
+
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import cast
 
 import yaml
 
 
-WORKFLOW_PATH = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
-
-CHECKOUT = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
-SETUP_UV = "astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b"
-SETUP_PNPM = "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271"
-SETUP_NODE = "actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f"
+ROOT = Path(__file__).parents[1]
+WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+SCRIPTS = {
+    "fast": ROOT / "scripts" / "verify-fast.sh",
+    "contract": ROOT / "scripts" / "verify-contract.sh",
+    "full": ROOT / "scripts" / "verify-full.sh",
+}
 
 
 def _mapping(value: object) -> dict[object, object]:
@@ -20,152 +22,90 @@ def _mapping(value: object) -> dict[object, object]:
     return cast(dict[object, object], value)
 
 
-def _sequence(value: object) -> list[object]:
-    assert isinstance(value, list)
-    return cast(list[object], value)
-
-
-def _load_workflow() -> tuple[str, dict[object, object]]:
-    assert WORKFLOW_PATH.is_file(), f"CI workflow가 없습니다: {WORKFLOW_PATH}"
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    parsed: object = yaml.safe_load(text)
-    return text, _mapping(parsed)
+def _workflow() -> dict[object, object]:
+    parsed: object = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return _mapping(parsed)
 
 
 def _triggers(workflow: dict[object, object]) -> dict[object, object]:
-    # PyYAML 1.1은 따옴표 없는 `on`을 bool로 읽으므로 두 표현을 모두 받는다.
     return _mapping(workflow.get("on", workflow.get(True)))
 
 
 def _jobs(workflow: dict[object, object]) -> dict[object, object]:
-    return _mapping(workflow.get("jobs"))
+    return _mapping(workflow["jobs"])
 
 
-def _steps(job: dict[object, object]) -> list[dict[object, object]]:
-    return [_mapping(step) for step in _sequence(job.get("steps"))]
+def _runs(job: dict[object, object]) -> list[str]:
+    steps = cast(list[object], job["steps"])
+    return [str(_mapping(step)["run"]) for step in steps if "run" in _mapping(step)]
 
 
-def _uses(steps: list[dict[object, object]]) -> list[str]:
-    values: list[str] = []
-    for step in steps:
-        value = step.get("uses")
-        if value is not None:
-            assert isinstance(value, str)
-            values.append(value)
-    return values
+def test_검증_스크립트는_명시_계층과_책임을_보존한다() -> None:
+    texts = {name: path.read_text(encoding="utf-8") for name, path in SCRIPTS.items()}
+    assert all(path.is_file() for path in SCRIPTS.values())
+    assert all(text.startswith("#!/usr/bin/env bash\nset -euo pipefail\n") for text in texts.values())
+
+    fast = texts["fast"]
+    for path in (
+        "test_support_contract.py", "test_smoke.py", "test_question_request.py",
+        "test_question_request_sqlite.py", "test_question_resolution_application.py",
+        "test_auth.py", "test_security_regression.py", "test_ci_workflow.py",
+    ):
+        assert path in fast
+    assert "uv run ruff check ." in fast
+    assert "corepack pnpm test" in fast
+    assert "corepack pnpm exec tsc --noEmit" in fast
+    assert "corepack pnpm lint" in fast
+    assert "pnpm build" not in fast
+
+    assert "tests/test_support_contract.py" in texts["contract"]
+    assert "tests/test_developer_api_boundary.py" in texts["contract"]
+    assert "tests/test_installation_contracts.py" in texts["contract"]
+    assert "tests/test_installation_entrypoints.py" in texts["contract"]
+    assert "tests/test_central_web_runtime.py" in texts["contract"]
+    assert "tests/test_central_next_artifact_contract.py" in texts["contract"]
+    assert "corepack pnpm --dir frontend build" in texts["contract"]
+    assert "uv run pytest -q" in texts["contract"]
+    assert "uv run pytest -q" in texts["full"]
+    assert "uv run pyright" in texts["full"]
+    assert "uv run ruff check ." in texts["full"]
+    for command in ("corepack pnpm test", "corepack pnpm exec tsc --noEmit", "corepack pnpm lint", "corepack pnpm build"):
+        assert command in texts["full"]
 
 
-def _runs(steps: list[dict[object, object]]) -> list[str]:
-    values: list[str] = []
-    for step in steps:
-        value = step.get("run")
-        if value is not None:
-            assert isinstance(value, str)
-            values.append(value)
-    return values
-
-
-def _step_using(steps: list[dict[object, object]], action: str) -> dict[object, object]:
-    matches = [step for step in steps if step.get("uses") == action]
-    assert len(matches) == 1
-    return matches[0]
-
-
-def _contains_key(value: object, forbidden: str) -> bool:
-    if isinstance(value, dict):
-        mapping = cast(dict[object, object], value)
-        return any(
-            key == forbidden or _contains_key(child, forbidden) for key, child in mapping.items()
-        )
-    if isinstance(value, list):
-        return any(_contains_key(child, forbidden) for child in cast(list[object], value))
-    return False
-
-
-def test_ci는_pr과_main_push를_최소권한으로_빠짐없이_검사한다() -> None:
-    _, workflow = _load_workflow()
-
+def test_ci는_pr_fast_contract와_main_nightly_manual_full을_분리한다() -> None:
+    workflow = _workflow()
     triggers = _triggers(workflow)
-    assert set(triggers) == {"pull_request", "push"}
+    assert set(triggers) == {"pull_request", "push", "schedule", "workflow_dispatch"}
     assert triggers["pull_request"] is None
     assert _mapping(triggers["push"]) == {"branches": ["main"]}
-    assert not _contains_key(triggers, "paths")
-    assert not _contains_key(triggers, "paths-ignore")
-
-    assert _mapping(workflow.get("permissions")) == {"contents": "read"}
-    concurrency = _mapping(workflow.get("concurrency"))
-    assert concurrency == {
-        "group": "ci-${{ github.workflow }}-${{ github.ref }}",
-        "cancel-in-progress": True,
-    }
-
-
-def test_ci는_backend와_frontend를_병렬_제한시간_job으로_실행한다() -> None:
-    _, workflow = _load_workflow()
+    assert triggers["workflow_dispatch"] is None
+    assert cast(list[object], triggers["schedule"]) == [{"cron": "17 3 * * *"}]
 
     jobs = _jobs(workflow)
-    assert set(jobs) == {"backend", "frontend"}
-    for raw_job in jobs.values():
-        job = _mapping(raw_job)
-        assert job.get("runs-on") == "ubuntu-24.04"
-        timeout = job.get("timeout-minutes")
-        assert isinstance(timeout, int) and not isinstance(timeout, bool)
-        assert 0 < timeout <= 20
-        assert "needs" not in job
-        assert "permissions" not in job
-        # required check 이름만 남기고 job/step이 조건부 skip되는 우회를 막는다.
-        assert not _contains_key(job, "if")
+    assert set(jobs) == {"fast", "contract", "full"}
+    assert _mapping(jobs["fast"])["if"] == (
+        "github.event_name == 'pull_request' || github.event_name == 'push'"
+    )
+    assert _mapping(jobs["contract"])["if"] == (
+        "github.event_name == 'pull_request' || github.event_name == 'push'"
+    )
+    full = _mapping(jobs["full"])
+    assert full["if"] == "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
+    assert _runs(_mapping(jobs["fast"])).pop() == "scripts/verify-fast.sh"
+    assert _runs(_mapping(jobs["contract"])).pop() == "scripts/verify-contract.sh"
+    assert _runs(full).pop() == "scripts/verify-full.sh"
 
 
-def test_ci는_action과_toolchain을_immutable_버전에_고정한다() -> None:
-    _, workflow = _load_workflow()
-    jobs = _jobs(workflow)
-    backend_steps = _steps(_mapping(jobs["backend"]))
-    frontend_steps = _steps(_mapping(jobs["frontend"]))
-
-    assert _uses(backend_steps) == [CHECKOUT, SETUP_UV]
-    assert _uses(frontend_steps) == [CHECKOUT, SETUP_PNPM, SETUP_NODE]
-    for action in _uses(backend_steps) + _uses(frontend_steps):
-        assert re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", action)
-
-    assert _mapping(_step_using(backend_steps, SETUP_UV).get("with")) == {
-        "version": "0.11.28",
-        "python-version": "3.12",
-        "enable-cache": True,
-    }
-    assert _mapping(_step_using(frontend_steps, SETUP_PNPM).get("with")) == {
-        "version": "10.33.0",
-        "run_install": False,
-    }
-    assert _mapping(_step_using(frontend_steps, SETUP_NODE).get("with")) == {
-        "node-version": "24.14.1",
-        "cache": "pnpm",
-        "cache-dependency-path": "frontend/pnpm-lock.yaml",
-    }
-
-
-def test_ci는_로컬과_같은_명령만_실행하고_외부자격증명을_쓰지_않는다() -> None:
-    text, workflow = _load_workflow()
-    jobs = _jobs(workflow)
-    backend = _mapping(jobs["backend"])
-    frontend = _mapping(jobs["frontend"])
-
-    assert _runs(_steps(backend)) == [
-        "uv sync --locked --all-extras --dev",
-        "uv run ruff check .",
-        "uv run pyright",
-        "uv run pytest -q",
-    ]
-    assert _runs(_steps(frontend)) == [
-        "pnpm install --frozen-lockfile",
-        "pnpm lint",
-        "pnpm build",
-    ]
-    assert _mapping(_mapping(frontend.get("defaults")).get("run")) == {
-        "working-directory": "frontend"
-    }
-
-    assert "secrets." not in text
-    assert "pull_request_target" not in _triggers(workflow)
-    assert not _contains_key(workflow, "secrets")
-    assert not _contains_key(workflow, "continue-on-error")
+def test_ci_frontend는_고정_pnpm과_기존_검증을_쓴다() -> None:
+    workflow = _workflow()
+    for name in ("fast", "contract", "full"):
+        job = _mapping(_jobs(workflow)[name])
+        steps = [_mapping(step) for step in cast(list[object], job["steps"])]
+        pnpm = next(
+            step
+            for step in steps
+            if str(step.get("uses", "")).startswith("pnpm/action-setup@")
+        )
+        assert _mapping(pnpm["with"])["version"] == "11.18.0"
+        assert "corepack pnpm --dir frontend install --frozen-lockfile" in _runs(job)

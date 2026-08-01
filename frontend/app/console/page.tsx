@@ -1,6 +1,5 @@
 import { PageHeader } from "@/components/app-shell/page-header";
-import { ConsoleView } from "@/components/console/console-view";
-import { LoginGate } from "@/components/session/login-gate";
+import { SsoUnavailable } from "@/components/session/sso-unavailable";
 
 export default function ConsolePage() {
   return (
@@ -9,11 +8,9 @@ export default function ConsolePage() {
         surface="Console"
         persona="운영자"
         title="운영 콘솔"
-        description="라우팅·답변·조직 이벤트를 감사 로그로 관찰하고, 매니저 에스컬레이션 큐와 조직 맵을 한 화면에서 확인합니다."
+        description="Central OIDC 세션과 현재 Authority 검증이 준비된 뒤에 제공합니다."
       />
-      <LoginGate surface="운영 콘솔" requiredRole="operator">
-        <ConsoleView />
-      </LoginGate>
+      <SsoUnavailable surface="운영 콘솔" />
     </div>
   );
 }

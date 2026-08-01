@@ -7,25 +7,37 @@
 // origin, so no CORS and the httponly cookie flows transparently.
 
 import { type NextRequest } from "next/server";
+import {
+  bffRequestHeaders,
+  bffResponseHeaders,
+  isAllowedBffRequest,
+  readBffBody,
+} from "@/lib/bff-policy";
+import { readFrontendRuntimeConfig, upstreamUrl } from "@/lib/frontend-runtime";
 
 export const dynamic = "force-dynamic";
 
-// 127.0.0.1 (not "localhost") — Node fetch resolves "localhost" to IPv6 (::1)
-// first and waits ~10s for the IPv4 fallback when uvicorn binds 127.0.0.1 only.
-const BACKEND_URL = process.env.AON_BACKEND_URL ?? "http://127.0.0.1:8011";
-
 async function proxy(req: NextRequest, path: string[]): Promise<Response> {
-  const search = req.nextUrl.search;
-  const target = `${BACKEND_URL}/${path.join("/")}${search}`;
+  if (!isAllowedBffRequest(req.method, path)) {
+    return Response.json({ detail: "Not found" }, { status: 404 });
+  }
+  const runtime = readFrontendRuntimeConfig();
+  if (!runtime.ok) {
+    return Response.json({ detail: "Frontend runtime is not configured" }, { status: 503 });
+  }
+  const target = upstreamUrl(runtime.config, path, req.nextUrl.search);
 
-  const headers = new Headers(req.headers);
-  headers.delete("host");
-  headers.delete("connection");
-  headers.delete("content-length");
+  const headers = bffRequestHeaders(req.headers);
 
   const init: RequestInit = { method: req.method, headers, redirect: "manual" };
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = await req.text();
+  try {
+    const body = await readBffBody(req);
+    if (body !== null) init.body = body as unknown as BodyInit;
+  } catch (error) {
+    if (error instanceof RangeError) {
+      return Response.json({ detail: "Request body too large" }, { status: 413 });
+    }
+    return Response.json({ detail: "Invalid request body" }, { status: 400 });
   }
 
   let backendRes: Response;
@@ -38,18 +50,12 @@ async function proxy(req: NextRequest, path: string[]): Promise<Response> {
     );
   }
 
-  const respHeaders = new Headers(backendRes.headers);
-  respHeaders.delete("content-encoding");
-  respHeaders.delete("content-length");
-  respHeaders.delete("transfer-encoding");
-
   // SSE (text/event-stream) must be piped through, NOT buffered — arrayBuffer()
   // would wait for the whole response and defeat token-by-token streaming.
   // Pass the backend's ReadableStream straight to the browser (same origin).
   const contentType = backendRes.headers.get("content-type") ?? "";
+  const respHeaders = bffResponseHeaders(backendRes.headers, contentType.includes("text/event-stream"));
   if (contentType.includes("text/event-stream") && backendRes.body) {
-    respHeaders.set("cache-control", "no-cache, no-transform");
-    respHeaders.set("x-accel-buffering", "no");
     return new Response(backendRes.body, {
       status: backendRes.status,
       headers: respHeaders,

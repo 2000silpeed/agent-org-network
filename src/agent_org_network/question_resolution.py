@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from threading import Lock
 from typing import Literal, Protocol, TypeAlias, assert_never
+from unicodedata import normalize
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -37,8 +38,10 @@ from agent_org_network.question_request import (
     AwaitingConflict,
     AwaitingManager,
     DeclinedRequest,
+    declined_request_message,
     FailedRequest,
     HandlingAssignment,
+    NON_ACTIONABLE_CONVERSATION_REASON,
     QuestionRequest,
     QuestionRequestStore,
     ReadyToDispatch,
@@ -55,6 +58,28 @@ from agent_org_network.router import RouterPort
 from agent_org_network.storage_capability import validate_workflow_composition
 
 Clock: TypeAlias = Callable[[], datetime]
+
+_NON_ACTIONABLE_EXACT_INPUTS = frozenset(
+    {
+        "안녕",
+        "안녕하세요",
+        "반가워",
+        "반갑습니다",
+        "hi",
+        "hello",
+        "hey",
+    }
+)
+
+
+def is_non_actionable_conversation(question: str) -> bool:
+    """보수적인 정확 일치 인사만 Router 전에 종결한다.
+
+    Unicode 호환·대소문자·앞뒤/연속 공백만 정규화한다. 문장부호 삭제, 접두사
+    매칭, 의미 추론은 하지 않아 실제 업무 질문이 이 경계에서 사라지지 않는다.
+    """
+    normalized = " ".join(normalize("NFKC", question).casefold().split())
+    return normalized in _NON_ACTIONABLE_EXACT_INPUTS
 
 
 class _FrozenDto(BaseModel):
@@ -279,7 +304,6 @@ class RequestLockPool:
 
 
 _PENDING_MESSAGE = "질문을 처리하고 있습니다."
-_DECLINED_MESSAGE = "질문 처리가 거절되었습니다."
 _FAILED_MESSAGE = "질문을 처리하지 못했습니다."
 
 
@@ -565,7 +589,17 @@ class QuestionResolutionApplication:
         if not isinstance(request.state, Received):
             return self._project(request)
 
-        updated = self._update_from_linked_orphan(request)
+        if is_non_actionable_conversation(request.question):
+            updated = request.record_initial_routing(
+                intent=None,
+                disposition="non_actionable",
+                target=DeclinedRequest(
+                    reason_code=NON_ACTIONABLE_CONVERSATION_REASON,
+                ),
+                clock=self._clock,
+            )
+        else:
+            updated = self._update_from_linked_orphan(request)
         if updated is None:
             try:
                 decision = self._router.route(request.question)
@@ -599,7 +633,7 @@ class QuestionResolutionApplication:
             and request.initial_disposition is not None
             and isinstance(
                 request.state,
-                (ReadyToDispatch, AwaitingConflict, AwaitingManager),
+                (ReadyToDispatch, AwaitingConflict, AwaitingManager, DeclinedRequest),
             )
         )
 
@@ -640,6 +674,8 @@ class QuestionResolutionApplication:
                 and left.handling.kind == right.handling.kind
                 and left.handling.ref == right.handling.ref
             )
+        if isinstance(left, DeclinedRequest) and isinstance(right, DeclinedRequest):
+            return left.reason_code == right.reason_code
         return False
 
     def _update_from_linked_orphan(
@@ -678,8 +714,15 @@ class QuestionResolutionApplication:
 
     def _validate_winner_link_consistency(self, request: QuestionRequest) -> None:
         """stale initial advance가 갈라진 linked workflow를 성공으로 숨기지 않게 한다."""
-        case, item = self._read_linked_snapshots(request.request_id)
         state = request.state
+        if (
+            isinstance(state, DeclinedRequest)
+            and request.initial_disposition == "non_actionable"
+            and request.intent is None
+            and state.reason_code == NON_ACTIONABLE_CONVERSATION_REASON
+        ):
+            return
+        case, item = self._read_linked_snapshots(request.request_id)
         if isinstance(state, ReadyToDispatch):
             if case is None and item is None:
                 return
@@ -1135,7 +1178,7 @@ class QuestionResolutionApplication:
             return RequestDeclined(
                 request_id=request.request_id,
                 reason_code=state.reason_code,
-                message=_DECLINED_MESSAGE,
+                message=declined_request_message(state.reason_code),
             )
         if isinstance(state, FailedRequest):
             return RequestFailed(

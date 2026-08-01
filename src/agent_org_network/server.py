@@ -427,7 +427,7 @@ def create_central_app(
     from agent_org_network.reeval import InMemoryReevalStore, ReevalService
     from agent_org_network.review import BackupReviewService, InMemoryBackupReviewStore
     from agent_org_network.storage_select import select_token_store_or_none
-    from agent_org_network.web import create_app
+    from agent_org_network.web import create_developer_api_app
 
     # 검토 store·service 하나씩 — 디스패처(생성 트리거)와 web의 legacy WorkTicket
     # retrieve overlay가 같은 인스턴스를 봐야 기존 검토 루프가 닫힌다(결정 7).
@@ -564,7 +564,7 @@ def create_central_app(
     for snapshot in demo_delegations():
         dispatcher.register_delegation(snapshot)
 
-    app = create_app(
+    app = create_developer_api_app(
         runtime=_central_runtime,
         dispatcher=dispatcher,
         review_store=review_store,

@@ -20,6 +20,7 @@ from agent_org_network.answer_finalization import (
 )
 from agent_org_network.question_request import (
     DeclinedRequest,
+    declined_request_message,
     FailedRequest,
     QuestionPendingKind,
     QuestionRequest,
@@ -703,7 +704,7 @@ def _event_from_request_terminal(
         return DeclinedEvent(
             request_id=canonical.request_id,
             reason_code=state.reason_code,
-            message=message,
+            message=declined_request_message(state.reason_code),
         )
     if isinstance(state, FailedRequest):
         return FailedEvent(

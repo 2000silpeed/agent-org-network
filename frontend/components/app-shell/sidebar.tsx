@@ -4,7 +4,6 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { NAV_ITEMS } from "./nav";
-import { IdentitySwitcher } from "@/components/session/identity-switcher";
 import { ThemeToggle } from "./theme";
 import { cn } from "@/lib/utils";
 
@@ -91,9 +90,7 @@ export function Sidebar() {
       </nav>
 
       <div className="flex items-center gap-ds-8 border-t border-[var(--ds-color-border)] px-ds-16 py-ds-12">
-        <div className="min-w-0 flex-1">
-          <IdentitySwitcher placement="up" />
-        </div>
+        <span className="min-w-0 flex-1 text-xs text-[var(--ds-color-ink-subtle)]">Central SSO</span>
         <ThemeToggle />
       </div>
     </aside>

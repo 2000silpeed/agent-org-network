@@ -892,7 +892,9 @@ Owner pair/redeem은 두 저장소의 교차 재시작을 전제로 한다. `Own
   `updated_at`을 다음 CAS 명령의 expected 값으로 사용하며, row가 없거나 검증에 실패하면
   paired/ready를 주장하지 않고 fail-closed한다. 이 API는 비밀·pairing code를 반환하지 않으며,
   terminal profile은 별도 read model이므로 finalize 뒤 `None`이 정상이다. Central issue/redeem
-  응답의 실제 receipt anchor가 연결되기 전에는 pair/redeem 완료로 해석하지 않는다(ADR 0085).
+  응답은 persisted issue/redeem receipt id/digest와 pairing-intent digest를 반환하지만, 이
+  anchor가 Owner bundle/recovery CAS와 교차 검증되기 전에는 pair/redeem 완료로 해석하지 않는다
+  (ADR 0085).
 
 Remote A2A Agent Card는 remote 통신 설정용 untrusted metadata다. Central Authority, Registry
 Agent Card admission, Knowledge Index 또는 Answer source evidence로 승격하지 않는다. Central

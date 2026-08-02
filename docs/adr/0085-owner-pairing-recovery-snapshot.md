@@ -24,11 +24,12 @@ redeem idempotency, issue receipt anchor를 잃고 중복 credential write나 �
 3. snapshot은 secret material, pairing code, private key를 반환하지 않는다. `finalize`가
    recovery row를 terminal profile로 이동한 뒤 snapshot이 `None`인 것은 정상이며, terminal
    profile read는 별도 경계로 둔다.
-4. Central issue/redeem 응답에 실제 immutable receipt id/digest가 연결되기 전까지는 이 경계를
-   pair/redeem 완료로 해석하지 않는다.
+4. Central issue/redeem 응답은 persisted receipt 행에서 계산한 immutable receipt id/digest와
+   pairing-intent digest를 반환한다. 다만 이 anchor가 Owner bundle/recovery CAS와 교차 검증되기
+   전까지는 이 경계를 pair/redeem 완료로 해석하지 않는다.
 
 ## 검증
 
 재시작을 모사하는 focused tests가 snapshot의 state/`updated_at` CAS 재개, malformed profile
-거부, 누락 row의 `None`을 검증한다. 실제 Central receipt anchor와 cross-store crash
-reconciliation은 후속 RB3.3a slice다.
+거부, 누락 row의 `None`을 검증한다. Central HTTP/strict verifier의 receipt anchor 전달도
+검증하지만, cross-store crash reconciliation과 실제 Owner orchestration은 후속 RB3.3a slice다.

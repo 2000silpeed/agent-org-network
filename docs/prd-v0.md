@@ -397,7 +397,9 @@ Owner 설치는 재시작·중복 요청에서도 pair 상태를 추측하지 �
   Owner orchestration의 request digest는 pairing code와 분리된 공개 projection으로 선행 CAS를
   가능하게 하며, Central의 code-verifier proof는 중앙 내부에만 남는다. 현재 이 orchestration은
   테스트된 component 경계이고 `aon-owner pair`/Owner API에 조립되기 전까지 설치 완료로
-  표시하지 않는다.
+  표시하지 않는다. 이번 slice의 OwnerPairingAdapter·stdin-only pair·secret-free
+  `/v1/pairing/status`/`/v1/pairing/redeem`은 명시적인 injection seam이며, concrete
+  keychain/device-material provisioning이 없는 clean install은 계속 unavailable이다.
 
 ### 7.1 회사 기본 운영 환경
 

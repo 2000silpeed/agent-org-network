@@ -181,7 +181,7 @@
       "surface": "aon-owner, create_owner_api_app",
       "status": "tested_component_factory",
       "run": "aon-owner --help",
-      "boundary": "literal loopback Owner API와 fail-closed command shape의 첫 slice다. pair, unpair, workspace serve, worker는 아직 stable unavailable로 종료하며 Owner workspace DB 초기화와 저작 flow를 제공하지 않는다.",
+      "boundary": "literal loopback Owner API와 fail-closed command shape의 첫 slice다. `/v1/pairing/status`와 `/v1/pairing/redeem`는 strict secret-free projection route이며, `OwnerPairingAdapter`가 주입되지 않은 clean install과 pair 입력 계약이 부족한 경로는 503/unavailable로 닫힌다. CLI pair는 stdin-only one-shot JSON이고 profile/argv/output에 pairing code를 저장하지 않는다.",
       "requirements": [
         "설치된 agent-org-network package",
         "doctor/api serve에는 absolute path의 명시 profile"

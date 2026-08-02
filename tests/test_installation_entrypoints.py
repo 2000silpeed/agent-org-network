@@ -388,6 +388,8 @@ def test_owner_api_runner_is_literal_loopback_and_unimplemented_commands_are_una
     assert _route_paths(cast(FastAPI, seen["app"])) == {
         "/healthz",
         "/readyz",
+        "/v1/pairing/status",
+        "/v1/pairing/redeem",
     }
 
 

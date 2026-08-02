@@ -16,10 +16,14 @@ from collections.abc import Callable
 from typing import Literal, Protocol, cast
 from urllib.parse import urlsplit
 
+from pydantic import BaseModel, ConfigDict, SecretStr, field_validator, model_validator
+
 OWNER_SCHEMA_NAME = "owner-installation"
 OWNER_SCHEMA_VERSION = 1
 _OPAQUE_REFERENCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _DIGEST = re.compile(r"[0-9a-f]{64}")
+_PAIRING_CODE = re.compile(r"[A-Za-z0-9_-]{32,128}")
+_THUMBPRINT = re.compile(r"[A-Za-z0-9_-]{40,64}")
 
 
 class OwnerInstallationConfigurationError(ValueError):
@@ -43,6 +47,197 @@ class OwnerBundleLoader(Protocol):
     def load(self, key: str) -> object | None: ...
 
 
+class OwnerPairingRequest(BaseModel, frozen=True):
+    """One-shot public pairing anchors plus an in-memory pairing code.
+
+    The code is accepted only as ``SecretStr`` in process memory; profiles and
+    Owner API responses never contain this value.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    intent_id: str
+    pairing_code: SecretStr
+    central_origin: str
+    org_id: str
+    owner_user_id: str
+    agent_card_id: str
+    agent_card_revision: int
+    agent_card_digest: str
+    device_key_thumbprint: str
+    pairing_intent_digest: str
+    issue_receipt_id: str
+    issue_receipt_digest: str
+    pairing_expires_at: datetime
+    redeem_idempotency_key: str
+
+    @field_validator(
+        "intent_id",
+        "org_id",
+        "owner_user_id",
+        "agent_card_id",
+        "issue_receipt_id",
+        "redeem_idempotency_key",
+    )
+    @classmethod
+    def _reference(cls, value: str) -> str:
+        if _OPAQUE_REFERENCE.fullmatch(value) is None:
+            raise ValueError("bounded Owner pairing reference required")
+        return value
+
+    @field_validator("pairing_code")
+    @classmethod
+    def _pairing_code(cls, value: SecretStr) -> SecretStr:
+        if _PAIRING_CODE.fullmatch(value.get_secret_value()) is None:
+            raise ValueError("opaque pairing code required")
+        return value
+
+    @field_validator("central_origin")
+    @classmethod
+    def _origin(cls, value: str) -> str:
+        if not _https_origin(value):
+            raise ValueError("Owner pairing Central origin must be HTTPS")
+        return value
+
+    @field_validator("agent_card_revision")
+    @classmethod
+    def _revision(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("positive Card revision required")
+        return value
+
+    @field_validator(
+        "agent_card_digest", "pairing_intent_digest", "issue_receipt_digest"
+    )
+    @classmethod
+    def _digest(cls, value: str) -> str:
+        if _DIGEST.fullmatch(value) is None:
+            raise ValueError("lowercase sha256 digest required")
+        return value
+
+    @field_validator("device_key_thumbprint")
+    @classmethod
+    def _thumbprint(cls, value: str) -> str:
+        if _THUMBPRINT.fullmatch(value) is None:
+            raise ValueError("canonical device thumbprint required")
+        return value
+
+    @field_validator("pairing_expires_at", mode="before")
+    @classmethod
+    def _parse_expiry(cls, value: object) -> object:
+        if type(value) is not str:
+            return value
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+
+    @field_validator("pairing_expires_at")
+    @classmethod
+    def _expiry(cls, value: datetime) -> datetime:
+        if (
+            value.tzinfo is None
+            or value.utcoffset() != timedelta(0)
+            or value.microsecond != 0
+        ):
+            raise ValueError("canonical UTC second required")
+        return value.astimezone(UTC)
+
+
+class OwnerPairingResultProjection(BaseModel, frozen=True):
+    """Secret-free result permitted to leave the Owner pairing boundary."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal[
+        "intent_created",
+        "redeem_submitted",
+        "credential_stored",
+        "finalized",
+        "recovered_unverified",
+        "replayed",
+    ]
+    profile_id: str
+    state: Literal["intent_issued", "redeem_submitted", "credential_stored"] | None
+    binding_digest: str
+    credential_id: str | None = None
+    credential_generation: int | None = None
+    credential_public_digest: str | None = None
+    bundle_revision: int | None = None
+    bundle_public_digest: str | None = None
+    verification: Literal["paired", "recovered_unverified"] | None = None
+
+    @field_validator("profile_id", "credential_id")
+    @classmethod
+    def _result_ref(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if _OPAQUE_REFERENCE.fullmatch(value) is None:
+            raise ValueError("bounded Owner result reference required")
+        return value
+
+    @field_validator(
+        "binding_digest", "credential_public_digest", "bundle_public_digest"
+    )
+    @classmethod
+    def _result_digest(cls, value: str | None) -> str | None:
+        if value is not None and _DIGEST.fullmatch(value) is None:
+            raise ValueError("lowercase sha256 digest required")
+        return value
+
+    @model_validator(mode="after")
+    def _exact_shape(self) -> "OwnerPairingResultProjection":
+        if self.kind in {"intent_created", "redeem_submitted", "credential_stored"}:
+            expected_state = {
+                "intent_created": "intent_issued",
+                "redeem_submitted": "redeem_submitted",
+                "credential_stored": "credential_stored",
+            }[self.kind]
+            if self.state != expected_state:
+                raise ValueError("result action/state mismatch")
+        credential_values = (
+            self.credential_id,
+            self.credential_generation,
+            self.credential_public_digest,
+            self.bundle_revision,
+            self.bundle_public_digest,
+        )
+        if self.state == "credential_stored":
+            if any(value is None for value in credential_values):
+                raise ValueError("stored credential projection required")
+        elif self.state is not None and any(value is not None for value in credential_values):
+            raise ValueError("credential projection forbidden")
+        if self.state is not None and self.verification is not None:
+            raise ValueError("recovery result cannot be verified")
+        if self.state is None:
+            if any(value is None for value in credential_values):
+                raise ValueError("profile credential projection required")
+            if self.kind == "finalized" and self.verification != "paired":
+                raise ValueError("finalized verification required")
+            if (
+                self.kind == "recovered_unverified"
+                and self.verification != "recovered_unverified"
+            ):
+                raise ValueError("recovery verification required")
+            if self.kind not in {"finalized", "recovered_unverified", "replayed"}:
+                raise ValueError("profile result kind required")
+        if self.credential_generation is not None and self.credential_generation <= 0:
+            raise ValueError("positive credential generation required")
+        if self.bundle_revision is not None and self.bundle_revision <= 0:
+            raise ValueError("positive bundle revision required")
+        return self
+
+
+class OwnerPairingAdapter(Protocol):
+    """Injected adapter that owns concrete keychain/recovery orchestration."""
+
+    def pair(
+        self,
+        config: "OwnerInstallationConfig",
+        request: OwnerPairingRequest,
+    ) -> object: ...
+
+
 @dataclass(frozen=True, slots=True)
 class OwnerInstallationConfig:
     profile: Literal["local-reference", "production"]
@@ -52,6 +247,7 @@ class OwnerInstallationConfig:
     port: int
     central_url: str | None = None
     pairing_reference: str | None = None
+    secret_store_directory: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +305,7 @@ class OwnerActiveBindingReadiness:
 class OwnerComposition:
     config: OwnerInstallationConfig
     pairing_readiness: OwnerPairingReadiness | None = None
+    pairing_adapter: OwnerPairingAdapter | None = None
 
     def schema_ready(self) -> bool:
         return _sqlite_schema_ready(
@@ -136,6 +333,7 @@ def load_owner_installation_config(profile_path: Path) -> OwnerInstallationConfi
         "port",
         "central_url",
         "pairing_reference",
+        "secret_store_directory",
     }
     if set(values) - allowed:
         raise OwnerInstallationConfigurationError("unknown Owner profile setting")
@@ -150,11 +348,20 @@ def load_owner_installation_config(profile_path: Path) -> OwnerInstallationConfi
         raise OwnerInstallationConfigurationError("unsafe Owner API bind")
     central_url = _optional_string(values, "central_url")
     pairing_reference = _optional_string(values, "pairing_reference")
+    secret_store_directory = (
+        _absolute_path(values, "secret_store_directory")
+        if "secret_store_directory" in values
+        else None
+    )
     if central_url is not None and not _https_origin(central_url):
         raise OwnerInstallationConfigurationError("Owner Central URL must be an HTTPS origin")
     if pairing_reference is not None and _OPAQUE_REFERENCE.fullmatch(pairing_reference) is None:
         raise OwnerInstallationConfigurationError("invalid Owner pairing reference")
-    if profile == "production" and (central_url is None or pairing_reference is None):
+    if profile == "production" and (
+        central_url is None
+        or pairing_reference is None
+        or secret_store_directory is None
+    ):
         raise OwnerInstallationConfigurationError("production Owner settings required")
     return OwnerInstallationConfig(
         profile=cast(Literal["local-reference", "production"], profile),
@@ -164,6 +371,7 @@ def load_owner_installation_config(profile_path: Path) -> OwnerInstallationConfi
         port=port,
         central_url=central_url,
         pairing_reference=pairing_reference,
+        secret_store_directory=secret_store_directory,
     )
 
 
@@ -171,6 +379,7 @@ def compose_owner(
     config: OwnerInstallationConfig,
     *,
     pairing_readiness: OwnerPairingReadiness | None = None,
+    pairing_adapter: OwnerPairingAdapter | None = None,
 ) -> OwnerComposition:
     if type(config) is not OwnerInstallationConfig:
         raise OwnerInstallationConfigurationError("validated Owner config required")
@@ -178,7 +387,15 @@ def compose_owner(
         getattr(pairing_readiness, "ready", None)
     ):
         raise OwnerInstallationConfigurationError("validated Owner pairing seam required")
-    return OwnerComposition(config=config, pairing_readiness=pairing_readiness)
+    if pairing_adapter is not None and not callable(
+        getattr(pairing_adapter, "pair", None)
+    ):
+        raise OwnerInstallationConfigurationError("validated Owner pairing adapter required")
+    return OwnerComposition(
+        config=config,
+        pairing_readiness=pairing_readiness,
+        pairing_adapter=pairing_adapter,
+    )
 
 
 def owner_doctor(

@@ -262,6 +262,8 @@ CENTRAL_SERVER_SURFACE_ALLOWLIST: tuple[str, ...] = (
 CARD_OWNER_SURFACE_ALLOWLIST: tuple[str, ...] = (
     "GET /healthz",
     "GET /readyz",
+    "GET /v1/pairing/status",
+    "POST /v1/pairing/redeem",
 )
 QUESTION_USER_SURFACE_ALLOWLIST: tuple[str, ...] = ()
 

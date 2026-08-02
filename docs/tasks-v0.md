@@ -523,6 +523,9 @@ RB3.8까지 보류하고 각 slice는 Fast·Contract·Affected gate와 독립 re
   순서를 결정론 Fake verifier로 검증 (서버 내부 code-verifier proof는 wire에 노출하지 않음)
 - [ ] 위 orchestrator를 실제 `aon-owner pair`/Owner API route와 clean-install profile에 조립하고,
   재시작 시 snapshot key/anchor를 caller 입력보다 우선하는 terminal/replay read seam을 추가
+  (이번 경계에서는 `OwnerPairingAdapter` 주입 seam과 stdin-only CLI,
+  `/v1/pairing/status`·`/v1/pairing/redeem` secret-free route shape만 추가했으며,
+  concrete keychain/device-provider가 없으면 configuration/unavailable로 닫힌다.)
 - [ ] Central-issued pair/redeem의 current generation을 exact compare하는 active Owner Installation
   binding, encrypted workspace/keychain profile, local durable AuthoringRun/draft/Git repository와
   default loopback Owner API `127.0.0.1:8012`를 조립

@@ -896,6 +896,13 @@ Owner pair/redeem은 두 저장소의 교차 재시작을 전제로 한다. `Own
   anchor가 Owner bundle/recovery CAS와 교차 검증되기 전에는 pair/redeem 완료로 해석하지 않는다
   (ADR 0085).
 
+Owner API의 `/v1/pairing/status`와 `/v1/pairing/redeem`는 이 경계를 반영한 loopback route다.
+`redeem`은 strict anchor와 `SecretStr` pairing code를 한 번만 메모리에서 받고, 주입된
+`OwnerPairingAdapter`가 반환한 `OwnerPairingResultProjection`만 응답한다. 기본 profile에는
+concrete keychain/device-provider가 없으므로 adapter가 없으면 503으로 닫히며, CLI
+`aon-owner pair`도 pairing JSON을 stdin에서만 읽고 profile/argv/output에 code를 저장하지 않는다.
+이 adapter seam은 실제 production device-material provisioning을 완료한 것으로 해석하지 않는다.
+
 Redeem digest는 두 계층으로 분리한다. Owner가 network 전 CAS에 저장하는
   `redeem_request_digest`는 JCS의 `kind=owner-pairing.redeem.v1`, `intent_id`,
   `idempotency_key`, `device_key_thumbprint`만 해시하며 pairing code/secret을 포함하지 않는다.

@@ -280,6 +280,42 @@ def test_wrong_backend_env_windows_before_write(
     assert not (tmp_path / "win").exists()
 
 
+def test_windows_native_uses_dpapi_backend_without_importing_keyring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agent_org_network.production_owner_device_key_store as module
+
+    loaded: list[str] = []
+
+    class _FakeWindowsDpapiBackend:
+        def __init__(self, root: Path) -> None:
+            self.root = root
+            self.values: dict[str, str] = {}
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            assert service == "agent-org-network.owner-secret-bundle.v1"
+            assert len(username) == 64 and all(char in "0123456789abcdef" for char in username)
+            self.values[username] = password
+
+        def get_password(self, service: str, username: str) -> str | None:
+            return self.values.get(username)
+
+        def delete_password(self, service: str, username: str) -> None:
+            self.values.pop(username, None)
+
+    def fail_import(name: str):
+        loaded.append(name)
+        raise AssertionError
+
+    monkeypatch.setattr(module, "_WindowsDpapiBackend", _FakeWindowsDpapiBackend)
+    monkeypatch.setattr(importlib, "import_module", fail_import)
+    monkeypatch.setattr(os, "name", "nt")
+    store = ProductionOwnerDeviceKeyStore(tmp_path / "win-dpapi")
+    assert str(store._root).replace("\\", "/") == str(tmp_path / "win-dpapi")  # pyright: ignore[reportPrivateUsage]
+    assert loaded == []
+    assert store.probe()
+
+
 def test_model_invariants() -> None:
     _device, binding, pairing, slot = _models()
     with pytest.raises(ValidationError):

@@ -881,7 +881,9 @@ OS keychain과 Owner-local Next 구현을 완료한 것으로 해석하지 않�
   `OwnerPairingReadiness` seam과 active-bundle adapter가 Central origin, device thumbprint,
   credential generation/expiry, pending 상태를 확인할 때만 paired/ready를 인정하며, profile의
   pairing reference나 metadata-only workspace만으로 ready를 반환하지 않는다. pair/redeem과
-  실제 OS keychain 조립은 후속 RB3.3a bounded slice다.
+  실제 OS keychain 조립은 후속 RB3.3a bounded slice다. Windows native secret bundle은 current-user
+  DPAPI ciphertext transport를 사용하고, macOS/Linux는 명시적 keyring allowlist를 사용한다
+  (ADR 0084); 어느 경로도 평문 secret 파일 fallback을 허용하지 않는다.
 
 Remote A2A Agent Card는 remote 통신 설정용 untrusted metadata다. Central Authority, Registry
 Agent Card admission, Knowledge Index 또는 Answer source evidence로 승격하지 않는다. Central

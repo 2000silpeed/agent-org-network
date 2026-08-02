@@ -30,7 +30,8 @@ POSIX shell에만 제공되어 Windows 사용자가 실제 Central/Frontend 프�
    - Docker 사용을 요구사항, 런타임 의존성 또는 지원 상태 승격 조건으로 삼지 않는다.
 4. Windows 환경변수 표기와 POSIX 표기는 README/frontend README/support-contract에
    각각 제공한다. PowerShell의 `$env:AON_*` 설정은 현재 프로세스 범위로 한정하고,
-   영속 secret은 사용자가 지정한 profile/Windows secret store 경계로 남긴다.
+   영속 secret은 사용자가 지정한 profile/Windows secret store 경계로 남긴다. Owner secret
+   bundle은 Windows current-user DPAPI를 사용하며 평문 파일 fallback은 없다(ADR 0084).
 5. 경로·포트·SQLite semantics는 OS에 따라 달라지지 않는다. Windows 경로는 CLI에서
    absolute path로 받고, shell quoting 차이는 PowerShell 스크립트가 처리한다.
 

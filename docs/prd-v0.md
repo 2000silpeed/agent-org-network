@@ -393,6 +393,8 @@ RB3의 유한 종료점은 `runnable_local_reference`(향후 support vocabulary�
 따라서 local reference의 설치·실행·Fast/Contract 검증은 PowerShell, Python 3.12+와 `uv`,
 Node.js 24+/Corepack, SQLite만으로 가능해야 한다. WSL·Git Bash·Docker daemon은 지원
 경로의 전제 조건이 아니며, Dockerfile은 선택적 Linux packaging 증거로만 취급한다.
+Owner secret bundle은 Windows current-user DPAPI로 보호하고, macOS/Linux는 명시적 OS keychain을
+사용한다. 어느 환경도 pairing credential/private key를 평문 파일로 fallback하지 않는다(ADR 0084).
 
 ## 8. 현재 개발 reference의 수용 동작
 

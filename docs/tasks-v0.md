@@ -509,8 +509,9 @@ RB3.8까지 보류하고 각 slice는 Fast·Contract·Affected gate와 독립 re
   Owner profile의 `pairing_reference`만으로 paired를 주장하지 않도록 read-only
   `OwnerPairingReadiness` seam과 active bundle의 Central origin·device binding·credential
   generation/expiry·pending 상태를 검증하는 adapter를 추가했고, seam·workspace·schema marker가
-  모두 없으면 doctor/readyz가 fail-closed한다. 실제 pair/redeem mutation과 OS keychain wiring은
-  다음 bounded slice다.
+  모두 없으면 doctor/readyz가 fail-closed한다. Windows current-user DPAPI secret-bundle backend와
+  keyring/DPAPI 실패 시 평문 fallback 금지를 추가했지만, 실제 pair/redeem mutation·receipt anchor·
+  recovery orchestration은 다음 bounded slice다(ADR 0084).
 - [ ] Central-issued pair/redeem의 current generation을 exact compare하는 active Owner Installation
   binding, encrypted workspace/keychain profile, local durable AuthoringRun/draft/Git repository와
   default loopback Owner API `127.0.0.1:8012`를 조립

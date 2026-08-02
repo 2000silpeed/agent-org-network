@@ -1,9 +1,10 @@
-"""OS-keychain-only storage for one canonical Owner secret bundle item."""
+"""OS-keychain/Windows-DPAPI storage for one canonical Owner secret bundle item."""
 
 from __future__ import annotations
 
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from contextlib import contextmanager
+import ctypes
 import importlib
 import json
 import os
@@ -35,6 +36,30 @@ _ALLOWED = {
 }
 _OVERRIDES = {"PYTHON_KEYRING_BACKEND", "PYTHON_KEYRING_PATH"}
 _SERVICE = "agent-org-network.owner-secret-bundle.v1"
+_WINDOWS_MAX_BLOB_BYTES = 256 * 1024
+
+
+def _windows_reparse(info: os.stat_result) -> bool:
+    marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(marker and getattr(info, "st_file_attributes", 0) & marker)
+
+
+def _safe_windows_regular(path: Path, *, allow_missing: bool = False) -> bool:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return allow_missing
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and not path.is_symlink() and not _windows_reparse(info)
+
+
+def _safe_windows_directory(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISDIR(info.st_mode) and not path.is_symlink() and not _windows_reparse(info)
 
 
 class _Backend(Protocol):
@@ -43,6 +68,184 @@ class _Backend(Protocol):
     def get_password(self, service: str, username: str) -> str | None: ...
     def set_password(self, service: str, username: str, password: str) -> None: ...
     def delete_password(self, service: str, username: str) -> None: ...
+
+
+class _WindowsProtectFn(Protocol):
+    def __call__(self, *args: object) -> int: ...
+
+
+class _WindowsFreeFn(Protocol):
+    def __call__(self, pointer: object) -> object: ...
+
+
+class _WindowsDataBlob(ctypes.Structure):
+    _fields_ = [
+        ("cbData", ctypes.c_uint32),
+        ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+    ]
+
+
+class _WindowsDpapiBackend:
+    """Current-user DPAPI-backed secret store for Windows native installs.
+
+    The bundle remains encrypted by Windows DPAPI before it reaches disk.  The
+    file is only a transport for the DPAPI blob; no plaintext credential or
+    private key is written as a fallback.  The public keyring backend remains
+    the preferred path on macOS/Linux where the configured native keyring is
+    available.
+    """
+
+    _root: Path
+    _protect: _WindowsProtectFn
+    _unprotect: _WindowsProtectFn
+    _local_free: _WindowsFreeFn
+
+    def __init__(self, root: Path) -> None:
+        if os.name != "nt":
+            raise OwnerDeviceKeyStoreUnavailable()
+        try:
+            crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            protect = crypt32.CryptProtectData
+            unprotect = crypt32.CryptUnprotectData
+            protect.argtypes = [
+                ctypes.POINTER(_WindowsDataBlob), ctypes.c_wchar_p,
+                ctypes.POINTER(_WindowsDataBlob), ctypes.c_void_p,
+                ctypes.c_void_p, ctypes.c_uint32,
+                ctypes.POINTER(_WindowsDataBlob),
+            ]
+            protect.restype = ctypes.c_int
+            unprotect.argtypes = [
+                ctypes.POINTER(_WindowsDataBlob), ctypes.c_wchar_p,
+                ctypes.POINTER(_WindowsDataBlob), ctypes.c_void_p,
+                ctypes.c_void_p, ctypes.c_uint32,
+                ctypes.POINTER(_WindowsDataBlob),
+            ]
+            unprotect.restype = ctypes.c_int
+            kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+            kernel32.LocalFree.restype = ctypes.c_void_p
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if not _safe_windows_directory(root):
+                raise OwnerDeviceKeyStoreUnavailable()
+            self._root = root
+            self._protect = cast(_WindowsProtectFn, protect)
+            self._unprotect = cast(_WindowsProtectFn, unprotect)
+            self._local_free = cast(_WindowsFreeFn, kernel32.LocalFree)
+        except OwnerDeviceKeyStoreUnavailable:
+            raise
+        except Exception as error:
+            raise OwnerDeviceKeyStoreUnavailable() from error
+
+    @staticmethod
+    def _blob(value: bytes) -> tuple[ctypes.Array[ctypes.c_char], _WindowsDataBlob]:
+        if not 1 <= len(value) <= _WINDOWS_MAX_BLOB_BYTES:
+            raise OwnerDeviceKeyStoreUnavailable()
+        buffer = ctypes.create_string_buffer(value)
+        pointer = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte))
+        return buffer, _WindowsDataBlob(len(value), pointer)
+
+    def _path(self, username: str) -> Path:
+        if re.fullmatch(r"[0-9a-f]{64}", username) is None:
+            raise OwnerDeviceKeyStoreUnavailable()
+        return self._root / f"{username}.dpapi"
+
+    def _protect_value(self, value: str) -> str:
+        raw = value.encode("utf-8")
+        source_buffer, source = self._blob(raw)
+        result = _WindowsDataBlob()
+        if not self._protect(
+            ctypes.byref(source), None, None, None, None, 0x1, ctypes.byref(result)
+        ):
+            raise OwnerDeviceKeyStoreUnavailable()
+        try:
+            encrypted = ctypes.string_at(result.pbData, result.cbData)
+        finally:
+            self._local_free(result.pbData)
+        _ = source_buffer
+        return _b64(encrypted)
+
+    def _unprotect_value(self, value: str) -> str:
+        encrypted = _unb64(value)
+        source_buffer, source = self._blob(encrypted)
+        result = _WindowsDataBlob()
+        if not self._unprotect(
+            ctypes.byref(source), None, None, None, None, 0x1, ctypes.byref(result)
+        ):
+            raise OwnerDeviceKeyStoreUnavailable()
+        try:
+            plaintext = ctypes.string_at(result.pbData, result.cbData)
+        finally:
+            self._local_free(result.pbData)
+        _ = source_buffer
+        if not 1 <= len(plaintext) <= _WINDOWS_MAX_BLOB_BYTES:
+            raise OwnerDeviceKeyStoreUnavailable()
+        try:
+            return plaintext.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise OwnerDeviceKeyStoreUnavailable() from error
+
+    def get_password(self, service: str, username: str) -> str | None:
+        if service != _SERVICE:
+            raise OwnerDeviceKeyStoreUnavailable()
+        path = self._path(username)
+        try:
+            if path.is_symlink():
+                raise OwnerDeviceKeyStoreUnavailable()
+            if not path.exists():
+                return None
+            if not _safe_windows_regular(path) or path.stat().st_size > _WINDOWS_MAX_BLOB_BYTES * 2:
+                raise OwnerDeviceKeyStoreUnavailable()
+            return self._unprotect_value(path.read_text(encoding="ascii"))
+        except OwnerDeviceKeyStoreUnavailable:
+            raise
+        except Exception as error:
+            raise OwnerDeviceKeyStoreUnavailable() from error
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        if service != _SERVICE or type(password) is not str:
+            raise OwnerDeviceKeyStoreUnavailable()
+        path = self._path(username)
+        if not _safe_windows_regular(path, allow_missing=True):
+            raise OwnerDeviceKeyStoreUnavailable()
+        payload = self._protect_value(password).encode("ascii")
+        temporary = path.with_name(f".{path.name}.{secrets.token_hex(16)}.tmp")
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
+            with os.fdopen(descriptor, "wb", closefd=False) as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            descriptor = None
+        except OwnerDeviceKeyStoreUnavailable:
+            raise
+        except Exception as error:
+            raise OwnerDeviceKeyStoreUnavailable() from error
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def delete_password(self, service: str, username: str) -> None:
+        if service != _SERVICE:
+            raise OwnerDeviceKeyStoreUnavailable()
+        path = self._path(username)
+        try:
+            if path.exists() and not _safe_windows_regular(path):
+                raise OwnerDeviceKeyStoreUnavailable()
+            path.unlink(missing_ok=True)
+        except OwnerDeviceKeyStoreUnavailable:
+            raise
+        except Exception as error:
+            raise OwnerDeviceKeyStoreUnavailable() from error
 
 
 def _b64(value: bytes) -> str:
@@ -200,13 +403,17 @@ def decode_owner_secret_bundle(raw: str) -> OwnerInstallationSecretBundleV1:
 
 class ProductionOwnerDeviceKeyStore:
     def __init__(self, lock_root: str | Path) -> None:
-        if os.name == "nt" or any(
+        if any(
             name in _OVERRIDES or name.startswith("KEYRING_PROPERTY_")
             for name in os.environ
         ):
             raise OwnerDeviceKeyStoreUnavailable()
+        root = Path(lock_root)
+        if os.name == "nt":
+            self._backend = cast(_Backend, _WindowsDpapiBackend(root))
+            self._root = root
+            return
         try:
-            root = Path(lock_root)
             root.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.chmod(root, 0o700)
             info = root.lstat()
@@ -230,6 +437,37 @@ class ProductionOwnerDeviceKeyStore:
 
     @contextmanager
     def _lock(self, key: str) -> Generator[None]:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_path = self._root / (_account(key) + ".lock")
+            if lock_path.is_symlink() or (
+                lock_path.exists() and not _safe_windows_regular(lock_path)
+            ):
+                raise OwnerDeviceKeyStoreUnavailable()
+            descriptor = os.open(
+                lock_path,
+                os.O_CREAT
+                | os.O_RDWR
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            try:
+                if not _safe_windows_regular(lock_path):
+                    raise OwnerDeviceKeyStoreUnavailable()
+                if os.fstat(descriptor).st_size == 0:
+                    os.write(descriptor, b"\0")
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                yield
+            finally:
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                finally:
+                    os.close(descriptor)
+            return
         import fcntl
 
         descriptor = os.open(
@@ -391,7 +629,7 @@ class ProductionOwnerDeviceKeyStore:
                 raise OwnerDeviceKeyStoreUnavailable() from error
 
     def probe(self) -> bool:
-        account = "probe-" + secrets.token_hex(16)
+        account = secrets.token_hex(32)
         value = secrets.token_urlsafe(32)
         try:
             self._backend.set_password(_SERVICE, account, value)

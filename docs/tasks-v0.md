@@ -518,6 +518,11 @@ RB3.8까지 보류하고 각 slice는 Fast·Contract·Affected gate와 독립 re
   (pair/redeem network 호출과 cross-store reconciliation은 아직 조립하지 않음)
 - [x] Central issue/redeem safe response에 persisted receipt id/digest와 pairing-intent digest를
   연결하고 HTTP/strict Owner verifier가 이를 검증 가능한 DTO로 전달
+- [x] Owner 선행 CAS용 secret-free `owner-pairing.redeem.v1` request digest를 Central/Owner가
+  공유하고, `OwnerPairingOrchestrator`의 pending→recovery→redeem→decrypt→active→finalize
+  순서를 결정론 Fake verifier로 검증 (서버 내부 code-verifier proof는 wire에 노출하지 않음)
+- [ ] 위 orchestrator를 실제 `aon-owner pair`/Owner API route와 clean-install profile에 조립하고,
+  재시작 시 snapshot key/anchor를 caller 입력보다 우선하는 terminal/replay read seam을 추가
 - [ ] Central-issued pair/redeem의 current generation을 exact compare하는 active Owner Installation
   binding, encrypted workspace/keychain profile, local durable AuthoringRun/draft/Git repository와
   default loopback Owner API `127.0.0.1:8012`를 조립

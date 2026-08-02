@@ -382,7 +382,10 @@ Installation은 별 Owner-local Next(`127.0.0.1:3001`)와 loopback Owner API
 Central은 Registry·Authority·workflow·published index만, Owner는 raw source/full draft/Git/
 provider credential만 소유합니다. Central Next는 Owner API를 proxy하지 않으며 Central은 raw
 evidence 또는 A2A를 relay하지 않습니다. Windows Owner secret bundle은 current-user DPAPI로
-암호화 저장할 수 있지만, 실제 pair/redeem·recovery orchestration은 아직 unavailable입니다.
+암호화 저장할 수 있습니다. 현재 pair/redeem은 `OwnerPairingOrchestrator` 테스트 component까지
+확장됐고, secret-free request digest 선행 CAS와 recovery/finalize 순서를 검증합니다. 다만
+`aon-owner pair`/Owner API route와 clean-install profile에 아직 조립하지 않았으므로 운영 명령은
+계속 unavailable입니다.
 과거 아홉 HTML의 exact route/API/error/authority
 destination은 [frontend runtime parity](docs/frontend-runtime-parity.md), command/file/acceptance
 shape는 [ADR 0075](docs/adr/0075-installable-three-artifact-and-feature-preserving-next-migration.md)에

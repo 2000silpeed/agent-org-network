@@ -45,6 +45,9 @@ from agent_org_network.owner_credential_envelope import (
     parse_owner_credential_envelope,
     serialize_owner_credential_envelope,
 )
+from agent_org_network.owner_pairing_digest import (
+    owner_pairing_redeem_request_digest,
+)
 
 
 class CentralOwnerPairingIssueUnavailable(Exception):
@@ -189,6 +192,7 @@ class RedeemedOwnerCredential(BaseModel, frozen=True):
     credential_id: str
     envelope: OwnerCredentialEnvelope
     evidence: PairingIssuancePrincipalEvidence
+    redeem_request_digest: str
     pairing_intent_digest: str
     issue_receipt_id: str
     issue_receipt_digest: str
@@ -204,7 +208,8 @@ class RedeemedOwnerCredential(BaseModel, frozen=True):
         return value
 
     @field_validator(
-        "pairing_intent_digest", "issue_receipt_digest", "redeem_receipt_digest"
+        "redeem_request_digest", "pairing_intent_digest", "issue_receipt_digest",
+        "redeem_receipt_digest",
     )
     @classmethod
     def _digest(cls, value: str) -> str:
@@ -1134,6 +1139,11 @@ class CentralOwnerPairingIssueStore:
                     device_key_thumbprint_value=thumbprint,
                     code_verifier=row[5],
                 )
+                redeem_request_digest = owner_pairing_redeem_request_digest(
+                    intent_id=command.intent_id,
+                    idempotency_key=command.idempotency_key,
+                    device_key_thumbprint=thumbprint,
+                )
                 existing = connection.execute(
                     "SELECT command_digest,credential_id,created_at FROM "
                     "central_owner_pairing_redeem_receipts WHERE idempotency_key=?",
@@ -1165,6 +1175,7 @@ class CentralOwnerPairingIssueStore:
                             replay[2].encode("utf-8")
                         ),
                         evidence=evidence,
+                        redeem_request_digest=redeem_request_digest,
                         pairing_intent_digest=_pairing_intent_digest(
                             intent_id=command.intent_id,
                             expires_at=expires_at,
@@ -1340,6 +1351,7 @@ class CentralOwnerPairingIssueStore:
                     credential_id=credential_id,
                     envelope=encrypted.envelope,
                     evidence=evidence,
+                    redeem_request_digest=redeem_request_digest,
                     pairing_intent_digest=_pairing_intent_digest(
                         intent_id=command.intent_id,
                         expires_at=datetime.fromisoformat(row[8]),

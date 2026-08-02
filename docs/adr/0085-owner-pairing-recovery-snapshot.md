@@ -27,9 +27,17 @@ redeem idempotency, issue receipt anchor를 잃고 중복 credential write나 �
 4. Central issue/redeem 응답은 persisted receipt 행에서 계산한 immutable receipt id/digest와
    pairing-intent digest를 반환한다. 다만 이 anchor가 Owner bundle/recovery CAS와 교차 검증되기
    전까지는 이 경계를 pair/redeem 완료로 해석하지 않는다.
+5. Redeem digest는 public request와 private proof를 분리한다. Owner가 pre-network CAS에
+   저장하는 `redeem_request_digest`는 `owner-pairing.redeem.v1`의 intent/idempotency/device
+   공개 projection만 해시한다. Central의 기존 code-verifier 기반 `redeem_command_digest`는
+   server-only proof로 남기며 wire·Owner recovery에 노출하지 않는다. 기존 Owner-local v1
+   SQLite/Bundle 필드명 `redeem_command_digest`는 이 public request digest를 저장하는 역사적
+   이름으로 유지하며, 다음 schema migration에서 `redeem_request_digest`로 명시적으로 rename한다.
 
 ## 검증
 
 재시작을 모사하는 focused tests가 snapshot의 state/`updated_at` CAS 재개, malformed profile
-거부, 누락 row의 `None`을 검증한다. Central HTTP/strict verifier의 receipt anchor 전달도
-검증하지만, cross-store crash reconciliation과 실제 Owner orchestration은 후속 RB3.3a slice다.
+거부, 누락 row의 `None`을 검증한다. Central HTTP/strict verifier의 receipt anchor 전달과
+secret-free request digest, 결정론 Fake 기반 cross-store 순서도 검증한다. 실제 `aon-owner`
+API/CLI wiring, snapshot 우선 terminal/replay read seam과 clean-install acceptance는 후속
+RB3.3a slice다.

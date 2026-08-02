@@ -21,6 +21,9 @@ from agent_org_network.owner_credential_envelope import (
     X25519PublicJwk,
     device_key_thumbprint,
 )
+from agent_org_network.owner_pairing_digest import (
+    owner_pairing_redeem_request_digest,
+)
 
 
 class CentralOwnerPairingUnavailable(Exception):
@@ -68,6 +71,7 @@ class RedeemedOwnerPairing(BaseModel, frozen=True):
     credential_generation: int
     expires_at: datetime
     envelope: OwnerCredentialEnvelope
+    redeem_request_digest: str
     pairing_intent_digest: str
     issue_receipt_id: str
     issue_receipt_digest: str
@@ -85,7 +89,7 @@ class RedeemedOwnerPairing(BaseModel, frozen=True):
         return value
 
     @field_validator(
-        "card_digest", "pairing_intent_digest", "issue_receipt_digest",
+        "card_digest", "redeem_request_digest", "pairing_intent_digest", "issue_receipt_digest",
         "redeem_receipt_digest",
     )
     @classmethod
@@ -242,6 +246,12 @@ class ProductionCentralPairingVerifier:
                 or datetime.fromisoformat(result.envelope.aad.expires_at)
                 != result.expires_at
                 or result.redeem_receipt_id != idempotency_key
+                or result.redeem_request_digest
+                != owner_pairing_redeem_request_digest(
+                    intent_id=code.intent_id,
+                    idempotency_key=idempotency_key,
+                    device_key_thumbprint=result.device_key_thumbprint,
+                )
             ):
                 raise CentralOwnerPairingUnavailable()
             return result

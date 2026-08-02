@@ -404,6 +404,12 @@ def serialize_owner_credential_envelope(
     return _jcs(envelope.model_dump(mode="json"))
 
 
+def credential_aad_digest(aad: CredentialEnvelopeAad) -> str:
+    if type(aad) is not CredentialEnvelopeAad:
+        raise OwnerCredentialEnvelopeUnavailable()
+    return sha256(_jcs(aad.model_dump(mode="json"))).hexdigest()
+
+
 def parse_owner_credential_envelope(payload: bytes) -> OwnerCredentialEnvelope:
     if type(payload) is not bytes or not 2 <= len(payload) <= 8 * 1024:
         raise OwnerCredentialEnvelopeUnavailable()
@@ -478,6 +484,7 @@ def _json_depth(value: object) -> int:
 
 __all__ = [
     "CredentialEnvelopeAad",
+    "credential_aad_digest",
     "DecryptedOwnerCredential",
     "EncryptedOwnerCredential",
     "OwnerCredentialEnvelope",

@@ -178,6 +178,7 @@ def mount_central_owner_pairing_routes(
                 "agent_id": result.evidence.agent_id,
                 "card_revision": result.evidence.card_revision,
                 "card_digest": result.evidence.card_digest,
+                "redeem_request_digest": result.redeem_request_digest,
                 "pairing_intent_digest": result.pairing_intent_digest,
                 "issue_receipt_id": result.issue_receipt_id,
                 "issue_receipt_digest": result.issue_receipt_digest,

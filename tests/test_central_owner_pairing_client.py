@@ -22,6 +22,9 @@ from agent_org_network.owner_credential_envelope import (
     encrypt_owner_credential_with_verifier,
     generate_device_keypair,
 )
+from agent_org_network.owner_pairing_digest import (
+    owner_pairing_redeem_request_digest,
+)
 
 _PRIVATE, PUBLIC = generate_device_keypair()
 _OTHER_PRIVATE, OTHER_PUBLIC = generate_device_keypair()
@@ -94,10 +97,15 @@ def _payload(*, device_public_key: X25519PublicJwk = PUBLIC) -> dict[str, object
         "identity_provider": "corp",
         "credential_generation": 1,
         "expires_at": envelope.aad.expires_at,
+        "redeem_request_digest": owner_pairing_redeem_request_digest(
+            intent_id="intent-1",
+            idempotency_key="pair-1",
+            device_key_thumbprint=device_key_thumbprint(device_public_key),
+        ),
         "pairing_intent_digest": "b" * 64,
         "issue_receipt_id": "issue-1",
         "issue_receipt_digest": "c" * 64,
-        "redeem_receipt_id": "redeem-1",
+        "redeem_receipt_id": "pair-1",
         "redeem_receipt_digest": "d" * 64,
         "envelope": envelope.model_dump(mode="json"),
     }

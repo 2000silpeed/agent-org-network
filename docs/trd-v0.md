@@ -896,6 +896,14 @@ Owner pair/redeem은 두 저장소의 교차 재시작을 전제로 한다. `Own
   anchor가 Owner bundle/recovery CAS와 교차 검증되기 전에는 pair/redeem 완료로 해석하지 않는다
   (ADR 0085).
 
+Redeem digest는 두 계층으로 분리한다. Owner가 network 전 CAS에 저장하는
+  `redeem_request_digest`는 JCS의 `kind=owner-pairing.redeem.v1`, `intent_id`,
+  `idempotency_key`, `device_key_thumbprint`만 해시하며 pairing code/secret을 포함하지 않는다.
+  Central receipt/audit의 기존 `redeem_command_digest`는 code-verifier를 포함한 server-only
+  proof로 유지하고 wire·Owner recovery에 내보내지 않는다. 따라서 잘못된 pairing code는 여전히
+  Central 인증에서 거절되고, Owner는 서버 비밀을 추정하지 않고 mark-submitted CAS를 먼저
+  확정할 수 있다.
+
 Remote A2A Agent Card는 remote 통신 설정용 untrusted metadata다. Central Authority, Registry
 Agent Card admission, Knowledge Index 또는 Answer source evidence로 승격하지 않는다. Central
 Server는 A2A inbound endpoint, discovery registry, automatic registration, federation proxy를

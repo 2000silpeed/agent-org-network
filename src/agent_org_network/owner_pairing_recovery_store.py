@@ -1266,6 +1266,32 @@ class OwnerPairingRecoveryStore:
             except (sqlite3.Error, ValueError, TypeError) as error:
                 raise OwnerPairingRecoveryUnavailable() from error
 
+    def has_terminal_device_binding(self, device_key_thumbprint: str) -> bool:
+        """Return whether an immutable terminal profile already owns a device key."""
+        if (
+            type(device_key_thumbprint) is not str
+            or not 40 <= len(device_key_thumbprint) <= 64
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", device_key_thumbprint)
+        ):
+            raise OwnerPairingRecoveryUnavailable()
+        with self._lock:
+            try:
+                self._validate_path()
+                with sqlite3.connect(self._path, timeout=30) as connection:
+                    self._validate(connection)
+                    return (
+                        connection.execute(
+                            "SELECT 1 FROM owner_installation_profiles "
+                            "WHERE device_key_thumbprint=? LIMIT 1",
+                            (device_key_thumbprint,),
+                        ).fetchone()
+                        is not None
+                    )
+            except OwnerPairingRecoveryUnavailable:
+                raise
+            except (sqlite3.Error, ValueError, TypeError) as error:
+                raise OwnerPairingRecoveryUnavailable() from error
+
     def read_terminal_profile(
         self,
         profile_id: str,

@@ -401,7 +401,8 @@ Owner 설치는 재시작·중복 요청에서도 pair 상태를 추측하지 �
   `/v1/pairing/status`/`/v1/pairing/redeem`은 명시적인 injection seam이며, concrete
   keychain/device-material provisioning이 없는 clean install은 계속 unavailable이다. terminal
   profile read/replay와 active bundle의 `recovered_unverified`/idempotency replay는 구현됐지만,
-  실제 production provisioning·clean-install 관통은 아직 남아 있다.
+  동일 device thumbprint의 다른 profile key 재-pair conflict도 pending 전에 차단한다. 실제
+  production provisioning·clean-install 관통은 아직 남아 있다.
 
 ### 7.1 회사 기본 운영 환경
 

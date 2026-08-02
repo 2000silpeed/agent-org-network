@@ -169,6 +169,10 @@ class OwnerPairingOrchestrator:
         try:
             bundle = self._device_keys.load(profile_id)
             if bundle is None:
+                if self._recovery.has_terminal_device_binding(
+                    binding.device_key_thumbprint
+                ):
+                    raise OwnerPairingOrchestrationUnavailable()
                 if profile_id != derived_profile_id:
                     raise OwnerPairingOrchestrationUnavailable()
                 pending = OwnerPairingPendingV1(

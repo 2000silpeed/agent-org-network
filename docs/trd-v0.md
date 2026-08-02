@@ -901,7 +901,9 @@ caller가 보낸 binding/device를 bundle과 먼저 exact compare한다. immutab
 있으면 `read_terminal_profile(profile_id, expected_central_origin)`을 read-only source-of-truth로
 사용하고, profile이 없는 active bundle에 한해 `RecoverFromKeychainCommand`를 실행한다.
 후자의 첫 결과는 `recovered_unverified`, 동일 idempotency 재호출은 `replayed`이며, binding·origin·
-device·expiry 불일치는 keychain/recovery 어느 쪽도 쓰지 않고 unavailable로 닫힌다.
+device·expiry 불일치는 keychain/recovery 어느 쪽도 쓰지 않고 unavailable로 닫힌다. caller가
+`pairing_reference`를 생략해 다른 profile key를 계산하더라도, recovery store의 immutable
+terminal device-thumbprint conflict probe가 pending 생성 전에 동일 device 재-pair를 차단한다.
 
 Owner API의 `/v1/pairing/status`와 `/v1/pairing/redeem`는 이 경계를 반영한 loopback route다.
 `redeem`은 strict anchor와 `SecretStr` pairing code를 한 번만 메모리에서 받고, 주입된

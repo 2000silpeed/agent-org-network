@@ -528,7 +528,8 @@ RB3.8까지 보류하고 각 slice는 Fast·Contract·Affected gate와 독립 re
 - [x] terminal bundle 재시작은 caller binding/device를 exact compare한 뒤
   `read_terminal_profile` read model을 우선하고, profile이 없을 때만
   `recover_from_keychain`으로 `recovered_unverified`→동일 idempotency `replayed`를 복구한다.
-  active expiry·binding drift는 두 저장소 모두 write 0으로 fail-closed한다.
+  새 profile key가 계산되는 binding drift도 terminal device-thumbprint conflict probe로
+  먼저 차단하며, active expiry·binding drift는 두 저장소 모두 write 0으로 fail-closed한다.
 - [ ] Central-issued pair/redeem의 current generation을 exact compare하는 active Owner Installation
   binding, encrypted workspace/keychain profile, local durable AuthoringRun/draft/Git repository와
   default loopback Owner API `127.0.0.1:8012`를 조립

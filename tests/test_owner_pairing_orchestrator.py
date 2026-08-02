@@ -322,16 +322,18 @@ def test_terminal_bundle의caller_binding_drift는recovery_write없이거절된�
         "pairing_expires_at": NOW + timedelta(minutes=5),
         "redeem_idempotency_key": "redeem-1",
     }
+    assert not recovery.has_terminal_device_binding(binding.device_key_thumbprint)
     assert orchestrator.pair(**base).kind == "finalized"
+    assert recovery.has_terminal_device_binding(binding.device_key_thumbprint)
     drifted = binding.model_copy(update={"central_origin": "https://other.example"})
     drifted_args: _PairArguments = {
         **base,
         "binding": drifted,
-        "pairing_reference": owner_profile_id(binding),
     }
     with pytest.raises(OwnerPairingOrchestrationUnavailable):
         orchestrator.pair(**drifted_args)
     assert recovery.read_snapshot(owner_profile_id(binding)) is None
+    assert keys.load(owner_profile_id(drifted)) is None
     assert verifier.calls == 1
 
 

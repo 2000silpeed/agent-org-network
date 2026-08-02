@@ -290,6 +290,106 @@ class OwnerPairingRecoveryResult(BaseModel, frozen=True):
         return self
 
 
+class OwnerPairingRecoverySnapshot(BaseModel, frozen=True):
+    """Read-only durable state needed to resume a pairing attempt after restart."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    profile_id: str
+    state: Literal["intent_issued", "redeem_submitted", "credential_stored"]
+    central_origin: str
+    org_id: str
+    owner_user_id: str
+    agent_card_id: str
+    agent_card_revision: int = Field(gt=0)
+    agent_card_digest: str
+    device_key_thumbprint: str
+    binding_digest: str
+    pairing_intent_id: str
+    pairing_intent_digest: str
+    issue_receipt_id: str
+    issue_receipt_digest: str
+    pairing_expires_at: datetime
+    redeem_idempotency_key: str | None = None
+    redeem_command_digest: str | None = None
+    credential_id: str | None = None
+    credential_generation: int | None = Field(default=None, gt=0)
+    credential_public_digest: str | None = None
+    bundle_revision: int | None = Field(default=None, gt=0)
+    bundle_public_digest: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator(
+        "profile_id", "org_id", "owner_user_id", "agent_card_id",
+        "pairing_intent_id", "issue_receipt_id",
+    )
+    @classmethod
+    def _references(cls, value: str) -> str:
+        return _validate_ref(value)
+
+    @field_validator("agent_card_digest", "binding_digest", "pairing_intent_digest", "issue_receipt_digest", "redeem_command_digest", "credential_public_digest", "bundle_public_digest")
+    @classmethod
+    def _digests(cls, value: str | None) -> str | None:
+        if value is not None and _DIGEST.fullmatch(value) is None:
+            raise ValueError("lowercase sha256 required")
+        return value
+
+    @field_validator("device_key_thumbprint")
+    @classmethod
+    def _thumbprint(cls, value: str) -> str:
+        if type(value) is not str or len(value) != 43:
+            raise ValueError("canonical device thumbprint required")
+        return value
+
+    @field_validator("pairing_expires_at", "created_at", "updated_at")
+    @classmethod
+    def _canonical_instant(cls, value: datetime) -> datetime:
+        if (
+            value.tzinfo is None
+            or value.utcoffset() != timedelta(0)
+            or value.microsecond != 0
+        ):
+            raise ValueError("canonical UTC second required")
+        return value
+
+    @model_validator(mode="after")
+    def _exact_shape(self) -> "OwnerPairingRecoverySnapshot":
+        binding = OwnerInstallationPublicBindingV1(
+            central_origin=self.central_origin,
+            org_id=self.org_id,
+            owner_user_id=self.owner_user_id,
+            agent_card_id=self.agent_card_id,
+            agent_card_revision=self.agent_card_revision,
+            agent_card_digest=self.agent_card_digest,
+            device_key_thumbprint=self.device_key_thumbprint,
+        )
+        if binding_digest(binding) != self.binding_digest:
+            raise ValueError("binding digest mismatch")
+        if self.pairing_expires_at <= self.created_at or self.updated_at < self.created_at:
+            raise ValueError("invalid recovery timestamps")
+        redeem_values = (self.redeem_idempotency_key, self.redeem_command_digest)
+        if self.state == "intent_issued":
+            if any(value is not None for value in redeem_values):
+                raise ValueError("redeem projection forbidden")
+        elif any(value is None for value in redeem_values):
+            raise ValueError("redeem projection required")
+        credential_values = (
+            self.credential_id,
+            self.credential_generation,
+            self.credential_public_digest,
+            self.bundle_revision,
+            self.bundle_public_digest,
+        )
+        if self.state == "credential_stored":
+            if any(value is None for value in credential_values):
+                raise ValueError("stored credential projection required")
+        elif any(value is not None for value in credential_values):
+            raise ValueError("credential projection forbidden")
+        if self.credential_id is not None:
+            _validate_ref(self.credential_id)
+        return self
+
+
 _SCHEMA = """
 CREATE TABLE owner_pairing_recoveries (
  profile_id TEXT PRIMARY KEY,state TEXT NOT NULL,
@@ -1115,6 +1215,57 @@ class OwnerPairingRecoveryStore:
             raise OwnerPairingRecoveryUnavailable()
         return historical.model_copy(update={"kind": "replayed"})
 
+    def read_snapshot(self, profile_id: str) -> OwnerPairingRecoverySnapshot | None:
+        """Return the current non-terminal recovery row for restart/resume orchestration."""
+        if type(profile_id) is not str:
+            raise OwnerPairingRecoveryUnavailable()
+        try:
+            _validate_ref(profile_id)
+        except ValueError as error:
+            raise OwnerPairingRecoveryUnavailable() from error
+        with self._lock:
+            try:
+                self._validate_path()
+                with sqlite3.connect(self._path, timeout=30) as connection:
+                    self._validate(connection)
+                    connection.row_factory = sqlite3.Row
+                    row = connection.execute(
+                        "SELECT * FROM owner_pairing_recoveries WHERE profile_id=?",
+                        (profile_id,),
+                    ).fetchone()
+                    if row is None:
+                        return None
+                    return OwnerPairingRecoverySnapshot(
+                        profile_id=row["profile_id"],
+                        state=row["state"],
+                        central_origin=row["central_origin"],
+                        org_id=row["org_id"],
+                        owner_user_id=row["owner_user_id"],
+                        agent_card_id=row["agent_card_id"],
+                        agent_card_revision=row["agent_card_revision"],
+                        agent_card_digest=row["agent_card_digest"],
+                        device_key_thumbprint=row["device_key_thumbprint"],
+                        binding_digest=row["binding_digest"],
+                        pairing_intent_id=row["pairing_intent_id"],
+                        pairing_intent_digest=row["pairing_intent_digest"],
+                        issue_receipt_id=row["issue_receipt_id"],
+                        issue_receipt_digest=row["issue_receipt_digest"],
+                        pairing_expires_at=_parse_instant(row["pairing_expires_at"]),
+                        redeem_idempotency_key=row["redeem_idempotency_key"],
+                        redeem_command_digest=row["redeem_command_digest"],
+                        credential_id=row["credential_id"],
+                        credential_generation=row["credential_generation"],
+                        credential_public_digest=row["credential_public_digest"],
+                        bundle_revision=row["bundle_revision"],
+                        bundle_public_digest=row["bundle_public_digest"],
+                        created_at=_parse_instant(row["created_at"]),
+                        updated_at=_parse_instant(row["updated_at"]),
+                    )
+            except OwnerPairingRecoveryUnavailable:
+                raise
+            except (sqlite3.Error, ValueError, TypeError) as error:
+                raise OwnerPairingRecoveryUnavailable() from error
+
     def _transact(self, command: _RecoveryCommand, *, action: str, domain: bytes, mutate: Callable[[sqlite3.Connection], None]) -> OwnerPairingRecoveryResult:
         digest = self._command_digest(domain, command)
         with self._lock:
@@ -1643,7 +1794,8 @@ __all__ = [
     "CreateIntentRecovery", "FinalizeFromStoredCredentialCommand",
     "LegacyOwnerPairingRequiresRepair", "MarkCredentialStored",
     "MarkRedeemSubmitted", "OwnerPairingRecoveryConflict",
-    "OwnerPairingRecoveryResult", "OwnerPairingRecoveryStore",
+    "OwnerPairingRecoveryResult", "OwnerPairingRecoverySnapshot",
+    "OwnerPairingRecoveryStore",
     "OwnerPairingRecoveryUnavailable", "RecoverFromKeychainCommand",
     "validate_finalized_owner_bundle_delta",
 ]

@@ -360,6 +360,12 @@ def test_first_generation_redeem과_exact_envelope_replay다(tmp_path: Path) -> 
     )
     first = store.redeem(command)
     replay = store.redeem(command)
+    assert issued.issue_receipt_id == issue_command.idempotency_key
+    assert len(issued.issue_receipt_digest) == 64
+    assert first.pairing_intent_digest == issued.pairing_intent_digest
+    assert first.issue_receipt_digest == issued.issue_receipt_digest
+    assert first.redeem_receipt_id == command.idempotency_key
+    assert len(first.redeem_receipt_digest) == 64
     assert replay.replayed
     assert replay.credential_id == first.credential_id
     assert serialize_owner_credential_envelope(replay.envelope) == (
@@ -440,6 +446,8 @@ def test_actual_http_issue_redeem과exact_replay다(tmp_path: Path) -> None:
     )
     parsed = RedeemedOwnerPairing.model_validate_json(redeemed.content)
     assert parsed.credential_id == redeemed.json()["credential_id"]
+    assert redeemed.json()["issue_receipt_id"] == issued.json()["issue_receipt_id"]
+    assert len(redeemed.json()["redeem_receipt_digest"]) == 64
     assert issued.json()["pairing_code"].encode() not in path.read_bytes()
 
 

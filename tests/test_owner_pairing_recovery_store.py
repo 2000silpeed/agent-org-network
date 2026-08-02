@@ -31,6 +31,7 @@ from agent_org_network.owner_pairing_recovery_store import (
     MarkRedeemSubmitted,
     OwnerPairingRecoveryConflict,
     OwnerPairingRecoveryStore,
+    OwnerPairingRecoverySnapshot,
     OwnerPairingRecoveryUnavailable,
     RecoverFromKeychainCommand,
 )
@@ -324,6 +325,44 @@ def _replay_commands() -> tuple[
             idempotency_key="idem-stored",
         ),
     )
+
+
+def test_recovery_snapshot은재시작후_CAS재개에필요한상태를반환한다(
+    tmp_path: Path,
+) -> None:
+    store = OwnerPairingRecoveryStore(tmp_path / "owner.sqlite")
+    store.create_intent_recovery(_create())
+
+    initial = store.read_snapshot("profile-1")
+    assert isinstance(initial, OwnerPairingRecoverySnapshot)
+    assert initial.state == "intent_issued"
+    assert initial.updated_at == NOW
+    assert initial.redeem_idempotency_key is None
+
+    store.mark_redeem_submitted(
+        MarkRedeemSubmitted(
+            profile_id="profile-1",
+            expected_state="intent_issued",
+            expected_updated_at=initial.updated_at,
+            redeem_idempotency_key="central-redeem-1",
+            redeem_command_digest="d" * 64,
+            now=NOW + timedelta(seconds=1),
+            idempotency_key="idem-redeem",
+        )
+    )
+    resumed = store.read_snapshot("profile-1")
+    assert resumed is not None
+    assert resumed.state == "redeem_submitted"
+    assert resumed.updated_at == NOW + timedelta(seconds=1)
+    assert resumed.redeem_idempotency_key == "central-redeem-1"
+    assert resumed.redeem_command_digest == "d" * 64
+
+
+def test_recovery_snapshot은잘못된_profile_id를거부한다(tmp_path: Path) -> None:
+    store = OwnerPairingRecoveryStore(tmp_path / "owner.sqlite")
+    with pytest.raises(OwnerPairingRecoveryUnavailable):
+        store.read_snapshot("../escape")
+    assert store.read_snapshot("missing-profile") is None
 
 
 def _install_terminal_fixture(path: Path, action: str) -> None:

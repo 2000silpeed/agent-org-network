@@ -68,9 +68,15 @@ class RedeemedOwnerPairing(BaseModel, frozen=True):
     credential_generation: int
     expires_at: datetime
     envelope: OwnerCredentialEnvelope
+    pairing_intent_digest: str
+    issue_receipt_id: str
+    issue_receipt_digest: str
+    redeem_receipt_id: str
+    redeem_receipt_digest: str
 
     @field_validator(
-        "org_id", "owner_id", "agent_id", "identity_provider", "credential_id"
+        "org_id", "owner_id", "agent_id", "identity_provider", "credential_id",
+        "issue_receipt_id", "redeem_receipt_id",
     )
     @classmethod
     def _ref(cls, value: str) -> str:
@@ -78,7 +84,10 @@ class RedeemedOwnerPairing(BaseModel, frozen=True):
             raise ValueError("bounded reference required")
         return value
 
-    @field_validator("card_digest")
+    @field_validator(
+        "card_digest", "pairing_intent_digest", "issue_receipt_digest",
+        "redeem_receipt_digest",
+    )
     @classmethod
     def _digest(cls, value: str) -> str:
         if _DIGEST.fullmatch(value) is None:
@@ -232,6 +241,7 @@ class ProductionCentralPairingVerifier:
                 or result.envelope.aad.scope != ("author.read", "author.write")
                 or datetime.fromisoformat(result.envelope.aad.expires_at)
                 != result.expires_at
+                or result.redeem_receipt_id != idempotency_key
             ):
                 raise CentralOwnerPairingUnavailable()
             return result

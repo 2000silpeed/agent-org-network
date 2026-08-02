@@ -387,6 +387,13 @@ RB3의 유한 종료점은 `runnable_local_reference`(향후 support vocabulary�
 
 현재는 이 gate를 통과하지 않았습니다.
 
+Owner 설치는 재시작·중복 요청에서도 pair 상태를 추측하지 않아야 한다. 로컬 recovery store는
+  Central issue/redeem 원장 anchor와 binding digest를 포함한 `intent_issued`,
+  `redeem_submitted`, `credential_stored` snapshot을 제공하고, 다음 단계는 그 snapshot을
+  기준으로만 CAS를 재개한다. snapshot 부재·손상·Central receipt 불일치는 paired가 아닌
+  명시적 unavailable로 남긴다. 실제 Central receipt를 포함한 pair/redeem 관통은 아직 목표
+  범위이며 현재 제공 범위로 주장하지 않는다.
+
 ### 7.1 회사 기본 운영 환경
 
 회사 기본 운영 환경은 Windows이며 Docker Desktop은 사용할 수 없는 것으로 가정한다.

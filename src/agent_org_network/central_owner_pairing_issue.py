@@ -140,7 +140,24 @@ class IssuedOwnerPairingIntent(BaseModel, frozen=True):
     pairing_code: SecretStr
     expires_at: datetime
     evidence: PairingIssuancePrincipalEvidence
+    pairing_intent_digest: str
+    issue_receipt_id: str
+    issue_receipt_digest: str
     replayed: bool = False
+
+    @field_validator("intent_id", "issue_receipt_id")
+    @classmethod
+    def _ref(cls, value: str) -> str:
+        if _REF.fullmatch(value) is None:
+            raise ValueError("bounded reference required")
+        return value
+
+    @field_validator("pairing_intent_digest", "issue_receipt_digest")
+    @classmethod
+    def _digest(cls, value: str) -> str:
+        if _DIGEST.fullmatch(value) is None:
+            raise ValueError("lowercase sha256 required")
+        return value
 
 
 class RedeemOwnerPairingCommand(BaseModel, frozen=True):
@@ -172,7 +189,28 @@ class RedeemedOwnerCredential(BaseModel, frozen=True):
     credential_id: str
     envelope: OwnerCredentialEnvelope
     evidence: PairingIssuancePrincipalEvidence
+    pairing_intent_digest: str
+    issue_receipt_id: str
+    issue_receipt_digest: str
+    redeem_receipt_id: str
+    redeem_receipt_digest: str
     replayed: bool = False
+
+    @field_validator("credential_id", "issue_receipt_id", "redeem_receipt_id")
+    @classmethod
+    def _ref(cls, value: str) -> str:
+        if _REF.fullmatch(value) is None:
+            raise ValueError("bounded reference required")
+        return value
+
+    @field_validator(
+        "pairing_intent_digest", "issue_receipt_digest", "redeem_receipt_digest"
+    )
+    @classmethod
+    def _digest(cls, value: str) -> str:
+        if _DIGEST.fullmatch(value) is None:
+            raise ValueError("lowercase sha256 required")
+        return value
 
 
 def _canonical(value: object) -> bytes:
@@ -183,6 +221,48 @@ def _canonical(value: object) -> bytes:
 
 def _digest(value: object) -> str:
     return sha256(_canonical(value)).hexdigest()
+
+
+def _pairing_intent_digest(
+    *, intent_id: str, expires_at: datetime, evidence: PairingIssuancePrincipalEvidence
+) -> str:
+    return _digest(
+        {
+            "intent_id": intent_id,
+            "expires_at": expires_at.isoformat(),
+            "evidence": evidence.model_dump(mode="json"),
+        }
+    )
+
+
+def _issue_receipt_digest(
+    *, org_id: str, receipt_id: str, command_digest: str, intent_id: str, created_at: str
+) -> str:
+    return _digest(
+        {
+            "kind": "owner-pairing.issue",
+            "org_id": org_id,
+            "receipt_id": receipt_id,
+            "command_digest": command_digest,
+            "intent_id": intent_id,
+            "created_at": created_at,
+        }
+    )
+
+
+def _redeem_receipt_digest(
+    *, receipt_id: str, command_digest: str, intent_id: str, credential_id: str, created_at: str
+) -> str:
+    return _digest(
+        {
+            "kind": "owner-pairing.redeem",
+            "receipt_id": receipt_id,
+            "command_digest": command_digest,
+            "intent_id": intent_id,
+            "credential_id": credential_id,
+            "created_at": created_at,
+        }
+    )
 
 
 def _issue_command_digest(command: IssueOwnerPairingCommand) -> str:
@@ -881,11 +961,23 @@ class CentralOwnerPairingIssueStore:
                 _validate_redeem_rows(connection)
                 self._fault("before_commit")
                 connection.commit()
+                issue_receipt_digest = _issue_receipt_digest(
+                    org_id=command.org_id,
+                    receipt_id=command.idempotency_key,
+                    command_digest=command_digest,
+                    intent_id=intent_id,
+                    created_at=now.isoformat(),
+                )
                 return IssuedOwnerPairingIntent(
                     intent_id=intent_id,
                     pairing_code=SecretStr(code),
                     expires_at=expires,
                     evidence=evidence,
+                    pairing_intent_digest=_pairing_intent_digest(
+                        intent_id=intent_id, expires_at=expires, evidence=evidence
+                    ),
+                    issue_receipt_id=command.idempotency_key,
+                    issue_receipt_digest=issue_receipt_digest,
                 )
         except (CentralOwnerPairingIssueUnavailable, CentralOwnerPairingIssueConflict):
             raise
@@ -897,16 +989,24 @@ class CentralOwnerPairingIssueStore:
     ) -> IssuedOwnerPairingIntent:
         row = connection.execute(
             "SELECT key_id,nonce,code_envelope,expires_at,evidence_json,state,"
-            "code_verifier "
+            "code_verifier,org_id,command_digest "
             "FROM central_owner_pairing_intents WHERE intent_id=?",
+            (intent_id,),
+        ).fetchone()
+        receipt = connection.execute(
+            "SELECT idempotency_key,command_digest,intent_id,created_at "
+            "FROM central_owner_pairing_issue_receipts WHERE intent_id=?",
             (intent_id,),
         ).fetchone()
         key = self._keys.current()
         if (
             row is None
+            or receipt is None
             or row[0] != key.key_id
             or row[5] != "pending"
             or datetime.fromisoformat(row[3]) <= self._clock()
+            or receipt[1] != row[8]
+            or receipt[2] != intent_id
         ):
             raise CentralOwnerPairingIssueUnavailable()
         try:
@@ -925,11 +1025,24 @@ class CentralOwnerPairingIssueStore:
             if not hmac.compare_digest(expected_verifier, row[6]):
                 raise CentralOwnerPairingIssueUnavailable()
             evidence = PairingIssuancePrincipalEvidence.model_validate_json(row[4])
+            issue_receipt_digest = _issue_receipt_digest(
+                org_id=row[7],
+                receipt_id=receipt[0],
+                command_digest=receipt[1],
+                intent_id=intent_id,
+                created_at=receipt[3],
+            )
+            expires_at = datetime.fromisoformat(row[3])
             return IssuedOwnerPairingIntent(
                 intent_id=intent_id,
                 pairing_code=SecretStr(code),
-                expires_at=datetime.fromisoformat(row[3]),
+                expires_at=expires_at,
                 evidence=evidence,
+                pairing_intent_digest=_pairing_intent_digest(
+                    intent_id=intent_id, expires_at=expires_at, evidence=evidence
+                ),
+                issue_receipt_id=receipt[0],
+                issue_receipt_digest=issue_receipt_digest,
                 replayed=True,
             )
         except (InvalidTag, ValueError) as error:
@@ -976,7 +1089,8 @@ class CentralOwnerPairingIssueStore:
                     row[7]
                 )
                 issue_receipt = connection.execute(
-                    "SELECT idempotency_key FROM central_owner_pairing_issue_receipts "
+                    "SELECT idempotency_key,command_digest,intent_id,created_at "
+                    "FROM central_owner_pairing_issue_receipts "
                     "WHERE intent_id=?",
                     (command.intent_id,),
                 ).fetchone()
@@ -985,7 +1099,12 @@ class CentralOwnerPairingIssueStore:
                     "WHERE identity_session_digest=?",
                     (row[6],),
                 ).fetchone()
-                if issue_receipt is None or session is None:
+                if (
+                    issue_receipt is None
+                    or session is None
+                    or issue_receipt[2] != command.intent_id
+                    or issue_receipt[1] != row[4]
+                ):
                     raise CentralOwnerPairingIssueUnavailable()
                 issue_command = IssueOwnerPairingCommand(
                     org_id=row[0],
@@ -1016,7 +1135,7 @@ class CentralOwnerPairingIssueStore:
                     code_verifier=row[5],
                 )
                 existing = connection.execute(
-                    "SELECT command_digest,credential_id FROM "
+                    "SELECT command_digest,credential_id,created_at FROM "
                     "central_owner_pairing_redeem_receipts WHERE idempotency_key=?",
                     (command.idempotency_key,),
                 ).fetchone()
@@ -1039,12 +1158,34 @@ class CentralOwnerPairingIssueStore:
                         or datetime.fromisoformat(replay[3]) <= now
                     ):
                         raise CentralOwnerPairingIssueUnavailable()
+                    expires_at = datetime.fromisoformat(row[8])
                     return RedeemedOwnerCredential(
                         credential_id=existing[1],
                         envelope=parse_owner_credential_envelope(
                             replay[2].encode("utf-8")
                         ),
                         evidence=evidence,
+                        pairing_intent_digest=_pairing_intent_digest(
+                            intent_id=command.intent_id,
+                            expires_at=expires_at,
+                            evidence=evidence,
+                        ),
+                        issue_receipt_id=issue_receipt[0],
+                        issue_receipt_digest=_issue_receipt_digest(
+                            org_id=row[0],
+                            receipt_id=issue_receipt[0],
+                            command_digest=issue_receipt[1],
+                            intent_id=command.intent_id,
+                            created_at=issue_receipt[3],
+                        ),
+                        redeem_receipt_id=command.idempotency_key,
+                        redeem_receipt_digest=_redeem_receipt_digest(
+                            receipt_id=command.idempotency_key,
+                            command_digest=existing[0],
+                            intent_id=command.intent_id,
+                            credential_id=existing[1],
+                            created_at=existing[2],
+                        ),
                         replayed=True,
                     )
                 if row[9] != "pending" or existing is not None:
@@ -1188,10 +1329,32 @@ class CentralOwnerPairingIssueStore:
                 _validate_redeem_rows(connection)
                 self._fault("before_redeem_commit")
                 connection.commit()
+                issue_receipt_digest = _issue_receipt_digest(
+                    org_id=row[0],
+                    receipt_id=issue_receipt[0],
+                    command_digest=issue_receipt[1],
+                    intent_id=command.intent_id,
+                    created_at=issue_receipt[3],
+                )
                 return RedeemedOwnerCredential(
                     credential_id=credential_id,
                     envelope=encrypted.envelope,
                     evidence=evidence,
+                    pairing_intent_digest=_pairing_intent_digest(
+                        intent_id=command.intent_id,
+                        expires_at=datetime.fromisoformat(row[8]),
+                        evidence=evidence,
+                    ),
+                    issue_receipt_id=issue_receipt[0],
+                    issue_receipt_digest=issue_receipt_digest,
+                    redeem_receipt_id=command.idempotency_key,
+                    redeem_receipt_digest=_redeem_receipt_digest(
+                        receipt_id=command.idempotency_key,
+                        command_digest=redeem_digest,
+                        intent_id=command.intent_id,
+                        credential_id=credential_id,
+                        created_at=now_text,
+                    ),
                 )
         except (CentralOwnerPairingIssueUnavailable, CentralOwnerPairingIssueConflict):
             raise

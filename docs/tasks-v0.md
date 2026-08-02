@@ -511,7 +511,11 @@ RB3.8까지 보류하고 각 slice는 Fast·Contract·Affected gate와 독립 re
   generation/expiry·pending 상태를 검증하는 adapter를 추가했고, seam·workspace·schema marker가
   모두 없으면 doctor/readyz가 fail-closed한다. Windows current-user DPAPI secret-bundle backend와
   keyring/DPAPI 실패 시 평문 fallback 금지를 추가했지만, 실제 pair/redeem mutation·receipt anchor·
-  recovery orchestration은 다음 bounded slice다(ADR 0084).
+  recovery orchestration은 다음 bounded slice다(ADR 0084). 재시작 시 CAS를 재개할 수 있도록
+  `OwnerPairingRecoveryStore.read_snapshot(profile_id)`와 immutable state projection을 추가했다.
+- [x] Owner-local recovery row의 `intent_issued → redeem_submitted → credential_stored` 상태와
+  `updated_at`을 원자적으로 읽는 snapshot 경계와 malformed/tampered row fail-close 테스트를 추가
+  (pair/redeem network 호출과 Central receipt anchor는 아직 조립하지 않음)
 - [ ] Central-issued pair/redeem의 current generation을 exact compare하는 active Owner Installation
   binding, encrypted workspace/keychain profile, local durable AuthoringRun/draft/Git repository와
   default loopback Owner API `127.0.0.1:8012`를 조립

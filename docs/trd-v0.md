@@ -885,6 +885,15 @@ OS keychain과 Owner-local Next 구현을 완료한 것으로 해석하지 않�
   DPAPI ciphertext transport를 사용하고, macOS/Linux는 명시적 keyring allowlist를 사용한다
   (ADR 0084); 어느 경로도 평문 secret 파일 fallback을 허용하지 않는다.
 
+Owner pair/redeem은 두 저장소의 교차 재시작을 전제로 한다. `OwnerPairingRecoveryStore`는
+  `read_snapshot(profile_id)`로 비종료 recovery row의 Central origin, binding/intent/issue receipt
+  digest, redeem idempotency/digest, credential/bundle public projection, `created_at`과
+  `updated_at`을 strict immutable DTO로 반환한다. orchestration은 이 snapshot의 `state`와
+  `updated_at`을 다음 CAS 명령의 expected 값으로 사용하며, row가 없거나 검증에 실패하면
+  paired/ready를 주장하지 않고 fail-closed한다. 이 API는 비밀·pairing code를 반환하지 않으며,
+  terminal profile은 별도 read model이므로 finalize 뒤 `None`이 정상이다. Central issue/redeem
+  응답의 실제 receipt anchor가 연결되기 전에는 pair/redeem 완료로 해석하지 않는다(ADR 0085).
+
 Remote A2A Agent Card는 remote 통신 설정용 untrusted metadata다. Central Authority, Registry
 Agent Card admission, Knowledge Index 또는 Answer source evidence로 승격하지 않는다. Central
 Server는 A2A inbound endpoint, discovery registry, automatic registration, federation proxy를

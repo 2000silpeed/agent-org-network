@@ -763,12 +763,18 @@ def test_finalize_32distinct_store의keychain_CAS_conflict는exact_final에join�
 def test_recover_from_keychain은active_only를unverified_profile로atomic복구한다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    store, command, _keys, _backend = _recover_fixture(tmp_path, monkeypatch)
+    store, command, keys, _backend = _recover_fixture(tmp_path, monkeypatch)
+    bundle = keys.load(command.profile_id)
+    assert bundle is not None
+    assert not store.has_terminal_device_binding(
+        bundle.binding.device_key_thumbprint
+    )
 
     result = store.recover_from_keychain(command)
     assert result.kind == "recovered_unverified"
     assert result.verification == "recovered_unverified"
     assert store.recover_from_keychain(command).kind == "replayed"
+    assert store.has_terminal_device_binding(bundle.binding.device_key_thumbprint)
 
     with sqlite3.connect(tmp_path / "recover.sqlite") as connection:
         assert connection.execute(

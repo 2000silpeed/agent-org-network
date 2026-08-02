@@ -137,7 +137,8 @@ backlog로 둔다”는 범위를 대체합니다. 상세 경계와 금지 흐�
 - A2A Remote Runtime은 Card Owner local profile, OOB credential, pinned endpoint와 exact
   Remote A2A Agent Card digest를 통해서만 선택한다.
 - strict A2A 1.0 `HTTP+JSON` REST의 direct Message 또는 completed Task 단일 text-only
-  Artifact만 기존 AnswerCandidate 경계로 보낸다.
+  Artifact만 기존 AnswerCandidate 경계로 보낸다. card/send-message 응답의 media type은
+  `application/json`으로 고정하고, 모든 3xx redirect는 거부한다.
 - remote failure는 답으로 위장하지 않는다. Owner Worker는 SubmitAnswer 없이 기존
   dispatcher의 release/timeout/escalation으로 종착시킨다.
 - Central Server는 A2A proxy, inbound server, discovery service 또는 자동 Registry admission

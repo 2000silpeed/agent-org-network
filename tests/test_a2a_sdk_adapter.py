@@ -255,6 +255,38 @@ def test_redirect_and_private_dns_are_redacted_unavailable_without_credential_se
     assert _SECRET not in f"{redirected!r} {private!r}"
 
 
+@pytest.mark.parametrize("status_code", [300, 304, 307])
+def test_any_card_redirect_status_is_rejected_even_without_location(status_code: int) -> None:
+    card = _card()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(status_code, json=card)
+
+    outcome = _adapter(httpx.MockTransport(handler)).invoke(
+        profile=_profile(card), question="질문", context=None
+    )
+
+    assert outcome == A2AProtocolViolation()
+    assert _SECRET not in f"{outcome!r} {outcome!s}"
+
+
+@pytest.mark.parametrize("content_type", [None, "text/plain", "application/jsonish"])
+def test_card_requires_application_json_content_type(content_type: str | None) -> None:
+    card = _card()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        headers = {} if content_type is None else {"content-type": content_type}
+        return httpx.Response(200, content=json.dumps(card).encode(), headers=headers)
+
+    outcome = _adapter(httpx.MockTransport(handler)).invoke(
+        profile=_profile(card), question="질문", context=None
+    )
+
+    assert outcome == A2AProtocolViolation()
+
+
 def test_ipv6_service_path_keeps_bracketed_same_origin_card_and_pinned_post_urls() -> None:
     origin = "https://[2606:2800:220:1:248:1893:25c8:1946]"
     endpoint = f"{origin}/a2a/v1"
@@ -347,6 +379,58 @@ def test_remote_terminal_and_pending_states_map_to_redacted_sealed_outcomes(
 
     assert outcome == expected
     assert _SECRET not in f"{outcome!r} {outcome!s}"
+
+
+def test_post_http_4xx_is_remote_rejected_but_5xx_is_unavailable() -> None:
+    card = _card()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403 if request.method == "POST" else 200,
+            json=card if request.method == "GET" else {"error": {"message": "denied"}},
+        )
+
+    rejected = _adapter(httpx.MockTransport(handler)).invoke(
+        profile=_profile(card), question="질문", context=None
+    )
+    assert rejected == A2ARemoteRejected()
+    assert _SECRET not in f"{rejected!r} {rejected!s}"
+
+    def unavailable_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            503,
+            json=card if request.method == "GET" else {"error": {"message": "down"}},
+        )
+
+    unavailable = _adapter(httpx.MockTransport(unavailable_handler)).invoke(
+        profile=_profile(card), question="질문", context=None
+    )
+    assert unavailable == A2ARemoteUnavailable()
+
+
+def test_post_requires_json_and_rejects_redirect_before_sdk_decode() -> None:
+    card = _card()
+
+    def redirect_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302 if request.method == "POST" else 200,
+            json=card if request.method == "GET" else {"message": {}},
+        )
+
+    redirected = _adapter(httpx.MockTransport(redirect_handler)).invoke(
+        profile=_profile(card), question="질문", context=None
+    )
+    assert redirected == A2AProtocolViolation()
+
+    def content_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=card)
+        return httpx.Response(200, content=b"{}", headers={"content-type": "text/plain"})
+
+    invalid_content_type = _adapter(httpx.MockTransport(content_handler)).invoke(
+        profile=_profile(card), question="질문", context=None
+    )
+    assert invalid_content_type == A2AProtocolViolation()
 
 
 def test_oversize_completed_text_and_remote_identifiers_do_not_escape() -> None:

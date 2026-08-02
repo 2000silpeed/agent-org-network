@@ -527,9 +527,11 @@ RB3.8까지 보류하고 각 slice는 Fast·Contract·Affected gate와 독립 re
   binding, encrypted workspace/keychain profile, local durable AuthoringRun/draft/Git repository와
   default loopback Owner API `127.0.0.1:8012`를 조립
 - [x] `server.py`/`web.py` transient authoring, demo source/Fake runtime의 product-root import 금지
-- [ ] A2A Remote Runtime은 `a2a-sdk==1.1.1`의 strict v1 `HTTP+JSON` direct Message 또는
-  completed Task 단일 text-only Artifact만 수용하고, profile/digest/interface/SSRF/redirect/OOB
-  secret/no-SubmitAnswer gate와 dispatcher release/timeout/escalation을 보존
+- [x] A2A Remote Runtime component는 `a2a-sdk==1.1.1`의 strict v1 `HTTP+JSON` direct Message
+  또는 completed Task 단일 text-only Artifact만 수용하고, profile/digest/interface/SSRF/redirect/
+  OOB secret/no-SubmitAnswer gate와 dispatcher release/timeout/escalation을 보존한다. exact
+  MockTransport Contract Gate에서 모든 3xx·비 JSON response·REST 4xx/5xx 매핑까지 fail-closed로
+  검증한다. 실제 Owner composition/egress와 별 process 증거는 아래 Manual Acceptance에 남는다.
 - [ ] 실제 HTTPS A2A 1.0, OOB credential/keychain, pinned card digest와 remote failure escalation의
   별 process Manual Acceptance
 

@@ -44,6 +44,22 @@ _CARD_PATH = "/.well-known/agent-card.json"
 _MAX_REQUEST_BYTES = 1_048_576
 
 
+class _RemoteRejected(Exception):
+    """Internal marker; never rendered outside this module."""
+
+
+class _RemoteUnavailable(Exception):
+    """Internal marker for a bounded 5xx before SDK error parsing."""
+
+
+def _is_json_content_type(value: str | None) -> bool:
+    """Accept only the HTTP+JSON media type (optional parameters allowed)."""
+    if value is None:
+        return False
+    media_type = value.split(";", 1)[0].strip().lower()
+    return media_type == "application/json"
+
+
 class DnsResolver(Protocol):
     """Deterministic seam for the connect-immediately-before DNS policy."""
 
@@ -86,6 +102,18 @@ class _BoundedMockTransport(httpx.AsyncBaseTransport):
         response = await self._inner.handle_async_request(request)
         if request.method != "POST":
             return response
+        if 300 <= response.status_code < 400:
+            await response.aclose()
+            raise ValueError("redirect rejected")
+        if 400 <= response.status_code < 500:
+            await response.aclose()
+            raise _RemoteRejected
+        if 500 <= response.status_code < 600:
+            await response.aclose()
+            raise _RemoteUnavailable
+        if not _is_json_content_type(response.headers.get("content-type")):
+            await response.aclose()
+            raise ValueError("application/json response required")
         declared = response.headers.get("content-length")
         if declared is not None:
             try:
@@ -244,6 +272,8 @@ class A2ASdkInvocationAdapter(A2AInvocationPort):
                 )
         except _RemoteRejected:
             return A2ARemoteRejected()
+        except _RemoteUnavailable:
+            return A2ARemoteUnavailable()
         except (httpx.HTTPError, OSError, socket.gaierror):
             return A2ARemoteUnavailable()
         except (TypeError, ValueError, ParseError):
@@ -277,9 +307,13 @@ class A2ASdkInvocationAdapter(A2AInvocationPort):
         try:
             if response.is_redirect:
                 raise ValueError("redirect rejected")
+            if 300 <= response.status_code < 400:
+                raise ValueError("redirect rejected")
             if 400 <= response.status_code < 500:
                 raise _RemoteRejected
             response.raise_for_status()
+            if not _is_json_content_type(response.headers.get("content-type")):
+                raise ValueError("application/json response required")
             declared_size = response.headers.get("content-length")
             if declared_size is not None and int(declared_size) > profile.max_response_bytes:
                 raise ValueError("card body too large")
@@ -368,11 +402,6 @@ class A2ASdkInvocationAdapter(A2AInvocationPort):
             address = ipaddress.ip_address(rendered)
             if not address.is_global:
                 raise OSError("non-public address")
-
-
-class _RemoteRejected(Exception):
-    """Internal marker; never rendered outside this module."""
-
 
 def _canonical_json(value: dict[str, object]) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")

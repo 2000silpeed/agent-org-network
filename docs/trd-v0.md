@@ -1005,7 +1005,10 @@ port만 두 installation이 함께 import할 수 있다.
 `a2a-sdk==1.1.1`을 narrow `A2AInvocationPort` 뒤에만 둔다. SDK에는
 `follow_redirects=False`, `trust_env=False`, TLS verification과 response/time limit을
 강제한 `httpx.AsyncClient`를 사용한다. 현재 Contract Gate는 exact MockTransport만 감싸며
-SDK의 0.3 compatibility는 선택하지 않는다.
+SDK의 0.3 compatibility는 선택하지 않는다. card와 send-message 응답은
+`Content-Type: application/json`만 허용하고, `Location` 유무와 상관없이 모든 3xx를 거부한다.
+SDK가 감싼 명시적 REST 4xx만 `A2ARemoteRejected`로, timeout/5xx/transport는
+`A2ARemoteUnavailable`로 redacted mapping한다.
 
 후속 paired Owner profile loader는 active Owner Installation binding의 org, owner, Agent Card
 ID/revision/digest와 local profile을 exact 비교해야 한다. endpoint는 profile로 직접 고정하고,

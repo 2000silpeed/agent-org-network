@@ -521,11 +521,14 @@ RB3.8까지 보류하고 각 slice는 Fast·Contract·Affected gate와 독립 re
 - [x] Owner 선행 CAS용 secret-free `owner-pairing.redeem.v1` request digest를 Central/Owner가
   공유하고, `OwnerPairingOrchestrator`의 pending→recovery→redeem→decrypt→active→finalize
   순서를 결정론 Fake verifier로 검증 (서버 내부 code-verifier proof는 wire에 노출하지 않음)
-- [ ] 위 orchestrator를 실제 `aon-owner pair`/Owner API route와 clean-install profile에 조립하고,
-  재시작 시 snapshot key/anchor를 caller 입력보다 우선하는 terminal/replay read seam을 추가
-  (이번 경계에서는 `OwnerPairingAdapter` 주입 seam과 stdin-only CLI,
+- [~] 위 orchestrator를 실제 `aon-owner pair`/Owner API route와 clean-install profile에 조립한다.
+  이번 경계에서는 `OwnerPairingAdapter` 주입 seam과 stdin-only CLI,
   `/v1/pairing/status`·`/v1/pairing/redeem` secret-free route shape만 추가했으며,
-  concrete keychain/device-provider가 없으면 configuration/unavailable로 닫힌다.)
+  concrete keychain/device-provider가 없으면 configuration/unavailable로 닫힌다.
+- [x] terminal bundle 재시작은 caller binding/device를 exact compare한 뒤
+  `read_terminal_profile` read model을 우선하고, profile이 없을 때만
+  `recover_from_keychain`으로 `recovered_unverified`→동일 idempotency `replayed`를 복구한다.
+  active expiry·binding drift는 두 저장소 모두 write 0으로 fail-closed한다.
 - [ ] Central-issued pair/redeem의 current generation을 exact compare하는 active Owner Installation
   binding, encrypted workspace/keychain profile, local durable AuthoringRun/draft/Git repository와
   default loopback Owner API `127.0.0.1:8012`를 조립

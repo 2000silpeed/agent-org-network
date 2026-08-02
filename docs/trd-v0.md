@@ -896,6 +896,13 @@ Owner pair/redeem은 두 저장소의 교차 재시작을 전제로 한다. `Own
   anchor가 Owner bundle/recovery CAS와 교차 검증되기 전에는 pair/redeem 완료로 해석하지 않는다
   (ADR 0085).
 
+재시작 시 `read_snapshot(profile_id)`가 없고 active bundle의 `pairing_pending`이 비어 있으면
+caller가 보낸 binding/device를 bundle과 먼저 exact compare한다. immutable terminal profile이
+있으면 `read_terminal_profile(profile_id, expected_central_origin)`을 read-only source-of-truth로
+사용하고, profile이 없는 active bundle에 한해 `RecoverFromKeychainCommand`를 실행한다.
+후자의 첫 결과는 `recovered_unverified`, 동일 idempotency 재호출은 `replayed`이며, binding·origin·
+device·expiry 불일치는 keychain/recovery 어느 쪽도 쓰지 않고 unavailable로 닫힌다.
+
 Owner API의 `/v1/pairing/status`와 `/v1/pairing/redeem`는 이 경계를 반영한 loopback route다.
 `redeem`은 strict anchor와 `SecretStr` pairing code를 한 번만 메모리에서 받고, 주입된
 `OwnerPairingAdapter`가 반환한 `OwnerPairingResultProjection`만 응답한다. 기본 profile에는

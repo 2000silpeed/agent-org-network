@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 import importlib
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 import pytest
 from pydantic import SecretStr
@@ -16,6 +17,7 @@ from agent_org_network.owner_credential_envelope import (
 from agent_org_network.owner_device_key_store import (
     OwnerDeviceKeyMaterialV1,
     OwnerInstallationPublicBindingV1,
+    OwnerPairingPendingV1,
     owner_profile_id,
 )
 from agent_org_network.owner_pairing_digest import (
@@ -34,6 +36,18 @@ from agent_org_network.production_owner_device_key_store import (
 
 
 NOW = datetime(2026, 8, 2, 3, 4, 5, tzinfo=UTC)
+
+
+class _PairArguments(TypedDict):
+    binding: OwnerInstallationPublicBindingV1
+    device: OwnerDeviceKeyMaterialV1
+    pairing_code: OwnerPairingCode
+    pairing_intent_digest: str
+    issue_receipt_id: str
+    issue_receipt_digest: str
+    pairing_expires_at: datetime
+    redeem_idempotency_key: str
+    pairing_reference: NotRequired[str]
 
 
 class _Backend:
@@ -219,3 +233,142 @@ def test_pair_orchestrator는서버응답digest가다르면저장을하지않는
             redeem_idempotency_key="redeem-1",
         )
     assert keys.load(owner_profile_id(binding)).active is None  # type: ignore[union-attr]
+
+
+def test_terminal_bundle은첫복구후같은idempotency로replayed된다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding, device, keys, recovery, verifier = _setup(tmp_path, monkeypatch)
+    orchestrator = OwnerPairingOrchestrator(
+        verifier=verifier,
+        device_keys=keys,
+        recovery=recovery,
+        clock=lambda: NOW + timedelta(minutes=1),
+    )
+    arguments: _PairArguments = {
+        "binding": binding,
+        "device": device,
+        "pairing_code": OwnerPairingCode(
+            intent_id="intent-1", value=SecretStr("p" * 32)
+        ),
+        "pairing_intent_digest": "b" * 64,
+        "issue_receipt_id": "issue-1",
+        "issue_receipt_digest": "c" * 64,
+        "pairing_expires_at": NOW + timedelta(minutes=5),
+        "redeem_idempotency_key": "redeem-1",
+    }
+    profile_id = owner_profile_id(binding)
+    keys.create_pending(
+        profile_id,
+        binding=binding,
+        device=device,
+        pairing_pending=OwnerPairingPendingV1(
+            pairing_intent_id="intent-1",
+            pairing_intent_digest="b" * 64,
+            issue_receipt_id="issue-1",
+            issue_receipt_digest="c" * 64,
+            redeem_idempotency_key="redeem-1",
+            redeem_command_digest=owner_pairing_redeem_request_digest(
+                intent_id="intent-1",
+                idempotency_key="redeem-1",
+                device_key_thumbprint=binding.device_key_thumbprint,
+            ),
+            pairing_expires_at="2026-08-02T03:09:05Z",
+        ),
+    )
+    bundle = keys.load(profile_id)
+    assert bundle is not None
+    redeemed = verifier.redeem(
+        arguments["pairing_code"],
+        device_public_key=device.public_key,
+        idempotency_key="redeem-1",
+    )
+    slot = orchestrator._slot(redeemed, bundle)  # pyright: ignore[reportPrivateUsage]
+    keys.store_active(
+        profile_id,
+        expected_revision=bundle.bundle_revision,
+        slot=slot,
+        keep_pairing_pending=False,
+    )
+    assert recovery.read_snapshot(profile_id) is None
+    recovered = orchestrator.pair(**arguments)
+    assert recovered.kind == "recovered_unverified"
+    assert recovered.verification == "recovered_unverified"
+    replayed = orchestrator.pair(**arguments)
+    assert replayed.kind == "replayed"
+    assert replayed.verification == "recovered_unverified"
+    assert verifier.calls == 1
+
+
+def test_terminal_bundle의caller_binding_drift는recovery_write없이거절된다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding, device, keys, recovery, verifier = _setup(tmp_path, monkeypatch)
+    orchestrator = OwnerPairingOrchestrator(
+        verifier=verifier,
+        device_keys=keys,
+        recovery=recovery,
+        clock=lambda: NOW + timedelta(minutes=1),
+    )
+    base: _PairArguments = {
+        "binding": binding,
+        "device": device,
+        "pairing_code": OwnerPairingCode(
+            intent_id="intent-1", value=SecretStr("p" * 32)
+        ),
+        "pairing_intent_digest": "b" * 64,
+        "issue_receipt_id": "issue-1",
+        "issue_receipt_digest": "c" * 64,
+        "pairing_expires_at": NOW + timedelta(minutes=5),
+        "redeem_idempotency_key": "redeem-1",
+    }
+    assert orchestrator.pair(**base).kind == "finalized"
+    drifted = binding.model_copy(update={"central_origin": "https://other.example"})
+    drifted_args: _PairArguments = {
+        **base,
+        "binding": drifted,
+        "pairing_reference": owner_profile_id(binding),
+    }
+    with pytest.raises(OwnerPairingOrchestrationUnavailable):
+        orchestrator.pair(**drifted_args)
+    assert recovery.read_snapshot(owner_profile_id(binding)) is None
+    assert verifier.calls == 1
+
+
+def test_terminal_active_expiry는recovery_write없이unavailable이다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding, device, keys, recovery, verifier = _setup(tmp_path, monkeypatch)
+    arguments: _PairArguments = {
+        "binding": binding,
+        "device": device,
+        "pairing_code": OwnerPairingCode(
+            intent_id="intent-1", value=SecretStr("p" * 32)
+        ),
+        "pairing_intent_digest": "b" * 64,
+        "issue_receipt_id": "issue-1",
+        "issue_receipt_digest": "c" * 64,
+        "pairing_expires_at": NOW + timedelta(minutes=5),
+        "redeem_idempotency_key": "redeem-1",
+    }
+    assert OwnerPairingOrchestrator(
+        verifier=verifier,
+        device_keys=keys,
+        recovery=recovery,
+        clock=lambda: NOW + timedelta(minutes=1),
+    ).pair(**arguments).kind == "finalized"
+    future = NOW + timedelta(days=31)
+    recovery._clock = lambda: future  # pyright: ignore[reportPrivateUsage]
+    expired_args: _PairArguments = {
+        **arguments,
+        "pairing_expires_at": NOW + timedelta(days=40),
+    }
+    with pytest.raises(OwnerPairingOrchestrationUnavailable):
+        OwnerPairingOrchestrator(
+            verifier=verifier,
+            device_keys=keys,
+            recovery=recovery,
+            clock=lambda: future,
+        ).pair(**expired_args)
+    assert recovery.read_snapshot(owner_profile_id(binding)) is None
+    assert verifier.calls == 1

@@ -387,7 +387,9 @@ evidence 또는 A2A를 relay하지 않습니다. Windows Owner secret bundle은 
 `/v1/pairing/status`·`/v1/pairing/redeem` route shape와 `OwnerPairingAdapter` injection seam이
 있으며, CLI pair는 pairing JSON을 stdin에서만 읽고 code를 profile/argv/output에 저장하지 않습니다.
 concrete keychain/device-material provider가 없는 clean-install 기본 경로는 명시적으로 unavailable이며,
-이 seam은 production pairing 관통 완료를 주장하지 않습니다.
+이 seam은 production pairing 관통 완료를 주장하지 않습니다. 재시작 시에는 terminal
+`read_terminal_profile`을 먼저 읽고, profile이 없을 때만 `recovered_unverified`/동일 idempotency
+`replayed` recovery를 수행하며 binding·expiry drift는 write 없이 닫힙니다.
 과거 아홉 HTML의 exact route/API/error/authority
 destination은 [frontend runtime parity](docs/frontend-runtime-parity.md), command/file/acceptance
 shape는 [ADR 0075](docs/adr/0075-installable-three-artifact-and-feature-preserving-next-migration.md)에

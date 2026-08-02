@@ -48,6 +48,7 @@ from agent_org_network.owner_pairing_recovery_store import (
     OwnerPairingRecoverySnapshot,
     OwnerPairingRecoveryStore,
     OwnerPairingRecoveryUnavailable,
+    RecoverFromKeychainCommand,
 )
 from agent_org_network.production_owner_device_key_store import (
     ProductionOwnerDeviceKeyStore,
@@ -141,6 +142,7 @@ class OwnerPairingOrchestrator:
         issue_receipt_digest: str,
         pairing_expires_at: datetime,
         redeem_idempotency_key: str,
+        pairing_reference: str | None = None,
     ) -> OwnerPairingRecoveryResult:
         if (
             type(binding) is not OwnerInstallationPublicBindingV1
@@ -153,7 +155,12 @@ class OwnerPairingOrchestrator:
         expires_at = _utc_second(pairing_expires_at)
         if expires_at <= now or pairing_code.intent_id == "":
             raise OwnerPairingOrchestrationUnavailable()
-        profile_id = owner_profile_id(binding)
+        if pairing_reference is not None and (
+            type(pairing_reference) is not str or not 1 <= len(pairing_reference) <= 128
+        ):
+            raise OwnerPairingOrchestrationUnavailable()
+        derived_profile_id = owner_profile_id(binding)
+        profile_id = pairing_reference or derived_profile_id
         redeem_digest = owner_pairing_redeem_request_digest(
             intent_id=pairing_code.intent_id,
             idempotency_key=redeem_idempotency_key,
@@ -162,6 +169,8 @@ class OwnerPairingOrchestrator:
         try:
             bundle = self._device_keys.load(profile_id)
             if bundle is None:
+                if profile_id != derived_profile_id:
+                    raise OwnerPairingOrchestrationUnavailable()
                 pending = OwnerPairingPendingV1(
                     pairing_intent_id=pairing_code.intent_id,
                     pairing_intent_digest=pairing_intent_digest,
@@ -175,8 +184,50 @@ class OwnerPairingOrchestrator:
                     profile_id, binding=binding, device=device, pairing_pending=pending
                 )
                 bundle = self._device_keys.load(profile_id)
-            if bundle is None or bundle.binding != binding or bundle.pairing_pending is None:
+            if bundle is None or bundle.binding != binding or bundle.device != device:
                 raise OwnerPairingOrchestrationUnavailable()
+            if bundle.pairing_pending is None:
+                if bundle.active is None:
+                    raise OwnerPairingOrchestrationUnavailable()
+                snapshot = self._recovery.read_snapshot(profile_id)
+                if snapshot is not None:
+                    raise OwnerPairingOrchestrationUnavailable()
+                terminal = self._recovery.read_terminal_profile(
+                    profile_id, expected_central_origin=binding.central_origin
+                )
+                if terminal is not None:
+                    if (
+                        terminal.profile_id != profile_id
+                        or terminal.binding_digest != binding_digest(binding)
+                        or terminal.credential_id != bundle.active.credential_id
+                        or terminal.credential_generation != bundle.active.credential_generation
+                        or terminal.verification
+                        not in {"paired", "recovered_unverified"}
+                    ):
+                        raise OwnerPairingOrchestrationUnavailable()
+                    if terminal.verification == "paired":
+                        return terminal
+                recovered = self._recovery.recover_from_keychain(
+                    RecoverFromKeychainCommand(
+                        profile_id=profile_id,
+                        now=now,
+                        expected_central_origin=binding.central_origin,
+                        idempotency_key=_derived_ref("profile-recover-", profile_id),
+                    )
+                )
+                if (
+                    type(recovered) is not OwnerPairingRecoveryResult
+                    or recovered.kind not in {"recovered_unverified", "replayed"}
+                    or recovered.state is not None
+                    or recovered.profile_id != profile_id
+                    or recovered.binding_digest != binding_digest(binding)
+                    or recovered.credential_id != bundle.active.credential_id
+                    or recovered.credential_generation != bundle.active.credential_generation
+                    or recovered.verification
+                    not in {"recovered_unverified", None}
+                ):
+                    raise OwnerPairingOrchestrationUnavailable()
+                return recovered
             pending = bundle.pairing_pending
             if (
                 pending.pairing_intent_id != pairing_code.intent_id

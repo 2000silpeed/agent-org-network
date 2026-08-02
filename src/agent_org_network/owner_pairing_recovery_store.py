@@ -1266,6 +1266,91 @@ class OwnerPairingRecoveryStore:
             except (sqlite3.Error, ValueError, TypeError) as error:
                 raise OwnerPairingRecoveryUnavailable() from error
 
+    def read_terminal_profile(
+        self,
+        profile_id: str,
+        *,
+        expected_central_origin: str,
+    ) -> OwnerPairingRecoveryResult | None:
+        """Read a finalized local profile without creating a recovery receipt.
+
+        A finalized pair has no non-terminal recovery snapshot by design.  This
+        read seam verifies the immutable terminal projection against the active
+        keychain bundle before returning a redacted replay result; it never
+        upgrades a caller-provided binding or repairs either store.
+        """
+        if type(profile_id) is not str or type(expected_central_origin) is not str:
+            raise OwnerPairingRecoveryUnavailable()
+        try:
+            _validate_ref(profile_id)
+        except ValueError as error:
+            raise OwnerPairingRecoveryUnavailable() from error
+        with self._lock:
+            try:
+                self._validate_path()
+                with sqlite3.connect(self._path, timeout=30) as connection:
+                    self._validate(connection)
+                    connection.row_factory = sqlite3.Row
+                    row = connection.execute(
+                        "SELECT * FROM owner_installation_profiles WHERE profile_id=?",
+                        (profile_id,),
+                    ).fetchone()
+                    if row is None:
+                        return None
+                    resource = self._resource(row)
+                    if resource["central_origin"] != expected_central_origin:
+                        raise OwnerPairingRecoveryUnavailable()
+                    if self._device_keys is None or self._clock is None:
+                        raise OwnerPairingRecoveryUnavailable()
+                    bundle = self._device_keys.load(profile_id)
+                    if bundle is None or bundle.active is None:
+                        raise OwnerPairingRecoveryUnavailable()
+                    if (
+                        owner_profile_id(bundle.binding) != profile_id
+                        or bundle.binding_digest != resource["binding_digest"]
+                        or bundle.binding.central_origin != expected_central_origin
+                        or bundle.pending is not None
+                        or bundle.pairing_pending is not None
+                        or bundle_public_digest(bundle) != resource["bundle_public_digest"]
+                        or bundle.active.credential_id != resource["credential_id"]
+                        or bundle.active.credential_generation != resource["credential_generation"]
+                        or credential_public_digest_from_projection(
+                            credential_public_projection(bundle.active)
+                        )
+                        != resource["credential_public_digest"]
+                        or _parse_instant(bundle.active.expires_at) <= self._clock()
+                    ):
+                        raise OwnerPairingRecoveryUnavailable()
+                    for field in (
+                        "central_origin", "org_id", "owner_user_id", "agent_card_id",
+                        "agent_card_revision", "agent_card_digest", "device_key_thumbprint",
+                    ):
+                        if getattr(bundle.binding, field) != resource[field]:
+                            raise OwnerPairingRecoveryUnavailable()
+                    verification = resource["verification"]
+                    if verification not in {"paired", "recovered_unverified"}:
+                        raise OwnerPairingRecoveryUnavailable()
+                    return OwnerPairingRecoveryResult(
+                        kind="replayed",
+                        profile_id=profile_id,
+                        state=None,
+                        binding_digest=bundle.binding_digest,
+                        credential_id=bundle.active.credential_id,
+                        credential_generation=bundle.active.credential_generation,
+                        credential_public_digest=credential_public_digest_from_projection(
+                            credential_public_projection(bundle.active)
+                        ),
+                        bundle_revision=bundle.bundle_revision,
+                        bundle_public_digest=bundle_public_digest(bundle),
+                        verification=cast(
+                            Literal["paired", "recovered_unverified"], verification
+                        ),
+                    )
+            except OwnerPairingRecoveryUnavailable:
+                raise
+            except (sqlite3.Error, ValueError, TypeError) as error:
+                raise OwnerPairingRecoveryUnavailable() from error
+
     def _transact(self, command: _RecoveryCommand, *, action: str, domain: bytes, mutate: Callable[[sqlite3.Connection], None]) -> OwnerPairingRecoveryResult:
         digest = self._command_digest(domain, command)
         with self._lock:
